@@ -61,6 +61,16 @@
       "dist-electron/**/*",
       "node_modules/node-pty/**/*"
     ],
+    "extraResources": [
+      {
+        "from": "resources/x11-server.zip",
+        "to": "x11-server.zip"
+      },
+      {
+        "from": "resources/x11-server/README.txt",
+        "to": "x11-server/README.txt"
+      }
+    ],
     "asarUnpack": [
       "dist-electron/mcpSshServer.cjs"
     ],

@@ -1093,6 +1093,9 @@ type Props = {
   onSwitchSession?: (nodeId: string, idx: number) => void;
   onCloseSession?: (nodeId: string, termId: string) => void;
   onMoveSession?: (fromNodeId: string, termId: string, toNodeId: string) => void;
+  workspaceList?: { id: string; title: string }[];
+  currentWorkspaceId?: string;
+  onMoveSessionToWorkspace?: (fromNodeId: string, termId: string, targetTabId: string) => void;
   onSplitMoveSession?: (fromNodeId: string, termId: string, toNodeId: string, zone: 'left' | 'right' | 'top' | 'bottom') => void;
   onReorderSession?: (nodeId: string, fromIdx: number, toIdx: number) => void;
   onAddSession?: (nodeId: string, shellName?: string, shellPath?: string) => void;
@@ -1115,6 +1118,7 @@ export const TerminalPanel: React.FC<Props> = ({
   nodeId, panel, onSplit, onClose, onSelect, onSwitchSession, onCloseSession, onMoveSession, onSplitMoveSession, onReorderSession, onAddSession, onRenameSession, onConnectDrop, onDuplicateSession, availableShells,
   treeWidth = 240, onTreeWidthChange, onOpenRemoteFile, onAttachToClaude,
   isFloating, onToggleFloat, isSelected: _isSelected, onSplitWithPicker,
+  workspaceList, currentWorkspaceId, onMoveSessionToWorkspace,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mountedTermRef = useRef<string | null>(null);
@@ -1425,6 +1429,7 @@ export const TerminalPanel: React.FC<Props> = ({
 
   const [dropZone, setDropZone] = useState<DropZone | null>(null);
   const [miniCtx, setMiniCtx] = useState<{ x: number; y: number; termId: string; name: string } | null>(null);
+  const [moveWorkspaceCtx, setMoveWorkspaceCtx] = useState<{ x: number; y: number; termId: string } | null>(null);
   const [termCtx, setTermCtx] = useState<{ x: number; y: number } | null>(null);
   const [encodingCtx, setEncodingCtx] = useState<{ x: number; y: number; current: string } | null>(null);
   const [themePickerCtx, setThemePickerCtx] = useState<{ x: number; y: number; current: string } | null>(null);
@@ -1789,8 +1794,26 @@ export const TerminalPanel: React.FC<Props> = ({
                 }
               } catch {}
             }},
+            ...(workspaceList && workspaceList.length > 1 && onMoveSessionToWorkspace ? [{
+              label: '다른 워크스페이스로 이동...',
+              onClick: () => {
+                setMoveWorkspaceCtx({ x: miniCtx.x, y: miniCtx.y, termId: miniCtx.termId });
+              },
+            }] : []),
             { label: '닫기', onClick: () => { window.api?.disconnectSSH?.(miniCtx.termId); onCloseSession?.(nodeId, miniCtx.termId); } },
           ]}
+        />
+      )}
+      {moveWorkspaceCtx && workspaceList && onMoveSessionToWorkspace && (
+        <ContextMenu
+          x={moveWorkspaceCtx.x} y={moveWorkspaceCtx.y}
+          onClose={() => setMoveWorkspaceCtx(null)}
+          items={workspaceList.filter(w => w.id !== currentWorkspaceId).map(w => ({
+            label: `→ ${w.title}`,
+            onClick: () => {
+              onMoveSessionToWorkspace(nodeId, moveWorkspaceCtx.termId, w.id);
+            },
+          }))}
         />
       )}
       {multiPaste && ReactDOM.createPortal(

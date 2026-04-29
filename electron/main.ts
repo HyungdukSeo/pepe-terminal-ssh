@@ -9,6 +9,9 @@ import { fileURLToPath } from 'url';
 import { loadSessionsData, saveSessionsData, getSessionsPath, saveCustomPath, loadUIPrefs, saveUIPrefs, Session, Folder, SessionsData } from './sessionsStore';
 import { getSSHBridge } from './sshBridge';
 import { createWebDAVBridge } from './webdavBridge';
+import { installX11DisplayHook } from './x11Display';
+import { startBundledX11, stopBundledX11, listRunningX11 } from './x11Bundled';
+import { stopEmbeddedX11 } from './x11Server';
 // MCP 서버 스크립트를 번들에 임베드 (vite ?raw) — 런타임에 임시 파일로 추출 후 spawn
 // @ts-ignore
 import mcpSshServerScript from './mcpSshServer.cjs?raw';
@@ -149,6 +152,7 @@ function createWindow() {
 app.whenReady().then(() => {
   sessionsData = loadSessionsData();
   createWindow();
+  installX11DisplayHook();
 
   const bridge = getSSHBridge();
   bridge.onMessage((msg) => {
@@ -252,6 +256,22 @@ ipcMain.handle('app:clear-startup-cwd', () => {
   startupCwd = null;
   // 임시 파일도 확실히 삭제
   try { fs.unlinkSync(path.join(require('os').tmpdir(), '.pepe-terminal-cwd')); } catch {}
+});
+
+// X11 서버 제어 IPC
+ipcMain.handle('x11:start', async (_e, displayNum: number = 0) => {
+  const logs: string[] = [];
+  const result = await startBundledX11(displayNum, (m) => logs.push(m));
+  return { usedBundled: result.usedBundled, pid: result.proc?.pid ?? null, logs };
+});
+ipcMain.handle('x11:stop', (_e, displayNum: number = 0) => {
+  stopBundledX11(displayNum);
+  stopEmbeddedX11();
+  return { success: true };
+});
+ipcMain.handle('x11:status', () => {
+  const running = listRunningX11();
+  return { running, anyRunning: running.length > 0 };
 });
 
 // 클립보드에 이미지(PNG bytes) 쓰기 — renderer 의 navigator.clipboard.write 가 실패하는 환경 대비

@@ -27,6 +27,8 @@ type Session = {
   icon?: string;
   initialPath?: string;
   autoTrackPwd?: boolean;
+  x11Forward?: boolean;
+  x11Display?: number;
   jumpTargetHost?: string;
   jumpTargetUser?: string;
   jumpTargetPort?: number;
@@ -65,6 +67,8 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
   const [icon, setIcon] = useState(session?.icon ?? '🖥️');
   const [initialPath, setInitialPath] = useState(session?.initialPath ?? '');
   const [autoTrackPwd, setAutoTrackPwd] = useState<boolean>(!!session?.autoTrackPwd);
+  const [x11Forward, setX11Forward] = useState<boolean>(!!session?.x11Forward);
+  const [x11Display, setX11Display] = useState<number>(session?.x11Display ?? 0);
   const [jumpTargetHost, setJumpTargetHost] = useState(session?.jumpTargetHost ?? '');
   const [jumpTargetUser, setJumpTargetUser] = useState(session?.jumpTargetUser ?? '');
   const [jumpTargetPort, setJumpTargetPort] = useState<number | ''>(session?.jumpTargetPort ?? '');
@@ -92,6 +96,8 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
     setIcon(session?.icon ?? '🖥️');
     setInitialPath(session?.initialPath ?? '');
     setAutoTrackPwd(!!session?.autoTrackPwd);
+    setX11Forward(!!session?.x11Forward);
+    setX11Display(session?.x11Display ?? 0);
     setJumpTargetHost(session?.jumpTargetHost ?? '');
     setJumpTargetUser(session?.jumpTargetUser ?? '');
     setJumpTargetPort(session?.jumpTargetPort ?? '');
@@ -139,7 +145,7 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
     setSaveError('');
     const auth = authType === 'password' ? { type: 'password', password } : { type: 'key', keyPath };
     const script = loginScript.filter(r => r.expect.trim() !== '' || r.send.trim() !== '');
-    onSave({ id, name, host: normalizeHost(host), port, username, auth, encoding, folderId: folderId || undefined, loginScript: script.length > 0 ? script : undefined, theme: theme || undefined, fontFamily: fontFamily || undefined, fontSize: fontSize || undefined, scrollback: scrollback || undefined, icon: icon || undefined, initialPath: initialPath.trim() || undefined, autoTrackPwd: autoTrackPwd || undefined, jumpTargetHost: jumpTargetHost.trim() || undefined, jumpTargetUser: jumpTargetUser.trim() || undefined, jumpTargetPort: typeof jumpTargetPort === 'number' && jumpTargetPort > 0 ? jumpTargetPort : undefined, jumpTargetPassword: jumpTargetPassword || undefined } as Session);
+    onSave({ id, name, host: normalizeHost(host), port, username, auth, encoding, folderId: folderId || undefined, loginScript: script.length > 0 ? script : undefined, theme: theme || undefined, fontFamily: fontFamily || undefined, fontSize: fontSize || undefined, scrollback: scrollback || undefined, icon: icon || undefined, initialPath: initialPath.trim() || undefined, autoTrackPwd: autoTrackPwd || undefined, x11Forward: x11Forward || undefined, x11Display: x11Forward ? x11Display : undefined, jumpTargetHost: jumpTargetHost.trim() || undefined, jumpTargetUser: jumpTargetUser.trim() || undefined, jumpTargetPort: typeof jumpTargetPort === 'number' && jumpTargetPort > 0 ? jumpTargetPort : undefined, jumpTargetPassword: jumpTargetPassword || undefined } as Session);
   };
 
   return (
@@ -264,6 +270,36 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
               style={{ margin: 0 }}
             />
             <span className="autotrack-info-icon" title="터미널에서 디렉토리 이동 시 파일트리도 갱신됨 (주입 명령 잠깐 보일 수 있음)">ⓘ</span>
+          </label>
+
+          <label>X11 forwarding</label>
+          <label
+            className="autotrack-checkbox-label"
+            title="원격 GUI 앱(xclock, xeyes 등)을 임베디드 X 서버로 표시. 별도 X 서버 설치 불필요."
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', position: 'relative', justifySelf: 'start' }}
+          >
+            <input
+              type="checkbox"
+              checked={x11Forward}
+              onChange={e => setX11Forward(e.target.checked)}
+              style={{ margin: 0 }}
+            />
+            {x11Forward && (
+              <>
+                <span style={{ fontSize: 11, color: '#aaa', marginLeft: 8 }}>display</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={99}
+                  value={x11Display}
+                  onChange={e => setX11Display(Math.max(0, parseInt(e.target.value) || 0))}
+                  onClick={e => e.stopPropagation()}
+                  style={{ width: 50, margin: 0, padding: '2px 4px', fontSize: 11 }}
+                />
+                <span style={{ fontSize: 10, color: '#888' }}>(:{x11Display} → localhost:{6000 + x11Display})</span>
+              </>
+            )}
+            <span className="autotrack-info-icon" title="활성화 시 SSH 연결할 때 임베디드 X 서버 자동 시작. 원격 GUI 앱 실행 → 별도 창에 표시. 단순 앱(xclock/xeyes)만 현재 지원, 복잡한 Qt/GTK 앱은 추후 지원.">ⓘ</span>
           </label>
 
           <label>점프 타겟 호스트 (ProxyJump)</label>

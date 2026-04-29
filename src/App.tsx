@@ -1102,6 +1102,38 @@ function App() {
     return isEmpty(layout) ? removeLeafNode(layout, nodeId) : layout;
   };
 
+  // 세션(터미널)을 다른 워크스페이스로 통째로 이동 — 단일 상태 업데이트로 termId 유지하며 옮김
+  const handleMoveSessionToWorkspace = (fromNodeId: string, termId: string, targetTabId: string) => {
+    if (!activeTab || activeTab.id === targetTabId) return;
+    setTabs(prev => {
+      const fromTab = prev.find(t => t.id === activeTab.id);
+      const toTab = prev.find(t => t.id === targetTabId);
+      if (!fromTab || !toTab) return prev;
+      // 세션 객체 추출
+      const findSess = (node: LayoutNode): PanelSession | null => {
+        if (node.type === 'leaf' && node.id === fromNodeId) return node.panel.sessions.find(s => s.termId === termId) ?? null;
+        if (node.type !== 'leaf') for (const c of node.children) { const r = findSess(c); if (r) return r; }
+        return null;
+      };
+      const sess = findSess(fromTab.layout);
+      if (!sess) return prev;
+      // from 에서 제거
+      let fromLayout = removeSessionFromPanel(fromTab.layout, fromNodeId, termId);
+      fromLayout = cleanEmptyLeaf(fromLayout, fromNodeId);
+      // to 에 추가 (첫 leaf, 추가된 세션을 active 로)
+      const targetLeafId = findFirstLeafId(toTab.layout);
+      if (!targetLeafId) return prev;
+      const toLayout = appendSessionsToPanel(toTab.layout, targetLeafId, [sess], true);
+      return prev.map(t => {
+        if (t.id === fromTab.id) return { ...t, layout: fromLayout };
+        if (t.id === toTab.id) return { ...t, layout: toLayout };
+        return t;
+      });
+    });
+    // 타겟 워크스페이스로 전환
+    setActiveTabId(targetTabId);
+  };
+
   const handleMoveSession = (fromNodeId: string, termId: string, toNodeId: string) => {
     if (!activeTab) return;
     updateLayout(activeTab.id, layout => {
@@ -1560,6 +1592,40 @@ function App() {
         { label: showQuickConnect ? '⚡ 빠른 연결 바 숨기기' : '⚡ 빠른 연결 바 표시', action: () => setShowQuickConnect(v => !v) },
         { label: showClaudeChat ? '🤖 Claude 채팅 숨기기' : '🤖 Claude 채팅 표시', action: () => setShowClaudeChat(v => !v) },
         { label: showBroadcast ? '📢 텍스트 일괄 전송 바 숨기기' : '📢 텍스트 일괄 전송 바 표시', action: () => { setShowBroadcast(v => !v); } },
+        { separator: true, label: '' },
+        { label: '🖥️ X 서버 시작 (DISPLAY=:0)', action: async () => {
+          try {
+            const r = await (window as any).api?.x11Start?.(0);
+            if (r?.usedBundled) {
+              setInfoModal({ title: 'X 서버 시작', text: `✅ DISPLAY=:0  PID=${r.pid}` });
+              setTimeout(() => { setInfoModal(null); restoreTerminalFocus(); }, 1200);
+            } else {
+              setInfoModal({ title: 'X 서버 시작', text: `⚠️ 번들/외부 X 서버 사용 안 함\n\n${(r?.logs || []).slice(-5).join('\n')}` });
+            }
+          } catch (e: any) {
+            setInfoModal({ title: 'X 서버 시작 실패', text: String(e?.message || e) });
+          }
+        }},
+        { label: '🛑 X 서버 중지', action: async () => {
+          try {
+            await (window as any).api?.x11Stop?.(0);
+            setInfoModal({ title: 'X 서버 중지', text: '✅ 중지 완료.' });
+            setTimeout(() => { setInfoModal(null); restoreTerminalFocus(); }, 1200);
+          } catch (e: any) {
+            setInfoModal({ title: 'X 서버 중지 실패', text: String(e?.message || e) });
+          }
+        }},
+        { label: 'ℹ️ X 서버 상태', action: async () => {
+          try {
+            const r = await (window as any).api?.x11Status?.();
+            const text = r?.anyRunning
+              ? `🟢 실행 중\n\n` + r.running.map((x: any) => `  • DISPLAY=:${x.displayNum}  PID=${x.pid}`).join('\n')
+              : '⚫ 실행 중인 X 서버 없음.';
+            setInfoModal({ title: 'X 서버 상태', text });
+          } catch (e: any) {
+            setInfoModal({ title: 'X 서버 상태 조회 실패', text: String(e?.message || e) });
+          }
+        }},
         { separator: true, label: '' },
         { label: '옵션...', action: async () => {
           setWordSepValue(getWordSeparator());
@@ -2153,6 +2219,9 @@ function App() {
             onClose={nodeId => closePanel(activeTab.id, nodeId)}
             floatingPanelId={floatingPanelId}
             fullscreenTermId={fullscreenTermId}
+            workspaceList={tabs.map(t => ({ id: t.id, title: t.title }))}
+            currentWorkspaceId={activeTab?.id}
+            onMoveSessionToWorkspace={handleMoveSessionToWorkspace}
             onToggleFloat={nodeId => {
               setFloatingPanelId(prev => prev === nodeId ? null : nodeId);
               setTimeout(() => { window.dispatchEvent(new Event('resize')); refitAllTerms(); }, 120);
@@ -2731,7 +2800,7 @@ function App() {
         return (
           <div className="session-editor-backdrop" onClick={closeAndFocus}>
             <div className="session-editor" onClick={e => e.stopPropagation()}
-              style={{ width: '70vw', maxWidth: 700, height: '70vh', display: 'flex', flexDirection: 'column' }}
+              style={{ minWidth: 320, maxWidth: 700, maxHeight: '70vh', display: 'flex', flexDirection: 'column' }}
               onKeyDown={e => { if (e.key === 'Escape') closeAndFocus(); }}
               tabIndex={-1}
               ref={el => { if (el) setTimeout(() => el.focus(), 0); }}
@@ -2740,7 +2809,7 @@ function App() {
                 <h3 style={{ margin: 0 }}>{infoModal.title}</h3>
                 <button onClick={closeAndFocus} title="닫기 (Esc)">✕</button>
               </div>
-              <pre style={{ flex: 1, overflow: 'auto', margin: 0, padding: '12px 16px', fontFamily: 'inherit', fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#ddd' }}>
+              <pre style={{ overflow: 'auto', margin: 0, padding: '12px 16px', fontFamily: 'inherit', fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#ddd' }}>
                 {infoModal.text}
               </pre>
             </div>
@@ -2771,10 +2840,10 @@ function App() {
 
             <label style={{ fontSize: 12, color: '#bbb' }}>소스 세션 (전체 목록, 미연결 세션 선택 시 백그라운드 SFTP 연결)</label>
             {(() => {
-              // 연결된 termId 맵 구축 (sessionId → 있으면 연결됨)
+              // 연결된 sessionId 맵 — 모든 워크스페이스의 모든 세션 검사
               const connectedSet = new Set<string>();
-              if (activeTab) {
-                for (const s of collectAllSessions(activeTab.layout)) {
+              for (const t of tabs) {
+                for (const s of collectAllSessions(t.layout)) {
                   if (s.sessionId && isTermConnected(s.termId)) connectedSet.add(s.sessionId);
                 }
               }

@@ -1,10 +1,32 @@
 // electron/sshBridge.ts
 import { Client } from 'ssh2';
 import { EventEmitter } from 'events';
+import net from 'net';
 import fs from 'fs';
 import path from 'path';
 import iconv from 'iconv-lite';
 import type { LoginScriptRule } from './sessionsStore';
+import { startEmbeddedX11 } from './x11Server';
+import { startBundledX11 } from './x11Bundled';
+
+// 로컬 X 서버 (Windows VcXsrv / X410 등) 로 X11 채널 forward.
+// 표준: TCP localhost:6000+display_num. display 0 가 기본.
+function setupX11Forwarding(conn: any, displayNum = 0, emit?: (msg: string) => void) {
+  conn.on('x11', (_info: any, accept: any, _reject: any) => {
+    const xstream = accept();
+    const port = 6000 + displayNum;
+    const xclient = net.connect(port, '127.0.0.1', () => {
+      // 양방향 파이프
+      xstream.pipe(xclient).pipe(xstream);
+    });
+    xclient.on('error', (err: any) => {
+      try { xstream.end(); } catch {}
+      emit?.(`X11: 로컬 X 서버 연결 실패 (localhost:${port}). VcXsrv/X410 설치/실행 필요. ${err.message}`);
+    });
+    xstream.on('error', () => { try { xclient.end(); } catch {} });
+    xstream.on('close', () => { try { xclient.end(); } catch {} });
+  });
+}
 
 interface ClientRecord {
   conn: any;           // 활성 SSH 연결 (점프 미사용 시 primary, 사용 시 jumpConn)
@@ -237,7 +259,28 @@ class SSHBridge extends EventEmitter {
     const shellRows = typeof rows === 'number' ? rows : 24;
     this.termCols.set(panelId, shellCols);
 
-    conn.shell({ cols: shellCols, rows: shellRows, term: 'xterm-256color' }, (err: any, stream: any) => {
+    // X11 forwarding 옵션 — 세션 설정에 따라 enable
+    const x11Enabled = !!session.x11Forward;
+    const x11Display = typeof session.x11Display === 'number' ? session.x11Display : 0;
+    if (x11Enabled) {
+      // X11 setup — 셸 출력으로는 보내지 않음 (프롬프트 깨짐 방지). 메인 프로세스 로그 + 별도 IPC 메시지로만.
+      const log = (msg: string) => {
+        console.log(`[x11] ${msg}`);
+        this.emit('message', { type: 'x11-log', panelId, data: msg });
+      };
+      (async () => {
+        const { usedBundled } = await startBundledX11(x11Display, log);
+        if (!usedBundled) {
+          log('번들/외부 X 서버 미사용 — 내장 X 서버 시작 (제한적 호환)');
+          startEmbeddedX11(x11Display, log);
+        }
+        setupX11Forwarding(conn, x11Display, log);
+      })().catch(e => log(`X11 setup 오류: ${e.message}`));
+    }
+
+    const shellOpts: any = { cols: shellCols, rows: shellRows, term: 'xterm-256color' };
+    if (x11Enabled) shellOpts.x11 = { screen: x11Display };
+    conn.shell(shellOpts, (err: any, stream: any) => {
       if (err) {
         this.emit('message', { type: 'error', panelId, error: String(err) });
         try { primaryConn?.end(); } catch {}
