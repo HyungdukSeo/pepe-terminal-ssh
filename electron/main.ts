@@ -144,6 +144,11 @@ function createWindow() {
 
   mainWindow.on('closed', () => {
     mainWindow = null;
+    // 메인 창 닫히면 검색창/이력 dropdown 도 같이 닫음
+    try { if (searchWindow && !searchWindow.isDestroyed()) searchWindow.close(); } catch {}
+    try { if (histDropdownWindow && !histDropdownWindow.isDestroyed()) histDropdownWindow.close(); } catch {}
+    // 페이스트 모달 창들도 정리
+    for (const [, pw] of pasteWindows) { try { if (!pw.isDestroyed()) pw.close(); } catch {} }
   });
 }
 
@@ -265,6 +270,372 @@ ipcMain.handle('app:clear-startup-cwd', () => {
   startupCwd = null;
   // 임시 파일도 확실히 삭제
   try { fs.unlinkSync(path.join(require('os').tmpdir(), '.pepe-terminal-cwd')); } catch {}
+});
+
+// 여러 줄 붙여넣기 — 별도 BrowserWindow (다른 모니터로도 이동 가능)
+const pasteWindows = new Map<string, BrowserWindow>();
+ipcMain.handle('paste-modal:open', (_e, { id, text }: { id: string; text: string }) => {
+  // 같은 id 의 기존 창은 닫기
+  const exist = pasteWindows.get(id);
+  if (exist && !exist.isDestroyed()) { try { exist.close(); } catch {} }
+
+  // 메인 창의 우상단 부근에 위치 (검색창과 같은 영역)
+  let pasteX = 100, pasteY = 100;
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    const b = mainWindow.getBounds();
+    pasteX = Math.max(b.x + 24, b.x + b.width - 600 - 100);
+    pasteY = b.y + 60;
+  }
+  const win = new BrowserWindow({
+    x: pasteX, y: pasteY,
+    width: 620, height: 460,
+    minWidth: 360, minHeight: 240,
+    frame: false, resizable: true,
+    thickFrame: false,                 // Windows Aero Snap (자석) 비활성
+    transparent: false, hasShadow: true,
+    backgroundColor: '#1a1a1a',
+    parent: mainWindow ?? undefined,
+    modal: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    show: false,
+    title: '여러 줄 붙여넣기',
+    webPreferences: { nodeIntegration: true, contextIsolation: false },
+  });
+  try { win.setAlwaysOnTop(true, 'floating'); } catch {}
+  win.once('ready-to-show', () => { try { win.show(); win.focus(); } catch {} });
+  pasteWindows.set(id, win);
+  win.on('closed', () => { pasteWindows.delete(id); });
+
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+    html,body { margin:0; padding:0; background:#1a1a1a; color:#eee; font-family: 'Segoe UI', sans-serif; height:100%; overflow:hidden; -webkit-user-select:none; user-select:none; }
+    .header { padding:10px 14px; border-bottom:1px solid #333; display:flex; align-items:center; justify-content:space-between; -webkit-app-region:drag; cursor:move; background:#222; }
+    .header strong { font-size:13px; }
+    .header button { -webkit-app-region:no-drag; background:transparent; border:none; color:#aaa; cursor:pointer; font-size:16px; padding:0 4px; }
+    .body { padding:14px; display:flex; flex-direction:column; height: calc(100% - 41px); box-sizing:border-box; }
+    .body p { color:#888; font-size:12px; margin:0 0 8px; }
+    textarea { flex:1; min-height:0; width:100%; box-sizing:border-box; background:#111; color:#eee; border:1px solid #333; border-radius:4px; padding:8px; font-size:12px; font-family:monospace; resize:none; -webkit-user-select:text; user-select:text; }
+    .actions { display:flex; gap:8px; margin-top:12px; justify-content:flex-end; }
+    .actions button { padding:6px 16px; border:none; border-radius:4px; cursor:pointer; font-size:12px; }
+    .btn-cancel { background:#333; border:1px solid #555 !important; color:#eee; }
+    .btn-paste { background:#2b6b9b; border:1px solid #3a8bc8 !important; color:#fff; }
+  </style></head><body>
+    <div class="header">
+      <strong>여러 줄 붙여넣기</strong>
+      <button id="x">✕</button>
+    </div>
+    <div class="body">
+      <p>다음 텍스트를 붙여넣을까요?</p>
+      <textarea id="t" autofocus spellcheck="false"></textarea>
+      <div class="actions">
+        <button id="c" class="btn-cancel">취소 (Esc)</button>
+        <button id="p" class="btn-paste">붙여넣기 (Ctrl+Enter)</button>
+      </div>
+    </div>
+    <script>
+      const { ipcRenderer } = require('electron');
+      const t = document.getElementById('t');
+      t.value = ${JSON.stringify(text)};
+      t.focus();
+      const sendResult = (action) => ipcRenderer.send('paste-modal:result', { id: ${JSON.stringify(id)}, action, text: t.value });
+      document.getElementById('x').onclick = () => sendResult('cancel');
+      document.getElementById('c').onclick = () => sendResult('cancel');
+      document.getElementById('p').onclick = () => sendResult('paste');
+      t.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') sendResult('cancel');
+        else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendResult('paste'); }
+      });
+    </script>
+  </body></html>`;
+  win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+  return { success: true };
+});
+
+// 결과 IPC — id 별로 main → renderer 로 forward
+ipcMain.on('paste-modal:result', (_e, payload: { id: string; action: 'paste' | 'cancel'; text: string }) => {
+  const win = pasteWindows.get(payload.id);
+  if (win && !win.isDestroyed()) { try { win.close(); } catch {} }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('paste-modal:result', payload);
+  }
+});
+
+// 옵션 popout 창
+let optionsWindow: BrowserWindow | null = null;
+ipcMain.handle('options:open', () => {
+  if (optionsWindow && !optionsWindow.isDestroyed()) { optionsWindow.focus(); return { success: true }; }
+  if (!mainWindow || mainWindow.isDestroyed()) return { success: false };
+  const baseUrl = mainWindow.webContents.getURL().split('?')[0].split('#')[0];
+  const sep = baseUrl.includes('?') ? '&' : '?';
+  const popUrl = `${baseUrl}${sep}popout=options`;
+  const win = new BrowserWindow({
+    width: 560, height: 720,
+    minWidth: 480, minHeight: 500,
+    frame: false, resizable: true,
+    backgroundColor: '#111',
+    parent: mainWindow,
+    skipTaskbar: true,
+    title: '옵션',
+    webPreferences: { nodeIntegration: false, contextIsolation: true, preload: path.join(__dirname, 'preload.js') },
+  });
+  win.setMenu(null);
+  optionsWindow = win;
+  win.on('closed', () => { optionsWindow = null; });
+  win.loadURL(popUrl);
+  return { success: true };
+});
+ipcMain.on('options:close', () => {
+  if (optionsWindow && !optionsWindow.isDestroyed()) { try { optionsWindow.close(); } catch {} }
+});
+ipcMain.on('options:saved', () => {
+  // 메인 창에 알림 (필요하면 설정 reload)
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('options:saved');
+  if (optionsWindow && !optionsWindow.isDestroyed()) { try { optionsWindow.close(); } catch {} }
+});
+
+// 세션 편집기 popout 창 — 동일 renderer URL 을 ?popout=session-editor 로 다시 로드
+let sessionEditorWindow: BrowserWindow | null = null;
+ipcMain.handle('session-editor:open', (_e, { sessionId }: { sessionId: string }) => {
+  if (sessionEditorWindow && !sessionEditorWindow.isDestroyed()) { sessionEditorWindow.focus(); return { success: true }; }
+  if (!mainWindow || mainWindow.isDestroyed()) return { success: false };
+  const baseUrl = mainWindow.webContents.getURL().split('?')[0].split('#')[0];
+  const sep = baseUrl.includes('?') ? '&' : '?';
+  const popUrl = `${baseUrl}${sep}popout=session-editor&sessionId=${encodeURIComponent(sessionId || 'new')}`;
+  const win = new BrowserWindow({
+    width: 560, height: 780,
+    minWidth: 480, minHeight: 600,
+    frame: false, resizable: true,
+    backgroundColor: '#111',
+    parent: mainWindow,
+    skipTaskbar: true,
+    title: '세션 편집',
+    webPreferences: { nodeIntegration: false, contextIsolation: true, preload: path.join(__dirname, 'preload.js') },
+  });
+  win.setMenu(null); // File/Edit/... 메뉴 제거
+  sessionEditorWindow = win;
+  win.on('closed', () => { sessionEditorWindow = null; });
+  win.loadURL(popUrl);
+  return { success: true };
+});
+ipcMain.on('session-editor:close', () => {
+  if (sessionEditorWindow && !sessionEditorWindow.isDestroyed()) { try { sessionEditorWindow.close(); } catch {} }
+});
+ipcMain.on('session-editor:saved', (_e, payload) => {
+  // 저장 완료 후 메인 창에 알림 → 세션 목록 갱신
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('session-editor:saved', payload);
+  if (sessionEditorWindow && !sessionEditorWindow.isDestroyed()) { try { sessionEditorWindow.close(); } catch {} }
+});
+
+// 검색 창 — 별도 BrowserWindow (다른 모니터로도 이동 가능)
+let searchWindow: BrowserWindow | null = null;
+ipcMain.handle('search:open-window', () => {
+  if (searchWindow && !searchWindow.isDestroyed()) { searchWindow.focus(); return { success: true }; }
+  const SEARCH_W = 470;
+  const SEARCH_H = 32;
+  // 처음 위치 — 메인 창의 우측 상단에 정렬
+  let posX = 100, posY = 100;
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    const b = mainWindow.getBounds();
+    // 메인 창 상단 가운데 부근 — 타이틀바 영역과 겹치지 않게 우측 시스템 버튼 (_□X) 좌측에 배치
+    posX = Math.max(b.x + 24, b.x + b.width - SEARCH_W - 140);
+    posY = b.y + 4;
+  }
+  const win = new BrowserWindow({
+    x: posX, y: posY,
+    width: SEARCH_W, height: SEARCH_H,
+    minWidth: SEARCH_W, minHeight: SEARCH_H, maxWidth: SEARCH_W, maxHeight: SEARCH_H,
+    frame: false, resizable: false,
+    transparent: false, hasShadow: true,
+    backgroundColor: '#1a1a1a',
+    show: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    title: '검색',
+    webPreferences: { nodeIntegration: true, contextIsolation: false, backgroundThrottling: false },
+  });
+  // 메인 창보다 위, 다른 alwaysOnTop 창보다는 아래 (UI 레벨)
+  try { win.setAlwaysOnTop(true, 'floating'); } catch {}
+  win.once('ready-to-show', () => { try { win.show(); win.focus(); } catch {} });
+  searchWindow = win;
+  win.on('closed', () => {
+    searchWindow = null;
+    closeHistDropdown();
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('search:closed');
+  });
+  win.on('move', () => closeHistDropdown());      // 검색창 이동 시 dropdown 닫기 (위치 안 맞아짐)
+  win.on('resize', () => closeHistDropdown());
+
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+    html,body{margin:0;padding:0;background:#1a1a1a;color:#eee;font-family:'Segoe UI',sans-serif;height:100%;overflow:visible;-webkit-user-select:none;user-select:none;font-size:11px;}
+    .row{display:flex;align-items:center;gap:2px;padding:0 4px;height:100%;-webkit-app-region:drag;cursor:move;}
+    .grip{font-size:10px;color:#666;padding:0 1px;-webkit-app-region:drag;cursor:move;user-select:none;}
+    .input-wrap{position:relative;display:flex;-webkit-app-region:no-drag;width:180px;flex:0 0 auto;margin-right:2px;}
+    input{flex:1;min-width:0;background:#111;color:#eee;border:1px solid #333;border-radius:3px 0 0 3px;padding:2px 5px;font-size:11px;outline:none;-webkit-user-select:text;user-select:text;cursor:text;}
+    input:focus{border-color:#2b6b9b;}
+    .hist-toggle{background:#222;color:#aaa;border:1px solid #333;border-left:none;border-radius:0 3px 3px 0;padding:0 3px;cursor:pointer;font-size:9px;}
+    button{-webkit-app-region:no-drag;background:#333;color:#eee;border:1px solid #555;border-radius:3px;padding:1px 3px;cursor:pointer;font-size:11px;min-width:18px;line-height:1.3;}
+    button:hover{background:#444;}
+    button.active{background:#2b6b9b;border-color:#3a8bc8;}
+    .mode{display:flex;border:1px solid #555;border-radius:3px;overflow:hidden;-webkit-app-region:no-drag;margin-left:2px;flex-shrink:0;}
+    .mode button{border:none;border-radius:0;min-width:auto;padding:1px 6px;background:#2a2a2a;font-size:10px;white-space:nowrap;}
+    .mode button.active{background:#2b6b9b;}
+    .mode button + button{border-left:1px solid #555;}
+    .count{font-size:10px;color:#aaa;min-width:32px;text-align:center;-webkit-app-region:drag;padding:0 2px;}
+    .close{padding:1px 5px;}
+  </style></head><body>
+    <div class="row">
+      <span class="grip" title="드래그하여 이동">⋮⋮</span>
+      <div class="input-wrap">
+        <input id="q" type="text" placeholder="검색..." autofocus spellcheck="false" />
+        <button class="hist-toggle" id="hist" title="검색 이력" tabindex="-1">▾</button>
+      </div>
+      <span class="count" id="cnt">0/0</span>
+      <button id="prev" title="Previous (Shift+Enter)">▲</button>
+      <button id="next" title="Next (Enter)">▼</button>
+      <button id="aa" title="대소문자">Aa</button>
+      <button id="re" title="정규식">.*</button>
+      <div class="mode">
+        <button id="m-cur" class="active" title="현재 탭">현재탭</button>
+        <button id="m-all" title="전체 탭">전체</button>
+      </div>
+      <button id="dock" title="앱 안으로 되돌리기">📌</button>
+      <button id="x" class="close" title="닫기 (Esc)">✕</button>
+    </div>
+    <script>
+      const { ipcRenderer } = require('electron');
+      const q = document.getElementById('q');
+      const cnt = document.getElementById('cnt');
+      const aa = document.getElementById('aa');
+      const re = document.getElementById('re');
+      const mCur = document.getElementById('m-cur');
+      const mAll = document.getElementById('m-all');
+      const histBtn = document.getElementById('hist');
+      let cs = false, ureg = false, mode = 'current';
+      const addHist = (s) => { if (s && s.trim()) ipcRenderer.send('search:history-add', s); };
+      // 검색창에 이력 항목이 채워질 때 (native menu 에서 클릭)
+      ipcRenderer.on('search:fill', (_e, text) => { q.value = text; sendQ(); q.focus(); });
+      const sendQ = () => ipcRenderer.send('search:query', { q: q.value, caseSensitive: cs, useRegex: ureg, mode });
+      q.addEventListener('input', () => sendQ());
+      q.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          if (q.value) addHist(q.value);
+          ipcRenderer.send(e.shiftKey ? 'search:prev' : 'search:next', { mode });
+        }
+        else if (e.key === 'Escape') ipcRenderer.send('search:close');
+        else if (e.key === 'ArrowDown') { e.preventDefault(); ipcRenderer.send('search:show-history-menu'); }
+      });
+      histBtn.onclick = (e) => { e.preventDefault(); ipcRenderer.send('search:show-history-menu'); };
+      document.getElementById('prev').onclick = () => { if (q.value) addHist(q.value); ipcRenderer.send('search:prev', { mode }); };
+      document.getElementById('next').onclick = () => { if (q.value) addHist(q.value); ipcRenderer.send('search:next', { mode }); };
+      document.getElementById('x').onclick = () => ipcRenderer.send('search:close');
+      document.getElementById('dock').onclick = () => ipcRenderer.send('search:dock');
+      aa.onclick = () => { cs = !cs; aa.classList.toggle('active', cs); sendQ(); };
+      re.onclick = () => { ureg = !ureg; re.classList.toggle('active', ureg); sendQ(); };
+      mCur.onclick = () => { mode = 'current'; mCur.classList.add('active'); mAll.classList.remove('active'); sendQ(); };
+      mAll.onclick = () => { mode = 'all'; mAll.classList.add('active'); mCur.classList.remove('active'); sendQ(); };
+      ipcRenderer.on('search:result', (_e, p) => { cnt.textContent = (p.current ?? 0) + '/' + (p.total ?? 0); });
+      q.focus();
+    </script>
+  </body></html>`;
+  win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+  return { success: true };
+});
+
+// 검색 창 ↔ 메인 렌더러 IPC 중계
+const forwardToMain = (channel: string) => (_e: any, payload?: any) => {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+};
+ipcMain.on('search:query', forwardToMain('search:query'));
+ipcMain.on('search:next', forwardToMain('search:next'));
+ipcMain.on('search:prev', forwardToMain('search:prev'));
+ipcMain.on('search:close', (_e) => {
+  if (searchWindow && !searchWindow.isDestroyed()) { try { searchWindow.close(); } catch {} }
+});
+ipcMain.on('search:dock', () => {
+  // 외부 창 닫고 메인 창에 인라인 검색바 열도록 알림
+  if (searchWindow && !searchWindow.isDestroyed()) { try { searchWindow.close(); } catch {} }
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('search:dock');
+});
+// 검색 이력 — 메모리에만 보관 (앱 종료 시 자동 소멸, 영속 저장 X)
+let searchHistory: string[] = [];
+ipcMain.handle('search:history-get', () => searchHistory);
+ipcMain.on('search:history-add', (_e, q: string) => {
+  if (!q || !q.trim()) return;
+  searchHistory = searchHistory.filter(x => x !== q);
+  searchHistory.unshift(q);
+  if (searchHistory.length > 50) searchHistory = searchHistory.slice(0, 50);
+});
+
+// 검색 이력 dropdown — 별도 BrowserWindow (검색창 바로 아래, 스타일 커스텀)
+let histDropdownWindow: BrowserWindow | null = null;
+const closeHistDropdown = () => {
+  if (histDropdownWindow && !histDropdownWindow.isDestroyed()) {
+    try { histDropdownWindow.close(); } catch {}
+  }
+  histDropdownWindow = null;
+};
+ipcMain.on('search:show-history-menu', () => {
+  if (!searchWindow || searchWindow.isDestroyed()) return;
+  closeHistDropdown();
+  if (searchHistory.length === 0) return;
+  const sb = searchWindow.getBounds();
+  const items = searchHistory.slice(0, 30);
+  const itemH = 22;
+  const ddH = Math.min(220, items.length * itemH + 4);
+  const ddX = sb.x + 20;
+  const ddY = sb.y + sb.height + 2;
+  const ddW = Math.max(240, sb.width - 60);
+  const dd = new BrowserWindow({
+    x: ddX, y: ddY, width: ddW, height: ddH,
+    frame: false, resizable: false, movable: false,
+    transparent: false, backgroundColor: '#1a1a1a',
+    show: false, skipTaskbar: true, alwaysOnTop: true, focusable: true,
+    parent: searchWindow,
+    webPreferences: { nodeIntegration: true, contextIsolation: false },
+  });
+  histDropdownWindow = dd;
+  dd.on('closed', () => { if (histDropdownWindow === dd) histDropdownWindow = null; });
+  dd.on('blur', () => closeHistDropdown());
+  const ddHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+    html,body{margin:0;padding:0;background:#1a1a1a;color:#eee;font-family:'Segoe UI',sans-serif;height:100%;overflow-y:auto;border:1px solid #333;border-radius:3px;box-sizing:border-box;-webkit-user-select:none;user-select:none;font-size:11px;}
+    body::-webkit-scrollbar{width:6px;}
+    body::-webkit-scrollbar-track{background:#1a1a1a;}
+    body::-webkit-scrollbar-thumb{background:#444;border-radius:3px;}
+    .item{padding:4px 10px;font-size:11px;cursor:pointer;color:#ccc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.3;}
+    .item:hover,.item.active{background:#2b6b9b;color:#fff;}
+  </style></head><body>
+    ${items.map((s, i) => '<div class="item" data-idx="' + i + '" title="' + s.replace(/"/g, '&quot;') + '">' + s.replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c])) + '</div>').join('')}
+    <script>
+      const { ipcRenderer } = require('electron');
+      const items = ${JSON.stringify(items)};
+      let active = 0;
+      const els = document.querySelectorAll('.item');
+      const setActive = (i) => { els.forEach((el, k) => el.classList.toggle('active', k === i)); active = i; els[i]?.scrollIntoView({block:'nearest'}); };
+      setActive(0);
+      els.forEach((el, i) => {
+        el.onmouseenter = () => setActive(i);
+        el.onmousedown = (e) => { e.preventDefault(); ipcRenderer.send('search:hist-pick', items[i]); };
+      });
+      window.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowDown') { e.preventDefault(); setActive(Math.min(items.length - 1, active + 1)); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); setActive(Math.max(0, active - 1)); }
+        else if (e.key === 'Enter') { e.preventDefault(); ipcRenderer.send('search:hist-pick', items[active]); }
+        else if (e.key === 'Escape') { ipcRenderer.send('search:hist-cancel'); }
+      });
+    </script>
+  </body></html>`;
+  dd.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(ddHtml));
+  dd.once('ready-to-show', () => { try { dd.show(); } catch {} });
+});
+ipcMain.on('search:hist-pick', (_e, text: string) => {
+  if (searchWindow && !searchWindow.isDestroyed()) searchWindow.webContents.send('search:fill', text);
+  closeHistDropdown();
+});
+ipcMain.on('search:hist-cancel', () => closeHistDropdown());
+// 메인 렌더러 → 검색 창 (결과 카운트)
+ipcMain.on('search:result', (_e, payload) => {
+  if (searchWindow && !searchWindow.isDestroyed()) searchWindow.webContents.send('search:result', payload);
 });
 
 // X11 서버 제어 IPC

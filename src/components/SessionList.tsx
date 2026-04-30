@@ -130,6 +130,15 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
     }
   };
 
+  // popout 세션 편집기에서 저장 완료 시 자동 reload
+  useEffect(() => {
+    const off = (window as any).api?.onSessionEditorSaved?.((p: { session?: Session }) => {
+      reload();
+      if (p?.session?.id) { setSelectedId(p.session.id); setSelectedType('session'); }
+    });
+    return () => { try { off?.(); } catch {} };
+  }, []);
+
   const onPointerDown = (e: React.PointerEvent) => {
     (e.target as Element).setPointerCapture?.(e.pointerId);
     e.preventDefault();
@@ -158,13 +167,13 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
 
   const handleAdd = () => {
     const folderId = selectedType === 'folder' ? selectedId : undefined;
-    setEditing({ id: `sess-${Date.now()}`, name: 'New Session', host: '', port: 22, username: '', auth: { type: 'password', password: '' }, encoding: 'utf-8', folderId: folderId ?? undefined });
+    { try { (window as any).api?.sessionEditorOpen?.('new'); } catch {} }
   };
 
   const handleEdit = () => {
     if (!selectedId) return;
     const s = sessions.find(x => x.id === selectedId);
-    if (s) setEditing(s);
+    if (s) { try { (window as any).api?.sessionEditorOpen?.(s.id); } catch {} }
   };
 
   const handleDelete = async () => {
@@ -532,25 +541,6 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
           {renderTree(undefined, 0)}
         </div>
 
-        {selectedId && selectedSession && (
-          <div className="session-footer">
-            <label>Encoding</label>
-            <select
-              value={selectedSession.encoding ?? 'utf-8'}
-              onChange={e => handleEncodingChange(selectedId, e.target.value)}
-            >
-              <option value="utf-8">utf-8</option>
-              <option value="cp949">cp949</option>
-              <option value="euc-kr">euc-kr</option>
-              <option value="latin1">latin1</option>
-            </select>
-            <div className="session-footer-actions">
-              <button onClick={() => handleConnect(selectedSession)}>연결</button>
-              <button onClick={() => setSelectedId(null)}>닫기</button>
-              <button onClick={handleDisconnect}>연결 끊기</button>
-            </div>
-          </div>
-        )}
 
         <div className="session-resize-handle" onPointerDown={onPointerDown} />
       </div>
@@ -667,7 +657,7 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
             <>
               <div className="context-menu-item" onClick={() => {
                 const s = sessions.find(x => x.id === contextMenu.id);
-                if (s) { setEditing(s); }
+                if (s) { try { (window as any).api?.sessionEditorOpen?.(s.id); } catch {} }
                 setContextMenu(null);
               }}>
                 편집

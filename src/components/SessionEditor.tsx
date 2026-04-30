@@ -10,7 +10,7 @@ type LoginScriptRule = {
   isRegex?: boolean;
 };
 
-type Session = {
+export type Session = {
   id: string;
   name: string;
   host: string;
@@ -35,7 +35,7 @@ type Session = {
   jumpTargetPassword?: string;
 };
 
-type Folder = {
+export type Folder = {
   id: string;
   name: string;
   parentId?: string;
@@ -390,8 +390,8 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
 
         <div className="session-editor-actions">
           {saveError && <span className="session-editor-error">{saveError}</span>}
-          <button className="btn-cancel" onClick={onCancel}>Cancel</button>
-          <button className="btn-save" onClick={save}>Save</button>
+          <button className="btn-cancel" onClick={onCancel}>취소</button>
+          <button className="btn-save" onClick={save}>저장</button>
         </div>
       </div>
     </div>

@@ -63,11 +63,11 @@ export const SearchBar: React.FC<Props> = ({ tabs, activeTab, selectedPanelId, o
 
   // query/regex/caseSensitive 변경 시 모든 매치 하이라이트 + 맨 위부터 검색 시작
   useEffect(() => {
-    if (!query) {
-      for (const tid of getAllTermIds()) clearHighlights(tid);
-      return;
-    }
+    // 모든 터미널 기존 하이라이트 정리 — 모드 전환 시 잔재 제거
+    for (const tid of getAllTermIds()) clearHighlights(tid);
+    if (!query) return;
     if (mode === 'current') {
+      // 현재탭 모드 — 선택된 패널의 활성 터미널 하나만 하이라이트
       const termId = getActiveTermId();
       if (termId) {
         highlightAllMatches(termId, query, useRegex, caseSensitive);
@@ -81,7 +81,7 @@ export const SearchBar: React.FC<Props> = ({ tabs, activeTab, selectedPanelId, o
         }
       }
     }
-  }, [query, useRegex, caseSensitive, mode]);
+  }, [query, useRegex, caseSensitive, mode, selectedPanelId]);
 
   const getActiveTermId = (): string | null => {
     if (!selectedPanelId) return null;
@@ -164,7 +164,7 @@ export const SearchBar: React.FC<Props> = ({ tabs, activeTab, selectedPanelId, o
       if (showHistory) { setShowHistory(false); setHistoryIdx(-1); return; }
       handleClose(); return;
     }
-    if (e.key === 'ArrowUp') {
+    if (e.key === 'ArrowDown') {
       e.preventDefault();
       if (searchHistory.length === 0) return;
       if (!showHistory) { setShowHistory(true); setHistoryIdx(0); setQuery(searchHistory[0]); return; }
@@ -173,7 +173,7 @@ export const SearchBar: React.FC<Props> = ({ tabs, activeTab, selectedPanelId, o
       setQuery(searchHistory[next]);
       return;
     }
-    if (e.key === 'ArrowDown') {
+    if (e.key === 'ArrowUp') {
       e.preventDefault();
       if (!showHistory) return;
       const next = historyIdx - 1;
@@ -223,6 +223,7 @@ export const SearchBar: React.FC<Props> = ({ tabs, activeTab, selectedPanelId, o
               {searchHistory.map((h, i) => (
                 <div
                   key={`${h}-${i}`}
+                  ref={el => { if (el && i === historyIdx) el.scrollIntoView({ block: 'nearest' }); }}
                   className={`search-history-item ${i === historyIdx ? 'active' : ''}`}
                   onMouseDown={e => { e.preventDefault(); setQuery(h); setShowHistory(false); setHistoryIdx(-1); inputRef.current?.focus(); }}
                 >{h}</div>
@@ -259,6 +260,14 @@ export const SearchBar: React.FC<Props> = ({ tabs, activeTab, selectedPanelId, o
         {mode === 'all' && matches.length > 0 && (
           <span className="search-match-count">{activeMatchIdx + 1}/{matches.length}</span>
         )}
+        <button
+          className="search-btn"
+          title="외부 창으로 분리 (다른 모니터로 이동 가능)"
+          onClick={() => {
+            try { (window as any).api?.searchOpenWindow?.(); } catch {}
+            onClose();
+          }}
+        >🪟</button>
         <button className="search-btn search-close-btn" onClick={handleClose} title="Close (Esc)">&times;</button>
       </div>
       {mode === 'all' && matches.length > 0 && (

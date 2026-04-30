@@ -12,7 +12,7 @@ import { ClaudeChat } from './components/ClaudeChat';
 import { RemoteFileTree } from './components/RemoteFileTree';
 import { QuickConnectBar, QuickConnectResult } from './components/QuickConnectDialog';
 import { StatusBar } from './components/StatusBar';
-import { resetTermConnectState, clearScrollbackInTerm, clearScreenInTerm, clearAllInTerm, applyThemeToAll, applyThemeToTerm, applyFontToTerm, applyFontToAll, getCurrentThemeName, registerTermSession, getTermSessionInfo, getWordSeparator, setWordSeparator, refitAllTerms, applyScrollbackToAll, applyScrollbackToTerm, cloneTermStyle, isTermConnected, isTermConnecting, isTermPty, subscribeConnectedChange, focusTerm, pasteToTerm, promptPasswordAndConnect, startInitialConnectWatchdog, getCurrentPwdForTerm } from './components/TerminalPanel';
+import { resetTermConnectState, clearScrollbackInTerm, clearScreenInTerm, clearAllInTerm, applyThemeToAll, applyThemeToTerm, applyFontToTerm, applyFontToAll, getCurrentThemeName, registerTermSession, getTermSessionInfo, getWordSeparator, setWordSeparator, refitAllTerms, applyScrollbackToAll, applyScrollbackToTerm, cloneTermStyle, isTermConnected, isTermConnecting, isTermPty, subscribeConnectedChange, focusTerm, pasteToTerm, promptPasswordAndConnect, startInitialConnectWatchdog, getCurrentPwdForTerm, refitTerm, searchInTerm, searchNextInTerm, searchPrevInTerm, clearSearchInTerm, highlightAllMatches, clearHighlights, searchFromTop, getAllTermIds } from './components/TerminalPanel';
 import { marked } from 'marked';
 // @ts-ignore — vite ?raw 로 docs/MANUAL.md 를 번들 문자열로 임베드
 import manualMd from '../docs/MANUAL.md?raw';
@@ -116,6 +116,7 @@ function App() {
   const [themeName, setThemeName] = useState(getCurrentThemeName);
   const [wordSepValue, setWordSepValue] = useState('');
   const [termSettings, setTermSettings] = useState<TerminalSettings>(getTerminalSettings);
+  const isOptionsPopout = false; // popout 비활성 — localStorage 격리로 데이터 유실 위험
   const [showOptions, setShowOptions] = useState(false);
   const [optFontFamily, setOptFontFamily] = useState(() => localStorage.getItem('terminalFontFamily') || '');
   const [optFontSize, setOptFontSize] = useState(() => Number(localStorage.getItem('terminalFontSize')) || 14);
@@ -123,6 +124,13 @@ function App() {
   const [optionsTab, setOptionsTab] = useState<'terminal' | 'session' | 'keybindings'>('terminal');
   const [keybindingsState, setKeybindingsState] = useState<Record<string, string>>({});
   const [keybindingsDraft, setKeybindingsDraft] = useState<Record<string, string>>({});
+
+  // popout=options 모드에선 keybindingsState 로드 후 자동으로 draft 동기화
+  useEffect(() => {
+    if (isOptionsPopout && Object.keys(keybindingsState).length > 0) {
+      setKeybindingsDraft({ ...keybindingsState });
+    }
+  }, [isOptionsPopout, keybindingsState]);
   const [listeningAction, setListeningAction] = useState<string | null>(null);
   const [keybindingWarning, setKeybindingWarning] = useState<string | null>(null);
   const [sessionsPathDisplay, setSessionsPathDisplay] = useState('');
@@ -569,6 +577,93 @@ function App() {
     overlayOpenRef.current = anyOpen;
   }, [showOptions, showManual, infoModal, showQuickConnect, showBroadcast, restoreTerminalFocus]);
 
+  // 외부 검색 창 IPC — listener 는 한 번만 등록, 최신 tabs/activeTab 은 ref 로 참조
+  // (활성 useState/useEffect 들이 모두 선언된 후 — activeTab 은 아래에서 계산되므로 lazy init)
+  const searchStateRef = useRef<any>({ tabs: [], activeTab: null, lastQuery: '', lastCs: false, lastRe: false, lastMode: 'current' as 'current' | 'all' });
+  useEffect(() => {
+    const api = (window as any).api;
+    if (!api) return;
+    const getActiveTermIdLocal = (): string | null => {
+      try {
+        const selInner = document.querySelector('.layout-leaf-inner.selected') as HTMLElement | null;
+        const tid = selInner?.parentElement?.getAttribute('data-active-term');
+        if (tid) return tid;
+      } catch {}
+      const ct = searchStateRef.current.activeTab;
+      if (!ct) return null;
+      return collectAllSessions(ct.layout)[0]?.termId || null;
+    };
+    const getAllVisibleTermIds = (): string[] => {
+      const ids: string[] = [];
+      for (const tab of searchStateRef.current.tabs) {
+        if (tab.type === 'fileExplorer' || tab.type === 'fileEditor') continue;
+        for (const s of collectAllSessions(tab.layout)) ids.push(s.termId);
+      }
+      return ids;
+    };
+    const st = searchStateRef.current;
+    const runSearch = (q: string, ureg: boolean, cs: boolean, mode: 'current' | 'all') => {
+      st.lastQuery = q; st.lastCs = cs; st.lastRe = ureg; st.lastMode = mode;
+      // 모든 터미널의 기존 하이라이트 정리
+      for (const t of getAllTermIds()) { try { clearHighlights(t); } catch {} }
+      if (!q) {
+        for (const t of getAllVisibleTermIds()) { try { clearSearchInTerm(t); } catch {} }
+        api.sendSearchResult?.({ current: 0, total: 0 });
+        return;
+      }
+      if (mode === 'current') {
+        const tid = getActiveTermIdLocal();
+        if (!tid) { api.sendSearchResult?.({ current: 0, total: 0 }); return; }
+        try {
+          highlightAllMatches(tid, q, ureg, cs);
+          const found = searchFromTop(tid, q, ureg, cs);
+          api.sendSearchResult?.({ current: found ? 1 : 0, total: found ? 1 : 0 });
+        } catch {}
+      } else {
+        let totalTerms = 0;
+        for (const tid of getAllVisibleTermIds()) {
+          try {
+            highlightAllMatches(tid, q, ureg, cs);
+            if (searchInTerm(tid, q, ureg, cs)) totalTerms++;
+          } catch {}
+        }
+        api.sendSearchResult?.({ current: totalTerms > 0 ? 1 : 0, total: totalTerms });
+      }
+    };
+    const offQ = api.onSearchQuery?.((p: { q: string; caseSensitive: boolean; useRegex: boolean; mode?: 'current' | 'all' }) => {
+      console.log('[search-debug] query received:', p, 'activeTermId=', getActiveTermIdLocal(), 'allIds=', getAllVisibleTermIds());
+      runSearch(p.q, p.useRegex, p.caseSensitive, p.mode || 'current');
+    });
+    const offN = api.onSearchNext?.((p?: { mode?: 'current' | 'all' }) => {
+      if (!st.lastQuery) return;
+      const mode = p?.mode || st.lastMode;
+      if (mode === 'current') {
+        const tid = getActiveTermIdLocal();
+        if (tid) { try { searchNextInTerm(tid, st.lastQuery, st.lastRe, st.lastCs); } catch {} }
+      } else {
+        for (const tid of getAllVisibleTermIds()) { try { searchNextInTerm(tid, st.lastQuery, st.lastRe, st.lastCs); } catch {} }
+      }
+    });
+    const offP = api.onSearchPrev?.((p?: { mode?: 'current' | 'all' }) => {
+      if (!st.lastQuery) return;
+      const mode = p?.mode || st.lastMode;
+      if (mode === 'current') {
+        const tid = getActiveTermIdLocal();
+        if (tid) { try { searchPrevInTerm(tid, st.lastQuery, st.lastRe, st.lastCs); } catch {} }
+      } else {
+        for (const tid of getAllVisibleTermIds()) { try { searchPrevInTerm(tid, st.lastQuery, st.lastRe, st.lastCs); } catch {} }
+      }
+    });
+    const offC = api.onSearchClosed?.(() => {
+      for (const tid of getAllTermIds()) {
+        try { clearSearchInTerm(tid); clearHighlights(tid); } catch {}
+      }
+    });
+    // 외부 검색창에서 📌 클릭 → 인라인 모드로 복귀
+    const offD = api.onSearchDock?.(() => { setShowSearch(true); });
+    return () => { offQ?.(); offN?.(); offP?.(); offC?.(); offD?.(); };
+  }, []); // listener 한 번만 — tabs/activeTab 은 ref 로 항상 최신 참조
+
   // 워크스페이스 전환 시 전체화면이면 새 워크스페이스의 선택된/첫번째 연결 패널로 fs-visible 전환
   useEffect(() => {
     if (!fullscreenTermId) return;
@@ -585,8 +680,8 @@ function App() {
       return (n.children || []).flatMap(walk);
     };
     const termIds = walk(tab.layout);
+    let targetTermId = fullscreenTermId;
     if (!termIds.includes(fullscreenTermId)) {
-      // 새 워크스페이스엔 없음 → selectedPanel 또는 첫 leaf 의 activeTermId 로 전환
       const findFirst = (n: any): string | null => {
         if (n.type === 'leaf') {
           const s = n.panel?.sessions?.[n.panel?.activeIdx ?? 0];
@@ -597,6 +692,12 @@ function App() {
       };
       const candidate = findFirst(tab.layout);
       setFullscreenTermId(candidate);
+      targetTermId = candidate || fullscreenTermId;
+    }
+    // fs-visible 전환 후 fit + refresh — 워크스페이스 전환 시 xterm 사이즈 재계산 + scrollbar 재렌더
+    if (targetTermId) {
+      const tid = targetTermId;
+      [50, 200, 500].forEach(delay => setTimeout(() => refitTerm(tid), delay));
     }
   }, [activeTabId, tabs, fullscreenTermId]);
 
@@ -684,6 +785,26 @@ function App() {
   };
 
   const activeTab = tabs.find(t => t.id === activeTabId) ?? tabs[0];
+
+  // 검색 상태 ref 동기화 — tabs/activeTab 변경 시 갱신 + 활성 터미널에서 자동 재하이라이트
+  useEffect(() => {
+    searchStateRef.current.tabs = tabs;
+    searchStateRef.current.activeTab = activeTab;
+    const st = searchStateRef.current;
+    if (!st.lastQuery) return;
+    setTimeout(() => {
+      try {
+        const selInner = document.querySelector('.layout-leaf-inner.selected') as HTMLElement | null;
+        const tid = selInner?.parentElement?.getAttribute('data-active-term');
+        const targetTid = tid || (st.activeTab ? collectAllSessions(st.activeTab.layout)[0]?.termId : null);
+        if (targetTid) {
+          highlightAllMatches(targetTid, st.lastQuery, st.lastRe, st.lastCs);
+          searchInTerm(targetTid, st.lastQuery, st.lastRe, st.lastCs);
+        }
+      } catch {}
+    }, 100);
+  }, [tabs, activeTab, selectedPanelId]);
+
   // 실제 포커스 복원 구현 — activeTab/selectedPanelId 가 선언된 후 ref 에 주입
   restoreTermFocusRef.current = () => {
     setTimeout(() => {
@@ -2346,10 +2467,34 @@ function App() {
 
       <StatusBar activeTab={activeTab} selectedPanelId={selectedPanelId} tabs={tabs} />
 
-      {showOptions && (
-        <div className="session-editor-backdrop" onClick={() => setShowOptions(false)}>
+      {showOptions && (() => {
+        const onDragStart = (e: React.MouseEvent) => {
+          if ((e.target as HTMLElement).closest('button, input, select, textarea, label, .options-tab')) return;
+          e.preventDefault();
+          const modal = e.currentTarget.parentElement as HTMLElement;
+          const rect = modal.getBoundingClientRect();
+          const offX = e.clientX - rect.left;
+          const offY = e.clientY - rect.top;
+          modal.style.position = 'fixed';
+          modal.style.left = rect.left + 'px';
+          modal.style.top = rect.top + 'px';
+          modal.style.transform = 'none';
+          modal.style.margin = '0';
+          const onMove = (ev: MouseEvent) => {
+            modal.style.left = Math.max(0, Math.min(window.innerWidth - rect.width, ev.clientX - offX)) + 'px';
+            modal.style.top = Math.max(0, Math.min(window.innerHeight - 40, ev.clientY - offY)) + 'px';
+          };
+          const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+          window.addEventListener('mousemove', onMove);
+          window.addEventListener('mouseup', onUp);
+        };
+        return (
+        <div className="session-editor-backdrop" onClick={() => {
+          if (isOptionsPopout) return; // popout 모드에선 backdrop 클릭으로 닫지 않음 (창은 OS 가 관리)
+          setShowOptions(false);
+        }}>
           <div className="session-editor" onClick={e => e.stopPropagation()} style={{ width: 500 }}>
-            <h3>옵션</h3>
+            <h3 style={isOptionsPopout ? { userSelect: 'none' } : { cursor: 'move', userSelect: 'none' }} onMouseDown={isOptionsPopout ? undefined : onDragStart} title={isOptionsPopout ? '' : '드래그하여 이동'}>옵션</h3>
 
             <div className="options-tabs">
               <button className={`options-tab ${optionsTab === 'terminal' ? 'active' : ''}`} onClick={() => setOptionsTab('terminal')}>터미널</button>
@@ -2559,7 +2704,10 @@ function App() {
             )}
 
             <div className="session-editor-actions">
-              <button className="btn-cancel" onClick={() => { setShowOptions(false); setListeningAction(null); }}>취소</button>
+              <button className="btn-cancel" onClick={() => {
+                if (isOptionsPopout) { try { (window as any).api?.optionsClose?.(); } catch {} return; }
+                setShowOptions(false); setListeningAction(null);
+              }}>취소</button>
               <button className="btn-save" onClick={() => {
                 saveTerminalSettings(termSettings);
                 setWordSeparator(wordSepValue);
@@ -2577,11 +2725,16 @@ function App() {
                 (window as any).api?.setUIPrefs?.({ keybindings: keybindingsDraft });
                 setListeningAction(null);
                 setShowOptions(false);
+                if (isOptionsPopout) {
+                  // localStorage 의 디스크 flush 시간 확보 후 창 닫기 (즉시 닫으면 변경사항 유실 가능)
+                  setTimeout(() => { try { (window as any).api?.optionsSaved?.(); } catch {} }, 250);
+                }
               }}>저장</button>
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {sftpProgress && (
         <div className="sftp-progress-bar">
