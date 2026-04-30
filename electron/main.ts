@@ -10,7 +10,7 @@ import { loadSessionsData, saveSessionsData, getSessionsPath, saveCustomPath, lo
 import { getSSHBridge } from './sshBridge';
 import { createWebDAVBridge } from './webdavBridge';
 import { installX11DisplayHook } from './x11Display';
-import { startBundledX11, stopBundledX11, listRunningX11 } from './x11Bundled';
+import { startBundledX11, stopBundledX11, stopAllBundledX11, listRunningX11 } from './x11Bundled';
 import { stopEmbeddedX11 } from './x11Server';
 // MCP 서버 스크립트를 번들에 임베드 (vite ?raw) — 런타임에 임시 파일로 추출 후 spawn
 // @ts-ignore
@@ -191,12 +191,21 @@ app.whenReady().then(() => {
       case 'auto-track':
         mainWindow.webContents.send('ssh:auto-track', { panelId: msg.panelId, enabled: msg.enabled });
         break;
+      case 'x11-log':
+        // x11 관련 로그를 renderer 콘솔로 — DevTools 에서 확인
+        mainWindow.webContents.executeJavaScript(`console.log('[X11]', ${JSON.stringify(msg.data)})`).catch(() => {});
+        break;
     }
   });
 });
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
+});
+
+// 앱 종료 직전 — 띄워놓은 모든 VcXsrv/embedded X 서버 정리
+app.on('before-quit', () => {
+  try { stopAllBundledX11(); } catch {}
 });
 
 // 앱 시작 5초 후 비동기로 session-* 정리 (시작 속도에 영향 없음)

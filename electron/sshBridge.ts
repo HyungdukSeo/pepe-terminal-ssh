@@ -123,6 +123,17 @@ class SSHBridge extends EventEmitter {
       keepaliveCountMax: 3,
     } as any;
 
+    // X11 forwarding 디버그 — ssh2 protocol 메시지 로깅
+    if (session.x11Forward) {
+      cfg.debug = (msg: string) => {
+        // x11 관련 메시지만 필터
+        if (msg.includes('x11') || msg.includes('X11')) {
+          console.log(`[ssh2-debug] ${msg}`);
+          this.emit('message', { type: 'x11-log', panelId, data: `[ssh2] ${msg}` });
+        }
+      };
+    }
+
     if (session.auth?.type === 'password' && session.auth.password) {
       cfg.password = session.auth.password;
     } else if (session.auth?.type === 'key') {
@@ -216,6 +227,12 @@ class SSHBridge extends EventEmitter {
       const cleanup = () => { jumpConn.removeListener('ready', onReady); jumpConn.removeListener('error', wrappedErr); };
       jumpConn.once('ready', onReady);
       jumpConn.once('error', wrappedErr);
+      const x11Debug = session.x11Forward ? (msg: string) => {
+        if (msg.includes('x11') || msg.includes('X11')) {
+          console.log(`[ssh2-jump] ${msg}`);
+          this.emit('message', { type: 'x11-log', panelId, data: `[ssh2-jump] ${msg}` });
+        }
+      } : undefined;
       jumpConn.connect({
         sock,
         username: jumpUser,
@@ -226,6 +243,7 @@ class SSHBridge extends EventEmitter {
         readyTimeout: 30000,
         keepaliveInterval: 10000,
         keepaliveCountMax: 3,
+        debug: x11Debug,
       } as any);
     });
 
@@ -262,24 +280,36 @@ class SSHBridge extends EventEmitter {
     // X11 forwarding 옵션 — 세션 설정에 따라 enable
     const x11Enabled = !!session.x11Forward;
     const x11Display = typeof session.x11Display === 'number' ? session.x11Display : 0;
+    const log = (msg: string) => {
+      console.log(`[x11] ${msg}`);
+      this.emit('message', { type: 'x11-log', panelId, data: msg });
+    };
     if (x11Enabled) {
-      // X11 setup — 셸 출력으로는 보내지 않음 (프롬프트 깨짐 방지). 메인 프로세스 로그 + 별도 IPC 메시지로만.
-      const log = (msg: string) => {
-        console.log(`[x11] ${msg}`);
-        this.emit('message', { type: 'x11-log', panelId, data: msg });
-      };
+      // ⚠️ 중요: setupX11Forwarding (conn.on('x11') 핸들러 등록) 은 conn.shell() 호출 전에
+      // 동기적으로 완료돼야 함. 안 그러면 server 가 X11 채널 열려고 할 때 리스너 없어서 거부됨.
+      setupX11Forwarding(conn, x11Display, log);
+      // X 서버는 백그라운드로 띄움 — 도착할 X 데이터를 받기 위해선 SSH 서버가 채널 열기 전에 준비 필요
+      // 하지만 listener 만 있으면 일단 OK, X 서버 자체는 첫 X 클라이언트 실행 직전까지 살아있으면 됨
       (async () => {
         const { usedBundled } = await startBundledX11(x11Display, log);
         if (!usedBundled) {
           log('번들/외부 X 서버 미사용 — 내장 X 서버 시작 (제한적 호환)');
           startEmbeddedX11(x11Display, log);
         }
-        setupX11Forwarding(conn, x11Display, log);
       })().catch(e => log(`X11 setup 오류: ${e.message}`));
     }
 
     const shellOpts: any = { cols: shellCols, rows: shellRows, term: 'xterm-256color' };
-    if (x11Enabled) shellOpts.x11 = { screen: x11Display };
+    if (x11Enabled) {
+      // 랜덤 32자 hex 쿠키 — MIT-MAGIC-COOKIE-1 표준 (Xshell/OpenSSH -Y 와 동일 방식)
+      const cookie = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+      shellOpts.x11 = {
+        single: false,                     // -Y (trusted) 동작 — 다중 X 연결 허용
+        screen: x11Display,
+        protocol: 'MIT-MAGIC-COOKIE-1',
+        cookie,
+      };
+    }
     conn.shell(shellOpts, (err: any, stream: any) => {
       if (err) {
         this.emit('message', { type: 'error', panelId, error: String(err) });

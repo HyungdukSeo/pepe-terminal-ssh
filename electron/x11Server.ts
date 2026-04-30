@@ -591,7 +591,7 @@ export class X11Server extends EventEmitter {
         break;
       }
       case 72: { // PutImage
-        const format = data[1]; // 0=Bitmap, 1=XYPixmap, 2=ZPixmap
+        // const format = data[1]; // 0=Bitmap, 1=XYPixmap, 2=ZPixmap (depth 로 분기)
         const drawable = u32(4);
         const gcid = u32(8);
         const w = u16(12), h = u16(14);
@@ -960,7 +960,6 @@ export class X11Server extends EventEmitter {
 
   private _handleShape(ctx: ClientCtx, data: Buffer): void {
     const le = ctx.le;
-    const u16 = (off: number) => this._u16(data, off, le);
     const u32 = (off: number) => this._u32(data, off, le);
     const sub = data[1]; // SHAPE 의 sub-opcode
     this.emit('log', `SHAPE sub=${sub} len=${data.length}`);

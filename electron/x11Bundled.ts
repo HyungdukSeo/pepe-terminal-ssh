@@ -78,13 +78,20 @@ async function isPortInUse(port: number): Promise<boolean> {
 
 export async function startBundledX11(displayNum = 0, log?: (msg: string) => void): Promise<{ proc: ChildProcess | null; usedBundled: boolean }> {
   const port = 6000 + displayNum;
-  // 이미 그 디스플레이에 X 서버가 떠 있으면 그대로 사용
-  if (await isPortInUse(port)) {
-    log?.(`port ${port} already in use — 외부 또는 기존 X 서버 사용`);
-    return { proc: null, usedBundled: false };
-  }
   if (_running.has(displayNum)) {
     return { proc: _running.get(displayNum)!, usedBundled: true };
+  }
+  // 좀비 VcXsrv 정리 — 이전 앱 인스턴스가 죽으면서 남긴 vcxsrv.exe 가 포트를 잡고 있을 수 있음
+  try {
+    const { execSync } = require('child_process');
+    execSync('taskkill /F /IM vcxsrv.exe', { stdio: 'ignore', windowsHide: true });
+    log?.(`이전 VcXsrv 프로세스 정리 완료`);
+    await new Promise(r => setTimeout(r, 500));
+  } catch {} // 죽일 프로세스 없으면 에러 — 무시
+  // 정리 후에도 포트 점유 중이면 외부 X 서버
+  if (await isPortInUse(port)) {
+    log?.(`port ${port} 외부 X 서버 사용 중 — bundled 시작 안 함`);
+    return { proc: null, usedBundled: false };
   }
   const exe = getBundledPath(log);
   if (!exe) {
@@ -153,7 +160,7 @@ export function stopBundledX11(displayNum = 0): void {
 }
 
 export function stopAllBundledX11(): void {
-  for (const [num, p] of _running) {
+  for (const [, p] of _running) {
     try { p.kill(); } catch {}
   }
   _running.clear();
