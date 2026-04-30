@@ -1067,7 +1067,8 @@ export function focusTerm(termId: string) {
     const textarea = el?.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null;
     if (textarea) textarea.focus();
     // 포커스 받을 때 fit + resize 한 번 — vi 등 풀스크린 앱이 잘못된 사이즈로 떴던 케이스 보정
-    if (entry.elem && (entry.elem as HTMLElement).offsetWidth > 0) {
+    const termEl = (entry.term as any).element as HTMLElement | undefined;
+    if (termEl && termEl.offsetWidth > 0) {
       try { entry.fit?.fit?.(); } catch {}
       const c = (entry.term as any).cols;
       const r = (entry.term as any).rows;
@@ -1391,7 +1392,8 @@ export const TerminalPanel: React.FC<Props> = ({
         const entry = termStore.get(tid);
         entry?.term?.blur?.();
         // xterm 의 hidden textarea 도 명시적으로 blur
-        const xtermEl = entry?.elem?.querySelector?.('textarea.xterm-helper-textarea') as HTMLTextAreaElement | null;
+        const termEl = (entry?.term as any)?.element as HTMLElement | undefined;
+        const xtermEl = termEl?.querySelector?.('textarea.xterm-helper-textarea') as HTMLTextAreaElement | null;
         xtermEl?.blur?.();
       } catch {}
       setMultiPaste({ termId: tid, text });
