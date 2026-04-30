@@ -12,6 +12,17 @@ if (popout === 'options') {
   (window as any).__popoutMode = 'options';
   document.body.classList.add('popout-options');
 }
+if (popout === 'session-editor') {
+  document.body.classList.add('popout-session-editor');
+  document.documentElement.style.background = '#1a1a1a';
+  document.documentElement.style.margin = '0';
+  document.documentElement.style.padding = '0';
+  document.body.style.background = '#1a1a1a';
+  document.body.style.margin = '0';
+  document.body.style.padding = '0';
+  document.body.style.border = 'none';
+  document.body.style.outline = 'none';
+}
 
 let root: React.ReactNode;
 if (popout === 'session-editor') {

@@ -12,7 +12,7 @@ import { ClaudeChat } from './components/ClaudeChat';
 import { RemoteFileTree } from './components/RemoteFileTree';
 import { QuickConnectBar, QuickConnectResult } from './components/QuickConnectDialog';
 import { StatusBar } from './components/StatusBar';
-import { resetTermConnectState, clearScrollbackInTerm, clearScreenInTerm, clearAllInTerm, applyThemeToAll, applyThemeToTerm, applyFontToTerm, applyFontToAll, getCurrentThemeName, registerTermSession, getTermSessionInfo, getWordSeparator, setWordSeparator, refitAllTerms, applyScrollbackToAll, applyScrollbackToTerm, cloneTermStyle, isTermConnected, isTermConnecting, isTermPty, subscribeConnectedChange, focusTerm, pasteToTerm, promptPasswordAndConnect, startInitialConnectWatchdog, getCurrentPwdForTerm, refitTerm, searchInTerm, searchNextInTerm, searchPrevInTerm, clearSearchInTerm, highlightAllMatches, clearHighlights, searchFromTop, getAllTermIds } from './components/TerminalPanel';
+import { resetTermConnectState, clearScrollbackInTerm, clearScreenInTerm, clearAllInTerm, applyThemeToAll, applyThemeToTerm, applyFontToTerm, applyFontToAll, getCurrentThemeName, registerTermSession, getTermSessionInfo, getWordSeparator, setWordSeparator, refitAllTerms, applyScrollbackToAll, applyScrollbackToTerm, cloneTermStyle, isTermConnected, isTermConnecting, isTermPty, subscribeConnectedChange, focusTerm, pasteToTerm, promptPasswordAndConnect, startInitialConnectWatchdog, getCurrentPwdForTerm, refitTerm, searchInTerm, searchNextInTerm, searchPrevInTerm, clearSearchInTerm, highlightAllMatches, clearHighlights, searchFromTop, getAllTermIds, applyCursorStyleToTerm } from './components/TerminalPanel';
 import { marked } from 'marked';
 // @ts-ignore — vite ?raw 로 docs/MANUAL.md 를 번들 문자열로 임베드
 import manualMd from '../docs/MANUAL.md?raw';
@@ -21,6 +21,7 @@ import { getTerminalSettings, saveTerminalSettings, TerminalSettings } from './u
 import { loadKeybindings, matchKeybinding, getKeybindings, DEFAULT_KEYBINDINGS, KEYBINDING_LABELS, keyEventToCombo, setKeybindingListening } from './utils/keybindings';
 import { getThemeList } from './utils/terminalThemes';
 import { SessionList } from './components/SessionList';
+import { SessionEditor } from './components/SessionEditor';
 import {
   LayoutNode,
   PanelSession,
@@ -118,6 +119,8 @@ function App() {
   const [termSettings, setTermSettings] = useState<TerminalSettings>(getTerminalSettings);
   const isOptionsPopout = false; // popout 비활성 — localStorage 격리로 데이터 유실 위험
   const [showOptions, setShowOptions] = useState(false);
+  const [editSessionCtx, setEditSessionCtx] = useState<{ session: any; termId: string } | null>(null);
+  const [editSessionFolders, setEditSessionFolders] = useState<any[]>([]);
   const [optFontFamily, setOptFontFamily] = useState(() => localStorage.getItem('terminalFontFamily') || '');
   const [optFontSize, setOptFontSize] = useState(() => Number(localStorage.getItem('terminalFontSize')) || 14);
   const [availableFonts, setAvailableFonts] = useState<string[]>([]);
@@ -576,6 +579,36 @@ function App() {
     }
     overlayOpenRef.current = anyOpen;
   }, [showOptions, showManual, infoModal, showQuickConnect, showBroadcast, restoreTerminalFocus]);
+
+  // 미니탭 우클릭 → '세션 편집' 이벤트 수신
+  useEffect(() => {
+    const handler = async (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (!detail?.sessionId) return;
+      try {
+        const data = await (window as any).api?.listSessions?.();
+        const all = data?.sessions ?? data ?? [];
+        const flds = data?.folders ?? [];
+        const sess = all.find((x: any) => x.id === detail.sessionId);
+        if (sess) {
+          setEditSessionCtx({ session: sess, termId: detail.termId });
+          setEditSessionFolders(flds);
+        }
+      } catch {}
+    };
+    window.addEventListener('open-session-editor', handler);
+    return () => window.removeEventListener('open-session-editor', handler);
+  }, []);
+
+  // 세션 변경 사항을 활성 터미널에 실시간 반영
+  const applySessionToTerm = (s: any, termId: string) => {
+    try {
+      if (s.theme) applyThemeToTerm(termId, s.theme);
+      if (s.fontFamily || s.fontSize) applyFontToTerm(termId, s.fontFamily, s.fontSize);
+      if (typeof s.scrollback === 'number') applyScrollbackToTerm(termId, s.scrollback);
+      applyCursorStyleToTerm(termId, s.cursorStyle || 'block', !!s.cursorBlink);
+    } catch (e) { console.error('[applySessionToTerm]', e); }
+  };
 
   // 외부 검색 창 IPC — listener 는 한 번만 등록, 최신 tabs/activeTab 은 ref 로 참조
   // (활성 useState/useEffect 들이 모두 선언된 후 — activeTab 은 아래에서 계산되므로 lazy init)
@@ -1469,6 +1502,16 @@ function App() {
       setTimeout(() => {
         if (sessionTheme) applyThemeToTerm(termId, sessionTheme);
         if (sessionFontFamily || sessionFontSize) applyFontToTerm(termId, sessionFontFamily, sessionFontSize);
+        // cursorStyle / cursorBlink 도 적용 (세션 데이터에서 fetch)
+        (async () => {
+          try {
+            const data = await (window as any).api?.listSessions?.();
+            const all = data?.sessions ?? data ?? [];
+            const s = all.find((x: any) => x.id === sessionId);
+            // cursorStyle 미지정 시 'block' 으로 기본화. cursorBlink 는 항상 적용 (사용자 의도 반영)
+            applyCursorStyleToTerm(termId, s?.cursorStyle || 'block', !!s?.cursorBlink);
+          } catch {}
+        })();
       }, 200);
     };
     const registerTerm = async (termId: string) => {
@@ -2467,6 +2510,28 @@ function App() {
 
       <StatusBar activeTab={activeTab} selectedPanelId={selectedPanelId} tabs={tabs} />
 
+      {editSessionCtx && (
+        <SessionEditor
+          session={editSessionCtx.session}
+          folders={editSessionFolders}
+          onSave={async (s: any) => {
+            try { await (window as any).api?.saveSession?.(s); } catch {}
+            // 활성 터미널에 실시간 반영
+            applySessionToTerm(s, editSessionCtx.termId);
+            // 편집 컨텍스트 갱신 (창 유지)
+            setEditSessionCtx({ session: s, termId: editSessionCtx.termId });
+          }}
+          onSaveAndConnect={async (s: any) => {
+            try { await (window as any).api?.saveSession?.(s); } catch {}
+            setEditSessionCtx(null);
+            // 새 탭으로 연결 (panelId=null → 새 패널/탭 생성)
+            setTimeout(() => {
+              try { handleConnectSession(s.id, s.name, null, s.theme, s.fontFamily, s.fontSize, s.scrollback); } catch (e) { console.error('[editor saveAndConnect]', e); }
+            }, 50);
+          }}
+          onCancel={() => setEditSessionCtx(null)}
+        />
+      )}
       {showOptions && (() => {
         const onDragStart = (e: React.MouseEvent) => {
           if ((e.target as HTMLElement).closest('button, input, select, textarea, label, .options-tab')) return;
@@ -2493,14 +2558,16 @@ function App() {
           if (isOptionsPopout) return; // popout 모드에선 backdrop 클릭으로 닫지 않음 (창은 OS 가 관리)
           setShowOptions(false);
         }}>
-          <div className="session-editor" onClick={e => e.stopPropagation()} style={{ width: 500 }}>
+          <div className="session-editor" onClick={e => e.stopPropagation()} style={{ width: 640 }}>
             <h3 style={isOptionsPopout ? { userSelect: 'none' } : { cursor: 'move', userSelect: 'none' }} onMouseDown={isOptionsPopout ? undefined : onDragStart} title={isOptionsPopout ? '' : '드래그하여 이동'}>옵션</h3>
 
-            <div className="options-tabs">
-              <button className={`options-tab ${optionsTab === 'terminal' ? 'active' : ''}`} onClick={() => setOptionsTab('terminal')}>터미널</button>
-              <button className={`options-tab ${optionsTab === 'session' ? 'active' : ''}`} onClick={() => setOptionsTab('session')}>세션</button>
-              <button className={`options-tab ${optionsTab === 'keybindings' ? 'active' : ''}`} onClick={() => setOptionsTab('keybindings')}>단축키</button>
-            </div>
+            <div className="options-body">
+              <div className="options-tabs options-tabs-side">
+                <button className={`options-tab ${optionsTab === 'terminal' ? 'active' : ''}`} onClick={() => setOptionsTab('terminal')}>터미널</button>
+                <button className={`options-tab ${optionsTab === 'session' ? 'active' : ''}`} onClick={() => setOptionsTab('session')}>세션</button>
+                <button className={`options-tab ${optionsTab === 'keybindings' ? 'active' : ''}`} onClick={() => setOptionsTab('keybindings')}>단축키</button>
+              </div>
+              <div className="options-pane">
 
             {optionsTab === 'terminal' && (
               <div className="options-content">
@@ -2702,6 +2769,8 @@ function App() {
                 </div>
               </div>
             )}
+              </div>
+            </div>
 
             <div className="session-editor-actions">
               <button className="btn-cancel" onClick={() => {

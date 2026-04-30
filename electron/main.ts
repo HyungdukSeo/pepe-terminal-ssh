@@ -404,13 +404,18 @@ ipcMain.handle('session-editor:open', (_e, { sessionId }: { sessionId: string })
   const win = new BrowserWindow({
     width: 560, height: 780,
     minWidth: 480, minHeight: 600,
-    frame: false, resizable: true,
+    frame: false, resizable: true, thickFrame: false,
+    transparent: false, hasShadow: true,
+    roundedCorners: false,            // Windows 11 둥근 모서리 / 보라색 accent border 비활성
     backgroundColor: '#111',
-    parent: mainWindow,
     skipTaskbar: true,
+    alwaysOnTop: true,
+    show: false,
     title: '세션 편집',
     webPreferences: { nodeIntegration: false, contextIsolation: true, preload: path.join(__dirname, 'preload.js') },
   });
+  try { win.setAlwaysOnTop(true, 'floating'); } catch {}
+  win.once('ready-to-show', () => { try { win.show(); win.focus(); } catch {} });
   win.setMenu(null); // File/Edit/... 메뉴 제거
   sessionEditorWindow = win;
   win.on('closed', () => { sessionEditorWindow = null; });

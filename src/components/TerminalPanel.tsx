@@ -560,9 +560,25 @@ export function cloneTermStyle(srcTermId: string, dstTermId: string) {
     if (ff) dstEntry.term.options.fontFamily = ff;
     if (fs !== undefined) dstEntry.term.options.fontSize = fs;
     if (sb !== undefined) dstEntry.term.options.scrollback = sb;
+    // 커서 스타일/깜박임/커스텀 오버레이 복제
+    const srcCs = (srcEntry.term.options as any).cursorStyle as string | undefined;
+    const srcCb = (srcEntry.term.options as any).cursorBlink as boolean | undefined;
+    // 소스가 커스텀 오버레이를 쓰고 있으면 dst 에도 동일 적용 (overlay 별도)
+    if (flameOverlayCleanup.has(srcTermId)) {
+      // 어떤 커스텀 스타일인지 알아내려면 별도 추적 필요 — termCursorStyleCache 에 저장
+      const customStyle = termCursorStyleCache.get(srcTermId);
+      if (customStyle) {
+        applyCursorStyleToTerm(dstTermId, customStyle as any, srcCb);
+      }
+    } else if (srcCs) {
+      applyCursorStyleToTerm(dstTermId, srcCs as any, srcCb);
+    }
     try { dstEntry.fit.fit(); } catch {}
   }
 }
+
+// 커스텀 커서 스타일 추적 — cloneTermStyle 등에서 참조
+const termCursorStyleCache: Map<string, string> = new Map();
 
 export function applyFontToAll(fontFamily?: string, fontSize?: number) {
   if (fontFamily) localStorage.setItem('terminalFontFamily', fontFamily);
@@ -631,6 +647,290 @@ export function applyFontToTerm(termId: string, fontFamily?: string, fontSize?: 
   if (fontFamily) entry.term.options.fontFamily = fontFamily;
   if (fontSize) { entry.term.options.fontSize = fontSize; termFontSizes.set(termId, fontSize); }
   try { entry.fit.fit(); } catch {}
+}
+
+// term 별 flame 오버레이 상태 — 새 element + onCursorMove 정리용
+const flameOverlayCleanup: Map<string, () => void> = new Map();
+
+type CustomCursorStyle = 'flame' | 'star' | 'heart' | 'circle' | 'rainbow' | 'power';
+const customCursorStyles: CustomCursorStyle[] = ['flame', 'star', 'heart', 'circle', 'rainbow', 'power'];
+
+// 키 입력 시 스파크/파티클 효과 (Hyper hyperpower 스타일)
+function spawnPowerSparks(elem: HTMLElement, x: number, y: number) {
+  const colors = ['#ff5722', '#ffc107', '#ffeb3b', '#ff9800', '#f44336'];
+  const count = 8 + Math.floor(Math.random() * 6);
+  for (let i = 0; i < count; i++) {
+    const spark = document.createElement('div');
+    spark.className = 'xterm-power-spark';
+    const angle = (Math.PI * 2 * i) / count + Math.random() * 0.4;
+    const dist = 30 + Math.random() * 30;
+    spark.style.cssText += `left:${x}px;top:${y}px;background:${colors[Math.floor(Math.random() * colors.length)]};box-shadow:0 0 6px currentColor;--dx:${Math.cos(angle) * dist}px;--dy:${Math.sin(angle) * dist}px;`;
+    elem.appendChild(spark);
+    setTimeout(() => { try { spark.remove(); } catch {} }, 700);
+  }
+}
+
+// 하트 퍼짐 — 1개 ♥ 가 커서 위치에서 점점 커지며 페이드아웃
+function spawnHeartSpread(elem: HTMLElement, x: number, y: number) {
+  const heart = document.createElement('div');
+  heart.className = 'xterm-heart-spread';
+  heart.textContent = '♥';
+  heart.style.cssText += `left:${x}px;top:${y}px;`;
+  elem.appendChild(heart);
+  setTimeout(() => { try { heart.remove(); } catch {} }, 900);
+}
+
+// 별 번짐 — 여러 ✦ 가 사방으로 회전하며 퍼져나감
+function spawnStarSpread(elem: HTMLElement, x: number, y: number) {
+  const count = 6 + Math.floor(Math.random() * 4);
+  for (let i = 0; i < count; i++) {
+    const star = document.createElement('div');
+    star.className = 'xterm-star-spread';
+    star.textContent = '✦';
+    const angle = (Math.PI * 2 * i) / count + Math.random() * 0.6;
+    const dist = 40 + Math.random() * 30;
+    star.style.cssText += `left:${x}px;top:${y}px;--dx:${Math.cos(angle) * dist}px;--dy:${Math.sin(angle) * dist}px;`;
+    elem.appendChild(star);
+    setTimeout(() => { try { star.remove(); } catch {} }, 1000);
+  }
+}
+
+// 무지개 폭발 — 빨주노초파남보 색색의 점이 사방으로 퍼짐
+function spawnRainbowSpread(elem: HTMLElement, x: number, y: number) {
+  const colors = ['#ff0000', '#ff9900', '#ffff00', '#00ff00', '#00ccff', '#3366ff', '#cc00ff'];
+  const total = 14;
+  for (let i = 0; i < total; i++) {
+    const dot = document.createElement('div');
+    dot.className = 'xterm-rainbow-spread';
+    const angle = (Math.PI * 2 * i) / total + Math.random() * 0.3;
+    const dist = 40 + Math.random() * 35;
+    const color = colors[i % colors.length];
+    dot.style.cssText += `left:${x}px;top:${y}px;background:${color};color:${color};--dx:${Math.cos(angle) * dist}px;--dy:${Math.sin(angle) * dist}px;`;
+    elem.appendChild(dot);
+    setTimeout(() => { try { dot.remove(); } catch {} }, 1000);
+  }
+}
+
+// 불꽃 폭발 — 여러 🔥 가 위쪽으로 솟구치며 사라짐
+function spawnFlameSpread(elem: HTMLElement, x: number, y: number) {
+  const count = 7 + Math.floor(Math.random() * 4);
+  for (let i = 0; i < count; i++) {
+    const f = document.createElement('div');
+    f.className = 'xterm-flame-spread';
+    f.textContent = '🔥';
+    // 위쪽으로 부채꼴 — 좌/우 30도 안에서 위로 50~80px
+    const angle = -Math.PI / 2 + (Math.random() - 0.5) * (Math.PI / 1.5);
+    const dist = 40 + Math.random() * 50;
+    f.style.cssText += `left:${x}px;top:${y}px;--dx:${Math.cos(angle) * dist}px;--dy:${Math.sin(angle) * dist}px;`;
+    elem.appendChild(f);
+    setTimeout(() => { try { f.remove(); } catch {} }, 950);
+  }
+}
+
+function buildCursorOverlayCss(style: CustomCursorStyle): { css: string; emoji?: string } {
+  switch (style) {
+    case 'flame': return { css: `
+      background: linear-gradient(180deg, #ffe066 0%, #ff9933 40%, #ff3300 80%, #cc0000 100%);
+      border-radius: 50% 50% 30% 30% / 60% 60% 40% 40%;
+      box-shadow: 0 0 6px #ff8800, 0 0 12px #ff5500;
+      animation: flame-flicker 0.6s ease-in-out infinite;
+    `};
+    case 'star': return { emoji: '✦', css: `
+      color: #ffd700; text-shadow: 0 0 6px #ffd700, 0 0 12px #ff9900;
+      font-size: 1.1em; line-height: 1; text-align: center;
+      animation: star-rotate 2s linear infinite;
+    `};
+    case 'heart': return { emoji: '♥', css: `
+      color: #ff3366; text-shadow: 0 0 4px #ff3366, 0 0 8px #ff0066;
+      font-size: 1em; line-height: 1; text-align: center;
+      animation: heart-pulse 1s ease-in-out infinite;
+    `};
+    case 'circle': return { css: `
+      background: currentColor; color: #fff;
+      border-radius: 50%; transform-origin: center;
+      animation: circle-pulse 1.2s ease-in-out infinite;
+    `};
+    case 'rainbow': return { css: `
+      background: linear-gradient(90deg,#ff0000,#ff9900,#ffff00,#00ff00,#00ccff,#3366ff,#cc00ff);
+      background-size: 300% 100%;
+      animation: rainbow-shift 2s linear infinite;
+      box-shadow: 0 0 4px rgba(255,255,255,0.4);
+    `};
+    case 'power': return { emoji: '💥', css: `
+      color: #ffeb3b; text-shadow: 0 0 8px #ff9800, 0 0 14px #ff5722;
+      font-size: 1em; line-height: 1; text-align: center;
+      animation: power-shake 0.15s ease-in-out infinite;
+    `};
+  }
+}
+
+export function applyCursorStyleToTerm(termId: string, style?: 'block' | 'underline' | 'bar' | CustomCursorStyle, blink?: boolean) {
+  const entry = termStore.get(termId);
+  if (!entry) return;
+  if (style) termCursorStyleCache.set(termId, style);
+  // 기존 커스텀 오버레이 정리
+  const prev = flameOverlayCleanup.get(termId);
+  if (prev) { try { prev(); } catch {} flameOverlayCleanup.delete(termId); }
+  try {
+    if (style && customCursorStyles.includes(style as CustomCursorStyle)) {
+      // xterm 자체 커서 비활성 (얇은 bar 로 두고 오버레이 사용)
+      (entry.term.options as any).cursorStyle = 'bar';
+      (entry.term.options as any).cursorBlink = false;
+      const term: any = entry.term;
+      const elem = term.element as HTMLElement | undefined;
+      if (!elem) return;
+      const conf = buildCursorOverlayCss(style as CustomCursorStyle);
+      const overlay = document.createElement('div');
+      overlay.className = 'xterm-custom-cursor';
+      overlay.style.cssText = `position:absolute;pointer-events:none;z-index:5;${conf.css}`;
+      if (conf.emoji) overlay.textContent = conf.emoji;
+      const screen = elem.querySelector('.xterm-screen') as HTMLElement | null;
+      if (screen && screen.parentElement) screen.parentElement.appendChild(overlay);
+      else elem.appendChild(overlay);
+
+      const updatePos = () => {
+        try {
+          const buf = term.buffer.active;
+          const renderService = term._core?._renderService;
+          const cellW = renderService?.dimensions?.css?.cell?.width ?? renderService?.dimensions?.actualCellWidth ?? 9;
+          const cellH = renderService?.dimensions?.css?.cell?.height ?? renderService?.dimensions?.actualCellHeight ?? 17;
+          // 글씨를 가리지 않게 살짝 우측으로 (반 칸 정도) — 입력 위치 다음 칸을 가리키는 형태
+          overlay.style.left = (buf.cursorX * cellW + cellW * 0.5) + 'px';
+          overlay.style.top = (buf.cursorY * cellH) + 'px';
+          overlay.style.width = cellW + 'px';
+          overlay.style.height = cellH + 'px';
+        } catch {}
+      };
+      updatePos();
+      const off1 = entry.term.onCursorMove(updatePos);
+      const off2 = entry.term.onRender(updatePos);
+      const off3 = entry.term.onResize(updatePos);
+      // 키 입력 hook — power 는 매 키마다 스파크, flame/heart/star/power 는 빈 백스페이스에서 효과
+      let off4: any = null;
+      const fxStyles: CustomCursorStyle[] = ['power', 'heart', 'star', 'flame', 'rainbow'];
+      if (fxStyles.includes(style as CustomCursorStyle)) {
+        off4 = entry.term.onData((data: string) => {
+          try {
+            const parent = overlay.parentElement;
+            if (!parent) return;
+            const left = parseFloat(overlay.style.left || '0');
+            const top = parseFloat(overlay.style.top || '0');
+            // power: 모든 키 입력에 스파크
+            if (style === 'power') spawnPowerSparks(parent, left + 4, top + 8);
+            // 백스페이스 처리 — 빈 입력에서 효과
+            if (data === '\x7f' || data === '\b') {
+              const buf = (term as any).buffer.active;
+              const prevX = buf.cursorX;
+              setTimeout(() => {
+                try {
+                  const newX = (term as any).buffer.active.cursorX;
+                  if (newX < prevX) return; // 정상 삭제 — 효과 X
+                  // 지울 곳 없음 — 모드별 효과
+                  const cx = parseFloat(overlay.style.left || '0') + 6;
+                  const cy = parseFloat(overlay.style.top || '0') + 8;
+                  if (style === 'power') {
+                    elem.classList.remove('xterm-power-shake');
+                    void elem.offsetHeight;
+                    elem.classList.add('xterm-power-shake');
+                    setTimeout(() => elem.classList.remove('xterm-power-shake'), 450);
+                  } else if (style === 'heart') {
+                    spawnHeartSpread(parent, cx, cy);
+                  } else if (style === 'star') {
+                    spawnStarSpread(parent, cx, cy);
+                  } else if (style === 'flame') {
+                    spawnFlameSpread(parent, cx, cy);
+                  } else if (style === 'rainbow') {
+                    spawnRainbowSpread(parent, cx, cy);
+                  }
+                } catch {}
+              }, 60);
+            }
+          } catch {}
+        });
+      }
+      flameOverlayCleanup.set(termId, () => {
+        try { off1.dispose(); } catch {}
+        try { off2.dispose(); } catch {}
+        try { off3.dispose(); } catch {}
+        try { off4?.dispose?.(); } catch {}
+        try { overlay.remove(); } catch {}
+      });
+    } else if (style === 'bar' && blink) {
+      // xterm 의 bar+blink 가 시각적으로 안보이는 케이스 → 커스텀 오버레이로 깜박임 구현
+      const term: any = entry.term;
+      try { term.options.cursorStyle = 'bar'; } catch {}
+      try { term.options.cursorBlink = false; } catch {}
+      const elem = term.element as HTMLElement | undefined;
+      if (elem) {
+        // xterm 자체 커서 layer 숨김 (정적 bar 와 오버레이 겹침 방지)
+        elem.classList.add('hide-xterm-cursor');
+        const overlay = document.createElement('div');
+        overlay.className = 'xterm-custom-cursor xterm-bar-blink';
+        overlay.style.cssText = 'position:absolute;pointer-events:none;z-index:5;background:currentColor;animation:blink 1s step-end infinite;';
+        const screen = elem.querySelector('.xterm-screen') as HTMLElement | null;
+        const host = (screen && screen.parentElement) || elem;
+        host.appendChild(overlay);
+        const updatePos = () => {
+          try {
+            const buf = term.buffer.active;
+            const rs = term._core?._renderService;
+            const cellW = rs?.dimensions?.css?.cell?.width ?? rs?.dimensions?.actualCellWidth ?? 9;
+            const cellH = rs?.dimensions?.css?.cell?.height ?? rs?.dimensions?.actualCellHeight ?? 17;
+            const w = 2;
+            // 글자 뒤(다음 셀 왼쪽 가장자리)에 위치 — 겹침 방지
+            overlay.style.left = ((buf.cursorX + 1) * cellW) + 'px';
+            overlay.style.top = (buf.cursorY * cellH) + 'px';
+            overlay.style.width = w + 'px';
+            overlay.style.height = cellH + 'px';
+            // 테마 전경색 동기화
+            const fg = (term.options as any)?.theme?.foreground || '#e6e1cf';
+            overlay.style.color = fg;
+          } catch {}
+        };
+        updatePos();
+        const off1 = entry.term.onCursorMove(updatePos);
+        const off2 = entry.term.onRender(updatePos);
+        const off3 = entry.term.onResize(updatePos);
+        flameOverlayCleanup.set(termId, () => {
+          try { off1.dispose(); } catch {}
+          try { off2.dispose(); } catch {}
+          try { off3.dispose(); } catch {}
+          try { overlay.remove(); } catch {}
+          try { elem.classList.remove('hide-xterm-cursor'); } catch {}
+        });
+      }
+    } else if (style) {
+      const term: any = entry.term;
+      // 깜박임 재시작을 위해 false 로 강제 후 다음 tick 에 원하는 값 적용
+      try { term.options.cursorBlink = false; } catch {}
+      try { term.options.cursorStyle = style; } catch {}
+      try { term.refresh?.(0, term.rows - 1); } catch {}
+      if (blink) {
+        setTimeout(() => {
+          try { term.options.cursorBlink = true; } catch {}
+          try { term.refresh?.(0, term.rows - 1); } catch {}
+          try {
+            const ta = term.textarea as HTMLTextAreaElement | undefined;
+            if (ta && document.activeElement !== ta) ta.focus({ preventScroll: true });
+          } catch {}
+        }, 30);
+      }
+    } else if (typeof blink === 'boolean') {
+      const term: any = entry.term;
+      try { term.options.cursorBlink = false; } catch {}
+      try { term.refresh?.(0, term.rows - 1); } catch {}
+      if (blink) {
+        setTimeout(() => {
+          try { term.options.cursorBlink = true; } catch {}
+          try { term.refresh?.(0, term.rows - 1); } catch {}
+          try {
+            const ta = term.textarea as HTMLTextAreaElement | undefined;
+            if (ta && document.activeElement !== ta) ta.focus({ preventScroll: true });
+          } catch {}
+        }, 30);
+      }
+    }
+  } catch {}
 }
 
 export function applyThemeToTerm(termId: string, themeName: string) {
@@ -2044,6 +2344,13 @@ export const TerminalPanel: React.FC<Props> = ({
           onClose={() => setMiniCtx(null)}
           items={[
             { label: '이름 변경', onClick: () => { setRenamingTermId(miniCtx.termId); setRenameValue(miniCtx.name); } },
+            { label: '세션 편집', onClick: () => {
+              const info = termSessionMap.get(miniCtx.termId);
+              if (info?.sessionId) {
+                // 전역 이벤트로 App.tsx 가 SessionEditor 모달 띄우도록
+                window.dispatchEvent(new CustomEvent('open-session-editor', { detail: { sessionId: info.sessionId, termId: miniCtx.termId } }));
+              }
+            } },
             { label: '세션 복제', onClick: () => { onDuplicateSession?.(nodeId, miniCtx.termId); } },
             { label: '세션 재연결', onClick: async () => {
               const tid = miniCtx.termId;
@@ -2149,6 +2456,12 @@ export const TerminalPanel: React.FC<Props> = ({
             { label: '테마 변경...', onClick: () => {
               const cur = termThemeCache.get(activeTermId) || '';
               setThemePickerCtx({ x: termCtx.x, y: termCtx.y, current: cur });
+            }},
+            { label: '세션 편집...', onClick: () => {
+              const info = termSessionMap.get(activeTermId);
+              if (info?.sessionId) {
+                window.dispatchEvent(new CustomEvent('open-session-editor', { detail: { sessionId: info.sessionId, termId: activeTermId } }));
+              }
             }},
           ]}
         />

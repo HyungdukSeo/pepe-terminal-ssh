@@ -167,13 +167,13 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
 
   const handleAdd = () => {
     const folderId = selectedType === 'folder' ? selectedId : undefined;
-    { try { (window as any).api?.sessionEditorOpen?.('new'); } catch {} }
+    setEditing({ id: `sess-${Date.now()}`, name: 'New Session', host: '', port: 22, username: '', auth: { type: 'password', password: '' }, encoding: 'utf-8', folderId: folderId ?? undefined });
   };
 
   const handleEdit = () => {
     if (!selectedId) return;
     const s = sessions.find(x => x.id === selectedId);
-    if (s) { try { (window as any).api?.sessionEditorOpen?.(s.id); } catch {} }
+    if (s) setEditing(s);
   };
 
   const handleDelete = async () => {
@@ -251,10 +251,21 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
 
   const onSaveSession = async (s: Session) => {
     await (window as any).api.saveSession(s);
+    // 저장만 — 창 유지
+    await reload();
+    setSelectedId(s.id);
+    setSelectedType('session');
+  };
+
+  // 저장 + 창 닫기 + 연결
+  const onSaveAndConnect = async (s: Session) => {
+    await (window as any).api.saveSession(s);
     setEditing(null);
     await reload();
     setSelectedId(s.id);
     setSelectedType('session');
+    // 모달 닫힘 + 리로드 후 약간 대기 후 연결 (state 갱신 시간 확보)
+    setTimeout(() => { try { handleConnect(s); } catch (e) { console.error('[saveAndConnect] connect failed:', e); } }, 50);
   };
 
   // 드래그로 세션을 폴더에 이동
@@ -545,7 +556,7 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
         <div className="session-resize-handle" onPointerDown={onPointerDown} />
       </div>
 
-      {editing && <SessionEditor session={editing} folders={folders} onSave={onSaveSession} onCancel={() => setEditing(null)} />}
+      {editing && <SessionEditor session={editing} folders={folders} onSave={onSaveSession} onSaveAndConnect={onSaveAndConnect} onCancel={() => setEditing(null)} />}
 
       {folderPicker && (() => {
         const renderTree = (parentId?: string, depth = 0): React.ReactNode[] => {
@@ -657,7 +668,7 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
             <>
               <div className="context-menu-item" onClick={() => {
                 const s = sessions.find(x => x.id === contextMenu.id);
-                if (s) { try { (window as any).api?.sessionEditorOpen?.(s.id); } catch {} }
+                if (s) setEditing(s);
                 setContextMenu(null);
               }}>
                 편집
