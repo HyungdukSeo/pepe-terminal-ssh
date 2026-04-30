@@ -263,7 +263,12 @@ function getOrCreateTerm(termId: string): { term: Terminal; fit: FitAddon; searc
       // Ctrl+V / 브라우저 paste 가로채기 — 여러 줄 붙여넣기 다이얼로그
       el.addEventListener('paste', (e: ClipboardEvent) => {
         const text = e.clipboardData?.getData('text');
-        if (text && text.includes('\n')) {
+        if (!text) return;
+        // 실제로 "여러 줄"인지 판단 — 끝에 trailing newline 만 있는 1줄짜리는 일반 paste 로 처리
+        // (e.g., "ls -l;\n" 또는 "ls -l;\n\n" 은 1줄로 봄)
+        const lines = text.split(/\r?\n/).filter(l => l.length > 0);
+        const isMultiLine = lines.length >= 2;
+        if (isMultiLine) {
           const settings = getTerminalSettings();
           if (settings.multiLinePaste === 'dialog') {
             e.preventDefault();
@@ -1061,6 +1066,16 @@ export function focusTerm(termId: string) {
     const el = (entry.term as any).element as HTMLElement | undefined;
     const textarea = el?.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null;
     if (textarea) textarea.focus();
+    // 포커스 받을 때 fit + resize 한 번 — vi 등 풀스크린 앱이 잘못된 사이즈로 떴던 케이스 보정
+    if (entry.elem && (entry.elem as HTMLElement).offsetWidth > 0) {
+      try { entry.fit?.fit?.(); } catch {}
+      const c = (entry.term as any).cols;
+      const r = (entry.term as any).rows;
+      if (c && r) {
+        if (ptyConnected.has(termId)) (window as any).api?.ptyResize?.(termId, c, r);
+        else (window as any).api?.resizeSSH?.(termId, c, r);
+      }
+    }
   } catch {}
 }
 
@@ -1257,7 +1272,23 @@ export const TerminalPanel: React.FC<Props> = ({
             }
           }
         } catch (err) { console.error('[initConnect] error:', err); }
-        setTimeout(() => { try { window.api?.resizeSSH?.(activeTermId, cols, rows); } catch {} }, 200);
+        // 연결 확립 후 한 번 더 fit + 실제 cols/rows 로 resize — 초기 fit 이 layout 안정화 전이었던 경우 보정
+        setTimeout(() => {
+          try {
+            fit.fit();
+            const c = (term as any).cols || cols;
+            const r = (term as any).rows || rows;
+            window.api?.resizeSSH?.(activeTermId, c, r);
+          } catch {}
+        }, 200);
+        setTimeout(() => {
+          try {
+            fit.fit();
+            const c = (term as any).cols || cols;
+            const r = (term as any).rows || rows;
+            window.api?.resizeSSH?.(activeTermId, c, r);
+          } catch {}
+        }, 600);
       } else if (globalConnected.has(activeTermId)) {
         try { window.api?.resizeSSH?.(activeTermId, cols, rows); } catch {}
       } else if (activeSession && !activeSession.sessionId && !ptyConnected.has(activeTermId)) {
@@ -1355,6 +1386,14 @@ export const TerminalPanel: React.FC<Props> = ({
     if (!containerRef.current) return;
     const handler = (e: Event) => {
       const { termId: tid, text } = (e as CustomEvent).detail;
+      // 터미널 포커스 해제 — 모달 띄워지는 동안 키 입력이 터미널로 가지 않게
+      try {
+        const entry = termStore.get(tid);
+        entry?.term?.blur?.();
+        // xterm 의 hidden textarea 도 명시적으로 blur
+        const xtermEl = entry?.elem?.querySelector?.('textarea.xterm-helper-textarea') as HTMLTextAreaElement | null;
+        xtermEl?.blur?.();
+      } catch {}
       setMultiPaste({ termId: tid, text });
     };
     containerRef.current.addEventListener('term-multi-paste', handler);
@@ -1413,13 +1452,19 @@ export const TerminalPanel: React.FC<Props> = ({
     const el = containerRef.current;
     el?.addEventListener('mousedown', forceSyncNow, true);
     el?.addEventListener('focusin', forceSyncNow);
+    // 윈도우 focus / 가시성 변경 시에도 보정 — 다른 창 갔다 돌아왔을 때 vi 작게 떠 있던 거 복구
+    window.addEventListener('focus', forceSyncNow);
+    document.addEventListener('visibilitychange', forceSyncNow);
 
-    const timers = [100, 300].map(ms => setTimeout(doFit, ms));
+    // 초기 fit 다단계 — 100/300/700/1200ms 에 반복해서 layout 안정 후 정확한 크기 보장
+    const timers = [100, 300, 700, 1200].map(ms => setTimeout(doFit, ms));
     setTimeout(() => { try { getOrCreateTerm(activeTermId).term.focus(); } catch {} }, 100);
 
     return () => {
       ro.disconnect();
       window.removeEventListener('resize', debouncedFit);
+      window.removeEventListener('focus', forceSyncNow);
+      document.removeEventListener('visibilitychange', forceSyncNow);
       el?.removeEventListener('mousedown', forceSyncNow, true);
       el?.removeEventListener('focusin', forceSyncNow);
       timers.forEach(clearTimeout);
@@ -1821,14 +1866,32 @@ export const TerminalPanel: React.FC<Props> = ({
           onMouseDown={e => { (e.currentTarget as any).__clickedBackdrop = (e.target === e.currentTarget); }}
           onMouseUp={e => { if ((e.currentTarget as any).__clickedBackdrop && e.target === e.currentTarget) { const tid = multiPaste.termId; setMultiPaste(null); setTimeout(() => focusTerm(tid), 0); } }}
         >
-          <div className="session-editor" onClick={e => e.stopPropagation()} style={{ width: 480 }}>
+          <div className="session-editor" onClick={e => e.stopPropagation()} style={{ minWidth: 480, maxWidth: '90vw', resize: 'both', overflow: 'auto' }}>
             <h3>여러 줄 붙여넣기</h3>
             <p style={{ color: '#888', fontSize: 12, margin: '0 0 8px' }}>다음 텍스트에 여러 줄이 포함되어 있습니다. 붙여넣을까요?</p>
             <textarea
+              autoFocus
+              ref={el => { if (el) setTimeout(() => el.focus(), 0); }}
               value={multiPaste.text}
               onChange={e => setMultiPaste(prev => prev ? { ...prev, text: e.target.value } : null)}
-              onKeyDown={e => e.stopPropagation()}
-              style={{ width: '100%', height: 150, background: '#111', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: 8, fontSize: 12, fontFamily: 'monospace', resize: 'vertical', boxSizing: 'border-box' }}
+              onKeyDown={e => {
+                e.stopPropagation();
+                // Esc → 취소, Ctrl+Enter → 붙여넣기
+                if (e.key === 'Escape') { const tid = multiPaste.termId; setMultiPaste(null); setTimeout(() => focusTerm(tid), 0); }
+                else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                  e.preventDefault();
+                  const tid = multiPaste.termId;
+                  try {
+                    const entry = termStore.get(tid);
+                    if (entry) entry.term.paste(multiPaste.text);
+                    else if (ptyConnected.has(tid)) (window as any).api.ptyInput(tid, multiPaste.text);
+                    else (window as any).api.sendSSHInput(tid, multiPaste.text);
+                  } catch {}
+                  setMultiPaste(null);
+                  setTimeout(() => focusTerm(tid), 0);
+                }
+              }}
+              style={{ width: '100%', minWidth: 0, height: 200, background: '#111', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: 8, fontSize: 12, fontFamily: 'monospace', resize: 'both', boxSizing: 'border-box' }}
             />
             <div className="session-editor-actions">
               <button className="btn-cancel" onClick={() => {

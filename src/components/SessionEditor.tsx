@@ -273,34 +273,29 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
           </label>
 
           <label>X11 forwarding</label>
-          <label
-            className="autotrack-checkbox-label"
-            title="원격 GUI 앱(xclock, xeyes 등)을 임베디드 X 서버로 표시. 별도 X 서버 설치 불필요."
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', position: 'relative', justifySelf: 'start' }}
-          >
+          <div className="x11-forwarding-row">
             <input
               type="checkbox"
+              id="x11-forward-checkbox"
               checked={x11Forward}
               onChange={e => setX11Forward(e.target.checked)}
-              style={{ margin: 0 }}
             />
             {x11Forward && (
               <>
-                <span style={{ fontSize: 11, color: '#aaa', marginLeft: 8 }}>display</span>
+                <span className="x11-label">display:</span>
                 <input
                   type="number"
                   min={0}
                   max={99}
                   value={x11Display}
                   onChange={e => setX11Display(Math.max(0, parseInt(e.target.value) || 0))}
-                  onClick={e => e.stopPropagation()}
-                  style={{ width: 50, margin: 0, padding: '2px 4px', fontSize: 11 }}
+                  className="x11-display-input"
                 />
-                <span style={{ fontSize: 10, color: '#888' }}>(:{x11Display} → localhost:{6000 + x11Display})</span>
+                <span className="x11-hint">→ localhost:{6000 + x11Display}</span>
               </>
             )}
-            <span className="autotrack-info-icon" title="활성화 시 SSH 연결할 때 임베디드 X 서버 자동 시작. 원격 GUI 앱 실행 → 별도 창에 표시. 단순 앱(xclock/xeyes)만 현재 지원, 복잡한 Qt/GTK 앱은 추후 지원.">ⓘ</span>
-          </label>
+            <span className="autotrack-info-icon" title="활성화 시 SSH 연결할 때 자동으로 X 서버 시작 (번들 VcXsrv → 외부 → 내장 fallback). 원격 GUI 앱(Qt/GTK 모두) 실행 시 Windows 네이티브 창으로 표시.">ⓘ</span>
+          </div>
 
           <label>점프 타겟 호스트 (ProxyJump)</label>
           <input
