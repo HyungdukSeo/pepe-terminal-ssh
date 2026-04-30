@@ -540,6 +540,23 @@ function App() {
   });
   useEffect(() => { localStorage.setItem('showQuickConnect', showQuickConnect ? '1' : '0'); }, [showQuickConnect]);
 
+  // 도구 모음 바 위치 슬롯
+  type ToolbarSlot = 'top' | 'qc-left' | 'qc-right';
+  const [toolbarSlot, setToolbarSlot] = useState<ToolbarSlot>(() => {
+    try { const s = localStorage.getItem('toolbarSlot') as ToolbarSlot | null; if (s === 'top' || s === 'qc-left' || s === 'qc-right') return s; } catch {}
+    return 'qc-right';
+  });
+  useEffect(() => { try { localStorage.setItem('toolbarSlot', toolbarSlot); } catch {} }, [toolbarSlot]);
+  const [toolbarDragHint, setToolbarDragHint] = useState<ToolbarSlot | null>(null);
+  // (qcWidth 제거됨 — QC 바는 항상 자연 너비)
+  useEffect(() => { try { localStorage.removeItem('qcWidth'); } catch {} }, []);
+  // 도구모음 바 표시/숨기기
+  const [showToolbar, setShowToolbar] = useState<boolean>(() => {
+    try { const v = localStorage.getItem('showToolbar'); if (v === '0') return false; } catch {}
+    return true;
+  });
+  useEffect(() => { try { localStorage.setItem('showToolbar', showToolbar ? '1' : '0'); } catch {} }, [showToolbar]);
+
   // 인라인 토스트 알림 (alert 대체)
   const showToast = useCallback((msg: string, duration = 3000) => {
     const el = document.createElement('div');
@@ -1753,6 +1770,7 @@ function App() {
           setActiveTabId(id);
         }},
         { separator: true, label: '' },
+        { label: showToolbar ? '🧰 도구 모음 바 숨기기' : '🧰 도구 모음 바 표시', action: () => setShowToolbar(v => !v) },
         { label: showQuickConnect ? '⚡ 빠른 연결 바 숨기기' : '⚡ 빠른 연결 바 표시', action: () => setShowQuickConnect(v => !v) },
         { label: showClaudeChat ? '🤖 Claude 채팅 숨기기' : '🤖 Claude 채팅 표시', action: () => setShowClaudeChat(v => !v) },
         { label: showBroadcast ? '📢 텍스트 일괄 전송 바 숨기기' : '📢 텍스트 일괄 전송 바 표시', action: () => { setShowBroadcast(v => !v); } },
@@ -2230,13 +2248,140 @@ function App() {
           </div>
         </div>
 
-        {showQuickConnect && (
-          <QuickConnectBar
-            onConnect={handleQuickConnect}
-            onCancel={() => setShowQuickConnect(false)}
-            forceProtocol={activeTab?.type === 'fileExplorer' ? 'sftp' : undefined}
-          />
-        )}
+        {/* 도구 모음 바 — 드래그하여 빠른연결 좌/우 또는 상단으로 이동 */}
+        {(() => {
+          const onDragStart = (e: React.MouseEvent) => {
+            e.preventDefault();
+            const onMove = (ev: MouseEvent) => {
+              const qc = document.querySelector('.quick-connect-bar') as HTMLElement | null;
+              if (qc) {
+                const r = qc.getBoundingClientRect();
+                if (ev.clientY >= r.top - 8 && ev.clientY <= r.bottom + 8) {
+                  const mid = r.left + r.width / 2;
+                  setToolbarDragHint(ev.clientX < mid ? 'qc-left' : 'qc-right');
+                  return;
+                }
+              }
+              setToolbarDragHint('top');
+            };
+            const onUp = () => {
+              document.removeEventListener('mousemove', onMove);
+              document.removeEventListener('mouseup', onUp);
+              setToolbarDragHint(curr => {
+                if (curr) setToolbarSlot(curr);
+                return null;
+              });
+            };
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+          };
+          const toolbar = (
+            <div className="tool-toolbar" role="toolbar">
+              <span
+                className="tool-drag"
+                title="드래그하여 빠른연결 좌/우 또는 상단으로"
+                onMouseDown={onDragStart}
+              >⋮⋮</span>
+              <button className="tool-btn" title="파일 전송" onClick={() => {
+            const id = `tab-fe-${Date.now()}`;
+            setTabs(prev => [...prev, { id, title: '📁 파일 전송', layout: createInitialLayout(id), type: 'fileExplorer' }]);
+            setActiveTabId(id);
+          }}>📁</button>
+          <span className="tool-sep" />
+          <button className={`tool-btn ${showQuickConnect ? 'active' : ''}`} title={showQuickConnect ? '빠른 연결 바 숨기기' : '빠른 연결 바 표시'} onClick={() => setShowQuickConnect(v => !v)}>⚡</button>
+          <button className={`tool-btn ${showClaudeChat ? 'active' : ''}`} title={showClaudeChat ? 'Claude 채팅 숨기기' : 'Claude 채팅 표시'} onClick={() => setShowClaudeChat(v => !v)}>🤖</button>
+          <button className={`tool-btn ${showBroadcast ? 'active' : ''}`} title={showBroadcast ? '텍스트 일괄 전송 바 숨기기' : '텍스트 일괄 전송 바 표시'} onClick={() => setShowBroadcast(v => !v)}>📢</button>
+          <span className="tool-sep" />
+          <button className="tool-btn" title="X 서버 시작 (DISPLAY=:0)" onClick={async () => {
+            try {
+              const r = await (window as any).api?.x11Start?.(0);
+              if (r?.usedBundled) {
+                setInfoModal({ title: 'X 서버 시작', text: `✅ DISPLAY=:0  PID=${r.pid}` });
+                setTimeout(() => { setInfoModal(null); restoreTerminalFocus(); }, 1200);
+              } else {
+                setInfoModal({ title: 'X 서버 시작', text: `⚠️ 번들/외부 X 서버 사용 안 함\n\n${(r?.logs || []).slice(-5).join('\n')}` });
+              }
+            } catch (e: any) { setInfoModal({ title: 'X 서버 시작 실패', text: String(e?.message || e) }); }
+          }}>🖥️</button>
+          <button className="tool-btn" title="X 서버 중지" onClick={async () => {
+            try {
+              await (window as any).api?.x11Stop?.(0);
+              setInfoModal({ title: 'X 서버 중지', text: '✅ 중지 완료.' });
+              setTimeout(() => { setInfoModal(null); restoreTerminalFocus(); }, 1200);
+            } catch (e: any) { setInfoModal({ title: 'X 서버 중지 실패', text: String(e?.message || e) }); }
+          }}>🛑</button>
+          <button className="tool-btn" title="X 서버 상태" onClick={async () => {
+            try {
+              const r = await (window as any).api?.x11Status?.();
+              const text = r?.anyRunning
+                ? `🟢 실행 중\n\n` + r.running.map((x: any) => `  • DISPLAY=:${x.displayNum}  PID=${x.pid}`).join('\n')
+                : '⚫ 실행 중인 X 서버 없음.';
+              setInfoModal({ title: 'X 서버 상태', text });
+            } catch (e: any) { setInfoModal({ title: 'X 서버 상태 조회 실패', text: String(e?.message || e) }); }
+          }}>ℹ️</button>
+          <span className="tool-sep" />
+          <button className="tool-btn" title="옵션" onClick={async () => {
+            setWordSepValue(getWordSeparator());
+            setTermSettings(getTerminalSettings());
+            setOptFontFamily(localStorage.getItem('terminalFontFamily') || '');
+            setOptFontSize(Number(localStorage.getItem('terminalFontSize')) || 14);
+            setOptDefaultShellPath(defaultShell.path);
+            (window as any).api?.checkContextMenu?.().then((v: boolean) => setContextMenuRegistered(v)).catch(() => {});
+            const monoFonts = ['Cascadia Mono','Cascadia Code','Consolas','Courier New','D2Coding','D2Coding ligature','D2CodingLigature','Fira Code','Fira Mono','JetBrains Mono','Source Code Pro','Ubuntu Mono','IBM Plex Mono','Hack','Inconsolata','Monaco','Menlo','Noto Sans Mono','Roboto Mono','SF Mono','NanumGothicCoding','Malgun Gothic','Lucida Console','DejaVu Sans Mono'];
+            const detected: string[] = [];
+            for (const f of monoFonts) { try { if (document.fonts.check(`12px "${f}"`)) detected.push(f); } catch {} }
+            setAvailableFonts(detected);
+            setOptionsTab('terminal');
+            setKeybindingsDraft({ ...keybindingsState });
+            try { const p = await (window as any).api.getSessionsPath(); setSessionsPathDisplay(p || ''); } catch {}
+            setShowOptions(true);
+          }}>⚙️</button>
+            </div>
+          );
+          return (
+            <>
+              {showToolbar && toolbarSlot === 'top' && toolbar}
+              {showToolbar && toolbarDragHint && toolbarDragHint !== toolbarSlot && (
+                <div className="tool-drag-hint">→ {toolbarDragHint === 'top' ? '상단' : toolbarDragHint === 'qc-left' ? '빠른연결 왼쪽' : '빠른연결 오른쪽'}</div>
+              )}
+              {(showQuickConnect || (showToolbar && toolbarSlot !== 'top')) && (() => {
+                const divider = <div className="qc-divider-static" />;
+                const qcStyle: React.CSSProperties = (toolbarSlot === 'top' || !showToolbar)
+                  ? { flex: 1 }
+                  : { flex: '0 0 auto' };
+                const qc = showQuickConnect ? (
+                  <div className="qc-wrap" style={qcStyle}>
+                    <QuickConnectBar
+                      onConnect={handleQuickConnect}
+                      onCancel={() => setShowQuickConnect(false)}
+                      forceProtocol={activeTab?.type === 'fileExplorer' ? 'sftp' : undefined}
+                    />
+                  </div>
+                ) : null;
+                const tb = showToolbar ? toolbar : null;
+                return (
+                  <div className="quickconnect-row">
+                    {(toolbarSlot === 'top' || !showToolbar) && qc}
+                    {showToolbar && toolbarSlot === 'qc-left' && (
+                      <>
+                        {tb}
+                        {qc && divider}
+                        {qc}
+                      </>
+                    )}
+                    {showToolbar && toolbarSlot === 'qc-right' && (
+                      <>
+                        {qc}
+                        {qc && divider}
+                        {tb}
+                      </>
+                    )}
+                  </div>
+                );
+              })()}
+            </>
+          );
+        })()}
 
         {showSearch && activeTab && (
           <SearchBar

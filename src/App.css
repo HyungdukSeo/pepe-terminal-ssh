@@ -1996,6 +1996,93 @@ body.popout-options .session-editor h3:first-child {
 .session-editor-categories .category-item.active { background: rgba(43,107,155,0.2); color: #fff; border-left: 2px solid #2b6b9b; padding-left: 6px; }
 .session-editor-pane { flex: 1; min-width: 0; overflow-y: auto; padding-right: 4px; }
 @keyframes blink { 50% { opacity: 0; } }
+
+/* 도구 모음 바 */
+.tool-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 2px 4px;
+  background: #1a1a1a;
+  border-bottom: 1px solid #333;
+  flex-wrap: wrap;
+  user-select: none;
+}
+.tool-toolbar.floating {
+  position: fixed;
+  border: 1px solid #3a475a;
+  border-radius: 4px;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.4);
+  z-index: 5000;
+}
+.quickconnect-row {
+  display: flex;
+  align-items: stretch;
+  flex-wrap: nowrap;
+  border-bottom: 1px solid #2a3340;
+  overflow: hidden;
+}
+.quickconnect-row > .qc-wrap { flex: 0 0 auto; display: flex; box-sizing: border-box; }
+.quickconnect-row > .qc-wrap > .quick-connect-bar { flex: 0 0 auto; border-bottom: 0; }
+.quickconnect-row > .tool-toolbar { border-bottom: 0; flex: 0 0 auto; }
+.qc-divider-static {
+  width: 1px;
+  background: #3a475a;
+  margin: 4px 0;
+  flex: 0 0 1px;
+}
+.tool-drag-hint {
+  position: fixed;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #2b4a6b;
+  color: #fff;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  z-index: 9999;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+  pointer-events: none;
+}
+.tool-toolbar .tool-drag {
+  color: #6a7a8c;
+  font-size: 11px;
+  padding: 0 4px;
+  cursor: grab;
+  letter-spacing: -2px;
+}
+.tool-toolbar .tool-drag:active { cursor: grabbing; }
+.tool-toolbar .tool-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: #d8e0ea;
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 3px;
+  cursor: pointer;
+  height: 22px;
+  min-width: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.tool-toolbar .tool-btn:hover {
+  background: #2c3848;
+  border-color: #3a475a;
+}
+.tool-toolbar .tool-btn.active {
+  background: #2b4a6b;
+  border-color: #3a6b9c;
+}
+.tool-toolbar .tool-sep {
+  width: 1px;
+  height: 16px;
+  background: #3a475a;
+  margin: 0 4px;
+  display: inline-block;
+}
 .hide-xterm-cursor .xterm-cursor-layer { display: none !important; }
 .hide-xterm-cursor .xterm-cursor { display: none !important; opacity: 0 !important; }
 @keyframes flame-flicker {
