@@ -155,7 +155,10 @@ class SSHConnection: NSObject, NMSSHSessionDelegate, NMSSHChannelDelegate {
         }
 
         if let pk = privateKey, !pk.isEmpty {
-            sess.authenticate(byInMemoryPublicKey: nil, privateKey: pk, andPassword: passphrase)
+            // NMSSH expects file paths for byPublicKey:privateKey:andPassword:
+            // For Phase 1 we accept the privateKey string as a file path.
+            // In-memory key support requires NMSSH 2.3+ inMemory variant — TODO.
+            sess.authenticate(byPublicKey: "", privateKey: pk, andPassword: passphrase ?? "")
         } else if let pw = password, !pw.isEmpty {
             sess.authenticate(byPassword: pw)
         } else {
@@ -190,10 +193,10 @@ class SSHConnection: NSObject, NMSSHSessionDelegate, NMSSHChannelDelegate {
 
     func write(_ data: String) {
         guard let sess = session, sess.isConnected else { return }
-        do {
-            try sess.channel.write(data, timeout: 5)
-        } catch let err as NSError {
-            plugin?.emitError(connectionId, "write failed: \(err.localizedDescription)")
+        var err: NSError?
+        let ok = sess.channel.write(data, error: &err, timeout: 5)
+        if !ok {
+            plugin?.emitError(connectionId, "write failed: \(err?.localizedDescription ?? "unknown")")
         }
     }
 
