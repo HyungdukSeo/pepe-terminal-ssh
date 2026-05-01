@@ -120,17 +120,16 @@ jobs:
         if: env.SIGNED == 'true'
         working-directory: ios/App
         run: |
+          # Signing settings (CODE_SIGN_STYLE/IDENTITY/PROFILE/TEAM) are baked
+          # into the App target's Release config in project.pbxproj — they
+          # apply only to the App target, not to Pod frameworks.
           xcodebuild \
             -workspace App.xcworkspace \
             -scheme App \
             -configuration Release \
             -sdk iphoneos \
             -archivePath $PWD/build/App.xcarchive \
-            archive \
-            DEVELOPMENT_TEAM='${{ secrets.APPLE_DEVELOPMENT_TEAM }}' \
-            PROVISIONING_PROFILE_SPECIFIER='${{ secrets.APPLE_PROVISIONING_PROFILE_SPECIFIER }}' \
-            CODE_SIGN_IDENTITY='${{ secrets.CODE_SIGN_IDENTITY }}' \
-            CODE_SIGN_STYLE=Manual
+            archive
 
       - name: Export signed IPA
         if: env.SIGNED == 'true'
