@@ -4,13 +4,21 @@ on:
   push:
     branches:
       - main
-      - v2.0.6
+      - v3.0.0
   workflow_dispatch:
+    inputs:
+      signed:
+        description: 'Produce a signed IPA (requires secrets configured)'
+        type: boolean
+        default: false
 
 jobs:
   build-ios:
     name: Build iOS IPA
     runs-on: macos-latest
+
+    env:
+      SIGNED: ${{ github.event_name == 'workflow_dispatch' && inputs.signed }}
 
     steps:
       - name: Checkout repository
@@ -20,75 +28,136 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
 
-      - name: Install dependencies
-        run: npm install
+      - name: Install npm dependencies
+        run: npm ci
 
       - name: Build web assets
         run: npm run build:web
 
-      - name: Add or sync Capacitor iOS
+      - name: Sync Capacitor iOS
         run: |
           if [ ! -d ios ]; then
-            npx cap add ios --no-interactive
+            npx cap add ios
           fi
           npx cap sync ios
 
-      - name: Install signing certificate and provisioning profile
+      - name: Install CocoaPods dependencies
+        working-directory: ios/App
+        run: pod install --repo-update
+
+      # ---------- Unsigned path (default) ----------
+      - name: Archive iOS app (unsigned)
+        if: env.SIGNED != 'true'
+        working-directory: ios/App
+        run: |
+          xcodebuild \
+            -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath $PWD/build/App.xcarchive \
+            archive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            DEVELOPMENT_TEAM=""
+
+      - name: Package unsigned IPA
+        if: env.SIGNED != 'true'
+        working-directory: ios/App
         run: |
           set -e
-          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          mkdir -p build/Payload
+          cp -R build/App.xcarchive/Products/Applications/App.app build/Payload/
+          cd build
+          zip -qr App-unsigned.ipa Payload
+          ls -lh App-unsigned.ipa
 
-          echo "$IOS_CERTIFICATE_BASE64" | base64 --decode > /tmp/cert.p12
-          security create-keychain -p "" build.keychain
-          security import /tmp/cert.p12 -k ~/Library/Keychains/build.keychain -P "$IOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
-          security list-keychains -s ~/Library/Keychains/build.keychain
-          security default-keychain -s ~/Library/Keychains/build.keychain
-          security unlock-keychain -p "" ~/Library/Keychains/build.keychain
-          security set-keychain-settings -t 3600 -u ~/Library/Keychains/build.keychain
+      - name: Upload unsigned IPA
+        if: env.SIGNED != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ipa-unsigned
+          path: ios/App/build/App-unsigned.ipa
 
-          echo "$IOS_PROVISIONING_PROFILE_BASE64" | base64 --decode > /tmp/profile.mobileprovision
-          security cms -D -i /tmp/profile.mobileprovision > /tmp/profile.plist
-          PROV_UUID=$(xmllint --xpath 'string(//key[.="UUID"]/following-sibling::string[1])' /tmp/profile.plist)
-          cp /tmp/profile.mobileprovision "~/Library/MobileDevice/Provisioning Profiles/${PROV_UUID}.mobileprovision"
-
-          security find-identity -v -p codesigning
+      # ---------- Signed path (workflow_dispatch with signed=true) ----------
+      - name: Install signing certificate and provisioning profile
+        if: env.SIGNED == 'true'
         env:
           IOS_CERTIFICATE_BASE64: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
           IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
           IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
-
-      - name: Archive iOS app
+          KEYCHAIN_PASSWORD: ${{ secrets.IOS_KEYCHAIN_PASSWORD }}
         run: |
-          cd ios/App
-          xcodebuild -workspace App.xcworkspace -scheme App -configuration Release -sdk iphoneos archive -archivePath $PWD/build/App.xcarchive DEVELOPMENT_TEAM=${{ secrets.APPLE_DEVELOPMENT_TEAM }} PROVISIONING_PROFILE_SPECIFIER='${{ secrets.APPLE_PROVISIONING_PROFILE_SPECIFIER }}' CODE_SIGN_IDENTITY='${{ secrets.CODE_SIGN_IDENTITY }}' CODE_SIGN_STYLE=Manual
-        env:
-          CI: true
+          set -e
+          if [ -z "$IOS_CERTIFICATE_BASE64" ] || [ -z "$IOS_PROVISIONING_PROFILE_BASE64" ]; then
+            echo "::error::Signed build requested but signing secrets are missing. Configure IOS_CERTIFICATE_BASE64, IOS_CERTIFICATE_PASSWORD, IOS_PROVISIONING_PROFILE_BASE64, IOS_KEYCHAIN_PASSWORD, APPLE_DEVELOPMENT_TEAM, APPLE_PROVISIONING_PROFILE_SPECIFIER, CODE_SIGN_IDENTITY in repo secrets."
+            exit 1
+          fi
 
-      - name: Export IPA
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+
+          echo "$IOS_CERTIFICATE_BASE64" | base64 --decode > /tmp/cert.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security import /tmp/cert.p12 -k build.keychain -P "$IOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          security list-keychains -s build.keychain login.keychain
+          security set-keychain-settings -lut 3600 build.keychain
+
+          echo "$IOS_PROVISIONING_PROFILE_BASE64" | base64 --decode > /tmp/profile.mobileprovision
+          security cms -D -i /tmp/profile.mobileprovision > /tmp/profile.plist
+          PROV_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /tmp/profile.plist)
+          cp /tmp/profile.mobileprovision "$HOME/Library/MobileDevice/Provisioning Profiles/${PROV_UUID}.mobileprovision"
+
+          security find-identity -v -p codesigning
+
+      - name: Archive iOS app (signed)
+        if: env.SIGNED == 'true'
+        working-directory: ios/App
         run: |
-          cd ios/App
-          cat <<'EOF' > exportOptions.plist
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>method</key>
-  <string>ad-hoc</string>
-  <key>compileBitcode</key>
-  <false/>
-  <key>signingStyle</key>
-  <string>manual</string>
-</dict>
-</plist>
-EOF
-          xcodebuild -exportArchive -archivePath build/App.xcarchive -exportOptionsPlist exportOptions.plist -exportPath build/App
-        env:
-          CI: true
+          xcodebuild \
+            -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath $PWD/build/App.xcarchive \
+            archive \
+            DEVELOPMENT_TEAM='${{ secrets.APPLE_DEVELOPMENT_TEAM }}' \
+            PROVISIONING_PROFILE_SPECIFIER='${{ secrets.APPLE_PROVISIONING_PROFILE_SPECIFIER }}' \
+            CODE_SIGN_IDENTITY='${{ secrets.CODE_SIGN_IDENTITY }}' \
+            CODE_SIGN_STYLE=Manual
 
-      - name: Upload IPA artifact
-        if: success()
+      - name: Export signed IPA
+        if: env.SIGNED == 'true'
+        working-directory: ios/App
+        run: |
+          cat > exportOptions.plist <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>ad-hoc</string>
+            <key>compileBitcode</key>
+            <false/>
+            <key>signingStyle</key>
+            <string>manual</string>
+          </dict>
+          </plist>
+          EOF
+          xcodebuild -exportArchive \
+            -archivePath build/App.xcarchive \
+            -exportOptionsPlist exportOptions.plist \
+            -exportPath build/App
+
+      - name: Upload signed IPA
+        if: env.SIGNED == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: ios-ipa
+          name: ios-ipa-signed
           path: ios/App/build/App/App.ipa
