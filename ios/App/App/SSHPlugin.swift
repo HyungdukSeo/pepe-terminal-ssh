@@ -3,17 +3,7 @@ import Capacitor
 import NMSSH
 
 @objc(SSHPlugin)
-public class SSHPlugin: CAPPlugin, CAPBridgedPlugin {
-    public let identifier = "SSHPlugin"
-    public let jsName = "SSH"
-    public let pluginMethods: [CAPPluginMethod] = [
-        CAPPluginMethod(name: "connect", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "disconnect", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "write", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "resize", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "isConnected", returnType: CAPPluginReturnPromise),
-    ]
-
+public class SSHPlugin: CAPPlugin {
     private var connections: [String: SSHConnection] = [:]
     private let queue = DispatchQueue(label: "com.ghjeong.pepe.ssh.plugin", qos: .userInitiated)
 

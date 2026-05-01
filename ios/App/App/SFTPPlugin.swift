@@ -3,21 +3,7 @@ import Capacitor
 import NMSSH
 
 @objc(SFTPPlugin)
-public class SFTPPlugin: CAPPlugin, CAPBridgedPlugin {
-    public let identifier = "SFTPPlugin"
-    public let jsName = "SFTP"
-    public let pluginMethods: [CAPPluginMethod] = [
-        CAPPluginMethod(name: "connect", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "disconnect", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "listDir", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "mkdir", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "deletePath", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "rename", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "realPath", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "readFile", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "writeFile", returnType: CAPPluginReturnPromise),
-    ]
-
+public class SFTPPlugin: CAPPlugin {
     private var sessions: [String: NMSSHSession] = [:]
     private let queue = DispatchQueue(label: "com.ghjeong.pepe.sftp.plugin", qos: .userInitiated)
 
