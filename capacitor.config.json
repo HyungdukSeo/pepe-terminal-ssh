@@ -1,0 +1,6 @@
+{
+  "appId": "com.ghjeong.pepe-terminal-ssh",
+  "appName": "PePe Terminal(SSH)",
+  "webDir": "dist",
+  "bundledWebRuntime": false
+}
