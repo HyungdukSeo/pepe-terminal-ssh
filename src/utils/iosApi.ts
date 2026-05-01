@@ -1,5 +1,6 @@
 import { Preferences } from '@capacitor/preferences'
 import { SSH } from './iosSSHPlugin'
+import { SFTP, type SFTPFile } from './iosSFTPPlugin'
 
 type Session = {
   id: string
@@ -245,26 +246,116 @@ export function createIosApi() {
     onPtyData: eventNoop,
     onPtyExit: eventNoop,
 
-    // File explorer / SFTP — not in Phase 1
-    feListDir: async () => ({ entries: [], cwd: '/' }),
-    feGetDrives: async () => [],
-    feGetHome: async () => '/',
-    feTransfer: asyncNoop,
-    feMkdir: asyncNoop,
-    feDelete: asyncNoop,
-    feRename: asyncNoop,
-    feHomeDir: async () => '/',
-    feSftpConnect: asyncNoop,
-    feSftpDisconnect: asyncNoop,
+    // File explorer / SFTP
+    feSftpConnect: async (
+      connId: string,
+      host: string,
+      port: number,
+      username: string,
+      auth?: { type: 'password'; password: string } | { type: 'key'; keyPath: string },
+      jumpOpts?: any,
+    ) => {
+      if (jumpOpts && jumpOpts.host) {
+        return { success: false, error: 'Jump host (ProxyJump) is not yet supported on iOS' }
+      }
+      try {
+        const password = auth && auth.type === 'password' ? auth.password : undefined
+        const privateKey = auth && auth.type === 'key' ? auth.keyPath : undefined
+        await SFTP.connect({
+          connectionId: connId,
+          host,
+          port: port || 22,
+          username,
+          password,
+          privateKey,
+        })
+        return { success: true }
+      } catch (e: any) {
+        return { success: false, error: e?.message || String(e) }
+      }
+    },
+    feSftpDisconnect: async (connId: string) => {
+      try { await SFTP.disconnect({ connectionId: connId }) } catch {}
+    },
     feConnectedSessions: async () => [],
+    feGetDrives: async () => ['/'],
+    feGetHome: async () => '/',
+    feHomeDir: async (mode: string, termId?: string) => {
+      if (mode !== 'remote' || !termId) return '/'
+      try {
+        const r = await SFTP.realPath({ connectionId: termId, path: '.' })
+        return r.path || '/'
+      } catch {
+        return '/'
+      }
+    },
+    feListDir: async (mode: string, dirPath: string, termId?: string) => {
+      if (mode !== 'remote' || !termId) return { error: 'iOS supports remote SFTP only' }
+      try {
+        const r = await SFTP.listDir({ connectionId: termId, path: dirPath })
+        const files = (r.files || []).map((f: SFTPFile) => ({
+          name: f.name,
+          isDir: f.isDirectory,
+          size: f.size,
+          modifiedAt: f.modifiedAt,
+          permissions: f.permissions,
+        }))
+        return { files }
+      } catch (e: any) {
+        return { error: `${dirPath}: ${e?.message || String(e)}` }
+      }
+    },
+    feMkdir: async (mode: string, dirPath: string, termId?: string) => {
+      if (mode !== 'remote' || !termId) return { success: false, error: 'remote only' }
+      try { await SFTP.mkdir({ connectionId: termId, path: dirPath }); return { success: true } }
+      catch (e: any) { return { success: false, error: e?.message || String(e) } }
+    },
+    feDelete: async (mode: string, filePath: string, termId?: string) => {
+      if (mode !== 'remote' || !termId) return { success: false, error: 'remote only' }
+      try {
+        // best-effort: try as file first, then as directory
+        try { await SFTP.deletePath({ connectionId: termId, path: filePath, isDirectory: false }) }
+        catch { await SFTP.deletePath({ connectionId: termId, path: filePath, isDirectory: true }) }
+        return { success: true }
+      } catch (e: any) { return { success: false, error: e?.message || String(e) } }
+    },
+    feRename: async (mode: string, oldPath: string, newPath: string, termId?: string) => {
+      if (mode !== 'remote' || !termId) return { success: false, error: 'remote only' }
+      try { await SFTP.rename({ connectionId: termId, oldPath, newPath }); return { success: true } }
+      catch (e: any) { return { success: false, error: e?.message || String(e) } }
+    },
+    feTransfer: async () => ({ success: false, error: 'cross-mode transfer not supported on iOS' }),
     pickFiles: async () => [],
     pickFolder: async () => null,
-    sftpDownload: asyncNoop,
-    sftpDownloadMulti: asyncNoop,
-    sftpUpload: asyncNoop,
-    sftpListDir: async () => ({ entries: [] }),
-    sftpReadFile: async () => '',
-    sftpWriteFile: asyncNoop,
+
+    sftpListDir: async (panelId: string, remotePath: string) => {
+      try {
+        const r = await SFTP.listDir({ connectionId: panelId, path: remotePath })
+        const entries = (r.files || []).map((f: SFTPFile) => ({
+          name: f.name,
+          isDir: f.isDirectory,
+          size: f.size,
+          modifiedAt: f.modifiedAt,
+        }))
+        return { entries }
+      } catch (e: any) {
+        return { entries: [], error: e?.message || String(e) }
+      }
+    },
+    sftpReadFile: async (panelId: string, remotePath: string, encoding?: string) => {
+      try {
+        const r = await SFTP.readFile({ connectionId: panelId, path: remotePath, encoding: encoding || 'utf-8' })
+        return r.content
+      } catch (e: any) {
+        throw new Error(e?.message || String(e))
+      }
+    },
+    sftpWriteFile: async (panelId: string, remotePath: string, content: string, encoding?: string) => {
+      await SFTP.writeFile({ connectionId: panelId, path: remotePath, content, encoding: encoding || 'utf-8' })
+    },
+    sftpDownload: async () => ({ success: false, error: 'download not supported on iOS yet' }),
+    sftpDownloadMulti: async () => ({ success: false, error: 'download not supported on iOS yet' }),
+    sftpUpload: async () => ({ success: false, error: 'upload not supported on iOS yet' }),
     onSFTPProgress: eventNoop,
     onSFTPComplete: eventNoop,
 
