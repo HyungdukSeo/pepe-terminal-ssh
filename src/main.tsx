@@ -1,5 +1,6 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
+import { Capacitor } from '@capacitor/core'
 import App from './App'
 import './index.css'
 
@@ -22,12 +23,22 @@ const createApiFallback = () => {
   })
 }
 
-if (!window.api) {
-  window.api = createApiFallback()
+async function bootstrap() {
+  if (!window.api) {
+    const platform = Capacitor.getPlatform()
+    if (platform === 'ios') {
+      const { createIosApi } = await import('./utils/iosApi')
+      window.api = createIosApi()
+    } else {
+      window.api = createApiFallback()
+    }
+  }
+
+  ReactDOM.createRoot(document.getElementById('root')!).render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>
+  )
 }
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-)
+void bootstrap()
