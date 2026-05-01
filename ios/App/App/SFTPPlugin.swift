@@ -145,12 +145,13 @@ public class SFTPPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func realPath(_ call: CAPPluginCall) {
-        guard let sess = session(for: call) else { return }
+        // NMSFTP 2.3 doesn't expose libssh2_sftp_realpath. Return "/" so caller
+        // can fall back to root, then navigate. Proper home-dir resolution is
+        // a post-Phase-2 enhancement (likely via a parallel exec channel running pwd).
+        _ = session(for: call)
         let path = call.getString("path") ?? "."
-        queue.async {
-            let resolved = sess.sftp.canonicalPath(forPath: path) ?? path
-            call.resolve(["path": resolved])
-        }
+        let resolved = (path == "." || path == "~") ? "/" : path
+        call.resolve(["path": resolved])
     }
 
     @objc func readFile(_ call: CAPPluginCall) {
