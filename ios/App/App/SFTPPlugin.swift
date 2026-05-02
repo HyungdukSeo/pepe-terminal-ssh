@@ -93,7 +93,11 @@ public class SFTPPlugin: CAPPlugin, CAPBridgedPlugin {
         guard let sess = session(for: call) else { return }
         let path = call.getString("path") ?? "."
         queue.async {
-            let items = sess.sftp.contentsOfDirectory(atPath: path) ?? []
+            guard let items = sess.sftp.contentsOfDirectory(atPath: path) else {
+                let err = sess.lastError?.localizedDescription ?? "directory listing returned nil"
+                call.reject("listDir failed for '\(path)': \(err)")
+                return
+            }
             let entries: [[String: Any]] = items.map { item in
                 let f = item as! NMSFTPFile
                 return [
