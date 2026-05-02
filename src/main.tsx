@@ -7,31 +7,19 @@ import './index.css'
 declare global {
   interface Window {
     api?: any
+    __setApiImpl?: (impl: any) => void
   }
 }
 
-const createApiFallback = () => {
-  const asyncNoOp = async (..._args: any[]) => undefined
-  const eventNoOp = (..._args: any[]) => () => {}
-  return new Proxy({}, {
-    get: (_target, prop) => {
-      if (typeof prop === 'string' && prop.startsWith('on')) {
-        return eventNoOp
-      }
-      return asyncNoOp
-    },
-  })
-}
-
 async function bootstrap() {
-  if (!window.api) {
-    const platform = Capacitor.getPlatform()
-    if (platform === 'ios') {
+  // Electron path: window.api was set by preload — leave it alone.
+  // Capacitor iOS path: install our adapter behind the index.html proxy.
+  if (window.__setApiImpl) {
+    if (Capacitor.getPlatform() === 'ios') {
       const { createIosApi } = await import('./utils/iosApi')
-      window.api = createIosApi()
-    } else {
-      window.api = createApiFallback()
+      window.__setApiImpl(createIosApi())
     }
+    // 'web' platform leaves the proxy stubs in place (async no-ops).
   }
 
   ReactDOM.createRoot(document.getElementById('root')!).render(
