@@ -108,6 +108,7 @@ async function connectBySession(panelId: string, sess: Session, password?: strin
   const auth = sess.auth as Session['auth']
   let pw: string | undefined = password
   if (!pw && auth && auth.type === 'password') pw = auth.password
+  const privateKey = auth && auth.type === 'key' ? (auth as any).keyPath : undefined
   try {
     await SSH.connect({
       connectionId: panelId,
@@ -115,9 +116,22 @@ async function connectBySession(panelId: string, sess: Session, password?: strin
       port: sess.port || 22,
       username: sess.username,
       password: pw,
+      privateKey,
       cols,
       rows,
     })
+    // Also open an SFTP session on the same panelId so the auto-opened file
+    // tree (RemoteFileTree, FilePanel) can list directories without a
+    // separate feSftpConnect call. Failure here is non-fatal — shell-only
+    // accounts will still get the terminal.
+    SFTP.connect({
+      connectionId: panelId,
+      host: sess.host,
+      port: sess.port || 22,
+      username: sess.username,
+      password: pw,
+      privateKey,
+    }).catch(() => { /* non-fatal */ })
     return 'ok'
   } catch (e: any) {
     const msg = e?.message || String(e)
@@ -200,6 +214,8 @@ export function createIosApi() {
     },
     disconnectSSH: (panelId: string) => {
       SSH.disconnect({ connectionId: panelId }).catch(() => {})
+      // Best-effort tear down of the auto-opened SFTP session for the same panel.
+      SFTP.disconnect({ connectionId: panelId }).catch(() => {})
     },
     sendSSHInput: (panelId: string, data?: string, b64?: string) => {
       let payload = data
