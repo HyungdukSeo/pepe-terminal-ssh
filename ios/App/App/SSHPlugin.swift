@@ -105,10 +105,16 @@ public class SSHPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func getShellSshdPid(_ call: CAPPluginCall) {
-        // PID 캡처는 NMSSH multi-channel race 위험 (셸 reader 와 동시 접근).
-        // 현재는 안전하게 null 반환 → SFTPPlugin 이 fallback 필터 (largest PID + TTY) 사용.
-        // 정확한 ppid 매칭은 별도 안전한 메커니즘 (env var 주입 등) 필요.
-        call.resolve(["sshdPid": NSNull()])
+        let connectionId = call.getString("connectionId") ?? ""
+        guard let conn = connections[connectionId] else {
+            call.reject("not connected")
+            return
+        }
+        if let pid = conn.sshdPid {
+            call.resolve(["sshdPid": pid])
+        } else {
+            call.resolve(["sshdPid": NSNull()])
+        }
     }
 
     // Called by SSHConnection on background thread
@@ -183,8 +189,18 @@ class SSHConnection: NSObject, NMSSHSessionDelegate, NMSSHChannelDelegate {
             return .failure(ConnectError.authFailed("invalid credentials"))
         }
 
-        // sshd PID 캡처는 SFTPPlugin.setAutoTrack 이 자기 idle 채널에서 수행
-        // (NMSSH 다중 채널 동시 접근 race 회피). 여기서는 shell 시작에 집중.
+        // Shell 시작 BEFORE 동기 PID 캡처 — sequential on same thread, no concurrent
+        // libssh2 access. Shell 채널이 아직 시작 전이라 reader 스레드도 없음 → race-free.
+        // user 의 interactive bash 는 이 sshd 의 자식이라 PPID 가 곧 sshdPid.
+        // auto-track 은 SFTPPlugin 에서 ps 결과 중 PPID == sshdPid 인 셸만 후보로.
+        let pidChannel = NMSSHChannel(session: sess)
+        var pidErr: NSError?
+        if let raw = pidChannel.execute("awk '/^PPid:/ {print $2}' /proc/self/status", error: &pidErr, timeout: 3) {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let pid = Int(trimmed) {
+                self.sshdPid = pid
+            }
+        }
 
         sess.channel.delegate = self
         sess.channel.requestPty = true
