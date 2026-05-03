@@ -45,13 +45,14 @@ async function saveSessionsData(d: SessionsData) {
 }
 
 type Cb = (p: any) => void
-type EventName = 'connected' | 'data' | 'closed' | 'error'
+type EventName = 'connected' | 'data' | 'closed' | 'error' | 'autoTrack'
 
 const callbacks: Record<EventName, Set<Cb>> = {
   connected: new Set(),
   data: new Set(),
   closed: new Set(),
   error: new Set(),
+  autoTrack: new Set(),
 }
 let listenersInstalled = false
 
@@ -76,6 +77,19 @@ async function ensureListeners() {
   await SSH.addListener('error', (e) => {
     callbacks.error.forEach((cb) => {
       try { cb({ panelId: e.connectionId, error: e.error }) } catch {}
+    })
+  })
+  // SFTP-side auto-track polling → fake OSC 7 into the SSH data stream so
+  // xterm parses it and the file tree picks up the new cwd, mirroring Electron.
+  await SFTP.addListener('cwdChanged', (e) => {
+    const osc = `]7;file://localhost${e.path}\\`
+    callbacks.data.forEach((cb) => {
+      try { cb({ panelId: e.connectionId, data: osc }) } catch {}
+    })
+  })
+  await SFTP.addListener('autoTrackChanged', (e) => {
+    callbacks.autoTrack.forEach((cb) => {
+      try { cb({ panelId: e.connectionId, enabled: e.enabled }) } catch {}
     })
   })
 }
@@ -230,7 +244,15 @@ export function createIosApi() {
     },
     setSSHEncoding: asyncNoop,
     getSSHEncoding: async () => 'utf-8',
-    setSSHAutoTrack: asyncNoop,
+    setSSHAutoTrack: async (panelId: string, enabled: boolean) => {
+      await ensureListeners()
+      try {
+        const r = await SFTP.setAutoTrack({ connectionId: panelId, enabled })
+        return { success: true, enabled: r.enabled }
+      } catch (e: any) {
+        return { success: false, error: e?.message || String(e) }
+      }
+    },
     resetSSHState: asyncNoop,
     sshAuthResponse: asyncNoop,
 
@@ -239,7 +261,7 @@ export function createIosApi() {
     onSSHData: makeOn('data'),
     onSSHClosed: makeOn('closed'),
     onSSHError: makeOn('error'),
-    onSSHAutoTrack: eventNoop,
+    onSSHAutoTrack: makeOn('autoTrack'),
     onSSHAuthPrompt: eventNoop,
 
     // Window controls — no-ops on mobile

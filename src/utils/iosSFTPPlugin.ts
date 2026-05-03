@@ -1,4 +1,4 @@
-import { registerPlugin } from '@capacitor/core'
+import { registerPlugin, type PluginListenerHandle } from '@capacitor/core'
 
 export interface SFTPConnectOptions {
   connectionId: string
@@ -28,6 +28,15 @@ export interface SFTPPlugin {
   realPath(options: { connectionId: string; path: string }): Promise<{ path: string }>
   readFile(options: { connectionId: string; path: string; encoding?: string }): Promise<{ content: string }>
   writeFile(options: { connectionId: string; path: string; content: string; encoding?: string }): Promise<void>
+  setAutoTrack(options: { connectionId: string; enabled: boolean }): Promise<{ enabled: boolean }>
+  addListener(
+    eventName: 'cwdChanged',
+    listener: (event: { connectionId: string; path: string }) => void
+  ): Promise<PluginListenerHandle>
+  addListener(
+    eventName: 'autoTrackChanged',
+    listener: (event: { connectionId: string; enabled: boolean }) => void
+  ): Promise<PluginListenerHandle>
 }
 
 export const SFTP = registerPlugin<SFTPPlugin>('SFTP')

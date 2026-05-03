@@ -16,10 +16,22 @@ public class SFTPPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "realPath", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "readFile", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "writeFile", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setAutoTrack", returnType: CAPPluginReturnPromise),
     ]
 
     private var sessions: [String: NMSSHSession] = [:]
+    private var autoTrackTimers: [String: DispatchSourceTimer] = [:]
+    private var lastCwd: [String: String] = [:]
     private let queue = DispatchQueue(label: "com.ghjeong.pepe.sftp.plugin", qos: .userInitiated)
+
+    // ps + readlink → 가장 최근 셸의 cwd 출력. base64 로 감싸서 quoting 회피.
+    private static let cwdScriptB64: String = {
+        let script = """
+        p=$(ps -u "$(whoami)" -o pid,etime,comm 2>/dev/null | awk '$3 ~ /(bash|zsh|sh|ksh|dash|fish|csh|tcsh)/ {print $1, $2}' | sort -k2 -r | head -1 | awk '{print $1}')
+        test -n "$p" && printf 'PEPECWD<%s>END' "$(readlink /proc/$p/cwd 2>/dev/null)"
+        """
+        return Data(script.utf8).base64EncodedString()
+    }()
 
     @objc func connect(_ call: CAPPluginCall) {
         guard let connectionId = call.getString("connectionId"),
@@ -72,11 +84,68 @@ public class SFTPPlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
         let sess = sessions.removeValue(forKey: connectionId)
+        autoTrackTimers.removeValue(forKey: connectionId)?.cancel()
+        lastCwd.removeValue(forKey: connectionId)
         queue.async {
             sess?.sftp.disconnect()
             sess?.disconnect()
             call.resolve()
         }
+    }
+
+    @objc func setAutoTrack(_ call: CAPPluginCall) {
+        guard let connectionId = call.getString("connectionId") else {
+            call.reject("connectionId required")
+            return
+        }
+        let enabled = call.getBool("enabled") ?? false
+
+        // 기존 타이머 정리
+        autoTrackTimers.removeValue(forKey: connectionId)?.cancel()
+        lastCwd.removeValue(forKey: connectionId)
+
+        if !enabled {
+            notifyListeners("autoTrackChanged", data: ["connectionId": connectionId, "enabled": false])
+            call.resolve(["enabled": false])
+            return
+        }
+
+        guard sessions[connectionId] != nil else {
+            call.reject("not connected")
+            return
+        }
+
+        // 폴링 타이머 시작 (400ms 주기)
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + .milliseconds(200), repeating: .milliseconds(400))
+        timer.setEventHandler { [weak self] in
+            self?.pollCwd(for: connectionId)
+        }
+        autoTrackTimers[connectionId] = timer
+        timer.resume()
+        notifyListeners("autoTrackChanged", data: ["connectionId": connectionId, "enabled": true])
+        call.resolve(["enabled": true])
+    }
+
+    private func pollCwd(for connectionId: String) {
+        guard let sess = sessions[connectionId], sess.isConnected else {
+            autoTrackTimers.removeValue(forKey: connectionId)?.cancel()
+            return
+        }
+        let cmd = "echo \(SFTPPlugin.cwdScriptB64) | base64 -d | /bin/sh"
+        var err: NSError?
+        guard let out = sess.channel.execute(cmd, error: &err, timeout: 3) else { return }
+        // 'PEPECWD<...>END' 패턴 추출
+        guard let startRange = out.range(of: "PEPECWD<"),
+              let endRange = out.range(of: ">END", range: startRange.upperBound..<out.endIndex) else {
+            return
+        }
+        let path = String(out[startRange.upperBound..<endRange.lowerBound])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty, path.hasPrefix("/") else { return }
+        if path == lastCwd[connectionId] { return }
+        lastCwd[connectionId] = path
+        notifyListeners("cwdChanged", data: ["connectionId": connectionId, "path": path])
     }
 
     private func session(for call: CAPPluginCall) -> NMSSHSession? {
