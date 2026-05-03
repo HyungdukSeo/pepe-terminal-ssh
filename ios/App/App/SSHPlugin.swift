@@ -106,13 +106,29 @@ public class SSHPlugin: CAPPlugin, CAPBridgedPlugin {
 
     @objc func getShellSshdPid(_ call: CAPPluginCall) {
         let connectionId = call.getString("connectionId") ?? ""
-        guard let conn = connections[connectionId] else {
+        guard let conn = connections[connectionId], let sess = conn.session else {
             call.reject("not connected")
             return
         }
+        // 캐시된 값 있으면 그대로 반환
         if let pid = conn.sshdPid {
             call.resolve(["sshdPid": pid])
-        } else {
+            return
+        }
+        // Lazy 캡처: shell 이 이미 시작된 상태이므로 fresh channel exec 안전.
+        // (연결 직후 즉시 실행하면 NMSSH multi-channel race 발생 → 첫 연결 크래시 위험)
+        queue.async { [weak conn] in
+            guard let conn = conn else { return }
+            let pidChannel = NMSSHChannel(session: sess)
+            var err: NSError?
+            if let raw = pidChannel.execute("awk '/^PPid:/ {print $2}' /proc/self/status", error: &err, timeout: 3) {
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let pid = Int(trimmed) {
+                    conn.sshdPid = pid
+                    call.resolve(["sshdPid": pid])
+                    return
+                }
+            }
             call.resolve(["sshdPid": NSNull()])
         }
     }
