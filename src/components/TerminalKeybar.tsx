@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { getLastFocusedTermId } from './TerminalPanel'
+import { getLastFocusedTermId, focusTerm } from './TerminalPanel'
 
 // 터미널 사용에 필요한 특수키들. iPad 가상 키보드에 없거나 누르기 번거로운 것들.
 type Key =
@@ -102,6 +102,8 @@ export function TerminalKeybar({ activePanelId }: Props) {
     }
 
     api.sendSSHInput(targetId, payload)
+    // 키 전송 직후 터미널에 포커스 재할당 — 안 그러면 iOS 가 키보드 dismiss 함.
+    try { focusTerm(targetId) } catch {}
     // 한 번 누르면 modifier 자동 해제 (sticky 아님)
     if (ctrlRef.current) setCtrl(false)
     if (altRef.current) setAlt(false)
@@ -117,8 +119,9 @@ export function TerminalKeybar({ activePanelId }: Props) {
             <button
               key={i}
               className={`tk-btn${active ? ' tk-btn-active' : ''}${isMod ? ' tk-btn-mod' : ''}`}
-              // onPointerDown 단일 이벤트 — 터치/마우스 통합. preventDefault 로
-              // 포커스 이동(=iOS 키보드 다시 뜨기) 방지, stopPropagation 으로 부모 캐치 방지.
+              // tabIndex=-1: 버튼이 포커스 받지 않게 → xterm textarea 의 포커스 유지 → 키보드 안 사라짐.
+              // onPointerDown + preventDefault: 마우스/터치 통합 + 기본 동작 차단.
+              tabIndex={-1}
               onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); sendKey(k) }}
             >
               {k.label}
