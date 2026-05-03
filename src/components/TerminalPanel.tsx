@@ -713,7 +713,7 @@ function ensureSSHSetup(termId: string) {
 
   const { term, fit } = getOrCreateTerm(termId);
 
-  window.api?.onSSHConnected?.((p: any) => {
+  window.api?.onSSHConnected?.(async (p: any) => {
     if (p.panelId !== termId) return;
     // 같은 termId에 PTY가 실행 중이면 종료 (Local Shell → SSH 전환)
     if (ptyConnected.has(termId)) {
@@ -734,6 +734,25 @@ function ensureSSHSetup(termId: string) {
     try {
       window.api?.resizeSSH?.(termId, (term as any).cols, (term as any).rows);
       setTimeout(() => { try { window.api?.resizeSSH?.(termId, (term as any).cols, (term as any).rows); } catch {} }, 200);
+    } catch {}
+
+    // 세션이 autoTrackPwd: true 면 연결 직후 자동 활성화 — 사용자가 매번 토글
+    // 누를 필요 없게. quickSession 우선 (inline 세션), 없으면 listSessions 로 조회.
+    try {
+      const info = termSessionMap.get(termId);
+      let autoTrack: boolean | undefined;
+      if (info?.quickSession) {
+        autoTrack = !!info.quickSession.autoTrackPwd;
+      } else if (info?.sessionId) {
+        const data: any = await window.api?.listSessions?.();
+        const list = data?.sessions || data || [];
+        const sess = list.find((s: any) => s.id === info.sessionId);
+        autoTrack = !!sess?.autoTrackPwd;
+      }
+      if (autoTrack) {
+        setTermAutoTrack(termId, true);
+        window.api?.setSSHAutoTrack?.(termId, true);
+      }
     } catch {}
   });
 
