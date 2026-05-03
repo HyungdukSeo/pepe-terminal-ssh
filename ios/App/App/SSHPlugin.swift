@@ -12,6 +12,7 @@ public class SSHPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "write", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "resize", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "isConnected", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getShellSshdPid", returnType: CAPPluginReturnPromise),
     ]
 
     private var connections: [String: SSHConnection] = [:]
@@ -103,6 +104,19 @@ public class SSHPlugin: CAPPlugin, CAPBridgedPlugin {
         call.resolve(["connected": connected])
     }
 
+    @objc func getShellSshdPid(_ call: CAPPluginCall) {
+        let connectionId = call.getString("connectionId") ?? ""
+        guard let conn = connections[connectionId] else {
+            call.reject("not connected")
+            return
+        }
+        if let pid = conn.sshdPid {
+            call.resolve(["sshdPid": pid])
+        } else {
+            call.resolve(["sshdPid": NSNull()])
+        }
+    }
+
     // Called by SSHConnection on background thread
     func emitData(_ connectionId: String, _ data: String) {
         notifyListeners("data", data: ["connectionId": connectionId, "data": data])
@@ -123,6 +137,11 @@ class SSHConnection: NSObject, NMSSHSessionDelegate, NMSSHChannelDelegate {
     weak var plugin: SSHPlugin?
     var session: NMSSHSession?
     var isConnected: Bool = false
+    /// PID of the sshd process serving this SSH connection on the remote host.
+    /// Captured once after shell starts (one-shot exec on a fresh channel).
+    /// Used by auto-track to identify *this* SSH session's interactive bash
+    /// (its PPid will match this value).
+    var sshdPid: Int?
 
     init(connectionId: String, plugin: SSHPlugin) {
         self.connectionId = connectionId
@@ -188,6 +207,21 @@ class SSHConnection: NSObject, NMSSHSessionDelegate, NMSSHChannelDelegate {
 
         self.session = sess
         self.isConnected = true
+
+        // One-shot exec on a fresh channel to capture this connection's sshd
+        // parent PID. The interactive bash spawned by startShell shares the
+        // same parent. Auto-track uses this to filter ps output.
+        DispatchQueue.global(qos: .background).async { [weak self] in
+            let pidChannel = NMSSHChannel(session: sess)
+            var err: NSError?
+            if let raw = pidChannel.execute("awk '/^PPid:/ {print $2}' /proc/self/status", error: &err, timeout: 3) {
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let pid = Int(trimmed) {
+                    self?.sshdPid = pid
+                }
+            }
+        }
+
         return .success(())
     }
 

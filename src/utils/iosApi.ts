@@ -247,7 +247,16 @@ export function createIosApi() {
     setSSHAutoTrack: async (panelId: string, enabled: boolean) => {
       await ensureListeners()
       try {
-        const r = await SFTP.setAutoTrack({ connectionId: panelId, enabled })
+        let sshdPid: number | undefined
+        if (enabled) {
+          try {
+            const r = await SSH.getShellSshdPid({ connectionId: panelId })
+            sshdPid = r.sshdPid ?? undefined
+          } catch {
+            // SSH plugin doesn't have it captured yet — fallback filter still works.
+          }
+        }
+        const r = await SFTP.setAutoTrack({ connectionId: panelId, enabled, sshdPid })
         return { success: true, enabled: r.enabled }
       } catch (e: any) {
         return { success: false, error: e?.message || String(e) }

@@ -18,6 +18,7 @@ export interface SSHPlugin {
   write(options: { connectionId: string; data: string }): Promise<void>
   resize(options: { connectionId: string; cols: number; rows: number }): Promise<void>
   isConnected(options: { connectionId: string }): Promise<{ connected: boolean }>
+  getShellSshdPid(options: { connectionId: string }): Promise<{ sshdPid: number | null }>
   addListener(
     eventName: 'connected',
     listener: (event: { connectionId: string }) => void
