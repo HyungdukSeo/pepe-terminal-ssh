@@ -24,10 +24,13 @@ public class SFTPPlugin: CAPPlugin, CAPBridgedPlugin {
     private var lastCwd: [String: String] = [:]
     private let queue = DispatchQueue(label: "com.ghjeong.pepe.sftp.plugin", qos: .userInitiated)
 
-    // ps + readlink → 가장 최근 셸의 cwd 출력. base64 로 감싸서 quoting 회피.
+    // ps + readlink → 사용자 interactive 셸의 cwd 출력. base64 로 감싸서 quoting 회피.
+    // - 정규식 anchored: ssh/sshd 같은 부분일치 방지
+    // - TTY 가 있는 프로세스만 (우리 exec 자신의 /bin/sh, daemon 제외)
+    // - PID 역순: 가장 최근 spawn 된 = 사용자가 실제 입력 중인 셸
     private static let cwdScriptB64: String = {
         let script = """
-        p=$(ps -u "$(whoami)" -o pid,etime,comm 2>/dev/null | awk '$3 ~ /(bash|zsh|sh|ksh|dash|fish|csh|tcsh)/ {print $1, $2}' | sort -k2 -r | head -1 | awk '{print $1}')
+        p=$(ps -u "$(whoami)" -o pid,tty,comm 2>/dev/null | awk '$3 ~ /^-?(bash|zsh|sh|ksh|dash|fish|csh|tcsh)$/ && $2 != "?" {print $1}' | sort -nr | head -1)
         test -n "$p" && printf 'PEPECWD<%s>END' "$(readlink /proc/$p/cwd 2>/dev/null)"
         """
         return Data(script.utf8).base64EncodedString()
