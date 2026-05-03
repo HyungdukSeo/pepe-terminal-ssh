@@ -35,15 +35,17 @@ async function bootstrap() {
         vv.addEventListener('scroll', sync)
         sync()
       }
-      // Capacitor Keyboard 의 willShow / willHide 도 listen — body class / 추가
-      // resize 디스패치 (visualViewport 가 약간 늦게 fire 되는 단말 대응).
+      // Capacitor Keyboard 가 정확한 키보드 높이를 알려주므로 그 값으로 --keyboard-h
+      // CSS 변수 set. 터미널 키바가 'bottom: var(--keyboard-h)' 로 키보드 위에 부상.
       const { Keyboard } = await import('@capacitor/keyboard')
-      Keyboard.addListener('keyboardWillShow', () => {
+      Keyboard.addListener('keyboardWillShow', (info) => {
         document.body.classList.add('keyboard-open')
+        document.documentElement.style.setProperty('--keyboard-h', `${info.keyboardHeight}px`)
         setTimeout(() => window.dispatchEvent(new Event('resize')), 250)
       })
       Keyboard.addListener('keyboardWillHide', () => {
         document.body.classList.remove('keyboard-open')
+        document.documentElement.style.setProperty('--keyboard-h', '0px')
         setTimeout(() => window.dispatchEvent(new Event('resize')), 250)
       })
     }

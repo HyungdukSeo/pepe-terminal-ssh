@@ -4401,14 +4401,15 @@ html, body {
   position: fixed;
   left: 0;
   right: 0;
-  /* visualViewport 기반 --app-h 가 있으면 그 영역 끝 (=키보드 위) 에 붙음.
-     없으면 화면 하단. safe-area-inset-bottom 으로 홈 인디케이터 회피. */
-  top: calc(var(--app-h, 100vh) - 44px - env(safe-area-inset-bottom));
+  /* Capacitor Keyboard willShow 에서 set 한 --keyboard-h 만큼 위로 부상.
+     키보드 닫혔을 때 0px → 홈 인디케이터 (safe-area-inset-bottom) 만큼만 띄움. */
+  bottom: calc(var(--keyboard-h, 0px) + env(safe-area-inset-bottom));
   height: 44px;
   background: #1f1f24;
   border-top: 1px solid #3a3a40;
   z-index: 5000;
   -webkit-tap-highlight-color: transparent;
+  transition: bottom 0.18s ease;
 }
 .is-ios .terminal-keybar-scroll {
   display: flex;

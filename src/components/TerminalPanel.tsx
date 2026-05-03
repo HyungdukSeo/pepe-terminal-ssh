@@ -87,6 +87,11 @@ const termJustComposed: Map<string, { text: string; at: number }> = new Map();
 
 function notifyConnectedChange() { connectedListeners.forEach(fn => fn()); }
 
+// 마지막으로 포커스 / 입력 받은 터미널 id — TerminalKeybar 등 외부에서 "현재 활성 터미널" 식별용.
+let _lastFocusedTermId: string | null = null;
+export function getLastFocusedTermId(): string | null { return _lastFocusedTermId; }
+export function _markTermActive(termId: string): void { _lastFocusedTermId = termId; }
+
 export function isTermConnected(termId: string): boolean {
   return globalConnected.has(termId);
 }
@@ -1310,8 +1315,10 @@ export const TerminalPanel: React.FC<Props> = ({
   // 키보드 입력 핸들러
   useEffect(() => {
     if (!activeTermId) return;
+    _markTermActive(activeTermId);
     const { term } = getOrCreateTerm(activeTermId);
     const disp = term.onData((data: string) => {
+      _markTermActive(activeTermId);
       // PTY(로컬 셸): IME 가로채기 없이 그대로 전달
       if (ptyConnected.has(activeTermId)) {
         window.api?.ptyInput?.(activeTermId, data);

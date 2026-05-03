@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { getLastFocusedTermId } from './TerminalPanel'
 
 // 터미널 사용에 필요한 특수키들. iPad 가상 키보드에 없거나 누르기 번거로운 것들.
 type Key =
@@ -6,9 +7,20 @@ type Key =
   | { kind: 'char'; label: string; ch: string } // Ctrl modifier 와 결합 가능
   | { kind: 'mod'; label: string; mod: 'ctrl' | 'alt' | 'shift' }
 
+// Ctrl + 알파벳 = control code (ASCII 0x01..0x1A)
+const ctrlCode = (c: string) => String.fromCharCode(c.toLowerCase().charCodeAt(0) - 96)
+
 const KEYS: Key[] = [
   { kind: 'send', label: 'ESC', data: '\x1b' },
   { kind: 'send', label: 'Tab', data: '\t' },
+  // 자주 쓰는 Ctrl 조합 — iOS 가상키보드와는 modifier 결합 불가능하므로 직접 버튼.
+  { kind: 'send', label: '^C', data: ctrlCode('c') },
+  { kind: 'send', label: '^D', data: ctrlCode('d') },
+  { kind: 'send', label: '^Z', data: ctrlCode('z') },
+  { kind: 'send', label: '^L', data: ctrlCode('l') },
+  { kind: 'send', label: '^R', data: ctrlCode('r') },
+  { kind: 'send', label: '^U', data: ctrlCode('u') },
+  { kind: 'send', label: '^W', data: ctrlCode('w') },
   { kind: 'mod', label: 'Ctrl', mod: 'ctrl' },
   { kind: 'mod', label: 'Alt', mod: 'alt' },
   { kind: 'send', label: '↑', data: '\x1b[A' },
@@ -54,7 +66,10 @@ export function TerminalKeybar({ activePanelId }: Props) {
   useEffect(() => { altRef.current = alt }, [alt])
 
   const sendKey = (key: Key) => {
-    if (!activePanelId) return
+    // selectedPanelId 는 leaf id 라 termId 와 다를 수 있음. 마지막으로
+    // 포커스받은 termId 를 우선 사용, fallback 으로 activePanelId.
+    const targetId = getLastFocusedTermId() || activePanelId
+    if (!targetId) return
     const api = (window as any).api
     if (!api?.sendSSHInput) return
 
@@ -86,7 +101,7 @@ export function TerminalKeybar({ activePanelId }: Props) {
       }
     }
 
-    api.sendSSHInput(activePanelId, payload)
+    api.sendSSHInput(targetId, payload)
     // 한 번 누르면 modifier 자동 해제 (sticky 아님)
     if (ctrlRef.current) setCtrl(false)
     if (altRef.current) setAlt(false)
@@ -102,8 +117,9 @@ export function TerminalKeybar({ activePanelId }: Props) {
             <button
               key={i}
               className={`tk-btn${active ? ' tk-btn-active' : ''}${isMod ? ' tk-btn-mod' : ''}`}
-              onMouseDown={(e) => { e.preventDefault(); sendKey(k) }}
-              onTouchStart={(e) => { e.preventDefault(); sendKey(k) }}
+              // onPointerDown 단일 이벤트 — 터치/마우스 통합. preventDefault 로
+              // 포커스 이동(=iOS 키보드 다시 뜨기) 방지, stopPropagation 으로 부모 캐치 방지.
+              onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); sendKey(k) }}
             >
               {k.label}
             </button>
