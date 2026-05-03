@@ -16,6 +16,7 @@ async function bootstrap() {
   // Capacitor iOS path: install our adapter behind the index.html proxy.
   if (window.__setApiImpl) {
     if (Capacitor.getPlatform() === 'ios') {
+      document.body.classList.add('is-ios')
       const { createIosApi } = await import('./utils/iosApi')
       window.__setApiImpl(createIosApi())
     }

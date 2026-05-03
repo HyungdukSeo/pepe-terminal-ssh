@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@capacitor/core": "^6.0.0",
+    "@capacitor/keyboard": "^6.0.4",
     "@capacitor/preferences": "^6.0.4",
     "@monaco-editor/react": "^4.7.0",
     "iconv-lite": "^0.6.3",

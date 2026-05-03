@@ -4348,3 +4348,44 @@ html, body {
   border-radius: 4px;
 }
 .keybinding-reset { margin-top: 8px; }
+
+
+/* ── iOS / iPad 모바일 적응 ── */
+.is-ios .tab-bar-row {
+  /* 상단 안전영역 (iOS 상태바 / iPad 분할뷰 컨트롤) 만큼 padding */
+  padding-top: env(safe-area-inset-top);
+  height: calc(40px + env(safe-area-inset-top));
+}
+
+/* iPad 에서는 windows 데스크톱용 - ☐ ✕ 컨트롤 숨김 (시스템 컨트롤이 대신 처리) */
+.is-ios .window-ctrl-btn {
+  display: none;
+}
+
+/* 데스크톱 드래그 영역도 터치 환경에선 무의미 — 시각적으론 보이지만 인터랙션 무력화 */
+.is-ios .titlebar-drag-area {
+  pointer-events: none;
+}
+
+/* 좌측/우측 안전영역 — Face ID iPad 가로모드 노치 회피 */
+.is-ios .app-main {
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+.is-ios .app-sidebar {
+  padding-left: env(safe-area-inset-left);
+}
+
+
+/* 40px 으로 하드코딩된 layout offset 들을 안전영역 만큼 추가 보정 */
+.is-ios .app-main { padding-top: calc(40px + env(safe-area-inset-top)); }
+.is-ios .session-sidebar-trigger { margin-top: calc(40px + env(safe-area-inset-top)); }
+.is-ios .session-sidebar-inner.auto-hide { top: calc(40px + env(safe-area-inset-top)); }
+.is-ios .workspace-file-tree-trigger { margin-top: calc(40px + env(safe-area-inset-top)); }
+.is-ios .remote-file-tree-container { padding-top: calc(40px + env(safe-area-inset-top)); }
+.is-ios .claude-chat-sidebar { top: calc(40px + env(safe-area-inset-top)); }
+
+/* iPad 외곽선 — 분할뷰 / Stage Manager 에서 시스템 컨트롤과 겹치지 않게 outset 살짝 줄임 */
+.is-ios #root::after {
+  inset: env(safe-area-inset-top) 0 0 0;
+}
