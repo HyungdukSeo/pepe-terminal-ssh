@@ -2,6 +2,7 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import './App.css';
 import { TabBar } from './components/TabBar';
+import { TerminalKeybar } from './components/TerminalKeybar';
 import { MenuBar } from './components/MenuBar';
 import type { MenuDef } from './components/MenuBar';
 import { Layout } from './components/Layout';
@@ -3031,6 +3032,8 @@ function App() {
           </div>
         </div>
       )}
+      {/* iOS 전용 터미널 특수키 키바 — body.is-ios 일 때만 visible (CSS 제어) */}
+      <TerminalKeybar activePanelId={selectedPanelId} />
     </div>
   );
 }

@@ -4391,3 +4391,64 @@ html, body {
 .is-ios #root::after {
   inset: env(safe-area-inset-top) 0 0 0;
 }
+
+/* ── iOS 터미널 특수키 키바 ── */
+.terminal-keybar {
+  display: none;
+}
+.is-ios .terminal-keybar {
+  display: block;
+  position: fixed;
+  left: 0;
+  right: 0;
+  /* visualViewport 기반 --app-h 가 있으면 그 영역 끝 (=키보드 위) 에 붙음.
+     없으면 화면 하단. safe-area-inset-bottom 으로 홈 인디케이터 회피. */
+  top: calc(var(--app-h, 100vh) - 44px - env(safe-area-inset-bottom));
+  height: 44px;
+  background: #1f1f24;
+  border-top: 1px solid #3a3a40;
+  z-index: 5000;
+  -webkit-tap-highlight-color: transparent;
+}
+.is-ios .terminal-keybar-scroll {
+  display: flex;
+  height: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.is-ios .terminal-keybar-scroll::-webkit-scrollbar { display: none; }
+
+.is-ios .tk-btn {
+  flex: 0 0 auto;
+  min-width: 48px;
+  height: 100%;
+  padding: 0 10px;
+  background: transparent;
+  border: none;
+  border-right: 1px solid #2a2a30;
+  color: #ddd;
+  font-size: 14px;
+  font-family: -apple-system, monospace;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+}
+.is-ios .tk-btn:active {
+  background: #3a3a40;
+}
+.is-ios .tk-btn-mod {
+  font-weight: 600;
+  color: #aaa;
+}
+.is-ios .tk-btn-active {
+  background: #4a90e2;
+  color: #fff;
+}
+
+/* 키바가 차지하는 44px 만큼 .app-main 에 padding-bottom — 마지막 줄 안 가려지게 */
+.is-ios .app-main {
+  padding-bottom: calc(44px + env(safe-area-inset-bottom));
+}
