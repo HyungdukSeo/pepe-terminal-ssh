@@ -392,13 +392,21 @@ export function createIosApi() {
     sftpReadFile: async (panelId: string, remotePath: string, encoding?: string) => {
       try {
         const r = await SFTP.readFile({ connectionId: panelId, path: remotePath, encoding: encoding || 'utf-8' })
-        return r.content
+        const text = r.content || ''
+        // size 는 byte 길이 (utf-8 가정 — 정확한 byte 수는 native 가 따로 안 줌).
+        const size = new TextEncoder().encode(text).length
+        return { success: true, text, size }
       } catch (e: any) {
-        throw new Error(e?.message || String(e))
+        return { success: false, error: e?.message || String(e) }
       }
     },
     sftpWriteFile: async (panelId: string, remotePath: string, content: string, encoding?: string) => {
-      await SFTP.writeFile({ connectionId: panelId, path: remotePath, content, encoding: encoding || 'utf-8' })
+      try {
+        await SFTP.writeFile({ connectionId: panelId, path: remotePath, content, encoding: encoding || 'utf-8' })
+        return { success: true }
+      } catch (e: any) {
+        return { success: false, error: e?.message || String(e) }
+      }
     },
     sftpDownload: async () => ({ success: false, error: 'download not supported on iOS yet' }),
     sftpDownloadMulti: async () => ({ success: false, error: 'download not supported on iOS yet' }),
