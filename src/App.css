@@ -535,9 +535,9 @@ html, body {
 /* layout-leaf는 padding 1px만큼 #333 테두리 유지 (분할 구분) */
 
 .app-root {
-  /* iOS 키보드 띄울 때 visualViewport 로 갱신되는 동적 높이 (main.tsx 에서 set).
-     일반 환경에서는 100vh fallback. */
-  height: var(--app-h, 100vh);
+  /* iOS: 키보드 높이만큼 앱 전체 축소 → 키보드 위에 앱이 deep-fit. main.tsx 가
+     Capacitor Keyboard willShow/willHide 에서 --keyboard-h set. 키보드 닫히면 0px. */
+  height: calc(100vh - var(--keyboard-h, 0px));
   display: flex;
   flex-direction: row;
   background: #0d0f10;
@@ -4401,15 +4401,14 @@ html, body {
   position: fixed;
   left: 0;
   right: 0;
-  /* Capacitor Keyboard willShow 에서 set 한 --keyboard-h 만큼 위로 부상.
-     키보드 닫혔을 때 0px → 홈 인디케이터 (safe-area-inset-bottom) 만큼만 띄움. */
+  /* fixed = viewport 기준. 키보드 위쪽 (=축소된 .app-root 의 바닥) 에 위치.
+     키보드 닫혔을 때는 --keyboard-h = 0 이라 화면 하단 + 홈 인디케이터 회피. */
   bottom: calc(var(--keyboard-h, 0px) + env(safe-area-inset-bottom));
   height: 44px;
   background: #1f1f24;
   border-top: 1px solid #3a3a40;
   z-index: 5000;
   -webkit-tap-highlight-color: transparent;
-  transition: bottom 0.18s ease;
 }
 .is-ios .terminal-keybar-scroll {
   display: flex;
