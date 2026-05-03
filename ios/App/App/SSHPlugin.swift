@@ -189,6 +189,19 @@ class SSHConnection: NSObject, NMSSHSessionDelegate, NMSSHChannelDelegate {
             return .failure(ConnectError.authFailed("invalid credentials"))
         }
 
+        // Capture sshd parent PID BEFORE starting shell. Sequential on the
+        // same thread — no concurrent libssh2 access (libssh2 is not thread-safe).
+        // The interactive bash spawned later shares the same sshd parent;
+        // auto-track will use this PID to filter ps output to *this* session.
+        let pidChannel = NMSSHChannel(session: sess)
+        var pidErr: NSError?
+        if let raw = pidChannel.execute("awk '/^PPid:/ {print $2}' /proc/self/status", error: &pidErr, timeout: 3) {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let pid = Int(trimmed) {
+                self.sshdPid = pid
+            }
+        }
+
         sess.channel.delegate = self
         sess.channel.requestPty = true
         sess.channel.ptyTerminalType = NMSSHChannelPtyTerminal.xterm
@@ -207,21 +220,6 @@ class SSHConnection: NSObject, NMSSHSessionDelegate, NMSSHChannelDelegate {
 
         self.session = sess
         self.isConnected = true
-
-        // One-shot exec on a fresh channel to capture this connection's sshd
-        // parent PID. The interactive bash spawned by startShell shares the
-        // same parent. Auto-track uses this to filter ps output.
-        DispatchQueue.global(qos: .background).async { [weak self] in
-            let pidChannel = NMSSHChannel(session: sess)
-            var err: NSError?
-            if let raw = pidChannel.execute("awk '/^PPid:/ {print $2}' /proc/self/status", error: &err, timeout: 3) {
-                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-                if let pid = Int(trimmed) {
-                    self?.sshdPid = pid
-                }
-            }
-        }
-
         return .success(())
     }
 
