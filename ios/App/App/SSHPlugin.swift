@@ -189,18 +189,8 @@ class SSHConnection: NSObject, NMSSHSessionDelegate, NMSSHChannelDelegate {
             return .failure(ConnectError.authFailed("invalid credentials"))
         }
 
-        // Capture sshd parent PID BEFORE starting shell. Sequential on the
-        // same thread — no concurrent libssh2 access (libssh2 is not thread-safe).
-        // The interactive bash spawned later shares the same sshd parent;
-        // auto-track will use this PID to filter ps output to *this* session.
-        let pidChannel = NMSSHChannel(session: sess)
-        var pidErr: NSError?
-        if let raw = pidChannel.execute("awk '/^PPid:/ {print $2}' /proc/self/status", error: &pidErr, timeout: 3) {
-            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let pid = Int(trimmed) {
-                self.sshdPid = pid
-            }
-        }
+        // sshd PID 캡처는 SFTPPlugin.setAutoTrack 이 자기 idle 채널에서 수행
+        // (NMSSH 다중 채널 동시 접근 race 회피). 여기서는 shell 시작에 집중.
 
         sess.channel.delegate = self
         sess.channel.requestPty = true

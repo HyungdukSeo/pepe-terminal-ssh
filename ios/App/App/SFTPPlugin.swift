@@ -109,7 +109,6 @@ public class SFTPPlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
         let enabled = call.getBool("enabled") ?? false
-        let sshdPid = call.getInt("sshdPid")  // optional — 더 정확한 필터링용
 
         // 기존 타이머 정리
         autoTrackTimers.removeValue(forKey: connectionId)?.cancel()
@@ -127,7 +126,8 @@ public class SFTPPlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
 
-        // sshdPid 가 있으면 정확한 ppid 매칭, 없으면 fallback (largest PID with TTY)
+        // sshdPid 가 들어오면 정확한 ppid 매칭, 없으면 fallback (largest PID with TTY).
+        let sshdPid = call.getInt("sshdPid")
         autoTrackScripts[connectionId] = SFTPPlugin.buildScript(sshdPid: sshdPid)
 
         // 폴링 타이머 시작 (400ms 주기)
