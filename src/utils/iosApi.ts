@@ -54,11 +54,14 @@ const callbacks: Record<EventName, Set<Cb>> = {
   error: new Set(),
   autoTrack: new Set(),
 }
-let listenersInstalled = false
+// Promise 캐시 — 동시 호출이 모두 같은 등록 완료를 기다리도록.
+// 단순 boolean flag 면 첫 호출이 await 중인 동안 후속 호출이 통과해서
+// listener 미등록 상태로 SSH.connect 가 발생, 'connected' 이벤트 놓침.
+let listenersPromise: Promise<void> | null = null
 
-async function ensureListeners() {
-  if (listenersInstalled) return
-  listenersInstalled = true
+function ensureListeners(): Promise<void> {
+  if (listenersPromise) return listenersPromise
+  listenersPromise = (async () => {
   await SSH.addListener('connected', (e) => {
     callbacks.connected.forEach((cb) => {
       try { cb({ panelId: e.connectionId }) } catch {}
@@ -92,6 +95,8 @@ async function ensureListeners() {
       try { cb({ panelId: e.connectionId, enabled: e.enabled }) } catch {}
     })
   })
+  })()
+  return listenersPromise
 }
 
 function makeOn(event: EventName) {
