@@ -1,6 +1,7 @@
 // src/components/RemoteFileTree.tsx
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { subscribePwdChange } from './TerminalPanel';
+import { makeLongPressHandlers } from '../utils/longPress';
 
 // 확장자 → 카테고리. CSS 에서 data-cat 으로 색상 매칭.
 const EXT_CAT: Record<string, string> = {
@@ -345,7 +346,24 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
             }
             setCtxMenu({ x: e.clientX, y: e.clientY, node });
           }}
+          {...makeLongPressHandlers((x, y) => {
+            if (!node.isDir && !selectedPaths.has(node.path)) {
+              setSelectedPaths(new Set([node.path]));
+              anchorPathRef.current = node.path;
+            }
+            setCtxMenu({ x, y, node });
+          })}
         >
+          {/* iOS 멀티선택 체크박스 — 파일만 (디렉토리는 멀티선택 무의미) */}
+          {!node.isDir && (
+            <input
+              type="checkbox"
+              className="ios-multi-select-cb"
+              checked={selectedPaths.has(node.path)}
+              onClick={e => e.stopPropagation()}
+              onChange={() => setSelectedPaths(prev => { const n = new Set(prev); n.has(node.path) ? n.delete(node.path) : n.add(node.path); return n; })}
+            />
+          )}
           {node.isDir ? (
             <span className="remote-file-toggle">{isCollapsed ? '▶' : '▼'}</span>
           ) : (

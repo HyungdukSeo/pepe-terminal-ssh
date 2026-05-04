@@ -933,10 +933,16 @@ html, body {
 .btn-delete:disabled:hover { background: #7b2b2b; }
 
 .session-list-scroll {
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   flex: 1 1 auto;
   outline: none;
   padding-bottom: 4px;
+}
+.session-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .session-item {
@@ -4450,4 +4456,16 @@ html, body {
 /* 키바 visible 일 때만 padding-bottom 추가 (키바 뒤에 가리지 않도록) */
 .is-ios.keyboard-open .app-main {
   padding-bottom: 44px;
+}
+
+/* ── iOS 멀티선택 체크박스 (다른 환경 숨김) ── */
+.ios-multi-select-cb { display: none; }
+.is-ios .ios-multi-select-cb {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  margin-right: 6px;
+  flex-shrink: 0;
+  vertical-align: middle;
+  accent-color: #4a90e2;
 }

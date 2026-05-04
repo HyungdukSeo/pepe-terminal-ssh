@@ -1,6 +1,7 @@
 // src/components/SessionList.tsx
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { SessionEditor } from './SessionEditor';
+import { makeLongPressHandlers } from '../utils/longPress';
 
 type LoginScriptRule = {
   expect: string;
@@ -319,10 +320,18 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
                   }}
                   onDoubleClick={() => toggleCollapse(f.id)}
                   onContextMenu={e => { e.preventDefault(); setSelectedId(f.id); setSelectedType('folder'); setContextMenu({ x: e.clientX, y: e.clientY, id: f.id, type: 'folder', name: f.name }); }}
+                  {...makeLongPressHandlers((x, y) => { setSelectedId(f.id); setSelectedType('folder'); setContextMenu({ x, y, id: f.id, type: 'folder', name: f.name }); })}
                   onDragOver={e => { if (e.dataTransfer.types.includes('text/session-id')) { e.preventDefault(); e.stopPropagation(); setDragOverId(f.id); } }}
                   onDragLeave={e => { e.stopPropagation(); setDragOverId(null); }}
                   onDrop={e => { e.stopPropagation(); const sid = e.dataTransfer.getData('text/session-id'); if (sid) { e.preventDefault(); handleSessionDrop(sid, f.id); } setDragOverId(null); }}
                 >
+                  <input
+                    type="checkbox"
+                    className="ios-multi-select-cb"
+                    checked={selectedIds.has(f.id)}
+                    onClick={e => e.stopPropagation()}
+                    onChange={() => setSelectedIds(prev => { const n = new Set(prev); n.has(f.id) ? n.delete(f.id) : n.add(f.id); return n; })}
+                  />
                   <span className="folder-toggle" onClick={e => { e.stopPropagation(); toggleCollapse(f.id); }}>{isCollapsed ? '▶' : '▼'}</span>
                   <span className="folder-icon">📁</span>
                   {renamingId === f.id ? (
@@ -366,10 +375,18 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
                 }}
                 onDoubleClick={() => { if (renamingId !== s.id) handleConnect(s); }}
                 onContextMenu={e => { e.preventDefault(); setSelectedId(s.id); setSelectedType('session'); setContextMenu({ x: e.clientX, y: e.clientY, id: s.id, type: 'session', name: s.name }); }}
+                {...makeLongPressHandlers((x, y) => { setSelectedId(s.id); setSelectedType('session'); setContextMenu({ x, y, id: s.id, type: 'session', name: s.name }); })}
                 draggable={renamingId !== s.id}
                 onDragStart={e => { e.dataTransfer.setData('text/session-id', s.id); e.dataTransfer.effectAllowed = 'move'; const el = e.currentTarget as HTMLElement; e.dataTransfer.setDragImage(el, el.offsetWidth / 2, el.offsetHeight / 2); }}
                 onDragEnd={() => setDragOverId(null)}
               >
+                <input
+                  type="checkbox"
+                  className="ios-multi-select-cb"
+                  checked={selectedIds.has(s.id)}
+                  onClick={e => e.stopPropagation()}
+                  onChange={() => setSelectedIds(prev => { const n = new Set(prev); n.has(s.id) ? n.delete(s.id) : n.add(s.id); return n; })}
+                />
                 {renamingId === s.id ? (
                   <input className="folder-rename-input" value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={handleRenameSubmit} onKeyDown={e => { if (e.key === 'Enter') handleRenameSubmit(); if (e.key === 'Escape') setRenamingId(null); }} autoFocus onClick={e => e.stopPropagation()} />
                 ) : (
