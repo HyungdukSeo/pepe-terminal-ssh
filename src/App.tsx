@@ -13,7 +13,7 @@ import { ClaudeChat } from './components/ClaudeChat';
 import { RemoteFileTree } from './components/RemoteFileTree';
 import { QuickConnectBar, QuickConnectResult } from './components/QuickConnectDialog';
 import { StatusBar } from './components/StatusBar';
-import { resetTermConnectState, clearScrollbackInTerm, clearScreenInTerm, clearAllInTerm, applyThemeToAll, applyThemeToTerm, applyFontToTerm, applyFontToAll, getCurrentThemeName, registerTermSession, getTermSessionInfo, getWordSeparator, setWordSeparator, refitAllTerms, applyScrollbackToAll, applyScrollbackToTerm, cloneTermStyle, isTermConnected, isTermConnecting, isTermPty, subscribeConnectedChange, focusTerm, pasteToTerm, promptPasswordAndConnect, startInitialConnectWatchdog, getCurrentPwdForTerm } from './components/TerminalPanel';
+import { resetTermConnectState, clearScrollbackInTerm, clearScreenInTerm, clearAllInTerm, applyThemeToAll, applyThemeToTerm, applyFontToTerm, applyFontToAll, getCurrentThemeName, registerTermSession, getTermSessionInfo, getWordSeparator, setWordSeparator, refitAllTerms, applyScrollbackToAll, applyScrollbackToTerm, cloneTermStyle, isTermConnected, isTermConnecting, isTermPty, subscribeConnectedChange, focusTerm, pasteToTerm, promptPasswordAndConnect, startInitialConnectWatchdog, getCurrentPwdForTerm, getTermAutoTrack, subscribeAutoTrack } from './components/TerminalPanel';
 import { marked } from 'marked';
 // @ts-ignore — vite ?raw 로 docs/MANUAL.md 를 번들 문자열로 임베드
 import manualMd from '../docs/MANUAL.md?raw';
@@ -429,6 +429,12 @@ function App() {
   const remoteTreeWidthLoadedRef = useRef(false);
   const [remoteTreePinned, setRemoteTreePinned] = useState<boolean>(true);
   const [remoteTreeVisible, setRemoteTreeVisible] = useState<boolean>(true);
+  // 활성 패널 세션의 autoTrack 토글 상태 — 변경 시 file-tree 표시/숨김 재평가용 dummy bumper.
+  const [, _bumpAutoTrackTick] = useState(0);
+  useEffect(() => {
+    const unsub = subscribeAutoTrack(() => _bumpAutoTrackTick(t => t + 1));
+    return unsub;
+  }, []);
   // 어느 오버레이가 최상위인지 — hover 중인 쪽이 다른 쪽 위에 오도록
   const [topPanel, setTopPanel] = useState<'session' | 'filetree' | null>(null);
   const remoteTreePinnedLoadedRef = useRef(false);
@@ -2053,7 +2059,8 @@ function App() {
             };
             const leaf = findLeaf(activeTab.layout, selectedPanelId);
             const sess = leaf?.panel?.sessions[leaf.panel.activeIdx];
-            if (sess?.sessionId && isTermConnected(sess.termId)) {
+            // 활성 세션이 SSH 연결 중이고 autoTrack(파일트리 자동추적) 이 ON 일 때만 파일트리 노출
+            if (sess?.sessionId && isTermConnected(sess.termId) && getTermAutoTrack(sess.termId)) {
               const onEnterTrigger = () => {
                 if (remoteTreePinned) return;
                 if (remoteTreeHideTimer.current) { clearTimeout(remoteTreeHideTimer.current); remoteTreeHideTimer.current = null; }
