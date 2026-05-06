@@ -36,3 +36,11 @@ python/
 *.njsproj
 *.sln
 *.sw?
+
+# tsbuildinfo
+*.tsbuildinfo
+
+# X11 서버 — 풀린 바이너리/zip 추적 X (README 만 추적)
+resources/x11-server/*
+!resources/x11-server/README.txt
+resources/x11-server.zip

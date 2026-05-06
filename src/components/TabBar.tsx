@@ -1,5 +1,5 @@
 // src/components/TabBar.tsx
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import type { Tab } from '../App';
 import { ContextMenu } from './ContextMenu';
 
@@ -41,8 +41,25 @@ export const TabBar: React.FC<Props> = ({ tabs, activeTabId, onChange, onAddTab,
     setRenamingId(null);
   };
 
+  const scrollRef = React.useRef<HTMLDivElement | null>(null);
+  const scrollBy = (dx: number) => { scrollRef.current?.scrollBy({ left: dx, behavior: 'smooth' }); };
+  // 탭이 영역을 넘는지 감지 → 스크롤 버튼 노출 여부
+  const [overflowing, setOverflowing] = useState(false);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const check = () => setOverflowing(el.scrollWidth > el.clientWidth + 1);
+    check();
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    window.addEventListener('resize', check);
+    return () => { ro.disconnect(); window.removeEventListener('resize', check); };
+  }, [tabs.length]);
   return (
     <div className="tab-bar">
+      <div className="tab-bar-scroll" ref={scrollRef} onWheel={e => {
+        e.currentTarget.scrollLeft += e.deltaY > 0 ? 60 : -60;
+      }}>
       {tabs.map(tab => (
         <div
           key={tab.id}
@@ -68,6 +85,7 @@ export const TabBar: React.FC<Props> = ({ tabs, activeTabId, onChange, onAddTab,
             setDragOverId(null);
           }}
           onClick={() => onChange(tab.id)}
+          onMouseDown={e => { if (e.button === 1) { e.preventDefault(); e.stopPropagation(); onCloseTab(tab.id); } }}
           onAuxClick={e => { if (e.button === 1) { e.preventDefault(); onCloseTab(tab.id); } }}
           onContextMenu={e => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, tabId: tab.id }); }}
         >
@@ -93,7 +111,14 @@ export const TabBar: React.FC<Props> = ({ tabs, activeTabId, onChange, onAddTab,
           </button>
         </div>
       ))}
+      </div>
       <button className="tab-add-btn" onClick={() => onAddTab()} title="새 워크스페이스">+</button>
+      {overflowing && (
+        <div className="tab-scroll-group">
+          <button className="tab-scroll-btn" onClick={() => scrollBy(-150)} title="이전">‹</button>
+          <button className="tab-scroll-btn" onClick={() => scrollBy(150)} title="다음">›</button>
+        </div>
+      )}
       {themeList && onThemeChange && (
         <select className="theme-select" value={themeName} onChange={e => onThemeChange(e.target.value)}>
           {themeList.map(t => <option key={t} value={t}>{t}</option>)}

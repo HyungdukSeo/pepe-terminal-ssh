@@ -534,6 +534,50 @@ html, body {
 }
 /* layout-leaf는 padding 1px만큼 #333 테두리 유지 (분할 구분) */
 
+/* popout=session-editor 모드 — 외곽 테두리/그림자 제거 (BrowserWindow 자체가 경계) */
+html.popout-html, body.popout-session-editor {
+  margin: 0 !important; padding: 0 !important;
+  background: #111 !important;
+  border: none !important; outline: none !important;
+  overflow: hidden !important;
+}
+body.popout-session-editor #root {
+  width: 100vw !important; height: 100vh !important;
+  border: none !important; outline: none !important;
+  background: #111 !important;
+}
+body.popout-session-editor #root > * {
+  border: none !important; outline: none !important;
+}
+body.popout-session-editor .session-editor {
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  height: 100%;
+  outline: none !important;
+}
+body.popout-session-editor *:focus,
+body.popout-session-editor *:focus-visible { outline: none !important; }
+
+/* popout=options 모드 — 옵션 모달만 표시, 나머지 메인 UI 모두 숨김 */
+body.popout-options .app-root > *:not(.session-editor-backdrop) { display: none !important; }
+body.popout-options .session-editor-backdrop { background: #111 !important; padding: 0 !important; }
+body.popout-options .session-editor { box-shadow: none !important; max-height: 100vh !important; height: 100vh !important; width: 100vw !important; max-width: 100vw !important; border-radius: 0 !important; }
+/* 드래그 가능한 커스텀 헤더 — frame:false 창에서 드래그 영역 */
+body.popout-options .session-editor h3:first-child {
+  margin: 0 !important;
+  padding: 8px 14px !important;
+  background: #222 !important;
+  border-bottom: 1px solid #333 !important;
+  font-size: 13px !important;
+  -webkit-app-region: drag;
+  cursor: move;
+  user-select: none;
+}
+
 .app-root {
   height: 100vh;
   display: flex;
@@ -626,7 +670,9 @@ html, body {
 /* ── TabBar ── */
 .tab-bar {
   display: flex;
-  flex-shrink: 0;
+  flex-shrink: 1;
+  flex-grow: 0;
+  flex-basis: auto;
   background: #1a1a2e;
   color: #eee;
   height: 40px;
@@ -634,7 +680,48 @@ html, body {
   padding-left: 4px;
   gap: 2px;
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
+.tab-bar-scroll {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-behavior: smooth;
+  min-width: 0;
+  flex-shrink: 1;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.tab-bar-scroll::-webkit-scrollbar { display: none; width: 0; height: 0; }
+.tab-bar .tab-item { flex-shrink: 0; }
+.tab-scroll-group {
+  display: flex;
+  flex-shrink: 0;
+  background: #222;
+  border: 1px solid #333;
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 0 4px;
+}
+.tab-scroll-btn {
+  background: transparent;
+  border: none;
+  color: #aaa;
+  font-size: 14px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  cursor: pointer;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.tab-scroll-btn + .tab-scroll-btn { border-left: 1px solid #333; }
+.tab-scroll-btn:hover { background: #2b6b9b; color: #fff; }
 
 .tab-item {
   display: flex;
@@ -1888,6 +1975,201 @@ html, body {
 }
 .session-editor h3 { margin-top: 0; position: sticky; top: -20px; background: #111; padding: 0 0 8px; margin: 0 0 16px; z-index: 5; }
 
+/* 트리 사이드바 + 콘텐츠 레이아웃 */
+.session-editor.session-editor-tree { width: 720px; max-width: calc(100vw - 40px); display: flex; flex-direction: column; padding: 16px 20px; }
+.session-editor-body { display: flex; gap: 14px; flex: 1; min-height: 0; height: 540px; }
+.session-editor-categories {
+  flex: 0 0 160px;
+  border-right: 1px solid #333;
+  padding-right: 6px;
+  overflow-y: auto;
+  font-size: 12px;
+}
+.session-editor-categories .category-item {
+  padding: 5px 8px;
+  cursor: pointer;
+  color: #aaa;
+  border-radius: 3px;
+  user-select: none;
+}
+.session-editor-categories .category-item:hover { background: rgba(255,255,255,0.05); color: #ddd; }
+.session-editor-categories .category-item.active { background: rgba(43,107,155,0.2); color: #fff; border-left: 2px solid #2b6b9b; padding-left: 6px; }
+.session-editor-pane { flex: 1; min-width: 0; overflow-y: auto; padding-right: 4px; }
+@keyframes blink { 50% { opacity: 0; } }
+
+/* 도구 모음 바 */
+.tool-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 2px 4px;
+  background: #1a1a1a;
+  border-bottom: 1px solid #333;
+  flex-wrap: wrap;
+  user-select: none;
+}
+.tool-toolbar.floating {
+  position: fixed;
+  border: 1px solid #3a475a;
+  border-radius: 4px;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.4);
+  z-index: 5000;
+}
+.quickconnect-row {
+  display: flex;
+  align-items: stretch;
+  flex-wrap: nowrap;
+  border-bottom: 1px solid #2a3340;
+  overflow: hidden;
+}
+.quickconnect-row > .qc-wrap { flex: 0 0 auto; display: flex; box-sizing: border-box; }
+.quickconnect-row > .qc-wrap > .quick-connect-bar { flex: 0 0 auto; border-bottom: 0; }
+.quickconnect-row > .tool-toolbar { border-bottom: 0; flex: 0 0 auto; }
+.qc-divider-static {
+  width: 1px;
+  background: #3a475a;
+  margin: 4px 0;
+  flex: 0 0 1px;
+}
+.tool-drag-hint {
+  position: fixed;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #2b4a6b;
+  color: #fff;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  z-index: 9999;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+  pointer-events: none;
+}
+.tool-toolbar .tool-drag {
+  color: #6a7a8c;
+  font-size: 11px;
+  padding: 0 4px;
+  cursor: grab;
+  letter-spacing: -2px;
+}
+.tool-toolbar .tool-drag:active { cursor: grabbing; }
+.tool-toolbar .tool-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: #d8e0ea;
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 3px;
+  cursor: pointer;
+  height: 22px;
+  min-width: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.tool-toolbar .tool-btn:hover {
+  background: #2c3848;
+  border-color: #3a475a;
+}
+.tool-toolbar .tool-btn.active {
+  background: #2b4a6b;
+  border-color: #3a6b9c;
+}
+.tool-toolbar .tool-sep {
+  width: 1px;
+  height: 16px;
+  background: #3a475a;
+  margin: 0 4px;
+  display: inline-block;
+}
+.hide-xterm-cursor .xterm-cursor-layer { display: none !important; }
+.hide-xterm-cursor .xterm-cursor { display: none !important; opacity: 0 !important; }
+@keyframes flame-flicker {
+  0%   { filter: brightness(1) hue-rotate(0deg); transform: scaleY(1); }
+  25%  { filter: brightness(1.2) hue-rotate(-5deg); transform: scaleY(1.05); }
+  50%  { filter: brightness(0.95) hue-rotate(3deg); transform: scaleY(0.97); }
+  75%  { filter: brightness(1.15) hue-rotate(-3deg); transform: scaleY(1.03); }
+  100% { filter: brightness(1) hue-rotate(0deg); transform: scaleY(1); }
+}
+@keyframes star-rotate { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes heart-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.3); } }
+@keyframes circle-pulse { 0%, 100% { opacity: 0.6; transform: scale(0.85); } 50% { opacity: 1; transform: scale(1.1); } }
+@keyframes rainbow-shift { 0% { background-position: 0% 0; } 100% { background-position: 300% 0; } }
+@keyframes power-shake { 0%, 100% { transform: translate(0, 0) rotate(-5deg); } 25% { transform: translate(-1px, -1px) rotate(5deg); } 50% { transform: translate(1px, 1px) rotate(-3deg); } 75% { transform: translate(-1px, 1px) rotate(3deg); } }
+@keyframes spark-fly {
+  0%   { transform: translate(0, 0) scale(1); opacity: 1; }
+  100% { transform: translate(var(--dx, 30px), var(--dy, -30px)) scale(0.2); opacity: 0; }
+}
+.xterm-power-spark {
+  position: absolute; pointer-events: none; z-index: 6;
+  width: 4px; height: 4px; border-radius: 50%;
+  animation: spark-fly 0.6s ease-out forwards;
+}
+@keyframes screen-shake {
+  0%, 100% { transform: translate(0, 0); }
+  10% { transform: translate(-4px, -2px); }
+  20% { transform: translate(4px, -2px); }
+  30% { transform: translate(-3px, 2px); }
+  40% { transform: translate(3px, -3px); }
+  50% { transform: translate(-2px, 3px); }
+  60% { transform: translate(2px, 2px); }
+  70% { transform: translate(-3px, -2px); }
+  80% { transform: translate(3px, 1px); }
+  90% { transform: translate(-2px, -1px); }
+}
+.xterm.xterm-power-shake { animation: screen-shake 0.4s ease-in-out; }
+
+/* 하트 퍼짐 — 빈 입력에서 백스페이스 시 */
+@keyframes heart-spread {
+  0%   { transform: translate(-50%, -50%) scale(0.4); opacity: 1; }
+  60%  { opacity: 0.7; }
+  100% { transform: translate(-50%, -50%) scale(4); opacity: 0; }
+}
+.xterm-heart-spread {
+  position: absolute; pointer-events: none; z-index: 6;
+  font-size: 20px; color: #ff3366;
+  text-shadow: 0 0 8px #ff3366, 0 0 16px #ff0066;
+  animation: heart-spread 0.8s ease-out forwards;
+}
+
+/* 별 번짐 — 빈 입력에서 백스페이스 시 (여러 별이 사방으로) */
+@keyframes star-spread {
+  0%   { transform: translate(0, 0) scale(0.5) rotate(0deg); opacity: 1; }
+  100% { transform: translate(var(--dx, 40px), var(--dy, -40px)) scale(0.2) rotate(540deg); opacity: 0; }
+}
+.xterm-star-spread {
+  position: absolute; pointer-events: none; z-index: 6;
+  font-size: 16px; color: #ffd700;
+  text-shadow: 0 0 6px #ffd700, 0 0 12px #ff9900;
+  animation: star-spread 0.9s ease-out forwards;
+}
+
+/* 불꽃 폭발 — 빈 입력에서 백스페이스 시 (여러 🔥 가 위/사방으로) */
+@keyframes flame-spread {
+  0%   { transform: translate(0, 0) scale(0.6); opacity: 1; }
+  60%  { opacity: 0.8; }
+  100% { transform: translate(var(--dx, 0px), var(--dy, -50px)) scale(1.4); opacity: 0; }
+}
+.xterm-flame-spread {
+  position: absolute; pointer-events: none; z-index: 6;
+  font-size: 18px;
+  text-shadow: 0 0 8px #ff5722, 0 0 14px #ff9800;
+  animation: flame-spread 0.85s ease-out forwards;
+}
+
+/* 무지개 폭발 — 빈 입력에서 백스페이스 시 (색색의 점이 사방으로) */
+@keyframes rainbow-spread {
+  0%   { transform: translate(0, 0) scale(1); opacity: 1; }
+  100% { transform: translate(var(--dx, 0px), var(--dy, 0px)) scale(0.3); opacity: 0; }
+}
+.xterm-rainbow-spread {
+  position: absolute; pointer-events: none; z-index: 6;
+  width: 8px; height: 8px; border-radius: 50%;
+  box-shadow: 0 0 6px currentColor, 0 0 12px currentColor;
+  animation: rainbow-spread 0.9s ease-out forwards;
+}
+
 /* Claude 채팅 이력 패널 — 메시지 영역 자리에 표시 */
 .claude-chat-history-panel {
   flex: 1;
@@ -2028,6 +2310,38 @@ html, body {
 
 .session-editor-grid input[type="radio"] {
   accent-color: #2b6b9b;
+}
+
+/* X11 forwarding 체크박스 행 — column 2 안에서 모든 항목 왼쪽 정렬, 체크 여부 무관하게 행 높이 고정 */
+.session-editor-grid .x11-forwarding-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-start;
+  width: 100%;
+  min-height: 30px; /* 체크 여부 무관하게 동일 높이 유지 — 다른 행과 어긋남 방지 */
+}
+.session-editor-grid .x11-forwarding-row input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+}
+.session-editor-grid .x11-forwarding-row .x11-label {
+  font-size: 12px;
+  color: #aaa;
+  white-space: nowrap;
+}
+.session-editor-grid .x11-forwarding-row .x11-display-input {
+  width: 70px !important;
+  height: 22px !important;
+  padding: 0 6px !important;
+  font-size: 12px;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+}
+.session-editor-grid .x11-forwarding-row .x11-hint {
+  font-size: 11px;
+  color: #888;
+  white-space: nowrap;
 }
 
 .password-field {
@@ -2246,36 +2560,57 @@ html, body {
   margin-bottom: 4px;
 }
 
-/* ── Options dialog tabs ── */
-.options-tabs {
+/* ── Options dialog — 좌측 사이드바 + 우측 콘텐츠 ── */
+.options-body {
   display: flex;
-  gap: 0;
-  border-bottom: 1px solid #333;
-  margin-bottom: 14px;
+  gap: 14px;
 }
 
-.options-tab {
-  padding: 6px 16px;
+.options-tabs.options-tabs-side {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-right: 1px solid #333;
+  border-bottom: none;
+  padding: 4px 0;
+  margin-bottom: 0;
+  flex: 0 0 110px;
+}
+
+.options-tabs.options-tabs-side .options-tab {
+  text-align: left;
+  padding: 8px 14px;
   background: transparent;
   color: #888;
   border: none;
-  border-bottom: 2px solid transparent;
+  border-left: 2px solid transparent;
+  border-bottom: none;
+  border-radius: 0;
   cursor: pointer;
   font-size: 13px;
   transition: all 0.12s;
 }
 
-.options-tab:hover {
+.options-tabs.options-tabs-side .options-tab:hover {
   color: #ccc;
+  background: rgba(255,255,255,0.04);
 }
 
-.options-tab.active {
+.options-tabs.options-tabs-side .options-tab.active {
   color: #fff;
-  border-bottom-color: #2b6b9b;
+  border-left-color: #2b6b9b;
+  background: rgba(43,107,155,0.12);
+}
+
+.options-pane {
+  flex: 1;
+  min-width: 0;
 }
 
 .options-content {
-  min-height: 200px;
+  height: 580px;
+  overflow-y: auto;
+  padding-right: 6px;
 }
 
 /* ── Font size OSD ── */

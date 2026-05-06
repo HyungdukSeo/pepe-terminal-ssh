@@ -1,5 +1,5 @@
 // src/components/TerminalPanel.tsx
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import ReactDOM from 'react-dom';
 import type { Panel, PanelSession } from '../utils/layoutUtils';
 import { ContextMenu } from './ContextMenu';
@@ -47,7 +47,92 @@ let currentWordSeparator = localStorage.getItem('terminalWordSeparator') ?? DEFA
 // termId별 폰트 크기
 const termFontSizes: Map<string, number> = new Map();
 
-const termStore: Map<string, { term: Terminal; fit: FitAddon; search: SearchAddon }> = new Map();
+export const termStore: Map<string, { term: Terminal; fit: FitAddon; search: SearchAddon }> = new Map();
+
+// 비활성 워크스페이스/패널의 xterm DOM 을 보관하는 hidden stash — detach 시 scrollbar/viewport 상태 보존
+function getXtermStash(): HTMLElement {
+  let s = document.getElementById('xterm-stash') as HTMLElement | null;
+  if (!s) {
+    s = document.createElement('div');
+    s.id = 'xterm-stash';
+    s.style.cssText = 'position:fixed;left:-99999px;top:-99999px;width:1px;height:1px;overflow:hidden;pointer-events:none;visibility:hidden';
+    document.body.appendChild(s);
+  }
+  return s;
+}
+// 여러 줄 붙여넣기 BrowserWindow 의 결과 (paste/cancel) 리스너 — 모듈 1회만 등록
+// (TerminalPanel 인스턴스가 여러 개일 때 중복 등록되면 paste 가 N번 실행됨)
+let _pasteResultListenerInstalled = false;
+function ensurePasteResultListener() {
+  if (_pasteResultListenerInstalled) return;
+  _pasteResultListenerInstalled = true;
+  try {
+    (window as any).api?.onPasteModalResult?.((p: { id: string; action: 'paste' | 'cancel'; text: string }) => {
+      const tid = p.id;
+      if (p.action === 'paste') {
+        try {
+          const entry = termStore.get(tid);
+          if (entry) entry.term.paste(p.text);
+          else if (ptyConnected.has(tid)) (window as any).api.ptyInput(tid, p.text);
+          else (window as any).api.sendSSHInput(tid, p.text);
+        } catch {}
+      }
+      setTimeout(() => focusTerm(tid), 0);
+    });
+  } catch {}
+}
+// 앱 초기화 시 한 번 호출
+if (typeof window !== 'undefined') {
+  setTimeout(ensurePasteResultListener, 0);
+}
+
+export function stashXtermDom(termId: string) {
+  const entry = termStore.get(termId);
+  if (!entry) return;
+  const el = (entry.term as any).element as HTMLElement | undefined;
+  if (el && el.parentNode && el.parentNode !== getXtermStash()) {
+    getXtermStash().appendChild(el);
+  }
+}
+// 외부에서 termId 의 fit + resize 강제 — 워크스페이스 전환 후 풀스크린 터미널 크기 보정 등
+export function refitTerm(termId: string) {
+  const entry = termStore.get(termId);
+  if (!entry) return;
+  try {
+    entry.fit.fit();
+    const term: any = entry.term;
+    const c = term.cols;
+    const r = term.rows;
+    if (c && r) {
+      if ((window as any).api?.ptyResize) (window as any).api.ptyResize(termId, c, r);
+      (window as any).api?.resizeSSH?.(termId, c, r);
+    }
+    // xterm 의 내부 viewport scroll-area 강제 재계산 — DOM 이동 후 scrollbar 가 안 보이는 케이스 핵심 fix
+    // term._core._viewport.syncScrollArea() 가 scroll-area div 의 height 를 (totalRows * cellHeight) 로 갱신
+    try { term._core?._viewport?.syncScrollArea?.(); } catch {}
+    // 그래도 안 되면 행 수 일시적으로 변경 → 복원으로 강제 resize 트리거
+    try {
+      const rows = term.rows;
+      if (rows && rows > 1) {
+        term.resize(term.cols, rows - 1);
+        term.resize(term.cols, rows);
+      }
+    } catch {}
+    term.refresh?.(0, term.rows - 1);
+    // viewport 의 overflow 토글 + scrollTop 만지기로 브라우저 scrollbar 재렌더 강제
+    const elem = term.element as HTMLElement | undefined;
+    const viewport = elem?.querySelector?.('.xterm-viewport') as HTMLElement | null;
+    if (viewport) {
+      const orig = viewport.style.overflowY;
+      viewport.style.overflowY = 'hidden';
+      void viewport.offsetHeight;
+      viewport.style.overflowY = orig || 'auto';
+      const st = viewport.scrollTop;
+      viewport.scrollTop = st + 1;
+      viewport.scrollTop = st;
+    }
+  } catch {}
+}
 const sshInitialized = new Set<string>();
 const globalConnected = new Set<string>();
 const connectedListeners = new Set<() => void>();
@@ -263,7 +348,12 @@ function getOrCreateTerm(termId: string): { term: Terminal; fit: FitAddon; searc
       // Ctrl+V / 브라우저 paste 가로채기 — 여러 줄 붙여넣기 다이얼로그
       el.addEventListener('paste', (e: ClipboardEvent) => {
         const text = e.clipboardData?.getData('text');
-        if (text && text.includes('\n')) {
+        if (!text) return;
+        // 실제로 "여러 줄"인지 판단 — 끝에 trailing newline 만 있는 1줄짜리는 일반 paste 로 처리
+        // (e.g., "ls -l;\n" 또는 "ls -l;\n\n" 은 1줄로 봄)
+        const lines = text.split(/\r?\n/).filter(l => l.length > 0);
+        const isMultiLine = lines.length >= 2;
+        if (isMultiLine) {
           const settings = getTerminalSettings();
           if (settings.multiLinePaste === 'dialog') {
             e.preventDefault();
@@ -470,9 +560,25 @@ export function cloneTermStyle(srcTermId: string, dstTermId: string) {
     if (ff) dstEntry.term.options.fontFamily = ff;
     if (fs !== undefined) dstEntry.term.options.fontSize = fs;
     if (sb !== undefined) dstEntry.term.options.scrollback = sb;
+    // 커서 스타일/깜박임/커스텀 오버레이 복제
+    const srcCs = (srcEntry.term.options as any).cursorStyle as string | undefined;
+    const srcCb = (srcEntry.term.options as any).cursorBlink as boolean | undefined;
+    // 소스가 커스텀 오버레이를 쓰고 있으면 dst 에도 동일 적용 (overlay 별도)
+    if (flameOverlayCleanup.has(srcTermId)) {
+      // 어떤 커스텀 스타일인지 알아내려면 별도 추적 필요 — termCursorStyleCache 에 저장
+      const customStyle = termCursorStyleCache.get(srcTermId);
+      if (customStyle) {
+        applyCursorStyleToTerm(dstTermId, customStyle as any, srcCb);
+      }
+    } else if (srcCs) {
+      applyCursorStyleToTerm(dstTermId, srcCs as any, srcCb);
+    }
     try { dstEntry.fit.fit(); } catch {}
   }
 }
+
+// 커스텀 커서 스타일 추적 — cloneTermStyle 등에서 참조
+const termCursorStyleCache: Map<string, string> = new Map();
 
 export function applyFontToAll(fontFamily?: string, fontSize?: number) {
   if (fontFamily) localStorage.setItem('terminalFontFamily', fontFamily);
@@ -516,6 +622,17 @@ export function refitAllTerms() {
       } else {
         (window as any).api?.resizeSSH?.(tid, newCols, newRows);
       }
+      // viewport scrollbar 재계산 강제 — fit 만으로는 scrollbar 가 다시 나타나지 않는 케이스 보정
+      const viewport = el?.querySelector?.('.xterm-viewport') as HTMLElement | null;
+      if (viewport) {
+        const orig = viewport.style.overflowY;
+        viewport.style.overflowY = 'hidden';
+        void viewport.offsetHeight;
+        viewport.style.overflowY = orig || 'auto';
+        const st = viewport.scrollTop;
+        viewport.scrollTop = st + 1;
+        viewport.scrollTop = st;
+      }
     } catch {}
   }
 }
@@ -530,6 +647,290 @@ export function applyFontToTerm(termId: string, fontFamily?: string, fontSize?: 
   if (fontFamily) entry.term.options.fontFamily = fontFamily;
   if (fontSize) { entry.term.options.fontSize = fontSize; termFontSizes.set(termId, fontSize); }
   try { entry.fit.fit(); } catch {}
+}
+
+// term 별 flame 오버레이 상태 — 새 element + onCursorMove 정리용
+const flameOverlayCleanup: Map<string, () => void> = new Map();
+
+type CustomCursorStyle = 'flame' | 'star' | 'heart' | 'circle' | 'rainbow' | 'power';
+const customCursorStyles: CustomCursorStyle[] = ['flame', 'star', 'heart', 'circle', 'rainbow', 'power'];
+
+// 키 입력 시 스파크/파티클 효과 (Hyper hyperpower 스타일)
+function spawnPowerSparks(elem: HTMLElement, x: number, y: number) {
+  const colors = ['#ff5722', '#ffc107', '#ffeb3b', '#ff9800', '#f44336'];
+  const count = 8 + Math.floor(Math.random() * 6);
+  for (let i = 0; i < count; i++) {
+    const spark = document.createElement('div');
+    spark.className = 'xterm-power-spark';
+    const angle = (Math.PI * 2 * i) / count + Math.random() * 0.4;
+    const dist = 30 + Math.random() * 30;
+    spark.style.cssText += `left:${x}px;top:${y}px;background:${colors[Math.floor(Math.random() * colors.length)]};box-shadow:0 0 6px currentColor;--dx:${Math.cos(angle) * dist}px;--dy:${Math.sin(angle) * dist}px;`;
+    elem.appendChild(spark);
+    setTimeout(() => { try { spark.remove(); } catch {} }, 700);
+  }
+}
+
+// 하트 퍼짐 — 1개 ♥ 가 커서 위치에서 점점 커지며 페이드아웃
+function spawnHeartSpread(elem: HTMLElement, x: number, y: number) {
+  const heart = document.createElement('div');
+  heart.className = 'xterm-heart-spread';
+  heart.textContent = '♥';
+  heart.style.cssText += `left:${x}px;top:${y}px;`;
+  elem.appendChild(heart);
+  setTimeout(() => { try { heart.remove(); } catch {} }, 900);
+}
+
+// 별 번짐 — 여러 ✦ 가 사방으로 회전하며 퍼져나감
+function spawnStarSpread(elem: HTMLElement, x: number, y: number) {
+  const count = 6 + Math.floor(Math.random() * 4);
+  for (let i = 0; i < count; i++) {
+    const star = document.createElement('div');
+    star.className = 'xterm-star-spread';
+    star.textContent = '✦';
+    const angle = (Math.PI * 2 * i) / count + Math.random() * 0.6;
+    const dist = 40 + Math.random() * 30;
+    star.style.cssText += `left:${x}px;top:${y}px;--dx:${Math.cos(angle) * dist}px;--dy:${Math.sin(angle) * dist}px;`;
+    elem.appendChild(star);
+    setTimeout(() => { try { star.remove(); } catch {} }, 1000);
+  }
+}
+
+// 무지개 폭발 — 빨주노초파남보 색색의 점이 사방으로 퍼짐
+function spawnRainbowSpread(elem: HTMLElement, x: number, y: number) {
+  const colors = ['#ff0000', '#ff9900', '#ffff00', '#00ff00', '#00ccff', '#3366ff', '#cc00ff'];
+  const total = 14;
+  for (let i = 0; i < total; i++) {
+    const dot = document.createElement('div');
+    dot.className = 'xterm-rainbow-spread';
+    const angle = (Math.PI * 2 * i) / total + Math.random() * 0.3;
+    const dist = 40 + Math.random() * 35;
+    const color = colors[i % colors.length];
+    dot.style.cssText += `left:${x}px;top:${y}px;background:${color};color:${color};--dx:${Math.cos(angle) * dist}px;--dy:${Math.sin(angle) * dist}px;`;
+    elem.appendChild(dot);
+    setTimeout(() => { try { dot.remove(); } catch {} }, 1000);
+  }
+}
+
+// 불꽃 폭발 — 여러 🔥 가 위쪽으로 솟구치며 사라짐
+function spawnFlameSpread(elem: HTMLElement, x: number, y: number) {
+  const count = 7 + Math.floor(Math.random() * 4);
+  for (let i = 0; i < count; i++) {
+    const f = document.createElement('div');
+    f.className = 'xterm-flame-spread';
+    f.textContent = '🔥';
+    // 위쪽으로 부채꼴 — 좌/우 30도 안에서 위로 50~80px
+    const angle = -Math.PI / 2 + (Math.random() - 0.5) * (Math.PI / 1.5);
+    const dist = 40 + Math.random() * 50;
+    f.style.cssText += `left:${x}px;top:${y}px;--dx:${Math.cos(angle) * dist}px;--dy:${Math.sin(angle) * dist}px;`;
+    elem.appendChild(f);
+    setTimeout(() => { try { f.remove(); } catch {} }, 950);
+  }
+}
+
+function buildCursorOverlayCss(style: CustomCursorStyle): { css: string; emoji?: string } {
+  switch (style) {
+    case 'flame': return { css: `
+      background: linear-gradient(180deg, #ffe066 0%, #ff9933 40%, #ff3300 80%, #cc0000 100%);
+      border-radius: 50% 50% 30% 30% / 60% 60% 40% 40%;
+      box-shadow: 0 0 6px #ff8800, 0 0 12px #ff5500;
+      animation: flame-flicker 0.6s ease-in-out infinite;
+    `};
+    case 'star': return { emoji: '✦', css: `
+      color: #ffd700; text-shadow: 0 0 6px #ffd700, 0 0 12px #ff9900;
+      font-size: 1.1em; line-height: 1; text-align: center;
+      animation: star-rotate 2s linear infinite;
+    `};
+    case 'heart': return { emoji: '♥', css: `
+      color: #ff3366; text-shadow: 0 0 4px #ff3366, 0 0 8px #ff0066;
+      font-size: 1em; line-height: 1; text-align: center;
+      animation: heart-pulse 1s ease-in-out infinite;
+    `};
+    case 'circle': return { css: `
+      background: currentColor; color: #fff;
+      border-radius: 50%; transform-origin: center;
+      animation: circle-pulse 1.2s ease-in-out infinite;
+    `};
+    case 'rainbow': return { css: `
+      background: linear-gradient(90deg,#ff0000,#ff9900,#ffff00,#00ff00,#00ccff,#3366ff,#cc00ff);
+      background-size: 300% 100%;
+      animation: rainbow-shift 2s linear infinite;
+      box-shadow: 0 0 4px rgba(255,255,255,0.4);
+    `};
+    case 'power': return { emoji: '💥', css: `
+      color: #ffeb3b; text-shadow: 0 0 8px #ff9800, 0 0 14px #ff5722;
+      font-size: 1em; line-height: 1; text-align: center;
+      animation: power-shake 0.15s ease-in-out infinite;
+    `};
+  }
+}
+
+export function applyCursorStyleToTerm(termId: string, style?: 'block' | 'underline' | 'bar' | CustomCursorStyle, blink?: boolean) {
+  const entry = termStore.get(termId);
+  if (!entry) return;
+  if (style) termCursorStyleCache.set(termId, style);
+  // 기존 커스텀 오버레이 정리
+  const prev = flameOverlayCleanup.get(termId);
+  if (prev) { try { prev(); } catch {} flameOverlayCleanup.delete(termId); }
+  try {
+    if (style && customCursorStyles.includes(style as CustomCursorStyle)) {
+      // xterm 자체 커서 비활성 (얇은 bar 로 두고 오버레이 사용)
+      (entry.term.options as any).cursorStyle = 'bar';
+      (entry.term.options as any).cursorBlink = false;
+      const term: any = entry.term;
+      const elem = term.element as HTMLElement | undefined;
+      if (!elem) return;
+      const conf = buildCursorOverlayCss(style as CustomCursorStyle);
+      const overlay = document.createElement('div');
+      overlay.className = 'xterm-custom-cursor';
+      overlay.style.cssText = `position:absolute;pointer-events:none;z-index:5;${conf.css}`;
+      if (conf.emoji) overlay.textContent = conf.emoji;
+      const screen = elem.querySelector('.xterm-screen') as HTMLElement | null;
+      if (screen && screen.parentElement) screen.parentElement.appendChild(overlay);
+      else elem.appendChild(overlay);
+
+      const updatePos = () => {
+        try {
+          const buf = term.buffer.active;
+          const renderService = term._core?._renderService;
+          const cellW = renderService?.dimensions?.css?.cell?.width ?? renderService?.dimensions?.actualCellWidth ?? 9;
+          const cellH = renderService?.dimensions?.css?.cell?.height ?? renderService?.dimensions?.actualCellHeight ?? 17;
+          // 글씨를 가리지 않게 살짝 우측으로 (반 칸 정도) — 입력 위치 다음 칸을 가리키는 형태
+          overlay.style.left = (buf.cursorX * cellW + cellW * 0.5) + 'px';
+          overlay.style.top = (buf.cursorY * cellH) + 'px';
+          overlay.style.width = cellW + 'px';
+          overlay.style.height = cellH + 'px';
+        } catch {}
+      };
+      updatePos();
+      const off1 = entry.term.onCursorMove(updatePos);
+      const off2 = entry.term.onRender(updatePos);
+      const off3 = entry.term.onResize(updatePos);
+      // 키 입력 hook — power 는 매 키마다 스파크, flame/heart/star/power 는 빈 백스페이스에서 효과
+      let off4: any = null;
+      const fxStyles: CustomCursorStyle[] = ['power', 'heart', 'star', 'flame', 'rainbow'];
+      if (fxStyles.includes(style as CustomCursorStyle)) {
+        off4 = entry.term.onData((data: string) => {
+          try {
+            const parent = overlay.parentElement;
+            if (!parent) return;
+            const left = parseFloat(overlay.style.left || '0');
+            const top = parseFloat(overlay.style.top || '0');
+            // power: 모든 키 입력에 스파크
+            if (style === 'power') spawnPowerSparks(parent, left + 4, top + 8);
+            // 백스페이스 처리 — 빈 입력에서 효과
+            if (data === '\x7f' || data === '\b') {
+              const buf = (term as any).buffer.active;
+              const prevX = buf.cursorX;
+              setTimeout(() => {
+                try {
+                  const newX = (term as any).buffer.active.cursorX;
+                  if (newX < prevX) return; // 정상 삭제 — 효과 X
+                  // 지울 곳 없음 — 모드별 효과
+                  const cx = parseFloat(overlay.style.left || '0') + 6;
+                  const cy = parseFloat(overlay.style.top || '0') + 8;
+                  if (style === 'power') {
+                    elem.classList.remove('xterm-power-shake');
+                    void elem.offsetHeight;
+                    elem.classList.add('xterm-power-shake');
+                    setTimeout(() => elem.classList.remove('xterm-power-shake'), 450);
+                  } else if (style === 'heart') {
+                    spawnHeartSpread(parent, cx, cy);
+                  } else if (style === 'star') {
+                    spawnStarSpread(parent, cx, cy);
+                  } else if (style === 'flame') {
+                    spawnFlameSpread(parent, cx, cy);
+                  } else if (style === 'rainbow') {
+                    spawnRainbowSpread(parent, cx, cy);
+                  }
+                } catch {}
+              }, 60);
+            }
+          } catch {}
+        });
+      }
+      flameOverlayCleanup.set(termId, () => {
+        try { off1.dispose(); } catch {}
+        try { off2.dispose(); } catch {}
+        try { off3.dispose(); } catch {}
+        try { off4?.dispose?.(); } catch {}
+        try { overlay.remove(); } catch {}
+      });
+    } else if (style === 'bar' && blink) {
+      // xterm 의 bar+blink 가 시각적으로 안보이는 케이스 → 커스텀 오버레이로 깜박임 구현
+      const term: any = entry.term;
+      try { term.options.cursorStyle = 'bar'; } catch {}
+      try { term.options.cursorBlink = false; } catch {}
+      const elem = term.element as HTMLElement | undefined;
+      if (elem) {
+        // xterm 자체 커서 layer 숨김 (정적 bar 와 오버레이 겹침 방지)
+        elem.classList.add('hide-xterm-cursor');
+        const overlay = document.createElement('div');
+        overlay.className = 'xterm-custom-cursor xterm-bar-blink';
+        overlay.style.cssText = 'position:absolute;pointer-events:none;z-index:5;background:currentColor;animation:blink 1s step-end infinite;';
+        const screen = elem.querySelector('.xterm-screen') as HTMLElement | null;
+        const host = (screen && screen.parentElement) || elem;
+        host.appendChild(overlay);
+        const updatePos = () => {
+          try {
+            const buf = term.buffer.active;
+            const rs = term._core?._renderService;
+            const cellW = rs?.dimensions?.css?.cell?.width ?? rs?.dimensions?.actualCellWidth ?? 9;
+            const cellH = rs?.dimensions?.css?.cell?.height ?? rs?.dimensions?.actualCellHeight ?? 17;
+            const w = 2;
+            // 글자 뒤(다음 셀 왼쪽 가장자리)에 위치 — 겹침 방지
+            overlay.style.left = ((buf.cursorX + 1) * cellW) + 'px';
+            overlay.style.top = (buf.cursorY * cellH) + 'px';
+            overlay.style.width = w + 'px';
+            overlay.style.height = cellH + 'px';
+            // 테마 전경색 동기화
+            const fg = (term.options as any)?.theme?.foreground || '#e6e1cf';
+            overlay.style.color = fg;
+          } catch {}
+        };
+        updatePos();
+        const off1 = entry.term.onCursorMove(updatePos);
+        const off2 = entry.term.onRender(updatePos);
+        const off3 = entry.term.onResize(updatePos);
+        flameOverlayCleanup.set(termId, () => {
+          try { off1.dispose(); } catch {}
+          try { off2.dispose(); } catch {}
+          try { off3.dispose(); } catch {}
+          try { overlay.remove(); } catch {}
+          try { elem.classList.remove('hide-xterm-cursor'); } catch {}
+        });
+      }
+    } else if (style) {
+      const term: any = entry.term;
+      // 깜박임 재시작을 위해 false 로 강제 후 다음 tick 에 원하는 값 적용
+      try { term.options.cursorBlink = false; } catch {}
+      try { term.options.cursorStyle = style; } catch {}
+      try { term.refresh?.(0, term.rows - 1); } catch {}
+      if (blink) {
+        setTimeout(() => {
+          try { term.options.cursorBlink = true; } catch {}
+          try { term.refresh?.(0, term.rows - 1); } catch {}
+          try {
+            const ta = term.textarea as HTMLTextAreaElement | undefined;
+            if (ta && document.activeElement !== ta) ta.focus({ preventScroll: true });
+          } catch {}
+        }, 30);
+      }
+    } else if (typeof blink === 'boolean') {
+      const term: any = entry.term;
+      try { term.options.cursorBlink = false; } catch {}
+      try { term.refresh?.(0, term.rows - 1); } catch {}
+      if (blink) {
+        setTimeout(() => {
+          try { term.options.cursorBlink = true; } catch {}
+          try { term.refresh?.(0, term.rows - 1); } catch {}
+          try {
+            const ta = term.textarea as HTMLTextAreaElement | undefined;
+            if (ta && document.activeElement !== ta) ta.focus({ preventScroll: true });
+          } catch {}
+        }, 30);
+      }
+    }
+  } catch {}
 }
 
 export function applyThemeToTerm(termId: string, themeName: string) {
@@ -1052,6 +1453,120 @@ function cancelReconnect(termId: string) {
   }
 }
 
+// ─── 여러 줄 붙여넣기 모달 — 드래그 이동 + 우/하/우하 리사이즈 (좌상단 고정) ─────────────
+interface MultiPasteModalProps {
+  text: string;
+  onChange: (t: string) => void;
+  onCancel: () => void;
+  onPaste: () => void;
+}
+// @ts-expect-error unused (kept for fallback)
+const MultiPasteModal: React.FC<MultiPasteModalProps> = ({ text, onChange, onCancel, onPaste }) => {
+  const [pos, setPos] = useState(() => {
+    const w = 600, h = 480;
+    return { x: Math.max(0, (window.innerWidth - w) / 2), y: Math.max(0, window.innerHeight * 0.1), w, h };
+  });
+  const dragRef = useRef<{ mode: 'move' | 'resize-r' | 'resize-b' | 'resize-br'; startX: number; startY: number; startPos: typeof pos } | null>(null);
+  const modalRef = useRef<HTMLDivElement | null>(null);
+
+  const startDrag = useCallback((mode: 'move' | 'resize-r' | 'resize-b' | 'resize-br') => (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragRef.current = { mode, startX: e.clientX, startY: e.clientY, startPos: { ...pos } };
+    const onMove = (ev: MouseEvent) => {
+      const d = dragRef.current; if (!d) return;
+      const dx = ev.clientX - d.startX;
+      const dy = ev.clientY - d.startY;
+      const sp = d.startPos;
+      let next = { ...sp };
+      if (d.mode === 'move') {
+        // 자유 이동 — 헤더(40px)는 항상 클릭 가능하게 최소한 화면 안에 보이도록만 제한
+        next.x = Math.max(-(sp.w - 80), Math.min(window.innerWidth - 80, sp.x + dx));
+        next.y = Math.max(0, Math.min(window.innerHeight - 40, sp.y + dy));
+      } else {
+        if (d.mode === 'resize-r' || d.mode === 'resize-br') {
+          next.w = Math.max(360, sp.w + dx);
+        }
+        if (d.mode === 'resize-b' || d.mode === 'resize-br') {
+          next.h = Math.max(240, sp.h + dy);
+        }
+      }
+      // DOM 직접 갱신 — 매 mousemove 마다 React 리렌더 회피로 끊김 없음
+      const m = modalRef.current;
+      if (m) {
+        m.style.left = next.x + 'px';
+        m.style.top = next.y + 'px';
+        m.style.width = next.w + 'px';
+        m.style.height = next.h + 'px';
+      }
+      (dragRef.current!.startPos as any).__lastNext = next;
+    };
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      const last = (dragRef.current?.startPos as any)?.__lastNext;
+      if (last) setPos(last);
+      dragRef.current = null;
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }, [pos]);
+
+  return (
+    <div
+      ref={modalRef}
+      onClick={e => e.stopPropagation()}
+      style={{
+        position: 'fixed', left: pos.x, top: pos.y, width: pos.w, height: pos.h,
+        background: '#1a1a1a', border: '1px solid #333', borderRadius: 6,
+        boxShadow: '0 8px 32px rgba(0,0,0,0.6)', display: 'flex', flexDirection: 'column',
+        color: '#eee', zIndex: 2000, overflow: 'hidden',
+      }}
+    >
+      {/* 헤더 — 드래그 핸들 */}
+      <div
+        onMouseDown={startDrag('move')}
+        style={{
+          padding: '10px 14px', borderBottom: '1px solid #333',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          cursor: 'move', userSelect: 'none', background: '#222',
+        }}
+      >
+        <strong style={{ fontSize: 13 }}>여러 줄 붙여넣기</strong>
+        <button onClick={onCancel} style={{ background: 'transparent', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: 16, padding: 0 }}>✕</button>
+      </div>
+      {/* 본문 */}
+      <div style={{ padding: 14, display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+        <p style={{ color: '#888', fontSize: 12, margin: '0 0 8px' }}>다음 텍스트를 붙여넣을까요?</p>
+        <textarea
+          autoFocus
+          ref={el => { if (el && (el as any).__focused !== true) { (el as any).__focused = true; setTimeout(() => el.focus(), 0); } }}
+          value={text}
+          onChange={e => onChange(e.target.value)}
+          onKeyDown={e => {
+            e.stopPropagation();
+            if (e.key === 'Escape') onCancel();
+            else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); onPaste(); }
+          }}
+          style={{
+            flex: 1, minHeight: 0, width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box',
+            background: '#111', color: '#eee', border: '1px solid #333', borderRadius: 4,
+            padding: 8, fontSize: 12, fontFamily: 'monospace', resize: 'none',
+          }}
+        />
+        <div style={{ display: 'flex', gap: 8, marginTop: 12, justifyContent: 'flex-end' }}>
+          <button onClick={onCancel} style={{ padding: '6px 16px', background: '#333', border: '1px solid #555', color: '#eee', borderRadius: 4, cursor: 'pointer' }}>취소 (Esc)</button>
+          <button onClick={onPaste} style={{ padding: '6px 16px', background: '#2b6b9b', border: '1px solid #3a8bc8', color: '#fff', borderRadius: 4, cursor: 'pointer' }}>붙여넣기 (Ctrl+Enter)</button>
+        </div>
+      </div>
+      {/* 리사이즈 핸들들 — 우, 하, 우하 (좌상단 고정) */}
+      <div onMouseDown={startDrag('resize-r')} style={{ position: 'absolute', right: 0, top: 0, width: 6, height: '100%', cursor: 'ew-resize' }} />
+      <div onMouseDown={startDrag('resize-b')} style={{ position: 'absolute', bottom: 0, left: 0, height: 6, width: '100%', cursor: 'ns-resize' }} />
+      <div onMouseDown={startDrag('resize-br')} style={{ position: 'absolute', bottom: 0, right: 0, width: 14, height: 14, cursor: 'nwse-resize', background: 'linear-gradient(135deg, transparent 50%, #555 50%, #555 60%, transparent 60%, transparent 70%, #555 70%, #555 80%, transparent 80%)' }} />
+    </div>
+  );
+};
+
 export function focusTerm(termId: string) {
   const entry = termStore.get(termId);
   if (!entry) return;
@@ -1061,6 +1576,17 @@ export function focusTerm(termId: string) {
     const el = (entry.term as any).element as HTMLElement | undefined;
     const textarea = el?.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null;
     if (textarea) textarea.focus();
+    // 포커스 받을 때 fit + resize 한 번 — vi 등 풀스크린 앱이 잘못된 사이즈로 떴던 케이스 보정
+    const termEl = (entry.term as any).element as HTMLElement | undefined;
+    if (termEl && termEl.offsetWidth > 0) {
+      try { entry.fit?.fit?.(); } catch {}
+      const c = (entry.term as any).cols;
+      const r = (entry.term as any).rows;
+      if (c && r) {
+        if (ptyConnected.has(termId)) (window as any).api?.ptyResize?.(termId, c, r);
+        else (window as any).api?.resizeSSH?.(termId, c, r);
+      }
+    }
   } catch {}
 }
 
@@ -1093,6 +1619,9 @@ type Props = {
   onSwitchSession?: (nodeId: string, idx: number) => void;
   onCloseSession?: (nodeId: string, termId: string) => void;
   onMoveSession?: (fromNodeId: string, termId: string, toNodeId: string) => void;
+  workspaceList?: { id: string; title: string }[];
+  currentWorkspaceId?: string;
+  onMoveSessionToWorkspace?: (fromNodeId: string, termId: string, targetTabId: string) => void;
   onSplitMoveSession?: (fromNodeId: string, termId: string, toNodeId: string, zone: 'left' | 'right' | 'top' | 'bottom') => void;
   onReorderSession?: (nodeId: string, fromIdx: number, toIdx: number) => void;
   onAddSession?: (nodeId: string, shellName?: string, shellPath?: string) => void;
@@ -1115,6 +1644,7 @@ export const TerminalPanel: React.FC<Props> = ({
   nodeId, panel, onSplit, onClose, onSelect, onSwitchSession, onCloseSession, onMoveSession, onSplitMoveSession, onReorderSession, onAddSession, onRenameSession, onConnectDrop, onDuplicateSession, availableShells,
   treeWidth = 240, onTreeWidthChange, onOpenRemoteFile, onAttachToClaude,
   isFloating, onToggleFloat, isSelected: _isSelected, onSplitWithPicker,
+  workspaceList, currentWorkspaceId, onMoveSessionToWorkspace,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mountedTermRef = useRef<string | null>(null);
@@ -1168,8 +1698,22 @@ export const TerminalPanel: React.FC<Props> = ({
 
     const { term, fit } = getOrCreateTerm(activeTermId);
 
-    containerRef.current.innerHTML = '';
-    term.open(containerRef.current);
+    // 이전에 .xterm DOM 이 만들어진 적이 있으면 (워크스페이스 전환 등으로 stash 됐을 수 있음)
+    // term.open() 다시 호출하지 않고 기존 DOM 을 새 컨테이너로 이동 — scrollbar/뷰포트 상태 보존
+    const stashedEl = (term as any).element as HTMLElement | undefined;
+    if (stashedEl && stashedEl.classList.contains('xterm')) {
+      containerRef.current.innerHTML = '';
+      containerRef.current.appendChild(stashedEl);
+      // stash 복귀 시엔 항상 refit + viewport 재계산 — 활동 없는 터미널의 scrollbar 가 0 으로 멈추는 문제 fix
+      requestAnimationFrame(() => {
+        refitTerm(activeTermId);
+        setTimeout(() => refitTerm(activeTermId), 50);
+        setTimeout(() => refitTerm(activeTermId), 200);
+      });
+    } else {
+      containerRef.current.innerHTML = '';
+      term.open(containerRef.current);
+    }
     applyTermOpacity(activeTermId, containerRef.current);
 
     // IME(한글 등) 조합 처리
@@ -1253,7 +1797,23 @@ export const TerminalPanel: React.FC<Props> = ({
             }
           }
         } catch (err) { console.error('[initConnect] error:', err); }
-        setTimeout(() => { try { window.api?.resizeSSH?.(activeTermId, cols, rows); } catch {} }, 200);
+        // 연결 확립 후 한 번 더 fit + 실제 cols/rows 로 resize — 초기 fit 이 layout 안정화 전이었던 경우 보정
+        setTimeout(() => {
+          try {
+            fit.fit();
+            const c = (term as any).cols || cols;
+            const r = (term as any).rows || rows;
+            window.api?.resizeSSH?.(activeTermId, c, r);
+          } catch {}
+        }, 200);
+        setTimeout(() => {
+          try {
+            fit.fit();
+            const c = (term as any).cols || cols;
+            const r = (term as any).rows || rows;
+            window.api?.resizeSSH?.(activeTermId, c, r);
+          } catch {}
+        }, 600);
       } else if (globalConnected.has(activeTermId)) {
         try { window.api?.resizeSSH?.(activeTermId, cols, rows); } catch {}
       } else if (activeSession && !activeSession.sessionId && !ptyConnected.has(activeTermId)) {
@@ -1284,7 +1844,13 @@ export const TerminalPanel: React.FC<Props> = ({
     };
     initConnect();
 
-    return () => { mountedTermRef.current = null; };
+    return () => {
+      // unmount 시 .xterm DOM 을 hidden stash 로 이동 — 워크스페이스/패널 전환 후
+      // 다시 mount 될 때 동일 DOM 을 재사용해서 scrollbar/viewport 상태 보존
+      const tid = mountedTermRef.current;
+      if (tid) { try { stashXtermDom(tid); } catch {} }
+      mountedTermRef.current = null;
+    };
   }, [activeTermId, nodeId]);
 
   // 패널 선택 핸들러 (텍스트 드래그로 선택해도 클릭이 발생하지 않을 수 있어
@@ -1346,15 +1912,25 @@ export const TerminalPanel: React.FC<Props> = ({
     }
   }, [panel.sessions.length]);
 
-  // 여러 줄 붙여넣기 이벤트 수신
+  // 여러 줄 붙여넣기 이벤트 수신 — 별도 BrowserWindow 로 띄움 (다른 모니터로도 이동 가능)
   useEffect(() => {
     if (!containerRef.current) return;
     const handler = (e: Event) => {
       const { termId: tid, text } = (e as CustomEvent).detail;
-      setMultiPaste({ termId: tid, text });
+      // 터미널 포커스 해제 — 모달 띄워지는 동안 키 입력이 터미널로 가지 않게
+      try {
+        const entry = termStore.get(tid);
+        entry?.term?.blur?.();
+        const termEl = (entry?.term as any)?.element as HTMLElement | undefined;
+        const xtermEl = termEl?.querySelector?.('textarea.xterm-helper-textarea') as HTMLTextAreaElement | null;
+        xtermEl?.blur?.();
+      } catch {}
+      try { (window as any).api?.pasteModalOpen?.(tid, text); } catch {}
     };
     containerRef.current.addEventListener('term-multi-paste', handler);
-    return () => containerRef.current?.removeEventListener('term-multi-paste', handler);
+    return () => {
+      containerRef.current?.removeEventListener('term-multi-paste', handler);
+    };
   }, [activeTermId]);
 
   // 터미널 우클릭 컨텍스트 메뉴
@@ -1409,13 +1985,19 @@ export const TerminalPanel: React.FC<Props> = ({
     const el = containerRef.current;
     el?.addEventListener('mousedown', forceSyncNow, true);
     el?.addEventListener('focusin', forceSyncNow);
+    // 윈도우 focus / 가시성 변경 시에도 보정 — 다른 창 갔다 돌아왔을 때 vi 작게 떠 있던 거 복구
+    window.addEventListener('focus', forceSyncNow);
+    document.addEventListener('visibilitychange', forceSyncNow);
 
-    const timers = [100, 300].map(ms => setTimeout(doFit, ms));
+    // 초기 fit 다단계 — 100/300/700/1200ms 에 반복해서 layout 안정 후 정확한 크기 보장
+    const timers = [100, 300, 700, 1200].map(ms => setTimeout(doFit, ms));
     setTimeout(() => { try { getOrCreateTerm(activeTermId).term.focus(); } catch {} }, 100);
 
     return () => {
       ro.disconnect();
       window.removeEventListener('resize', debouncedFit);
+      window.removeEventListener('focus', forceSyncNow);
+      document.removeEventListener('visibilitychange', forceSyncNow);
       el?.removeEventListener('mousedown', forceSyncNow, true);
       el?.removeEventListener('focusin', forceSyncNow);
       timers.forEach(clearTimeout);
@@ -1425,11 +2007,12 @@ export const TerminalPanel: React.FC<Props> = ({
 
   const [dropZone, setDropZone] = useState<DropZone | null>(null);
   const [miniCtx, setMiniCtx] = useState<{ x: number; y: number; termId: string; name: string } | null>(null);
+  const [moveWorkspaceCtx, setMoveWorkspaceCtx] = useState<{ x: number; y: number; termId: string } | null>(null);
   const [termCtx, setTermCtx] = useState<{ x: number; y: number } | null>(null);
   const [encodingCtx, setEncodingCtx] = useState<{ x: number; y: number; current: string } | null>(null);
   const [themePickerCtx, setThemePickerCtx] = useState<{ x: number; y: number; current: string } | null>(null);
   const [scrollbackDialog, setScrollbackDialog] = useState<{ value: string } | null>(null);
-  const [multiPaste, setMultiPaste] = useState<{ termId: string; text: string } | null>(null);
+  const [multiPaste, setMultiPaste] = useState<{ termId: string; text: string } | null>(null); void multiPaste;
   const [shellMenu, setShellMenu] = useState<{ x: number; y: number } | null>(null);
   const [fontDialog, setFontDialog] = useState<{ termId: string; family: string; size: number } | null>(null);
   const showMultiLinePasteDialog = (tid: string, text: string) => setMultiPaste({ termId: tid, text });
@@ -1762,6 +2345,13 @@ export const TerminalPanel: React.FC<Props> = ({
           onClose={() => setMiniCtx(null)}
           items={[
             { label: '이름 변경', onClick: () => { setRenamingTermId(miniCtx.termId); setRenameValue(miniCtx.name); } },
+            { label: '세션 편집', onClick: () => {
+              const info = termSessionMap.get(miniCtx.termId);
+              if (info?.sessionId) {
+                // 전역 이벤트로 App.tsx 가 SessionEditor 모달 띄우도록
+                window.dispatchEvent(new CustomEvent('open-session-editor', { detail: { sessionId: info.sessionId, termId: miniCtx.termId } }));
+              }
+            } },
             { label: '세션 복제', onClick: () => { onDuplicateSession?.(nodeId, miniCtx.termId); } },
             { label: '세션 재연결', onClick: async () => {
               const tid = miniCtx.termId;
@@ -1789,51 +2379,29 @@ export const TerminalPanel: React.FC<Props> = ({
                 }
               } catch {}
             }},
+            ...(workspaceList && workspaceList.length > 1 && onMoveSessionToWorkspace ? [{
+              label: '다른 워크스페이스로 이동...',
+              onClick: () => {
+                setMoveWorkspaceCtx({ x: miniCtx.x, y: miniCtx.y, termId: miniCtx.termId });
+              },
+            }] : []),
             { label: '닫기', onClick: () => { window.api?.disconnectSSH?.(miniCtx.termId); onCloseSession?.(nodeId, miniCtx.termId); } },
           ]}
         />
       )}
-      {multiPaste && ReactDOM.createPortal(
-        <div className="session-editor-backdrop"
-          onMouseDown={e => { (e.currentTarget as any).__clickedBackdrop = (e.target === e.currentTarget); }}
-          onMouseUp={e => { if ((e.currentTarget as any).__clickedBackdrop && e.target === e.currentTarget) { const tid = multiPaste.termId; setMultiPaste(null); setTimeout(() => focusTerm(tid), 0); } }}
-        >
-          <div className="session-editor" onClick={e => e.stopPropagation()} style={{ width: 480 }}>
-            <h3>여러 줄 붙여넣기</h3>
-            <p style={{ color: '#888', fontSize: 12, margin: '0 0 8px' }}>다음 텍스트에 여러 줄이 포함되어 있습니다. 붙여넣을까요?</p>
-            <textarea
-              value={multiPaste.text}
-              onChange={e => setMultiPaste(prev => prev ? { ...prev, text: e.target.value } : null)}
-              onKeyDown={e => e.stopPropagation()}
-              style={{ width: '100%', height: 150, background: '#111', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: 8, fontSize: 12, fontFamily: 'monospace', resize: 'vertical', boxSizing: 'border-box' }}
-            />
-            <div className="session-editor-actions">
-              <button className="btn-cancel" onClick={() => {
-                const tid = multiPaste.termId;
-                setMultiPaste(null);
-                setTimeout(() => focusTerm(tid), 0);
-              }}>취소</button>
-              <button className="btn-save" onClick={() => {
-                const tid = multiPaste.termId;
-                try {
-                  const entry = termStore.get(tid);
-                  if (entry) {
-                    // xterm.paste() — bracketed paste mode 활성 시 자동으로 \e[200~...\e[201~ 래핑
-                    entry.term.paste(multiPaste.text);
-                  } else if (ptyConnected.has(tid)) {
-                    (window as any).api.ptyInput(tid, multiPaste.text);
-                  } else {
-                    (window as any).api.sendSSHInput(tid, multiPaste.text);
-                  }
-                } catch {}
-                setMultiPaste(null);
-                setTimeout(() => focusTerm(tid), 0);
-              }}>붙여넣기</button>
-            </div>
-          </div>
-        </div>,
-        document.body
+      {moveWorkspaceCtx && workspaceList && onMoveSessionToWorkspace && (
+        <ContextMenu
+          x={moveWorkspaceCtx.x} y={moveWorkspaceCtx.y}
+          onClose={() => setMoveWorkspaceCtx(null)}
+          items={workspaceList.filter(w => w.id !== currentWorkspaceId).map(w => ({
+            label: `→ ${w.title}`,
+            onClick: () => {
+              onMoveSessionToWorkspace(nodeId, moveWorkspaceCtx.termId, w.id);
+            },
+          }))}
+        />
       )}
+      {/* 여러 줄 붙여넣기 — 별도 BrowserWindow 로 띄워짐 (main process 가 관리) */}
       {termCtx && activeTermId && (
         <ContextMenu
           x={termCtx.x} y={termCtx.y}
@@ -1889,6 +2457,12 @@ export const TerminalPanel: React.FC<Props> = ({
             { label: '테마 변경...', onClick: () => {
               const cur = termThemeCache.get(activeTermId) || '';
               setThemePickerCtx({ x: termCtx.x, y: termCtx.y, current: cur });
+            }},
+            { label: '세션 편집...', onClick: () => {
+              const info = termSessionMap.get(activeTermId);
+              if (info?.sessionId) {
+                window.dispatchEvent(new CustomEvent('open-session-editor', { detail: { sessionId: info.sessionId, termId: activeTermId } }));
+              }
             }},
           ]}
         />

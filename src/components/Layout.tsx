@@ -27,6 +27,9 @@ type CommonHandlers = {
   fullscreenTermId?: string | null;
   onToggleFloat?: (nodeId: string) => void;
   onSplitWithPicker?: (nodeId: string, dir: 'row' | 'column') => void;
+  workspaceList?: { id: string; title: string }[];
+  currentWorkspaceId?: string;
+  onMoveSessionToWorkspace?: (fromNodeId: string, termId: string, targetTabId: string) => void;
 };
 
 type Props = CommonHandlers & { root: LayoutNode };
@@ -48,7 +51,8 @@ const NodeView: React.FC<NodeProps> = ({ node, ...h }) => {
     };
     const activeTermId = node.panel.sessions[node.panel.activeIdx]?.termId || '';
     const isFloating = h.floatingPanelId === node.id;
-    const isFsVisible = !!(h.fullscreenTermId && h.fullscreenTermId === activeTermId);
+    // fullscreenTermId 가 이 패널의 어느 세션이든 포함되면 fs-visible (active 미니탭이 바뀌어도 패널 자체는 표시 유지)
+    const isFsVisible = !!(h.fullscreenTermId && node.panel.sessions.some(s => s.termId === h.fullscreenTermId));
     return (
       <div className={`layout-leaf ${isFloating ? 'floating' : ''} ${isFsVisible ? 'fs-visible' : ''}`} data-active-term={activeTermId}>
         <div className={`layout-leaf-inner ${h.selectedPanelId === node.id ? 'selected' : ''}`}
@@ -67,6 +71,9 @@ const NodeView: React.FC<NodeProps> = ({ node, ...h }) => {
             isFloating={isFloating} onToggleFloat={h.onToggleFloat}
             isSelected={h.selectedPanelId === node.id}
             onSplitWithPicker={h.onSplitWithPicker}
+            workspaceList={h.workspaceList}
+            currentWorkspaceId={h.currentWorkspaceId}
+            onMoveSessionToWorkspace={h.onMoveSessionToWorkspace}
           />
         </div>
       </div>

@@ -184,6 +184,39 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('claude:get-mount-path', { panelId, remotePath }),
   claudeStop: (sessionId: string, requestId?: string) => ipcRenderer.invoke('claude:stop', { sessionId, requestId }),
   clipboardWriteImage: (dataUrl: string) => ipcRenderer.invoke('clipboard:write-image', { dataUrl }),
+  x11Start: (displayNum?: number) => ipcRenderer.invoke('x11:start', displayNum ?? 0),
+  x11Stop: (displayNum?: number) => ipcRenderer.invoke('x11:stop', displayNum ?? 0),
+  x11Status: () => ipcRenderer.invoke('x11:status'),
+  pasteModalOpen: (id: string, text: string) => ipcRenderer.invoke('paste-modal:open', { id, text }),
+  onPasteModalResult: (cb: (p: { id: string; action: 'paste' | 'cancel'; text: string }) => void) => {
+    const handler = (_: any, p: any) => cb(p);
+    ipcRenderer.on('paste-modal:result', handler);
+    return () => ipcRenderer.removeListener('paste-modal:result', handler);
+  },
+  searchOpenWindow: () => ipcRenderer.invoke('search:open-window'),
+  optionsOpen: () => ipcRenderer.invoke('options:open'),
+  optionsClose: () => ipcRenderer.send('options:close'),
+  optionsSaved: () => ipcRenderer.send('options:saved'),
+  onOptionsSaved: (cb: () => void) => {
+    const h = () => cb(); ipcRenderer.on('options:saved', h);
+    return () => ipcRenderer.removeListener('options:saved', h);
+  },
+  sessionEditorOpen: (sessionId: string) => ipcRenderer.invoke('session-editor:open', { sessionId }),
+  sessionEditorClose: () => ipcRenderer.send('session-editor:close'),
+  sessionEditorSaved: (payload: any) => ipcRenderer.send('session-editor:saved', payload),
+  onSessionEditorSaved: (cb: (p: any) => void) => {
+    const h = (_: any, p: any) => cb(p); ipcRenderer.on('session-editor:saved', h);
+    return () => ipcRenderer.removeListener('session-editor:saved', h);
+  },
+  sendSearchResult: (payload: { current: number; total: number }) => ipcRenderer.send('search:result', payload),
+  onSearchQuery: (cb: (p: { q: string; caseSensitive: boolean; useRegex: boolean }) => void) => {
+    const h = (_: any, p: any) => cb(p); ipcRenderer.on('search:query', h);
+    return () => ipcRenderer.removeListener('search:query', h);
+  },
+  onSearchNext: (cb: (p?: any) => void) => { const h = (_: any, p: any) => cb(p); ipcRenderer.on('search:next', h); return () => ipcRenderer.removeListener('search:next', h); },
+  onSearchPrev: (cb: (p?: any) => void) => { const h = (_: any, p: any) => cb(p); ipcRenderer.on('search:prev', h); return () => ipcRenderer.removeListener('search:prev', h); },
+  onSearchClosed: (cb: () => void) => { const h = () => cb(); ipcRenderer.on('search:closed', h); return () => ipcRenderer.removeListener('search:closed', h); },
+  onSearchDock: (cb: () => void) => { const h = () => cb(); ipcRenderer.on('search:dock', h); return () => ipcRenderer.removeListener('search:dock', h); },
   onClaudeStream: (cb: (p: any) => void) => {
     const handler = (_: any, p: any) => cb(p);
     ipcRenderer.on('claude:stream', handler);
