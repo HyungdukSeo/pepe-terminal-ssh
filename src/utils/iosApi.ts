@@ -44,6 +44,109 @@ async function saveSessionsData(d: SessionsData) {
   await Preferences.set({ key: SESSIONS_KEY, value: JSON.stringify(d) })
 }
 
+async function exportSessionsToFile() {
+  const data = await loadSessionsData()
+  const json = JSON.stringify(data, null, 2)
+  const stamp = new Date().toISOString().slice(0, 10)
+  const filename = `pepe-sessions-${stamp}.json`
+
+  // iPadOS 15+ 의 Web Share API 는 파일 공유를 지원 — 시트에서 "파일에 저장" 선택 시
+  // Files 앱(iCloud Drive / On My iPad)에 저장 가능. AirDrop, 메일 첨부 등도 동일 시트.
+  try {
+    const file = new File([json], filename, { type: 'application/json' })
+    const nav = navigator as any
+    if (typeof nav.canShare === 'function' && nav.canShare({ files: [file] })) {
+      await nav.share({ files: [file], title: 'PePe Sessions Export' })
+      return { success: true }
+    }
+  } catch (e: any) {
+    // 사용자 취소(AbortError)도 여기로 — 폴백 다운로드까진 진행하지 않고 종료.
+    if (e?.name === 'AbortError') return { success: false, canceled: true }
+  }
+
+  // 폴백: Blob URL → <a download>. WKWebView 가 Web Share 를 거부하는 환경/웹 브라우저용.
+  const blob = new Blob([json], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.style.display = 'none'
+  document.body.appendChild(a)
+  a.click()
+  setTimeout(() => { try { document.body.removeChild(a) } catch {}; URL.revokeObjectURL(url) }, 200)
+  return { success: true }
+}
+
+async function importSessionsFromFile(): Promise<{ addedCount: number; totalParsed: number } | null> {
+  return new Promise((resolve) => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = 'application/json,.json'
+    input.style.display = 'none'
+    let resolved = false
+    const finish = (v: { addedCount: number; totalParsed: number } | null) => {
+      if (resolved) return
+      resolved = true
+      try { document.body.removeChild(input) } catch {}
+      resolve(v)
+    }
+
+    input.onchange = async () => {
+      const file = input.files?.[0]
+      if (!file) { finish(null); return }
+      try {
+        const text = await file.text()
+        const raw = JSON.parse(text)
+        const imported: SessionsData = Array.isArray(raw)
+          ? { folders: [], sessions: raw, childOrder: {} }
+          : {
+              folders: raw.folders ?? [],
+              sessions: raw.sessions ?? [],
+              childOrder: raw.childOrder ?? {},
+            }
+        const data = await loadSessionsData()
+        // 폴더 머지: name+parentId 동일하면 기존 ID 로 remap, 아니면 새로 추가.
+        for (const f of imported.folders) {
+          const existing = data.folders.find((x) => x.name === f.name && x.parentId === f.parentId)
+          if (existing) {
+            for (const s of imported.sessions) {
+              if (s.folderId === f.id) s.folderId = existing.id
+            }
+            for (const cf of imported.folders) {
+              if (cf.parentId === f.id) cf.parentId = existing.id
+            }
+          } else {
+            data.folders.push(f)
+          }
+        }
+        // 세션 머지: host+port+username+name 동일하면 중복 스킵.
+        let addedCount = 0
+        for (const s of imported.sessions) {
+          const dup = data.sessions.some(
+            (x) => x.host === s.host && x.port === s.port && x.username === s.username && x.name === s.name,
+          )
+          if (!dup) { data.sessions.push(s); addedCount++ }
+        }
+        await saveSessionsData(data)
+        finish({ addedCount, totalParsed: imported.sessions.length })
+      } catch {
+        finish(null)
+      }
+    }
+
+    // 사용자 취소 시 change 이벤트가 안 옴 → window focus 복귀 후 파일 미선택이면 null 반환.
+    const onFocus = () => {
+      setTimeout(() => {
+        if (!input.files || input.files.length === 0) finish(null)
+      }, 500)
+    }
+    window.addEventListener('focus', onFocus, { once: true })
+
+    document.body.appendChild(input)
+    input.click()
+  })
+}
+
 type Cb = (p: any) => void
 type EventName = 'connected' | 'data' | 'closed' | 'error' | 'autoTrack'
 
@@ -208,8 +311,8 @@ export function createIosApi() {
     resetSessionsPath: asyncNoop,
     openSessionsFolder: asyncNoop,
     openSessionsEditor: asyncNoop,
-    exportSessions: async () => loadSessionsData(),
-    importSessions: asyncNoop,
+    exportSessions: () => exportSessionsToFile(),
+    importSessions: () => importSessionsFromFile(),
 
     // UI Prefs
     getUIPrefs: async () => {
