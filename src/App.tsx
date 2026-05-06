@@ -8,6 +8,7 @@ import { Layout } from './components/Layout';
 import { SearchBar } from './components/SearchBar';
 import { FileExplorer } from './components/FileExplorer';
 import { FileEditor } from './components/FileEditor';
+import { SqlToolWorkspace } from './components/SqlToolWorkspace';
 import { ClaudeChat } from './components/ClaudeChat';
 import { RemoteFileTree } from './components/RemoteFileTree';
 import { QuickConnectBar, QuickConnectResult } from './components/QuickConnectDialog';
@@ -44,8 +45,8 @@ import {
 export type { LayoutNode, ContainerNode, LeafNode, Panel, PanelSession } from './utils/layoutUtils';
 
 export type TabId = string;
-export type TabType = 'terminal' | 'fileExplorer' | 'fileEditor';
-export type Tab = { id: TabId; title: string; layout: LayoutNode; type?: TabType; editor?: { termId: string; remotePath: string; fileName: string } };
+export type TabType = 'terminal' | 'fileExplorer' | 'fileEditor' | 'sqlTool';
+export type Tab = { id: TabId; title: string; layout: LayoutNode; type?: TabType; editor?: { termId: string; remotePath: string; fileName: string }; sqlTool?: { sessionId: string; sessionName: string } };
 
 // 일괄전송 히스토리 (앱 실행 중 유지, 최대 50개)
 const broadcastHistory: string[] = [];
@@ -573,7 +574,7 @@ function App() {
   useEffect(() => {
     if (!fullscreenTermId) return;
     const tab = tabs.find(t => t.id === activeTabId);
-    if (!tab || tab.type === 'fileExplorer' || tab.type === 'fileEditor') {
+    if (!tab || tab.type === 'fileExplorer' || tab.type === 'fileEditor' || tab.type === 'sqlTool') {
       setFullscreenTermId(null);
       return;
     }
@@ -1934,6 +1935,14 @@ function App() {
             alert(`파일 전송 연결 예외: ${err?.message || err}`);
           }
         }}
+        onOpenSqlTool={(sessionId, sessionName) => {
+          const existing = tabs.find(t => t.type === 'sqlTool' && t.sqlTool?.sessionId === sessionId);
+          if (existing) { setActiveTabId(existing.id); return; }
+          const id = `tab-sql-${Date.now()}`;
+          const newTab: Tab = { id, title: `🗄 SQL: ${sessionName}`, layout: createInitialLayout(id), type: 'sqlTool', sqlTool: { sessionId, sessionName } };
+          setTabs(prev => [...prev, newTab]);
+          setActiveTabId(id);
+        }}
       />
       {/* 파일 트리는 이제 각 TerminalPanel 내부에서 mini-tab 별로 렌더링됨 (Ctrl+Shift+E 로 토글). */}
       <div className="app-main">
@@ -2026,6 +2035,13 @@ function App() {
           </div>
         )}
 
+        {/* SQL Tool 탭들 - 마운트 유지 */}
+        {tabs.filter(t => t.type === 'sqlTool' && t.sqlTool).map(t => (
+          <div key={t.id} style={{ display: activeTab?.id === t.id ? 'flex' : 'none', flex: 1, minHeight: 0 }}>
+            <SqlToolWorkspace sessionId={t.sqlTool!.sessionId} sessionName={t.sqlTool!.sessionName} />
+          </div>
+        ))}
+
         {/* FileEditor 탭들 - 마운트 유지 */}
         {tabs.filter(t => t.type === 'fileEditor' && t.editor).map(t => (
           <div key={t.id} style={{ display: activeTab?.id === t.id ? 'flex' : 'none', flex: 1, minHeight: 0 }}>
@@ -2041,7 +2057,7 @@ function App() {
           </div>
         ))}
 
-        {activeTab && activeTab.type !== 'fileExplorer' && activeTab.type !== 'fileEditor' && (() => {
+        {activeTab && activeTab.type !== 'fileExplorer' && activeTab.type !== 'fileEditor' && activeTab.type !== 'sqlTool' && (() => {
           // 워크스페이스 레벨 파일 트리 — 선택된 패널의 활성 세션이 SSH 연결이면 표시
           let fileTreeNode: React.ReactNode = null;
           if (selectedPanelId) {
@@ -2052,7 +2068,7 @@ function App() {
             };
             const leaf = findLeaf(activeTab.layout, selectedPanelId);
             const sess = leaf?.panel?.sessions[leaf.panel.activeIdx];
-            if (sess?.sessionId && isTermConnected(sess.termId)) {
+            if (sess?.termId && isTermConnected(sess.termId)) {
               const onEnterTrigger = () => {
                 if (remoteTreePinned) return;
                 if (remoteTreeHideTimer.current) { clearTimeout(remoteTreeHideTimer.current); remoteTreeHideTimer.current = null; }

@@ -62,7 +62,9 @@
       "node_modules/node-pty/**/*"
     ],
     "asarUnpack": [
-      "dist-electron/mcpSshServer.cjs"
+      "dist-electron/mcpSshServer.cjs",
+      "**/node_modules/node-pty/**",
+      "**/*.node"
     ],
     "win": {
       "target": [

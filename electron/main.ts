@@ -900,6 +900,34 @@ ipcMain.handle('fe:sftp-disconnect', (_e, { connId }: any) => {
   bridge.handleSFTPDisconnect(connId);
 });
 
+// SQL Tool — CSV 파일 저장 다이얼로그
+ipcMain.handle('sql:save-csv', async (_e, { defaultName, content }: { defaultName?: string; content: string }) => {
+  if (!mainWindow) return { success: false, error: 'no window' };
+  const r = await dialog.showSaveDialog(mainWindow, {
+    title: 'CSV로 저장',
+    defaultPath: defaultName || 'query-result.csv',
+    filters: [{ name: 'CSV', extensions: ['csv'] }, { name: 'All Files', extensions: ['*'] }],
+  });
+  if (r.canceled || !r.filePath) return { success: false, canceled: true };
+  try {
+    fs.writeFileSync(r.filePath, '﻿' + content, 'utf8'); // BOM for Excel
+    return { success: true, path: r.filePath };
+  } catch (err: any) {
+    return { success: false, error: String(err?.message || err) };
+  }
+});
+
+// SQL Tool — 동일 SSH 연결의 exec 채널로 isql 등 임의 명령 실행
+ipcMain.handle('sql:exec', async (_e, { connId, command, timeoutMs }: { connId: string; command: string; timeoutMs?: number }) => {
+  try {
+    const bridge = getSSHBridge();
+    const r = await bridge.handleSQLExec(connId, command, timeoutMs);
+    return { success: true, ...r };
+  } catch (err: any) {
+    return { success: false, error: String(err?.message || err) };
+  }
+});
+
 ipcMain.handle('fe:connected-sessions', () => {
   const bridge = getSSHBridge();
   return bridge.getConnectedPanelIds();
@@ -1248,16 +1276,72 @@ ipcMain.handle('pty:list-shells', async () => {
   return shells;
 });
 
+// node-pty 의 spawn-helper(macOS/Linux) 가 asar.unpacked 에 unpack 되었지만 실행권한이 빠질 수 있음 → 매 spawn 직전에 검사 + chmod.
+function ensurePtyHelperExecutable() {
+  if (process.platform === 'win32') return;
+  try {
+    let dir: string;
+    try { dir = path.dirname(require.resolve('node-pty/package.json')); }
+    catch { dir = path.join(__dirname, '..', 'node_modules', 'node-pty'); }
+    dir = dir.replace('app.asar' + path.sep, 'app.asar.unpacked' + path.sep).replace('app.asar/', 'app.asar.unpacked/');
+    const helper = path.join(dir, 'prebuilds', `${process.platform}-${process.arch}`, 'spawn-helper');
+    if (fs.existsSync(helper)) {
+      const st = fs.statSync(helper);
+      if (!(st.mode & 0o111)) { fs.chmodSync(helper, 0o755); console.log('[pty] chmod +x', helper); }
+    } else {
+      console.warn('[pty] spawn-helper not found at', helper);
+    }
+  } catch (e: any) { console.warn('[pty] chmod helper failed:', e?.message || e); }
+}
+
 ipcMain.handle('pty:spawn', (_e, { panelId, shell: shellPath, cols, rows, cwd }: { panelId: string; shell?: string; cols?: number; rows?: number; cwd?: string }) => {
   if (ptyProcesses.has(panelId)) return 'already';
-  const sh = shellPath || (process.platform === 'win32' ? 'powershell.exe' : process.env.SHELL || '/bin/bash');
-  const proc = pty.spawn(sh, [], {
-    name: 'xterm-256color',
-    cols: cols || 80,
-    rows: rows || 24,
-    cwd: cwd || process.env.USERPROFILE || process.env.HOME || '.',
-    env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' } as Record<string, string>,
-  });
+  ensurePtyHelperExecutable();
+  // OS 별 기본 셸 결정. GUI 앱은 SHELL 환경변수 미설정인 경우가 있어 darwin 은 /bin/zsh, linux 는 /bin/bash 로 폴백.
+  const isWin = process.platform === 'win32';
+  const isDarwin = process.platform === 'darwin';
+  let sh = shellPath;
+  if (!sh) {
+    if (isWin) sh = 'powershell.exe';
+    else if (isDarwin) sh = process.env.SHELL || '/bin/zsh';
+    else sh = process.env.SHELL || '/bin/bash';
+  }
+  // Unix shell 인자: macOS Terminal.app 과 동일하게 login(-l) 모드. -i 는 빼서 .profile 충돌 회피.
+  const baseName = (sh.split('/').pop() || sh).toLowerCase();
+  const isUnixShell = !isWin && /^(zsh|bash|sh|fish|ksh|dash)$/.test(baseName);
+  const args: string[] = isUnixShell ? ['-l'] : [];
+  const spawnEnv: Record<string, string> = { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' } as Record<string, string>;
+  if (isUnixShell) spawnEnv.SHELL = sh;
+  if (!spawnEnv.HOME && process.env.USERPROFILE) spawnEnv.HOME = process.env.USERPROFILE;
+  const spawnCwd = cwd || spawnEnv.HOME || process.env.HOME || process.env.USERPROFILE || (isWin ? 'C:\\' : '/');
+  console.log('[pty:spawn]', { panelId, sh, args, cwd: spawnCwd, hasShellEnv: !!process.env.SHELL });
+  const trySpawn = (shellPath: string, shellArgs: string[]): pty.IPty | Error => {
+    try {
+      return pty.spawn(shellPath, shellArgs, {
+        name: 'xterm-256color',
+        cols: cols || 80,
+        rows: rows || 24,
+        cwd: spawnCwd,
+        env: spawnEnv,
+      });
+    } catch (e: any) { return e; }
+  };
+  let proc = trySpawn(sh, args);
+  // ENOENT 등으로 실패 시 macOS/Linux 기본 셸로 재시도
+  if (proc instanceof Error && process.platform !== 'win32') {
+    console.warn('[pty:spawn] first attempt failed:', proc.message, '— falling back to /bin/zsh');
+    const fb = trySpawn('/bin/zsh', ['-l']);
+    if (!(fb instanceof Error)) proc = fb;
+    else {
+      const fb2 = trySpawn('/bin/bash', ['-l']);
+      if (!(fb2 instanceof Error)) proc = fb2;
+    }
+  }
+  if (proc instanceof Error) {
+    console.error('[pty:spawn] all attempts failed:', proc.message);
+    mainWindow?.webContents.send('pty:data', { panelId, data: `\r\n[shell spawn 실패] ${proc.message}\r\n` });
+    return 'error';
+  }
   ptyProcesses.set(panelId, proc);
   proc.onData((data: string) => {
     mainWindow?.webContents.send('pty:data', { panelId, data });

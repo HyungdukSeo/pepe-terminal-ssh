@@ -23,6 +23,7 @@ type Session = {
   fontSize?: number;
   scrollback?: number;
   icon?: string;
+  dbms?: { type: 'altibase'; port: number; user: string; password: string; host?: string };
 };
 
 type Folder = {
@@ -35,11 +36,12 @@ type Props = {
   onConnect: (sessionId: string, sessionName: string, targetPanelId?: string | null, sessionTheme?: string, fontFamily?: string, fontSize?: number, scrollback?: number) => void;
   onMultiConnect?: (sessions: Session[], mode: 'minitab' | 'split-h' | 'split-v' | 'split-tile') => void;
   onFileTransfer?: (sessionId: string, sessionName: string) => void;
+  onOpenSqlTool?: (sessionId: string, sessionName: string) => void;
   onDisconnect?: (targetPanelId?: string | null) => void;
   targetPanelId?: string | null;
 };
 
-export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisconnect, onFileTransfer, targetPanelId }) => {
+export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisconnect, onFileTransfer, onOpenSqlTool, targetPanelId }) => {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [width, setWidth] = useState<number>(() => {
@@ -699,6 +701,17 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
               📁 파일 전송
             </div>
           )}
+          {contextMenu.type === 'session' && (() => {
+            const s = sessions.find(x => x.id === contextMenu.id);
+            return s?.dbms ? (
+              <div className="context-menu-item" onClick={() => {
+                onOpenSqlTool?.(s.id, s.name);
+                setContextMenu(null);
+              }}>
+                🗄️ SQL Tool
+              </div>
+            ) : null;
+          })()}
           <div className="context-menu-separator" />
           <div className="context-menu-item" onClick={() => { (async () => { await (window as any).api.reorderSession(contextMenu.id, contextMenu.type, 'up'); await reload(); })(); setContextMenu(null); }}>↑ 위로</div>
           <div className="context-menu-item" onClick={() => { (async () => { await (window as any).api.reorderSession(contextMenu.id, contextMenu.type, 'down'); await reload(); })(); setContextMenu(null); }}>↓ 아래로</div>

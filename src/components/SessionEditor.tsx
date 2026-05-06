@@ -31,6 +31,13 @@ type Session = {
   jumpTargetUser?: string;
   jumpTargetPort?: number;
   jumpTargetPassword?: string;
+  dbms?: {
+    type: 'altibase';
+    port: number;
+    user: string;
+    password: string;
+    host?: string;
+  };
 };
 
 type Folder = {
@@ -70,6 +77,12 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
   const [jumpTargetPort, setJumpTargetPort] = useState<number | ''>(session?.jumpTargetPort ?? '');
   const [jumpTargetPassword, setJumpTargetPassword] = useState(session?.jumpTargetPassword ?? '');
   const [showJumpPassword, setShowJumpPassword] = useState(false);
+  const [dbmsEnabled, setDbmsEnabled] = useState<boolean>(!!session?.dbms);
+  const [dbmsPort, setDbmsPort] = useState<number>(session?.dbms?.port ?? 20300);
+  const [dbmsUser, setDbmsUser] = useState<string>(session?.dbms?.user ?? '');
+  const [dbmsPassword, setDbmsPassword] = useState<string>(session?.dbms?.password ?? '');
+  const [dbmsHost, setDbmsHost] = useState<string>(session?.dbms?.host ?? '127.0.0.1');
+  const [showDbmsPassword, setShowDbmsPassword] = useState(false);
   const [showIconPicker, setShowIconPicker] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [saveError, setSaveError] = useState('');
@@ -96,6 +109,11 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
     setJumpTargetUser(session?.jumpTargetUser ?? '');
     setJumpTargetPort(session?.jumpTargetPort ?? '');
     setJumpTargetPassword(session?.jumpTargetPassword ?? '');
+    setDbmsEnabled(!!session?.dbms);
+    setDbmsPort(session?.dbms?.port ?? 20300);
+    setDbmsUser(session?.dbms?.user ?? '');
+    setDbmsPassword(session?.dbms?.password ?? '');
+    setDbmsHost(session?.dbms?.host ?? '127.0.0.1');
   }, [session]);
 
   const getFolderPath = (f: Folder): string => {
@@ -139,7 +157,10 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
     setSaveError('');
     const auth = authType === 'password' ? { type: 'password', password } : { type: 'key', keyPath };
     const script = loginScript.filter(r => r.expect.trim() !== '' || r.send.trim() !== '');
-    onSave({ id, name, host: normalizeHost(host), port, username, auth, encoding, folderId: folderId || undefined, loginScript: script.length > 0 ? script : undefined, theme: theme || undefined, fontFamily: fontFamily || undefined, fontSize: fontSize || undefined, scrollback: scrollback || undefined, icon: icon || undefined, initialPath: initialPath.trim() || undefined, autoTrackPwd: autoTrackPwd || undefined, jumpTargetHost: jumpTargetHost.trim() || undefined, jumpTargetUser: jumpTargetUser.trim() || undefined, jumpTargetPort: typeof jumpTargetPort === 'number' && jumpTargetPort > 0 ? jumpTargetPort : undefined, jumpTargetPassword: jumpTargetPassword || undefined } as Session);
+    const dbms = dbmsEnabled && dbmsUser.trim()
+      ? { type: 'altibase' as const, port: dbmsPort || 20300, user: dbmsUser.trim(), password: dbmsPassword, host: dbmsHost.trim() || '127.0.0.1' }
+      : undefined;
+    onSave({ id, name, host: normalizeHost(host), port, username, auth, encoding, folderId: folderId || undefined, loginScript: script.length > 0 ? script : undefined, theme: theme || undefined, fontFamily: fontFamily || undefined, fontSize: fontSize || undefined, scrollback: scrollback || undefined, icon: icon || undefined, initialPath: initialPath.trim() || undefined, autoTrackPwd: autoTrackPwd || undefined, jumpTargetHost: jumpTargetHost.trim() || undefined, jumpTargetUser: jumpTargetUser.trim() || undefined, jumpTargetPort: typeof jumpTargetPort === 'number' && jumpTargetPort > 0 ? jumpTargetPort : undefined, jumpTargetPassword: jumpTargetPassword || undefined, dbms } as Session);
   };
 
   return (
@@ -312,6 +333,35 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
               disabled={!jumpTargetHost.trim()}
               title={showJumpPassword ? '숨기기' : '보이기'}
             >{showJumpPassword ? '🙈' : '👁'}</button>
+          </div>
+
+          <label>DBMS (SQL Tool)</label>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', justifySelf: 'start' }}
+            title="켜면 우클릭 메뉴에 SQL Tool 항목이 나타나고, 별도 워크스페이스에서 isql 로 쿼리 실행 가능">
+            <input type="checkbox" checked={dbmsEnabled} onChange={e => setDbmsEnabled(e.target.checked)} />
+            <span>Altibase 사용</span>
+          </label>
+
+          <label>DB Port</label>
+          <input type="number" value={dbmsPort} onChange={e => setDbmsPort(Number(e.target.value) || 20300)} placeholder="20300" disabled={!dbmsEnabled} min={1} max={65535} />
+
+          <label>DB Host</label>
+          <input type="text" value={dbmsHost} onChange={e => setDbmsHost(e.target.value)} placeholder="127.0.0.1" disabled={!dbmsEnabled} title="SSH 연결한 서버 내부에서 isql 이 접속할 호스트 (보통 127.0.0.1)" />
+
+          <label>DB User</label>
+          <input type="text" value={dbmsUser} onChange={e => setDbmsUser(e.target.value)} placeholder="ipageon" disabled={!dbmsEnabled} autoComplete="off" />
+
+          <label>DB Password</label>
+          <div style={{ display: 'flex', gap: 4 }}>
+            <input
+              type={showDbmsPassword ? 'text' : 'password'}
+              value={dbmsPassword}
+              onChange={e => setDbmsPassword(e.target.value)}
+              disabled={!dbmsEnabled}
+              style={{ flex: 1 }}
+              autoComplete="off"
+            />
+            <button type="button" onClick={() => setShowDbmsPassword(v => !v)} disabled={!dbmsEnabled} title={showDbmsPassword ? '숨기기' : '보이기'}>{showDbmsPassword ? '🙈' : '👁'}</button>
           </div>
         </div>
 

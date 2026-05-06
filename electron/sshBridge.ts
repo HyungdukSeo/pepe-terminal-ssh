@@ -1047,6 +1047,26 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
     });
   }
 
+  // SSH exec 채널로 임의 명령을 실행하고 stdout/stderr 를 모아서 반환 (SQL Tool 용)
+  handleSQLExec(connId: string, command: string, timeoutMs = 60000): Promise<{ stdout: string; stderr: string; code: number | null }> {
+    return new Promise((resolve, reject) => {
+      const rec = this.clients.get(connId);
+      if (!rec?.conn) return reject(new Error('not connected'));
+      rec.conn.exec(command, (err: any, stream: any) => {
+        if (err) return reject(err);
+        let stdout = '';
+        let stderr = '';
+        let code: number | null = null;
+        const timer = setTimeout(() => { try { stream.close(); } catch {} reject(new Error('timeout')); }, timeoutMs);
+        stream.on('data', (d: Buffer) => { stdout += d.toString('utf8'); });
+        stream.stderr.on('data', (d: Buffer) => { stderr += d.toString('utf8'); });
+        stream.on('exit', (c: number) => { code = c; });
+        stream.on('close', () => { clearTimeout(timer); resolve({ stdout, stderr, code }); });
+        stream.on('error', (e: any) => { clearTimeout(timer); reject(e); });
+      });
+    });
+  }
+
   handleSFTPDisconnect(connId: string) {
     const rec = this.clients.get(connId);
     if (!rec) return;

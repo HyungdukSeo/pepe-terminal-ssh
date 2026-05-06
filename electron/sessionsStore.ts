@@ -33,6 +33,15 @@ export type Session = {
   jumpTargetUser?: string;  // 예: "root"
   jumpTargetPort?: number;  // 기본 22
   jumpTargetPassword?: string; // 있으면 비밀번호 인증, 비어 있으면 primary 의 ~/.ssh/id_rsa 등 자동 사용
+  // DBMS (Altibase) 연결 정보 — 채우면 우클릭 메뉴에 "SQL Tool" 노출됨.
+  // 동일 SSH 연결의 exec 채널로 isql 을 실행해서 DB 쿼리.
+  dbms?: {
+    type: 'altibase';
+    port: number;       // 기본 20300
+    user: string;
+    password: string;
+    host?: string;      // 기본 127.0.0.1 (SSH 연결한 서버 내부에서 isql 실행)
+  };
 };
 
 export type Folder = {
