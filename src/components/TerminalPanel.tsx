@@ -1460,6 +1460,7 @@ interface MultiPasteModalProps {
   onCancel: () => void;
   onPaste: () => void;
 }
+// @ts-expect-error unused (kept for fallback)
 const MultiPasteModal: React.FC<MultiPasteModalProps> = ({ text, onChange, onCancel, onPaste }) => {
   const [pos, setPos] = useState(() => {
     const w = 600, h = 480;
@@ -1498,12 +1499,12 @@ const MultiPasteModal: React.FC<MultiPasteModalProps> = ({ text, onChange, onCan
         m.style.width = next.w + 'px';
         m.style.height = next.h + 'px';
       }
-      dragRef.current!.startPos.__lastNext = next;
+      (dragRef.current!.startPos as any).__lastNext = next;
     };
     const onUp = () => {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
-      const last = dragRef.current?.startPos.__lastNext;
+      const last = (dragRef.current?.startPos as any)?.__lastNext;
       if (last) setPos(last);
       dragRef.current = null;
     };
@@ -2011,7 +2012,7 @@ export const TerminalPanel: React.FC<Props> = ({
   const [encodingCtx, setEncodingCtx] = useState<{ x: number; y: number; current: string } | null>(null);
   const [themePickerCtx, setThemePickerCtx] = useState<{ x: number; y: number; current: string } | null>(null);
   const [scrollbackDialog, setScrollbackDialog] = useState<{ value: string } | null>(null);
-  const [multiPaste, setMultiPaste] = useState<{ termId: string; text: string } | null>(null);
+  const [multiPaste, setMultiPaste] = useState<{ termId: string; text: string } | null>(null); void multiPaste;
   const [shellMenu, setShellMenu] = useState<{ x: number; y: number } | null>(null);
   const [fontDialog, setFontDialog] = useState<{ termId: string; family: string; size: number } | null>(null);
   const showMultiLinePasteDialog = (tid: string, text: string) => setMultiPaste({ termId: tid, text });

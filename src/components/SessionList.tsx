@@ -163,7 +163,7 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
   const [copiedSession, setCopiedSession] = useState<Session | null>(null);
 
   const handleConnect = (s: Session) => onConnect(s.id, s.name, targetPanelId ?? null, s.theme, s.fontFamily, s.fontSize, s.scrollback);
-  const handleDisconnect = () => onDisconnect?.(targetPanelId ?? null);
+  const _handleDisconnect = () => onDisconnect?.(targetPanelId ?? null); void _handleDisconnect;
 
   const handleAdd = () => {
     const folderId = selectedType === 'folder' ? selectedId : undefined;
@@ -241,6 +241,7 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
     });
   };
 
+  // @ts-expect-error unused (kept for future)
   const handleEncodingChange = async (sessionId: string, encoding: string) => {
     const s = sessions.find(x => x.id === sessionId);
     if (!s) return;
@@ -276,7 +277,7 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
     await reload();
   };
 
-  const selectedSession = selectedType === 'session' ? sessions.find(x => x.id === selectedId) : null;
+  const _selectedSession = selectedType === 'session' ? sessions.find(x => x.id === selectedId) : null; void _selectedSession;
 
   // 현재 렌더되는 세션 ID 의 순서 (shift-click 범위 선택용)
   const visibleSessionIds = useMemo<string[]>(() => {

@@ -610,7 +610,7 @@ ipcMain.on('search:show-history-menu', () => {
     .item{padding:4px 10px;font-size:11px;cursor:pointer;color:#ccc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.3;}
     .item:hover,.item.active{background:#2b6b9b;color:#fff;}
   </style></head><body>
-    ${items.map((s, i) => '<div class="item" data-idx="' + i + '" title="' + s.replace(/"/g, '&quot;') + '">' + s.replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c])) + '</div>').join('')}
+    ${items.map((s, i) => '<div class="item" data-idx="' + i + '" title="' + s.replace(/"/g, '&quot;') + '">' + s.replace(/[<>&"]/g, c => (({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'} as Record<string,string>)[c] || c)) + '</div>').join('')}
     <script>
       const { ipcRenderer } = require('electron');
       const items = ${JSON.stringify(items)};
