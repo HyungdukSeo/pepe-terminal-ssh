@@ -119,10 +119,10 @@ export function TerminalKeybar({ activePanelId }: Props) {
             <button
               key={i}
               className={`tk-btn${active ? ' tk-btn-active' : ''}${isMod ? ' tk-btn-mod' : ''}`}
-              // tabIndex=-1: 버튼이 포커스 받지 않게 → xterm textarea 의 포커스 유지 → 키보드 안 사라짐.
-              // onPointerDown + preventDefault: 마우스/터치 통합 + 기본 동작 차단.
               tabIndex={-1}
-              onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); sendKey(k) }}
+              onTouchStart={(e) => { e.preventDefault(); e.stopPropagation(); sendKey(k) }}
+              onPointerDown={(e) => { e.preventDefault(); e.stopPropagation() }}
+              onMouseDown={(e) => { e.preventDefault(); sendKey(k) }}
             >
               {k.label}
             </button>

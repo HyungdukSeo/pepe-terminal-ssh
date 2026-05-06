@@ -130,7 +130,8 @@ function App() {
   const [contextMenuRegistered, setContextMenuRegistered] = useState(false);
   const [sftpProgress, setSftpProgress] = useState<{ filename: string; transferred: number; total: number; direction: string } | null>(null);
   const [availableShells, setAvailableShells] = useState<{ name: string; path: string; icon?: string }[]>([]);
-  const [defaultShell, setDefaultShell] = useState<{ name: string; path: string }>({ name: 'Windows PowerShell', path: 'powershell.exe' });
+  const isIos = document.body.classList.contains('is-ios');
+  const [defaultShell, setDefaultShell] = useState<{ name: string; path: string }>({ name: isIos ? 'SSH Terminal' : 'Windows PowerShell', path: isIos ? 'ssh' : 'powershell.exe' });
   const [optDefaultShellPath, setOptDefaultShellPath] = useState('');
   const [showBroadcast, setShowBroadcast] = useState<boolean>(true);
   const showBroadcastLoadedRef = useRef(false);
@@ -142,8 +143,11 @@ function App() {
       (window as any).api?.getStartupCwd?.().catch(() => null),
     ]).then(([shells, prefs, cwd]: [any[], any, string | null]) => {
       if (shells?.length) setAvailableShells(shells);
-      const name = prefs?.defaultShellName || shells?.[0]?.name || 'Windows PowerShell';
-      const spath = prefs?.defaultShellPath || shells?.[0]?.path || 'powershell.exe';
+      else if (isIos) setAvailableShells([{ name: 'SSH Terminal', path: 'ssh', icon: '📡' }]);
+      const name = isIos ? 'SSH Terminal'
+        : (prefs?.defaultShellName || shells?.[0]?.name || 'Windows PowerShell');
+      const spath = isIos ? 'ssh'
+        : (prefs?.defaultShellPath || shells?.[0]?.path || 'powershell.exe');
       setDefaultShell({ name, path: spath });
       // 초기 탭의 세션명/경로/cwd를 업데이트
       setTabs(prev => prev.map((t, i) => {
@@ -685,9 +689,15 @@ function App() {
 
   const handleThemeChange = (name: string) => {
     setThemeName(name);
-    const tid = getActiveTermId();
-    if (tid) applyThemeToTerm(tid, name);
-    else applyThemeToAll(name);
+    applyThemeToAll(name);
+  };
+
+  const handleFontSizeChange = (delta: number) => {
+    setOptFontSize(prev => {
+      const next = Math.max(8, Math.min(32, prev + delta));
+      applyFontToAll(undefined, next);
+      return next;
+    });
   };
 
   const activeTab = tabs.find(t => t.id === activeTabId) ?? tabs[0];
@@ -1083,7 +1093,15 @@ function App() {
     const tab = tabs.find(t => t.id === tabId);
     if (!tab) return;
     if (countLeaves(tab.layout) === 1) {
-      if (tab.layout.type === 'leaf') tab.layout.panel.sessions.forEach(s => window.api?.disconnectSSH?.(s.termId));
+      if (tab.layout.type === 'leaf') {
+        tab.layout.panel.sessions.forEach(s => window.api?.disconnectSSH?.(s.termId));
+        updateLayout(tabId, layout => {
+          if (layout.type === 'leaf') {
+            return { ...layout, panel: { ...layout.panel, sessions: [], activeIdx: 0 } };
+          }
+          return layout;
+        });
+      }
       return;
     }
     updateLayout(tabId, layout => removeLeafNode(layout, targetNodeId));
@@ -1373,8 +1391,8 @@ function App() {
               }
             }, 0);
             applySessionTheme(termId); registerTerm(termId);
-          } else {
-            // 끊겨있으면 → 기존 termId 유지, 세션 정보만 교체 후 재연결
+          } else if (activeSess.sessionId === sessionId) {
+            // 같은 세션 재연결 → 기존 termId 유지, 세션 정보만 교체 후 재연결
             resetTermConnectState(activeSess.termId);
             updateLayout(activeTab.id, layout => {
               function walk(node: LayoutNode): LayoutNode {
@@ -1396,6 +1414,17 @@ function App() {
               }
             }, 100);
             applySessionTheme(activeSess.termId); registerTerm(activeSess.termId);
+          } else {
+            // 다른 세션 → 새 미니탭으로 추가
+            const { layout, termId } = addSessionToPanel(activeTab.layout, selectedPanelId!, sessionId, displayName);
+            setTabs(prev => prev.map(t => t.id === activeTab.id ? { ...t, layout } : t));
+            setTimeout(async () => {
+              const r = await (window as any).api.connectSSH(termId, sessionId);
+              if (r === 'need-password') {
+                promptPasswordAndConnect(termId, sessionId);
+              }
+            }, 0);
+            applySessionTheme(termId); registerTerm(termId);
           }
         };
         checkAndConnect();
@@ -1994,6 +2023,11 @@ function App() {
             }}
           />
           <div className="window-controls-right">
+            <div className="font-size-group">
+              <button className="font-size-btn" onClick={() => handleFontSizeChange(-1)} title="글꼴 축소">−</button>
+              <span className="font-size-label">{optFontSize}</span>
+              <button className="font-size-btn" onClick={() => handleFontSizeChange(1)} title="글꼴 확대">+</button>
+            </div>
             <select className="theme-select" value={themeName} onChange={e => handleThemeChange(e.target.value)}>
               {getThemeList().map(t => <option key={t} value={t}>{t}</option>)}
             </select>

@@ -693,6 +693,55 @@ html, body {
   box-shadow: inset 3px 0 0 0 #58a6ff;
 }
 
+.font-size-group {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin-right: 4px;
+}
+.font-size-btn {
+  background: #1a1a2e;
+  color: #ccc;
+  border: 1px solid #333;
+  width: 22px;
+  height: 22px;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.font-size-btn:first-child {
+  border-radius: 4px 0 0 4px;
+  border-right: none;
+}
+.font-size-btn:last-child {
+  border-radius: 0 4px 4px 0;
+  border-left: none;
+}
+.font-size-btn:hover {
+  background: #2a2a3e;
+  color: #fff;
+}
+.font-size-btn:active {
+  background: #3a3a4e;
+}
+.font-size-label {
+  background: #111;
+  color: #aaa;
+  border: 1px solid #333;
+  font-size: 10px;
+  min-width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: monospace;
+  user-select: none;
+}
+
 .theme-select {
   background: #1a1a2e;
   color: #ccc;
@@ -4468,12 +4517,23 @@ html, body {
 }
 
 /* ── iOS 멀티선택 체크박스 (다른 환경 숨김) ── */
+.ios-cb-touch-area { display: none; }
+.is-ios .ios-cb-touch-area {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
+  margin: -10px;
+  margin-right: -4px;
+  flex-shrink: 0;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
 .ios-multi-select-cb { display: none; }
 .is-ios .ios-multi-select-cb {
   display: inline-block;
   width: 18px;
   height: 18px;
-  margin-right: 6px;
   flex-shrink: 0;
   vertical-align: middle;
   accent-color: #4a90e2;

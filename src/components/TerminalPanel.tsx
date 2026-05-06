@@ -399,14 +399,14 @@ function renderHighlightOverlay(termId: string, query: string, regex: boolean, c
 
 
 export function applyThemeToAll(themeName: string) {
+  const oldThemeName = currentThemeName;
   currentThemeName = themeName;
   localStorage.setItem('terminalTheme', themeName);
   for (const [tid, entry] of termStore) {
-    // 세션별 테마가 없는 터미널만 글로벌 테마 적용
-    if (!termThemeCache.has(tid) || termThemeCache.get(tid) === currentThemeName) {
+    // 세션별 커스텀 테마가 아닌 터미널만 글로벌 테마 적용
+    if (!termThemeCache.has(tid) || termThemeCache.get(tid) === oldThemeName) {
       termThemeCache.set(tid, themeName);
     }
-    // 투명도가 적용된 상태면 테마+투명도 함께 반영
     const containerEl = (entry.term as any).element?.closest?.('.xterm-container') || null;
     applyTermOpacity(tid, containerEl);
   }
@@ -1171,10 +1171,12 @@ export const TerminalPanel: React.FC<Props> = ({
   }, [panel.sessions.map(s => s.termId).join(',')]);
 
   // 패널이 비어 있으면 자동으로 새 세션(미니탭) 생성 (중복 호출 방지)
+  // iOS 에서는 로컬 쉘이 없으므로 빈 패널을 유지 — 세션 리스트에서 연결하면 채워짐.
   const autoAddedRef = useRef(false);
+  const isIosEnv = document.body.classList.contains('is-ios');
   useEffect(() => {
     if (panel.sessions.length === 0) {
-      if (autoAddedRef.current) return;
+      if (isIosEnv || autoAddedRef.current) return;
       autoAddedRef.current = true;
       onAddSession?.(nodeId);
     } else {
@@ -1599,8 +1601,8 @@ export const TerminalPanel: React.FC<Props> = ({
                 }}>&times;</span>
               </span>
             ))}
-            <span className="panel-session-tab-add" onClick={e => { e.stopPropagation(); onAddSession?.(nodeId); }} title="새 세션">+</span>
-            {availableShells && availableShells.length > 0 && (
+            {!isIosEnv && <span className="panel-session-tab-add" onClick={e => { e.stopPropagation(); onAddSession?.(nodeId); }} title="새 세션">+</span>}
+            {!isIosEnv && availableShells && availableShells.length > 0 && (
               <span className="panel-session-tab-add panel-shell-btn" onClick={e => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setShellMenu(prev => prev ? null : { x: r.left, y: r.bottom }); }} title="쉘 선택">∨</span>
             )}
           </div>
@@ -1615,9 +1617,9 @@ export const TerminalPanel: React.FC<Props> = ({
           </div>
         ) : (
           <span className="panel-header-label" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            Empty
-            <span className="panel-session-tab-add" onClick={e => { e.stopPropagation(); onAddSession?.(nodeId); }} title="새 세션">+</span>
-            {availableShells && availableShells.length > 0 && (
+            {isIosEnv ? '세션을 선택하세요' : 'Empty'}
+            {!isIosEnv && <span className="panel-session-tab-add" onClick={e => { e.stopPropagation(); onAddSession?.(nodeId); }} title="새 세션">+</span>}
+            {!isIosEnv && availableShells && availableShells.length > 0 && (
               <span className="panel-session-tab-add panel-shell-btn" onClick={e => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setShellMenu(prev => prev ? null : { x: r.left, y: r.bottom }); }} title="쉘 선택">∨</span>
             )}
           </span>

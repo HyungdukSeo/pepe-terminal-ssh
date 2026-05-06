@@ -6,11 +6,12 @@ use_frameworks!
 # workaround to avoid Xcode caching of Pods that requires
 # Product -> Clean Build Folder after new Cordova plugins installed
 # Requires CocoaPods 1.6 or newer
-install! 'cocoapods', :disable_input_output_paths => true
+# install! 'cocoapods', :disable_input_output_paths => true
 
 def capacitor_pods
   pod 'Capacitor', :path => '../../node_modules/@capacitor/ios'
   pod 'CapacitorCordova', :path => '../../node_modules/@capacitor/ios'
+  pod 'CapacitorKeyboard', :path => '../../node_modules/@capacitor/keyboard'
   pod 'CapacitorPreferences', :path => '../../node_modules/@capacitor/preferences'
 end
 
@@ -21,4 +22,18 @@ end
 
 post_install do |installer|
   assertDeploymentTarget(installer)
+  # NMSSH bundles device-only libcrypto.a / libssl.a (arm64 iOS, no simulator slice).
+  # Exclude arm64 from simulator → forces Rosetta (x86_64) sim builds.
+  installer.pods_project.targets.each do |target|
+    target.build_configurations.each do |config|
+      config.build_settings['EXCLUDED_ARCHS[sdk=iphonesimulator*]'] = 'arm64'
+    end
+  end
+  # Propagate the same setting to the App target via its base xcconfig.
+  Dir.glob(File.join(installer.sandbox.root, 'Target Support Files', 'Pods-App', '*.xcconfig')).each do |xcconfig_path|
+    content = File.read(xcconfig_path)
+    unless content.include?('EXCLUDED_ARCHS')
+      File.open(xcconfig_path, 'a') { |f| f.puts 'EXCLUDED_ARCHS[sdk=iphonesimulator*] = arm64' }
+    end
+  end
 end

@@ -3,12 +3,55 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="./vite.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>PePe Terminal(SSH)</title>
-    <script type="module" crossorigin src="./assets/index-DNf-S-Cb.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-DoDTQ9Oj.css">
+    <script type="module" crossorigin src="./assets/index-DuBpugej.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-CAIFHgcX.css">
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // Install window.api proxy synchronously, BEFORE any ES module imports run.
+      // Electron preload sets window.api before bundle loads, but on Capacitor (iOS),
+      // the adapter is installed asynchronously — modules that capture
+      // `const api = window.api || {}` at top level would otherwise see {}.
+      // The proxy delegates to the real api once main.tsx swaps it in.
+      (function () {
+        if (window.api) return; // electron preload already set it
+        var real = null;
+        var listeners = {}; // event name -> [callback]
+        window.__setApiImpl = function (impl) { real = impl; };
+        window.api = new Proxy({}, {
+          get: function (_t, prop) {
+            if (typeof prop !== 'string') return undefined;
+            if (real && prop in real) return real[prop];
+            // event subscribers (onFoo) — keep callbacks so they fire after impl loads
+            if (prop.indexOf('on') === 0) {
+              return function (cb) {
+                if (real && typeof real[prop] === 'function') return real[prop](cb);
+                if (!listeners[prop]) listeners[prop] = [];
+                listeners[prop].push(cb);
+                return function () {
+                  if (!listeners[prop]) return;
+                  listeners[prop] = listeners[prop].filter(function (f) { return f !== cb; });
+                };
+              };
+            }
+            return function () { return Promise.resolve(undefined); };
+          }
+        });
+        // After real impl set, replay queued event subscriptions
+        var origSet = window.__setApiImpl;
+        window.__setApiImpl = function (impl) {
+          origSet(impl);
+          Object.keys(listeners).forEach(function (ev) {
+            if (typeof impl[ev] === 'function') {
+              listeners[ev].forEach(function (cb) { impl[ev](cb); });
+            }
+          });
+          listeners = {};
+        };
+      })();
+    </script>
   </body>
 </html>

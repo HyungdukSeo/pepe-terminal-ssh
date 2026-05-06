@@ -280,13 +280,16 @@ export function collectAllSessions(node: LayoutNode): PanelSession[] {
 }
 
 export function createInitialLayout(_tabId: string, shellName?: string, shellPath?: string): LayoutNode {
-  const termId = `term-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const isIos = document.body.classList.contains('is-ios');
+  const sessions: PanelSession[] = isIos
+    ? []
+    : [{ termId: `term-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, sessionId: '', sessionName: shellName || 'Local Shell', shellPath }];
   return {
     id: makeId('node-root'),
     type: 'leaf',
     panel: {
       id: makeId('panel'),
-      sessions: [{ termId, sessionId: '', sessionName: shellName || 'Local Shell', shellPath }],
+      sessions,
       activeIdx: 0,
     },
   };

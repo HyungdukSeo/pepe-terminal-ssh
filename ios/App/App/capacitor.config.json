@@ -2,7 +2,14 @@
 	"appId": "com.ghjeong.pepeterminalssh",
 	"appName": "PePe Terminal SSH",
 	"webDir": "dist",
+	"plugins": {
+		"Keyboard": {
+			"resize": "body",
+			"resizeOnFullScreen": true
+		}
+	},
 	"packageClassList": [
+		"KeyboardPlugin",
 		"PreferencesPlugin"
 	]
 }
