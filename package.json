@@ -2,7 +2,7 @@
   "name": "pepe-terminal-ssh",
   "productName": "PePe Terminal(SSH)",
   "private": true,
-  "version": "2.0.6",
+  "version": "3.0.1",
   "description": "SSH Terminal Client",
   "author": "Claude (feat. ghjeong[prompt])",
   "type": "commonjs",
@@ -15,6 +15,7 @@
     "cap:copy": "npx cap copy",
     "cap:add:ios": "npx cap add ios",
     "cap:open:ios": "npx cap open ios",
+    "setup:ios": "bash ios/setup.sh",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview"
   },

@@ -1,0 +1,8 @@
+{
+	"appId": "com.ghjeong.pepeterminalssh",
+	"appName": "PePe Terminal SSH",
+	"webDir": "dist",
+	"packageClassList": [
+		"PreferencesPlugin"
+	]
+}

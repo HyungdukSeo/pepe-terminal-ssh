@@ -1,13 +1,14 @@
 App/build
 App/Pods
 App/output
-App/App/public
 DerivedData
 xcuserdata
 
 # Cordova plugins for Capacitor
 capacitor-cordova-ios-plugins
 
-# Generated Config files
-App/App/capacitor.config.json
-App/App/config.xml
+# v3.0.1: 아래 generated 파일들은 clone 직후 Xcode 빌드를 위해 트래킹합니다.
+# (변경 시 `npm run setup:ios` 또는 `npx cap sync` 후 재커밋)
+# App/App/public
+# App/App/capacitor.config.json
+# App/App/config.xml
