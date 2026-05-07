@@ -165,8 +165,8 @@ contextBridge.exposeInMainWorld('api', {
 
   // Claude Code CLI
   claudeCheck: () => ipcRenderer.invoke('claude:check'),
-  claudeSend: (sessionId: string, prompt: string, addDirs?: string[], disallowBash?: boolean, sshTermId?: string, resumeSessionId?: string | null, permissionMode?: string, model?: string, perToolApproval?: boolean, requestId?: string) =>
-    ipcRenderer.invoke('claude:send', { sessionId, prompt, addDirs, disallowBash, sshTermId, resumeSessionId, permissionMode, model, perToolApproval, requestId }),
+  claudeSend: (sessionId: string, prompt: string, addDirs?: string[], disallowBash?: boolean, sshTermId?: string, resumeSessionId?: string | null, permissionMode?: string, model?: string, perToolApproval?: boolean, requestId?: string, effort?: string) =>
+    ipcRenderer.invoke('claude:send', { sessionId, prompt, addDirs, disallowBash, sshTermId, resumeSessionId, permissionMode, model, perToolApproval, requestId, effort }),
   claudeHookRespond: (approvalId: string, decision: 'allow' | 'deny', reason?: string) =>
     ipcRenderer.invoke('claude:hook-respond', { approvalId, decision, reason }),
   onClaudeHookApprovalRequest: (cb: (p: any) => void) => {
@@ -184,6 +184,7 @@ contextBridge.exposeInMainWorld('api', {
   claudeProbeUsage: () => ipcRenderer.invoke('claude:probe-usage'),
   claudeProbeUsageTui: () => ipcRenderer.invoke('claude:probe-usage-tui'),
   claudeFetchUsageApi: () => ipcRenderer.invoke('claude:fetch-usage-api'),
+  claudeFetchModels: () => ipcRenderer.invoke('claude:fetch-models'),
   claudeReadSettings: () => ipcRenderer.invoke('claude:read-settings'),
   clipboardWriteImage: (dataUrl: string) => ipcRenderer.invoke('clipboard:write-image', { dataUrl }),
   x11Start: (displayNum?: number) => ipcRenderer.invoke('x11:start', displayNum ?? 0),

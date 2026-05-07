@@ -358,7 +358,10 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const toggleToolGroup = (gid: string) => setExpandedToolGroups(prev => { const n = new Set(prev); n.has(gid) ? n.delete(gid) : n.add(gid); return n; });
   const toggleToolItem = (id: string) => setExpandedToolItems(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   // 툴 단위 승인 모드 (hooks)
-  const [perToolApproval, setPerToolApproval] = useState(false);
+  const [perToolApproval, setPerToolApproval] = useState(() => {
+    try { const v = localStorage.getItem('claudePerToolApproval'); return v === null ? true : v === '1'; } catch { return true; }
+  });
+  useEffect(() => { try { localStorage.setItem('claudePerToolApproval', perToolApproval ? '1' : '0'); } catch {} }, [perToolApproval]);
   // 현재 대기 중인 툴 승인 요청 (hook 에서 전달)
   const [pendingToolApproval, setPendingToolApproval] = useState<{ approvalId: string; toolName: string; toolInput: any } | null>(null);
   const [sessionId] = useState(() => `claude-${Date.now()}-${sessionCounter++}`);
@@ -429,6 +432,43 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const recentLocalPathsRef = useRef<Set<string>>(new Set());
   // 권한 모드: default(기본, 요청 시) / acceptEdits(편집만 자동) / plan(실행 없이 계획만) / bypassPermissions(모두 허용)
   const [permissionMode, setPermissionMode] = useState<'bypassPermissions' | 'acceptEdits' | 'plan' | 'default'>('default');
+  // 작업량 (effort) — claude --effort 플래그로 전달
+  const [effort, setEffort] = useState<string>(() => {
+    try { return localStorage.getItem('claudeEffort') || 'medium'; } catch { return 'medium'; }
+  });
+  useEffect(() => { try { localStorage.setItem('claudeEffort', effort); } catch {} }, [effort]);
+  // 동적 모델 목록 (Anthropic /v1/models)
+  type AnthropicModel = { id: string; display_name: string; max_input_tokens?: number; capabilities?: any };
+  const [availableModels, setAvailableModels] = useState<AnthropicModel[]>([]);
+  useEffect(() => {
+    (async () => {
+      try {
+        // 캐시 사용 — 1시간 이내면 재사용
+        const cached = localStorage.getItem('claudeModelsCache');
+        if (cached) {
+          const o = JSON.parse(cached);
+          if (o.ts && Date.now() - o.ts < 3600_000 && Array.isArray(o.models)) {
+            setAvailableModels(o.models);
+          }
+        }
+      } catch {}
+      try {
+        const r: any = await (window as any).api?.claudeFetchModels?.();
+        if (r?.success && Array.isArray(r.models)) {
+          setAvailableModels(r.models);
+          try { localStorage.setItem('claudeModelsCache', JSON.stringify({ ts: Date.now(), models: r.models })); } catch {}
+        }
+      } catch {}
+    })();
+  }, []);
+  // 모드 진입 시 툴별 승인 자동 토글: default/plan 은 ON, bypass/acceptEdits 는 OFF
+  useEffect(() => {
+    if (permissionMode === 'bypassPermissions' || permissionMode === 'acceptEdits') {
+      if (perToolApproval) setPerToolApproval(false);
+    } else if (permissionMode === 'default' || permissionMode === 'plan') {
+      if (!perToolApproval) setPerToolApproval(true);
+    }
+  }, [permissionMode]);
   // 모델 선택 — claude CLI --model 플래그
   const [model, setModel] = useState<string>('opus');
   const [commandMenuOpen, setCommandMenuOpen] = useState(false);
@@ -1201,7 +1241,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     // 전송 후 로컬 파일 첨부는 해제
     setLocalFileAttachments([]);
     try {
-      await (window as any).api?.claudeSend?.(sessionId, prompt, addDirs, disallowBash, sshTermId, resumeSessionId, effectivePermMode, model, perToolApproval, requestId);
+      await (window as any).api?.claudeSend?.(sessionId, prompt, addDirs, disallowBash, sshTermId, resumeSessionId, effectivePermMode, model, perToolApproval, requestId, effort);
     } catch (err: any) {
       setMessages(prev => [...prev, { role: 'assistant', content: `❌ ${err}`, id: `err-${Date.now()}`, seq: nextSeq() }]);
       setStreaming(false);
@@ -1415,17 +1455,43 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     { id: 'attach-file', section: 'Context', label: 'Attach file...', desc: '로컬 파일 첨부', run: () => fileUploadRef.current?.click() },
     { id: 'attach-folder', section: 'Context', label: 'Attach folder...', desc: '로컬 폴더 첨부 (재귀)', run: () => folderUploadRef.current?.click() },
     { id: 'clear', section: 'Context', label: 'Clear conversation', desc: '대화 및 컨텍스트 초기화', run: () => clear() },
-    // Model
-    { id: 'model-default', section: 'Model', label: 'Model: 기본', run: () => setModel('default') },
-    { id: 'model-opus', section: 'Model', label: 'Model: Opus', desc: '최고 성능', run: () => setModel('opus') },
-    { id: 'model-sonnet', section: 'Model', label: 'Model: Sonnet', desc: '균형', run: () => setModel('sonnet') },
-    { id: 'model-haiku', section: 'Model', label: 'Model: Haiku', desc: '빠름', run: () => setModel('haiku') },
-    { id: 'model-opusplan', section: 'Model', label: 'Model: Opus Plan', desc: '계획 Opus', run: () => setModel('opusplan') },
-    // Permission
-    { id: 'perm-default', section: 'Permission', label: '🖐 편집 전 확인', run: () => setPermissionMode('default') },
-    { id: 'perm-accept', section: 'Permission', label: '✏️ 편집 자동 수락', run: () => setPermissionMode('acceptEdits') },
-    { id: 'perm-plan', section: 'Permission', label: '🗺 계획 모드', run: () => setPermissionMode('plan') },
-    { id: 'perm-bypass', section: 'Permission', label: '⚡ 모두 허용', run: () => setPermissionMode('bypassPermissions') },
+    // Model — Anthropic /v1/models 결과로 동적 생성, 없으면 fallback
+    ...(availableModels.length > 0
+      ? (() => {
+          const tier = (id: string) => /opus/i.test(id) ? 0 : /sonnet/i.test(id) ? 1 : /haiku/i.test(id) ? 2 : 3;
+          const sorted = [...availableModels].sort((a, b) => {
+            const t = tier(a.id) - tier(b.id);
+            return t !== 0 ? t : b.id.localeCompare(a.id);
+          });
+          const acts: PaletteAction[] = [];
+          for (const m of sorted) {
+            const has1M = (m.max_input_tokens || 0) >= 1_000_000;
+            const shortAlias = /opus-4-7/i.test(m.id) ? 'opus' : /sonnet-4-6/i.test(m.id) ? 'sonnet' : /haiku-4-5/i.test(m.id) ? 'haiku' : m.id;
+            if (has1M) {
+              acts.push({ id: `model-${m.id}-200k`, section: 'Model', label: `Model: ${m.display_name}`, desc: '200k context', run: () => setModel(shortAlias) });
+              acts.push({ id: `model-${m.id}-1m`, section: 'Model', label: `Model: ${m.display_name} 1M`, desc: '1M context', run: () => setModel(`${shortAlias}[1m]`) });
+            } else {
+              acts.push({ id: `model-${m.id}`, section: 'Model', label: `Model: ${m.display_name}`, run: () => setModel(shortAlias) });
+            }
+          }
+          return acts;
+        })()
+      : [
+          { id: 'model-opus', section: 'Model', label: 'Model: Opus 4.7', run: () => setModel('opus') },
+          { id: 'model-opus-1m', section: 'Model', label: 'Model: Opus 4.7 1M', run: () => setModel('opus[1m]') },
+          { id: 'model-sonnet', section: 'Model', label: 'Model: Sonnet 4.6', run: () => setModel('sonnet') },
+          { id: 'model-haiku', section: 'Model', label: 'Model: Haiku 4.5', run: () => setModel('haiku') },
+          { id: 'model-opus-legacy', section: 'Model', label: 'Model: Opus 4.6 레거시', run: () => setModel('claude-opus-4-6') },
+        ]),
+    // Effort
+    { id: 'effort-low', section: 'Effort', label: '작업량: 낮음', run: () => setEffort('low') },
+    { id: 'effort-medium', section: 'Effort', label: '작업량: 보통', run: () => setEffort('medium') },
+    { id: 'effort-high', section: 'Effort', label: '작업량: 높음', run: () => setEffort('high') },
+    { id: 'effort-max', section: 'Effort', label: '작업량: Max', run: () => setEffort('max') },
+    // Permission (모드 3종으로 정리 — bypass 제거됨)
+    { id: 'perm-default', section: 'Permission', label: '🖐 권한 요청', run: () => setPermissionMode('default') },
+    { id: 'perm-accept', section: 'Permission', label: '✏️ 편집 수락', run: () => setPermissionMode('acceptEdits') },
+    { id: 'perm-plan', section: 'Permission', label: '📋 계획 모드', run: () => setPermissionMode('plan') },
     // Slash Commands (프롬프트 삽입)
     ...commandPresets.map(p => ({
       id: `slash-${p.label}`,
@@ -2051,12 +2117,52 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             onChange={e => setModel(e.target.value)}
             title="모델 선택"
           >
-            <option value="opus">🟣 Opus 4.7 (200k)</option>
-            <option value="opus[1m]">🟣 Opus 4.7 1M</option>
-            <option value="sonnet">🔵 Sonnet 4.6 (200k)</option>
-            <option value="sonnet[1m]">🔵 Sonnet 4.6 1M</option>
-            <option value="haiku">⚡ Haiku 4.5 (200k)</option>
-            <option value="opusplan">🎯 Opus Plan (계획)</option>
+            {availableModels.length > 0 ? (() => {
+              // API 응답을 정렬 — 최신 (created_at desc), Opus → Sonnet → Haiku 순
+              const tier = (id: string) => /opus/i.test(id) ? 0 : /sonnet/i.test(id) ? 1 : /haiku/i.test(id) ? 2 : 3;
+              const sorted = [...availableModels].sort((a, b) => {
+                const t = tier(a.id) - tier(b.id);
+                if (t !== 0) return t;
+                return (b.id.localeCompare(a.id));
+              });
+              const opts: JSX.Element[] = [];
+              for (const m of sorted) {
+                const icon = /opus/i.test(m.id) ? '🟣' : /sonnet/i.test(m.id) ? '🔵' : /haiku/i.test(m.id) ? '⚡' : '🤖';
+                const has1M = (m.max_input_tokens || 0) >= 1_000_000;
+                // 짧은 alias 가 있으면 그것을 value 로 — opus, sonnet, haiku
+                const shortAlias = /opus-4-7/i.test(m.id) ? 'opus' : /sonnet-4-6/i.test(m.id) ? 'sonnet' : /haiku-4-5/i.test(m.id) ? 'haiku' : m.id;
+                if (has1M) {
+                  opts.push(<option key={m.id + '-200k'} value={shortAlias}>{icon} {m.display_name} (200k)</option>);
+                  opts.push(<option key={m.id + '-1m'} value={shortAlias === m.id ? `${shortAlias}[1m]` : `${shortAlias}[1m]`}>{icon} {m.display_name} 1M</option>);
+                } else {
+                  opts.push(<option key={m.id} value={shortAlias}>{icon} {m.display_name}</option>);
+                }
+              }
+              return opts;
+            })() : (
+              <>
+                <option value="opus">🟣 Opus 4.7</option>
+                <option value="opus[1m]">🟣 Opus 4.7 1M</option>
+                <option value="sonnet">🔵 Sonnet 4.6</option>
+                <option value="haiku">⚡ Haiku 4.5</option>
+                <option value="claude-opus-4-6">🕘 Opus 4.6 레거시</option>
+              </>
+            )}
+          </select>
+          <select
+            className="claude-chat-perm-select"
+            value={effort}
+            onChange={e => setEffort(e.target.value)}
+            title="작업량 (Effort) — 모델이 출력에 쓰는 thinking 양"
+          >
+            {(() => {
+              // 모델별 지원 effort 레벨 — 첫 번째 모델의 capabilities.effort 참고
+              const supported = availableModels[0]?.capabilities?.effort;
+              const labels: Record<string, string> = { low: '낮음', medium: '보통', high: '높음', max: 'Max' };
+              const all = ['low', 'medium', 'high', 'max'];
+              const enabled = supported ? all.filter(k => supported[k]?.supported) : all;
+              return enabled.map(v => <option key={v} value={v}>{labels[v]}</option>);
+            })()}
           </select>
           <label className="claude-chat-tool-approval-label" title="각 Bash/Edit/Write 툴 호출마다 승인 요청">
             <input type="checkbox" checked={perToolApproval} onChange={e => setPerToolApproval(e.target.checked)} />
@@ -2068,10 +2174,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             onChange={e => setPermissionMode(e.target.value as any)}
             title="권한 모드 — 편집 전 확인(기본)은 계획을 먼저 보여주고, '실행' 또는 '진행' 등으로 답하면 실행합니다"
           >
-            <option value="default">🖐 편집 전 확인 (계획 → 승인)</option>
-            <option value="acceptEdits">✏️ 편집 자동 수락</option>
-            <option value="plan">🗺 계획 모드 (실행 X)</option>
-            <option value="bypassPermissions">⚡ 자동 모드 (모두 허용)</option>
+            <option value="default">🖐 권한 요청</option>
+            <option value="acceptEdits">✏️ 편집 수락</option>
+            <option value="plan">📋 계획 모드</option>
           </select>
         </div>
         <textarea

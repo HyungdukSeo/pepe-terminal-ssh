@@ -1822,7 +1822,7 @@ ipcMain.handle('claude:get-mount-path', async (_e, { panelId, remotePath }: { pa
 });
 
 // claude CLI 실행 + 스트리밍 응답 (print 모드)
-ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowBash, sshTermId, resumeSessionId, permissionMode, model, perToolApproval, requestId }: { sessionId: string; prompt: string; addDirs?: string[]; disallowBash?: boolean; sshTermId?: string; resumeSessionId?: string | null; permissionMode?: string; model?: string; perToolApproval?: boolean; requestId?: string }) => {
+ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowBash, sshTermId, resumeSessionId, permissionMode, model, perToolApproval, requestId, effort }: { sessionId: string; prompt: string; addDirs?: string[]; disallowBash?: boolean; sshTermId?: string; resumeSessionId?: string | null; permissionMode?: string; model?: string; perToolApproval?: boolean; requestId?: string; effort?: string }) => {
   try {
     const { spawn } = require('child_process');
     // requestId 가 있으면 그걸 프로세스 키로 사용 — 동일 sessionId 안에서 여러 대화가 동시에 진행될 수 있음.
@@ -1929,6 +1929,7 @@ ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowB
 
     // 모델 선택 (--model)
     const modelFlag = (model && model !== 'default') ? `--model ${model}` : '';
+    const effortFlag = (effort && ['low', 'medium', 'high', 'max'].includes(effort)) ? `--effort ${effort}` : '';
     console.log('[claude] model:', model || 'default');
 
     // 툴 단위 승인 (hooks) — perToolApproval true 일 때만 활성화
@@ -1967,8 +1968,8 @@ ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowB
     // shell 커맨드로 파이프 구성 (claude 는 PATHEXT 로 .cmd 자동 해석)
     // Windows: chcp 65001 로 UTF-8 코드페이지 전환 (한글 깨짐 방지)
     const shellCmd = isWin
-      ? `chcp 65001 >nul && type "${tmpFile}" | claude -p ${resumeFlag} ${modelFlag} ${permFlag} ${allowedFlag} ${disallowedFlag} ${settingsFlag} ${mcpConfigArg} ${addDirArgs} --output-format stream-json --verbose`
-      : `cat "${tmpFile}" | claude -p ${resumeFlag} ${modelFlag} ${permFlag} ${allowedFlag} ${disallowedFlag} ${settingsFlag} ${mcpConfigArg} ${addDirArgs} --output-format stream-json --verbose`;
+      ? `chcp 65001 >nul && type "${tmpFile}" | claude -p ${resumeFlag} ${modelFlag} ${effortFlag} ${permFlag} ${allowedFlag} ${disallowedFlag} ${settingsFlag} ${mcpConfigArg} ${addDirArgs} --output-format stream-json --verbose`
+      : `cat "${tmpFile}" | claude -p ${resumeFlag} ${modelFlag} ${effortFlag} ${permFlag} ${allowedFlag} ${disallowedFlag} ${settingsFlag} ${mcpConfigArg} ${addDirArgs} --output-format stream-json --verbose`;
     console.log('[claude] shell cmd:', shellCmd);
     console.log('[claude] PATH has npm:', augmentedPath.toLowerCase().includes('npm'));
 
@@ -2034,6 +2035,37 @@ ipcMain.handle('claude:read-settings', async () => {
     const p = pathMod.join(os.homedir(), '.claude', 'settings.json');
     const obj = JSON.parse(fs.readFileSync(p, 'utf-8'));
     return { success: true, settings: obj };
+  } catch (e: any) {
+    return { success: false, error: String(e?.message || e) };
+  }
+});
+
+// Anthropic 모델 목록 조회 — /v1/models
+ipcMain.handle('claude:fetch-models', async () => {
+  const fs = require('fs');
+  const pathMod = require('path');
+  const os = require('os');
+  const credPath = pathMod.join(os.homedir(), '.claude', '.credentials.json');
+  let token: string | null = null;
+  try {
+    const raw = fs.readFileSync(credPath, 'utf-8');
+    const obj = JSON.parse(raw);
+    token = obj?.claudeAiOauth?.accessToken;
+  } catch {}
+  if (!token) return { success: false, error: 'no token' };
+  try {
+    const fetchFn: any = (global as any).fetch;
+    const resp = await fetchFn('https://api.anthropic.com/v1/models', {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'oauth-2025-04-20',
+      },
+    });
+    const text = await resp.text();
+    if (!resp.ok) return { success: false, error: `HTTP ${resp.status}`, body: text.slice(0, 300) };
+    const data = JSON.parse(text);
+    return { success: true, models: data.data || [] };
   } catch (e: any) {
     return { success: false, error: String(e?.message || e) };
   }

@@ -2673,7 +2673,7 @@ export const TerminalPanel: React.FC<Props> = ({
                 }
               } catch {}
             }},
-            ...(workspaceList && workspaceList.length > 1 && onMoveSessionToWorkspace ? [{
+            ...(onMoveSessionToWorkspace ? [{
               label: '다른 워크스페이스로 이동...',
               onClick: () => {
                 setMoveWorkspaceCtx({ x: miniCtx.x, y: miniCtx.y, termId: miniCtx.termId });
@@ -2683,16 +2683,17 @@ export const TerminalPanel: React.FC<Props> = ({
           ]}
         />
       )}
-      {moveWorkspaceCtx && workspaceList && onMoveSessionToWorkspace && (
+      {moveWorkspaceCtx && onMoveSessionToWorkspace && (
         <ContextMenu
           x={moveWorkspaceCtx.x} y={moveWorkspaceCtx.y}
           onClose={() => setMoveWorkspaceCtx(null)}
-          items={workspaceList.filter(w => w.id !== currentWorkspaceId).map(w => ({
-            label: `→ ${w.title}`,
-            onClick: () => {
-              onMoveSessionToWorkspace(nodeId, moveWorkspaceCtx.termId, w.id);
-            },
-          }))}
+          items={[
+            ...((workspaceList || []).filter(w => w.id !== currentWorkspaceId).map(w => ({
+              label: `→ ${w.title}`,
+              onClick: () => onMoveSessionToWorkspace(nodeId, moveWorkspaceCtx.termId, w.id),
+            }))),
+            { label: '+ 새 워크스페이스로 이동', onClick: () => onMoveSessionToWorkspace(nodeId, moveWorkspaceCtx.termId, '__new__') },
+          ]}
         />
       )}
       {/* 여러 줄 붙여넣기 — 별도 BrowserWindow 로 띄워짐 (main process 가 관리) */}

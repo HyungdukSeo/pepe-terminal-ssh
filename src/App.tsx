@@ -1290,7 +1290,17 @@ function App() {
 
   // 세션(터미널)을 다른 워크스페이스로 통째로 이동 — 단일 상태 업데이트로 termId 유지하며 옮김
   const handleMoveSessionToWorkspace = (fromNodeId: string, termId: string, targetTabId: string) => {
-    if (!activeTab || activeTab.id === targetTabId) return;
+    if (!activeTab) return;
+    // 새 워크스페이스 생성 옵션
+    if (targetTabId === '__new__') {
+      const newId = `tab-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      const newTab = { id: newId, title: `Workspace ${tabs.length + 1}`, layout: createInitialLayout(newId) } as any;
+      setTabs(prev => [...prev, newTab]);
+      // 다음 tick 에 이동 진행
+      setTimeout(() => handleMoveSessionToWorkspace(fromNodeId, termId, newId), 30);
+      return;
+    }
+    if (activeTab.id === targetTabId) return;
     setTabs(prev => {
       const fromTab = prev.find(t => t.id === activeTab.id);
       const toTab = prev.find(t => t.id === targetTabId);
