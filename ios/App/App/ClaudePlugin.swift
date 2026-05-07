@@ -121,7 +121,7 @@ private class SSEDelegate: NSObject, URLSessionDataDelegate {
         while true {
             guard let range = buffer.range(of: "\n") else { break }
             let line = String(buffer[buffer.startIndex..<range.lowerBound])
-                .trimmingCharacters(in: .carriageReturns)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\r"))
             buffer = String(buffer[range.upperBound...])
 
             guard line.hasPrefix("data: ") else { continue }
@@ -160,8 +160,4 @@ private class SSEDelegate: NSObject, URLSessionDataDelegate {
             plugin?.emit(requestId, ["type": "error", "error": msg])
         }
     }
-}
-
-private extension CharacterSet {
-    static let carriageReturns = CharacterSet(charactersIn: "\r")
 }

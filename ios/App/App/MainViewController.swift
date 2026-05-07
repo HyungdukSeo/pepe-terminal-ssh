@@ -6,6 +6,7 @@ class MainViewController: CAPBridgeViewController {
     override func capacitorDidLoad() {
         bridge?.registerPluginInstance(SSHPlugin())
         bridge?.registerPluginInstance(SFTPPlugin())
+        bridge?.registerPluginInstance(ClaudePlugin())
     }
 
     override func viewDidLoad() {
