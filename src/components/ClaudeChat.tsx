@@ -720,6 +720,12 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       r.querySelectorAll<HTMLElement>('code.language-mermaid:not([data-mermaid-rendered])').forEach(el => codeBlocks.push(el));
     }
     if (codeBlocks.length === 0) return;
+    // body 직속 stale mermaid element 청소 (이전 렌더 실패가 남긴 것)
+    try {
+      document.querySelectorAll('body > [id^="mermaid-"], body > [id^="dmermaid-"]').forEach(el => {
+        if (el.parentElement === document.body) el.remove();
+      });
+    } catch {}
     (async () => {
       for (let i = 0; i < codeBlocks.length; i++) {
         const codeEl = codeBlocks[i];
@@ -889,6 +895,14 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           err1.className = 'claude-chat-mermaid-error';
           err1.textContent = `[Mermaid 렌더 실패] ${String(err).slice(0, 200)}`;
           if (pre && pre.parentElement) pre.parentElement.insertBefore(err1, pre);
+          // mermaid 가 body 에 남긴 에러 SVG/임시 element 정리 (id 기반)
+          try {
+            const stale = document.getElementById(id);
+            stale?.parentElement?.removeChild(stale);
+            // 추가 안전장치: 'd' + id 형태의 임시 element 도 mermaid 가 사용
+            const stale2 = document.getElementById('d' + id);
+            stale2?.parentElement?.removeChild(stale2);
+          } catch {}
         }
       }
     })();

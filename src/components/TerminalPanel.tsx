@@ -48,6 +48,155 @@ let currentWordSeparator = localStorage.getItem('terminalWordSeparator') ?? DEFA
 const termFontSizes: Map<string, number> = new Map();
 
 export const termStore: Map<string, { term: Terminal; fit: FitAddon; search: SearchAddon }> = new Map();
+// 마지막 PTY/SSH resize 크기 — 변경 없을 때 SIGWINCH 송신 안 하기 위함 (vim W11 경고 회피)
+const lastResizeMap: Map<string, { cols: number; rows: number }> = new Map();
+// vim 1002h 첫 수신 시 ttymouse=sgr 자동 주입 플래그 (per termId)
+const ttymouseSgrInjected: Set<string> = new Set();
+// xterm 의 focus reporting (\x1b[I/O) 송신 패치 — vim 의 FocusGained → :checktime → W11 경고 방지
+function patchSuppressFocusEvents(term: any) {
+  try {
+    const core = term._core;
+    if (!core) return;
+    const cs = core.coreService || core._coreService;
+    if (!cs) return;
+    if (cs && typeof cs.triggerDataEvent === 'function' && !cs.__focusPatched) {
+      cs.__focusPatched = true;
+      const orig = cs.triggerDataEvent.bind(cs);
+      cs.triggerDataEvent = function(data: string, wasUserInput?: boolean) {
+        if (data === '\x1b[I' || data === '\x1b[O') return;
+        if (typeof data === 'string' && data.includes('\x1b[?1004')) return;
+        // DA2 응답 (xterm 버전) 을 380 으로 높여서 vim 이 ttymouse=sgr 자동 선택하도록
+        if (typeof data === 'string') {
+          const m = data.match(/^\x1b\[>(\d+);(\d+);(\d+)c$/);
+          if (m) data = `\x1b[>${m[1]};380;${m[3]}c`;
+        }
+        return orig(data, wasUserInput);
+      };
+    }
+    if (cs?.decPrivateModes && !cs.__sendFocusFrozen) {
+      try {
+        cs.decPrivateModes.sendFocus = false;
+        Object.defineProperty(cs.decPrivateModes, 'sendFocus', {
+          get() { return false; },
+          set() {},
+          configurable: false,
+        });
+        // 1007 alt-scroll mode 도 강제 false — 휠 → 화살표 변환 차단
+        // (vim 에서 휠 스크롤이 cursor 이동으로 변환되어 CursorMoved → checktime 트리거되는 문제)
+        try {
+          cs.decPrivateModes.altSendsEscape = cs.decPrivateModes.altSendsEscape;
+          if ('altSendsEscape' in cs.decPrivateModes) { /* keep */ }
+        } catch {}
+        cs.__sendFocusFrozen = true;
+      } catch {}
+    }
+    // alt-scroll mode (DECSET 1007) 비활성화 — term.options.altClickMovesCursor 와는 별도
+    try {
+      if (term.options) (term.options as any).fastScrollModifier = 'none';
+    } catch {}
+    // wheel 이벤트 capture phase 에서 가로채 alt 버퍼면 직접 scrollLines 처리
+    // 마우스 이벤트 직접 forwarding — xterm v5.3 의 1002 mode click 미작동 회피
+    const elem = (term as any).element as HTMLElement | undefined;
+    if (elem && !(elem as any).__mouseForwardInstalled) {
+      (elem as any).__mouseForwardInstalled = true;
+      const getMouseMode = (): string => {
+        try {
+          const core = term._core;
+          if (!core) return 'none';
+          const cms = core.coreMouseService || core._mouseService || (core as any)._coreMouseService;
+          if (cms) {
+            const ap = cms.activeProtocol || cms._activeProtocol;
+            if (ap && ap !== 'NONE') return ap;
+          }
+        } catch {}
+        return 'none';
+      };
+      const getCellPos = (ev: MouseEvent): { col: number; row: number } | null => {
+        try {
+          const rs = term._core?._renderService;
+          const cellW = rs?.dimensions?.css?.cell?.width ?? 9;
+          const cellH = rs?.dimensions?.css?.cell?.height ?? 17;
+          const screen = elem.querySelector('.xterm-screen') as HTMLElement | null;
+          const rect = (screen || elem).getBoundingClientRect();
+          const col = Math.max(1, Math.floor((ev.clientX - rect.left) / cellW) + 1);
+          const row = Math.max(1, Math.floor((ev.clientY - rect.top) / cellH) + 1);
+          return { col, row };
+        } catch { return null; }
+      };
+      const isActive = (m: string) => m === 'X10' || m === 'VT200' || m === 'DRAG' || m === 'ANY';
+      const isDragMode = (m: string) => m === 'DRAG' || m === 'ANY';
+      const getEncoding = (): 'DEFAULT' | 'SGR' => {
+        try {
+          const core = term._core;
+          const cms = core?.coreMouseService || core?._mouseService || core?._coreMouseService;
+          const enc = cms?.activeEncoding || cms?._activeEncoding;
+          if (enc === 'SGR' || enc === 'SGR_PIXELS') return 'SGR';
+        } catch {}
+        return 'DEFAULT';
+      };
+      const sendMouseEvent = (cb: number, col: number, row: number, release: boolean) => {
+        // 항상 SGR 형식으로 송신 — legacy X10/xterm2 이 일부 vim 환경에서 안 먹힘
+        const seq = `\x1b[<${cb};${col};${row}${release ? 'm' : 'M'}`;
+        try {
+          if (ptyConnected.has(termId)) (window as any).api?.ptyInput?.(termId, seq);
+          else (window as any).api?.sendSSHInput?.(termId, seq);
+        } catch {}
+      };
+      let dragging = false;
+      let lastBtn = 0;
+      elem.addEventListener('mousedown', (ev: MouseEvent) => {
+        const mode = getMouseMode();
+        if (!isActive(mode)) return;
+        // 우클릭(button=2) — 앱 컨텍스트 메뉴 띄움
+        if (ev.button === 2) return;
+        // Shift+클릭 — vim mouse 모드 bypass, xterm 자체 선택/복사 사용 가능
+        if (ev.shiftKey) return;
+        const pos = getCellPos(ev);
+        if (!pos) return;
+        const btn = ev.button;
+        lastBtn = btn;
+        sendMouseEvent(btn, pos.col, pos.row, false);
+        dragging = isDragMode(mode);
+        ev.preventDefault();
+      }, true);
+      elem.addEventListener('mouseup', (ev: MouseEvent) => {
+        const mode = getMouseMode();
+        if (!isActive(mode) || !dragging) return;
+        if (ev.shiftKey) return;
+        const pos = getCellPos(ev);
+        if (!pos) return;
+        sendMouseEvent(lastBtn, pos.col, pos.row, true);
+        dragging = false;
+      }, true);
+      elem.addEventListener('mousemove', (ev: MouseEvent) => {
+        if (!dragging) return;
+        const mode = getMouseMode();
+        if (!isDragMode(mode)) return;
+        const pos = getCellPos(ev);
+        if (!pos) return;
+        sendMouseEvent(lastBtn + 32, pos.col, pos.row, false);
+      }, true);
+      // 휠은 vim 으로 forwarding 안 함 — alt 버퍼에서 native scroll
+      elem.addEventListener('wheel', (ev: WheelEvent) => {
+        if (ev.ctrlKey || ev.metaKey) return; // Ctrl+wheel = 폰트 zoom
+        try {
+          const buf = (term as any).buffer?.active;
+          if (!buf || buf.type !== 'alternate') return;
+          ev.preventDefault();
+          ev.stopImmediatePropagation();
+          term.scrollLines(ev.deltaY > 0 ? 3 : -3);
+        } catch {}
+      }, { capture: true });
+    }
+    // textarea 의 focus/blur 이벤트 자체에서도 송신 안하도록 핸들러 추가 — capture phase 에서 전파 차단
+    const ta = term.textarea as HTMLTextAreaElement | undefined;
+    if (ta && !(ta as any).__focusBlockerInstalled) {
+      (ta as any).__focusBlockerInstalled = true;
+      // xterm 의 focus listener 가 등록되기 전에 추가하기 위해 즉시 적용
+      // 단순히 listener 하나 더 — xterm 이 \x1b[I/O 송신해도 위 패치가 차단
+    }
+  } catch {}
+}
 
 // 비활성 워크스페이스/패널의 xterm DOM 을 보관하는 hidden stash — detach 시 scrollbar/viewport 상태 보존
 function getXtermStash(): HTMLElement {
@@ -363,7 +512,7 @@ function getOrCreateTerm(termId: string): { term: Terminal; fit: FitAddon; searc
           }
         }
       }, true);
-      // 우클릭 → 컨텍스트 메뉴 이벤트 발행 (컴포넌트에서 처리)
+      // 우클릭 → 항상 앱 컨텍스트 메뉴 (mouse mode 여부 무관, 복사/붙여넣기 등 사용 가능)
       el.addEventListener('contextmenu', (e: MouseEvent) => {
         e.preventDefault();
         el.dispatchEvent(new CustomEvent('term-contextmenu', { detail: { x: e.clientX, y: e.clientY }, bubbles: true }));
@@ -395,6 +544,10 @@ function getOrCreateTerm(termId: string): { term: Terminal; fit: FitAddon; searc
     });
     entry = { term, fit, search };
     termStore.set(termId, entry);
+    // 동기적으로 즉시 패치 — DA2 query 가 빨리 와도 가로챌 수 있도록
+    patchSuppressFocusEvents(term);
+    // 추가 안전망 — _coreService 가 늦게 초기화되는 케이스 대응
+    [0, 10, 50, 200, 500].forEach(ms => setTimeout(() => patchSuppressFocusEvents(term), ms));
   }
   return entry;
 }
@@ -1310,12 +1463,20 @@ export function selectAllInTerm(termId: string) {
               }
             };
             vp.addEventListener('wheel', preReapply, { capture: true, passive: true });
-            vp.addEventListener('mousedown', preReapply, { capture: true });
+            // mousedown 은 selectAll 유지 위해 가로채지 않음 — 정상 드래그-선택과 충돌
           }
           term.onData(() => selectAllActive.delete(termId));
+          // 모든 마우스 클릭 시 selectAll 해제 (xterm 의 정상 드래그-선택과 충돌 방지)
+          // 단, scrollbar 자체 클릭은 유지 — clientX 가 viewport 우측 가장자리 근처일 때만
           (entry.term as any).element?.addEventListener?.('mousedown', (ev: MouseEvent) => {
-            const t = ev.target as HTMLElement | null;
-            if (t && t.closest && t.closest('.xterm-viewport')) return;
+            try {
+              const vp = (entry.term as any).element?.querySelector?.('.xterm-viewport') as HTMLElement | null;
+              if (vp) {
+                const r = vp.getBoundingClientRect();
+                // 스크롤바는 보통 16px 너비 (브라우저 기본). 그 영역이면 selectAll 유지
+                if (ev.clientX >= r.right - 20 && ev.clientX <= r.right + 4) return;
+              }
+            } catch {}
             selectAllActive.delete(termId);
           });
         } catch {}
@@ -1998,6 +2159,8 @@ export const TerminalPanel: React.FC<Props> = ({
     if (!activeTermId) return;
     const { term } = getOrCreateTerm(activeTermId);
     const disp = term.onData((data: string) => {
+      // focus reporting (xterm 의 alt buffer 활성 시 자동 송신) 차단 — vim FocusGained → checktime → W11 회피
+      if (data === '\x1b[I' || data === '\x1b[O') return;
       // PTY(로컬 셸): IME 가로채기 없이 그대로 전달
       if (ptyConnected.has(activeTermId)) {
         window.api?.ptyInput?.(activeTermId, data);
@@ -2079,6 +2242,9 @@ export const TerminalPanel: React.FC<Props> = ({
         fit.fit();
         const newCols = (e.term as any).cols;
         const newRows = (e.term as any).rows;
+        const last = lastResizeMap.get(activeTermId);
+        if (last && last.cols === newCols && last.rows === newRows) return;
+        lastResizeMap.set(activeTermId, { cols: newCols, rows: newRows });
         if (ptyConnected.has(activeTermId)) {
           window.api?.ptyResize?.(activeTermId, newCols, newRows);
         } else {
