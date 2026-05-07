@@ -28,7 +28,7 @@ export interface SFTPPlugin {
   realPath(options: { connectionId: string; path: string }): Promise<{ path: string }>
   readFile(options: { connectionId: string; path: string; encoding?: string }): Promise<{ content: string }>
   writeFile(options: { connectionId: string; path: string; content: string; encoding?: string }): Promise<void>
-  setAutoTrack(options: { connectionId: string; enabled: boolean; sshdPid?: number }): Promise<{ enabled: boolean }>
+  setAutoTrack(options: { connectionId: string; enabled: boolean }): Promise<{ enabled: boolean }>
   addListener(
     eventName: 'cwdChanged',
     listener: (event: { connectionId: string; path: string }) => void

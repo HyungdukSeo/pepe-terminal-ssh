@@ -19,28 +19,95 @@ public class SFTPPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setAutoTrack", returnType: CAPPluginReturnPromise),
     ]
 
+    private struct ConnParams {
+        let host: String
+        let port: Int
+        let username: String
+        let password: String?
+        let privateKey: String?
+        let passphrase: String?
+    }
+
     private var sessions: [String: NMSSHSession] = [:]
+    private var connParams: [String: ConnParams] = [:]
+    private var execSessions: [String: NMSSHSession] = [:]
     private var autoTrackTimers: [String: DispatchSourceTimer] = [:]
-    private var autoTrackScripts: [String: String] = [:]
+    private var autoTrackPids: [String: Int] = [:]
     private var lastCwd: [String: String] = [:]
     private let queue = DispatchQueue(label: "com.ghjeong.pepe.sftp.plugin", qos: .userInitiated)
+    private let execQueue = DispatchQueue(label: "com.ghjeong.pepe.sftp.exec", qos: .userInitiated)
 
-    /// ps + readlink → 사용자 interactive 셸의 cwd. base64 wrap 으로 quoting 회피.
-    /// - sshdPid 가 주어지면 ppid 매칭으로 *이* SSH 세션의 셸만 식별 (멀티세션 격리).
-    /// - 없으면 fallback: TTY 있는 셸 중 largest PID (단일 세션 환경).
-    private static func buildScript(sshdPid: Int?) -> String {
-        let filter: String
-        if let pid = sshdPid {
-            filter = "$2 == \(pid) && $4 ~ /^-?(bash|zsh|sh|ksh|dash|fish|csh|tcsh)$/ && $3 != \"?\""
+    // MARK: - Auth helper
+
+    private func authenticateSession(_ sess: NMSSHSession, password: String?, privateKey: String?, passphrase: String?) {
+        if let pk = privateKey, !pk.isEmpty {
+            sess.authenticate(byPublicKey: "", privateKey: pk, andPassword: passphrase ?? "")
+        } else if let pw = password, !pw.isEmpty {
+            sess.authenticate(byPassword: pw)
         } else {
-            filter = "$4 ~ /^-?(bash|zsh|sh|ksh|dash|fish|csh|tcsh)$/ && $3 != \"?\""
+            sess.authenticate(byPassword: "")
         }
-        let script = """
-        p=$(ps -u "$(whoami)" -o pid,ppid,tty,comm 2>/dev/null | awk '\(filter) {print $1}' | sort -nr | head -1)
-        test -n "$p" && printf 'PEPECWD<%s>END' "$(readlink /proc/$p/cwd 2>/dev/null)"
-        """
-        return Data(script.utf8).base64EncodedString()
     }
+
+    // MARK: - Exec helpers
+
+    private func ensureExecSession(for connectionId: String) -> NMSSHSession? {
+        if let exec = execSessions[connectionId], exec.isConnected { return exec }
+        guard let p = connParams[connectionId] else { return nil }
+        let sess = NMSSHSession(host: p.host, port: p.port, andUsername: p.username)
+        sess.connect()
+        guard sess.isConnected else { return nil }
+        authenticateSession(sess, password: p.password, privateKey: p.privateKey, passphrase: p.passphrase)
+        guard sess.isAuthorized else { sess.disconnect(); return nil }
+        execSessions[connectionId] = sess
+        return sess
+    }
+
+    private func runScript(_ script: String, on exec: NMSSHSession, timeout: NSNumber = 5) -> String? {
+        let b64 = Data(script.utf8).base64EncodedString()
+        let cmd = "echo '\(b64)' | base64 -d | /bin/sh"
+        let ch = NMSSHChannel(session: exec)
+        var err: NSError?
+        return ch.execute(cmd, error: &err, timeout: timeout)
+    }
+
+    private func extractMarker(from raw: String) -> String? {
+        guard let s = raw.range(of: "<<PEPE>>"),
+              let e = raw.range(of: "<<END>>", range: s.upperBound..<raw.endIndex) else { return nil }
+        let v = String(raw[s.upperBound..<e.lowerBound])
+        return v.isEmpty ? nil : v
+    }
+
+    // MARK: - /proc scanning for shell PID
+
+    private func detectShellPid(exec: NMSSHSession) -> Int? {
+        let script = """
+        best=0
+        for d in /proc/[0-9]*/; do
+          pid="${d#/proc/}"
+          pid="${pid%/}"
+          [ -r "$d/environ" ] || continue
+          env="$(cat "$d/environ" 2>/dev/null | tr '\\0' '\\n')"
+          printf '%s\\n' "$env" | grep -q '^SSH_CONNECTION=' || continue
+          printf '%s\\n' "$env" | grep -q '^TERM=' || continue
+          tty="$(awk '{print $7}' "$d/stat" 2>/dev/null)"
+          [ "$tty" != "0" ] || continue
+          comm="$(cat "$d/comm" 2>/dev/null)"
+          case "$comm" in
+            bash|sh|zsh|tcsh|csh|fish|dash|ksh|ash) ;;
+            *) continue ;;
+          esac
+          [ "$pid" -gt "$best" ] && best="$pid"
+        done
+        printf '<<PEPE>>%s<<END>>' "$best"
+        """
+        guard let raw = runScript(script, on: exec, timeout: 10),
+              let val = extractMarker(from: raw),
+              let pid = Int(val), pid > 0 else { return nil }
+        return pid
+    }
+
+    // MARK: - Connect / Disconnect
 
     @objc func connect(_ call: CAPPluginCall) {
         guard let connectionId = call.getString("connectionId"),
@@ -62,13 +129,7 @@ public class SFTPPlugin: CAPPlugin, CAPBridgedPlugin {
                 call.reject("Failed to connect to host")
                 return
             }
-            if let pk = privateKey, !pk.isEmpty {
-                sess.authenticate(byPublicKey: "", privateKey: pk, andPassword: passphrase ?? "")
-            } else if let pw = password, !pw.isEmpty {
-                sess.authenticate(byPassword: pw)
-            } else {
-                sess.authenticate(byPassword: "")
-            }
+            self.authenticateSession(sess, password: password, privateKey: privateKey, passphrase: passphrase)
             guard sess.isAuthorized else {
                 sess.disconnect()
                 call.reject("SFTP authentication failed")
@@ -82,6 +143,10 @@ public class SFTPPlugin: CAPPlugin, CAPBridgedPlugin {
             }
             DispatchQueue.main.async {
                 self.sessions[connectionId] = sess
+                self.connParams[connectionId] = ConnParams(
+                    host: host, port: port, username: username,
+                    password: password, privateKey: privateKey, passphrase: passphrase
+                )
             }
             call.resolve(["ok": true])
         }
@@ -93,15 +158,22 @@ public class SFTPPlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
         let sess = sessions.removeValue(forKey: connectionId)
+        let exec = execSessions.removeValue(forKey: connectionId)
         autoTrackTimers.removeValue(forKey: connectionId)?.cancel()
-        autoTrackScripts.removeValue(forKey: connectionId)
+        autoTrackPids.removeValue(forKey: connectionId)
         lastCwd.removeValue(forKey: connectionId)
+        connParams.removeValue(forKey: connectionId)
         queue.async {
             sess?.sftp.disconnect()
             sess?.disconnect()
+        }
+        execQueue.async {
+            exec?.disconnect()
             call.resolve()
         }
     }
+
+    // MARK: - Auto-track
 
     @objc func setAutoTrack(_ call: CAPPluginCall) {
         guard let connectionId = call.getString("connectionId") else {
@@ -110,9 +182,8 @@ public class SFTPPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         let enabled = call.getBool("enabled") ?? false
 
-        // 기존 타이머 정리
         autoTrackTimers.removeValue(forKey: connectionId)?.cancel()
-        autoTrackScripts.removeValue(forKey: connectionId)
+        autoTrackPids.removeValue(forKey: connectionId)
         lastCwd.removeValue(forKey: connectionId)
 
         if !enabled {
@@ -126,43 +197,49 @@ public class SFTPPlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
 
-        // sshdPid 가 들어오면 정확한 ppid 매칭, 없으면 fallback (largest PID with TTY).
-        let sshdPid = call.getInt("sshdPid")
-        autoTrackScripts[connectionId] = SFTPPlugin.buildScript(sshdPid: sshdPid)
+        execQueue.async { [weak self] in
+            guard let self = self else { return }
+            guard let exec = self.ensureExecSession(for: connectionId) else {
+                call.reject("failed to create exec session")
+                return
+            }
+            guard let pid = self.detectShellPid(exec: exec) else {
+                call.reject("failed to detect shell PID")
+                return
+            }
+            self.autoTrackPids[connectionId] = pid
 
-        // 폴링 타이머 시작 (400ms 주기)
-        let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now() + .milliseconds(200), repeating: .milliseconds(400))
-        timer.setEventHandler { [weak self] in
-            self?.pollCwd(for: connectionId)
+            let timer = DispatchSource.makeTimerSource(queue: self.execQueue)
+            timer.schedule(deadline: .now() + .milliseconds(200), repeating: .milliseconds(400))
+            timer.setEventHandler { [weak self] in
+                self?.pollCwd(for: connectionId)
+            }
+            self.autoTrackTimers[connectionId] = timer
+            timer.resume()
+            self.notifyListeners("autoTrackChanged", data: ["connectionId": connectionId, "enabled": true])
+            call.resolve(["enabled": true])
         }
-        autoTrackTimers[connectionId] = timer
-        timer.resume()
-        notifyListeners("autoTrackChanged", data: ["connectionId": connectionId, "enabled": true])
-        call.resolve(["enabled": true])
     }
 
     private func pollCwd(for connectionId: String) {
-        guard let sess = sessions[connectionId], sess.isConnected,
-              let scriptB64 = autoTrackScripts[connectionId] else {
+        guard let exec = execSessions[connectionId],
+              let pid = autoTrackPids[connectionId],
+              autoTrackTimers[connectionId] != nil else {
             autoTrackTimers.removeValue(forKey: connectionId)?.cancel()
             return
         }
-        let cmd = "echo \(scriptB64) | base64 -d | /bin/sh"
-        var err: NSError?
-        guard let out = sess.channel.execute(cmd, error: &err, timeout: 3) else { return }
-        // 'PEPECWD<...>END' 패턴 추출
-        guard let startRange = out.range(of: "PEPECWD<"),
-              let endRange = out.range(of: ">END", range: startRange.upperBound..<out.endIndex) else {
+        let script = "printf '<<PEPE>>%s<<END>>' \"$(readlink /proc/\(pid)/cwd 2>/dev/null)\""
+        guard let raw = runScript(script, on: exec, timeout: 3),
+              let path = extractMarker(from: raw),
+              path.hasPrefix("/") else {
             return
         }
-        let path = String(out[startRange.upperBound..<endRange.lowerBound])
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !path.isEmpty, path.hasPrefix("/") else { return }
         if path == lastCwd[connectionId] { return }
         lastCwd[connectionId] = path
         notifyListeners("cwdChanged", data: ["connectionId": connectionId, "path": path])
     }
+
+    // MARK: - SFTP helpers
 
     private func session(for call: CAPPluginCall) -> NMSSHSession? {
         guard let connectionId = call.getString("connectionId"),
@@ -173,6 +250,8 @@ public class SFTPPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         return sess
     }
+
+    // MARK: - SFTP operations
 
     @objc func listDir(_ call: CAPPluginCall) {
         guard let sess = session(for: call) else { return }
@@ -234,22 +313,26 @@ public class SFTPPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func realPath(_ call: CAPPluginCall) {
-        guard let sess = session(for: call) else { return }
+        guard session(for: call) != nil else { return }
+        let connectionId = call.getString("connectionId")!
         let path = call.getString("path") ?? "."
-        queue.async {
-            // For "." or "~" or empty — resolve to user's home via exec channel.
-            // The SFTP session's NMSSHChannel is unused (we only use .sftp), so
-            // it's safe to run a one-shot exec on it.
-            if path == "." || path == "~" || path.isEmpty {
-                var err: NSError?
-                if let raw = sess.channel.execute("pwd 2>/dev/null", error: &err, timeout: 3) {
-                    let resolved = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if resolved.hasPrefix("/") {
-                        call.resolve(["path": resolved])
-                        return
-                    }
+        if path == "." || path == "~" || path.isEmpty {
+            execQueue.async { [weak self] in
+                guard let self = self,
+                      let exec = self.ensureExecSession(for: connectionId) else {
+                    call.resolve(["path": path])
+                    return
+                }
+                let script = "printf '<<PEPE>>%s<<END>>' \"$(pwd)\""
+                if let raw = self.runScript(script, on: exec),
+                   let resolved = self.extractMarker(from: raw),
+                   resolved.hasPrefix("/") {
+                    call.resolve(["path": resolved])
+                } else {
+                    call.resolve(["path": path])
                 }
             }
+        } else {
             call.resolve(["path": path])
         }
     }
