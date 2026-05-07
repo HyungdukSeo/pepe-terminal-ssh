@@ -181,6 +181,10 @@ contextBridge.exposeInMainWorld('api', {
   claudeGetMountPath: (panelId: string, remotePath: string) =>
     ipcRenderer.invoke('claude:get-mount-path', { panelId, remotePath }),
   claudeStop: (sessionId: string, requestId?: string) => ipcRenderer.invoke('claude:stop', { sessionId, requestId }),
+  claudeProbeUsage: () => ipcRenderer.invoke('claude:probe-usage'),
+  claudeProbeUsageTui: () => ipcRenderer.invoke('claude:probe-usage-tui'),
+  claudeFetchUsageApi: () => ipcRenderer.invoke('claude:fetch-usage-api'),
+  claudeReadSettings: () => ipcRenderer.invoke('claude:read-settings'),
   clipboardWriteImage: (dataUrl: string) => ipcRenderer.invoke('clipboard:write-image', { dataUrl }),
   x11Start: (displayNum?: number) => ipcRenderer.invoke('x11:start', displayNum ?? 0),
   x11Stop: (displayNum?: number) => ipcRenderer.invoke('x11:stop', displayNum ?? 0),

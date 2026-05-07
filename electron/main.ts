@@ -2025,6 +2025,201 @@ ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowB
   }
 });
 
+// claude 설정 읽기 (model 변형으로 컨텍스트 max 추론 — opus[1m] 등)
+ipcMain.handle('claude:read-settings', async () => {
+  const fs = require('fs');
+  const pathMod = require('path');
+  const os = require('os');
+  try {
+    const p = pathMod.join(os.homedir(), '.claude', 'settings.json');
+    const obj = JSON.parse(fs.readFileSync(p, 'utf-8'));
+    return { success: true, settings: obj };
+  } catch (e: any) {
+    return { success: false, error: String(e?.message || e) };
+  }
+});
+
+// Anthropic OAuth API 직접 호출 — ~/.claude/.credentials.json 의 accessToken 사용
+ipcMain.handle('claude:fetch-usage-api', async () => {
+  const fs = require('fs');
+  const pathMod = require('path');
+  const os = require('os');
+  const credPath = pathMod.join(os.homedir(), '.claude', '.credentials.json');
+  let token: string | null = null;
+  try {
+    const raw = fs.readFileSync(credPath, 'utf-8');
+    const obj = JSON.parse(raw);
+    token = obj?.claudeAiOauth?.accessToken;
+  } catch (e: any) {
+    return { success: false, error: 'credentials 읽기 실패: ' + e?.message };
+  }
+  if (!token) return { success: false, error: 'accessToken 없음 (claude login 필요)' };
+  try {
+    const fetchFn: any = (global as any).fetch;
+    if (!fetchFn) return { success: false, error: 'fetch 미지원 (Node 18+ 필요)' };
+    const resp = await fetchFn('https://api.anthropic.com/api/oauth/usage', {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'anthropic-beta': 'oauth-2025-04-20',
+        'User-Agent': 'claude-code/oauth',
+      },
+    });
+    const status = resp.status;
+    const text = await resp.text();
+    if (!resp.ok) return { success: false, error: `HTTP ${status}`, body: text.slice(0, 500) };
+    const data = JSON.parse(text);
+    return { success: true, data };
+  } catch (e: any) {
+    return { success: false, error: String(e?.message || e) };
+  }
+});
+
+// claude TUI 를 PTY 로 띄우고 /usage 명령 보내서 출력 캡처 (Anthropic 구독 한도 정보)
+ipcMain.handle('claude:probe-usage-tui', async () => {
+  return new Promise((resolve) => {
+    let proc: any = null;
+    let buf = '';
+    let resolved = false;
+    const finish = (result: any) => {
+      if (resolved) return;
+      resolved = true;
+      try { proc?.write?.('\x03'); } catch {}
+      try { proc?.write?.('/exit\n'); } catch {}
+      setTimeout(() => { try { proc?.kill?.(); } catch {} }, 300);
+      resolve(result);
+    };
+    try {
+      const { execSync } = require('child_process');
+      const isWin = process.platform === 'win32';
+      // claude 실행 경로 직접 찾기 (cmd.exe wrapper 우회)
+      let claudeBin = 'claude';
+      try {
+        const which = execSync(isWin ? 'where claude' : 'which claude', { encoding: 'utf-8' }).split(/\r?\n/)[0].trim();
+        if (which) claudeBin = which;
+      } catch {}
+      proc = pty.spawn(claudeBin, [], {
+        name: 'xterm-256color',
+        cols: 120,
+        rows: 40,
+        cwd: process.env.USERPROFILE || process.env.HOME || process.cwd(),
+        env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' } as any,
+      });
+    } catch (e: any) {
+      return resolve({ success: false, error: 'PTY spawn 실패: ' + (e?.message || e) });
+    }
+    let trustHandled = false;
+    let usageStartLen = 0;
+    let usageSent = false;
+    const captureAndFinish = () => {
+      const after = usageStartLen ? buf.slice(usageStartLen) : buf;
+      const stripped = after
+        .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
+        .replace(/\x1b\][^\x07]*\x07/g, '')
+        .replace(/\x1b[()][AB012]/g, '')
+        .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
+      finish({ success: true, raw: stripped, length: buf.length });
+    };
+    proc.onData((d: string) => {
+      buf += d;
+      if (!trustHandled && /trust this folder|이 폴더를 신뢰|1\.\s*Yes/i.test(buf)) {
+        trustHandled = true;
+        try { proc.write('1\r'); } catch {}
+      }
+      // /usage 패널 완성 감지 — "Esc to cancel" 마커 (TUI 패널 완전히 그려진 시점)
+      if (usageSent && /Esc\s*to\s*cancel/i.test(buf.slice(usageStartLen))) {
+        setTimeout(captureAndFinish, 200);
+      }
+    });
+    proc.onExit(() => {});
+    // 5초 후 /usage 송신 — 우선 더미 키(스페이스+백스페이스)로 입력 박스 활성화
+    setTimeout(() => {
+      if (usageSent) return;
+      usageSent = true;
+      // 입력 박스 깨우기 — 스페이스 후 백스페이스
+      try { proc.write(' '); } catch {}
+      setTimeout(() => { try { proc.write('\b'); } catch {} }, 100);
+      setTimeout(() => {
+        usageStartLen = buf.length;
+        const cmd = '/usage';
+        let i = 0;
+        const typer = () => {
+          if (i < cmd.length) {
+            try { proc.write(cmd[i]); } catch {}
+            i++;
+            setTimeout(typer, 50);
+          } else {
+            // ENTER 두 번 시도 — \r 와 \n 모두
+            setTimeout(() => { try { proc.write('\r\n'); } catch {} }, 300);
+          }
+        };
+        typer();
+      }, 300);
+    }, 5000);
+    // 최대 12초 후 무조건 캡처
+    setTimeout(captureAndFinish, 12000);
+    // 안전 타임아웃
+    setTimeout(() => finish({ success: false, error: 'timeout', raw: buf }), 15000);
+  });
+});
+
+// ~/.claude/projects 의 모든 세션 jsonl 을 스캔해 usage 합산 (전체 누적 사용량)
+ipcMain.handle('claude:probe-usage', async () => {
+  const fs = require('fs');
+  const pathMod = require('path');
+  const os = require('os');
+  const claudeDir = pathMod.join(os.homedir(), '.claude', 'projects');
+  let totalIn = 0, totalOut = 0, totalCacheCreate = 0, totalCacheRead = 0, sessionCount = 0, msgCount = 0;
+  const projectStats: { project: string; in: number; out: number; cacheRead: number; sessions: number }[] = [];
+  try {
+    if (!fs.existsSync(claudeDir)) return { success: false, error: '~/.claude/projects 폴더 없음' };
+    const projects = fs.readdirSync(claudeDir);
+    for (const proj of projects) {
+      const projPath = pathMod.join(claudeDir, proj);
+      let stat;
+      try { stat = fs.statSync(projPath); } catch { continue; }
+      if (!stat.isDirectory()) continue;
+      let projIn = 0, projOut = 0, projCacheRead = 0, projSessions = 0;
+      const walk = (dir: string) => {
+        let items: string[] = [];
+        try { items = fs.readdirSync(dir); } catch { return; }
+        for (const it of items) {
+          const full = pathMod.join(dir, it);
+          let s; try { s = fs.statSync(full); } catch { continue; }
+          if (s.isDirectory()) { walk(full); continue; }
+          if (!it.endsWith('.jsonl')) continue;
+          projSessions++;
+          sessionCount++;
+          let content = '';
+          try { content = fs.readFileSync(full, 'utf-8'); } catch { continue; }
+          for (const line of content.split('\n')) {
+            if (!line.trim()) continue;
+            try {
+              const obj = JSON.parse(line);
+              const u = obj?.message?.usage;
+              if (u) {
+                msgCount++;
+                projIn += u.input_tokens || 0;
+                projOut += u.output_tokens || 0;
+                projCacheRead += u.cache_read_input_tokens || 0;
+                totalIn += u.input_tokens || 0;
+                totalOut += u.output_tokens || 0;
+                totalCacheCreate += u.cache_creation_input_tokens || 0;
+                totalCacheRead += u.cache_read_input_tokens || 0;
+              }
+            } catch {}
+          }
+        }
+      };
+      walk(projPath);
+      if (projIn || projOut) projectStats.push({ project: proj, in: projIn, out: projOut, cacheRead: projCacheRead, sessions: projSessions });
+    }
+    projectStats.sort((a, b) => (b.in + b.out) - (a.in + a.out));
+    return { success: true, totalIn, totalOut, totalCacheCreate, totalCacheRead, sessionCount, msgCount, projects: projectStats.slice(0, 20) };
+  } catch (e: any) {
+    return { success: false, error: String(e?.message || e) };
+  }
+});
+
 ipcMain.handle('claude:stop', (_e, { sessionId, requestId }: { sessionId: string; requestId?: string }) => {
   const { spawn } = require('child_process');
   // requestId 가 명시되면 해당 프로세스만 종료, 아니면 sessionId 키로 fallback (legacy)

@@ -15,6 +15,17 @@ type Props = {
 
 export const ContextMenu: React.FC<Props> = ({ x, y, items, onClose }) => {
   const menuRef = useRef<HTMLDivElement | null>(null);
+  // 메뉴가 viewport 를 벗어나면 위치 보정
+  const [pos, setPos] = React.useState({ x, y });
+  React.useEffect(() => {
+    if (!menuRef.current) return;
+    const r = menuRef.current.getBoundingClientRect();
+    let nx = x, ny = y;
+    const vw = window.innerWidth, vh = window.innerHeight;
+    if (nx + r.width > vw - 4) nx = Math.max(4, vw - r.width - 4);
+    if (ny + r.height > vh - 4) ny = Math.max(4, vh - r.height - 4);
+    if (nx !== pos.x || ny !== pos.y) setPos({ x: nx, y: ny });
+  }, [x, y, items.length]);
   useEffect(() => {
     // document capture 페이즈에서 mousedown 을 가로채서 메뉴 밖 클릭이면 닫는다.
     // xterm 등 내부 요소가 stopPropagation 해도 capture 단계는 먼저 실행돼서 영향 없음.
@@ -36,7 +47,7 @@ export const ContextMenu: React.FC<Props> = ({ x, y, items, onClose }) => {
   }, [onClose]);
 
   return (
-    <div ref={menuRef} className="context-menu" style={{ top: y, left: x }} onClick={e => e.stopPropagation()}>
+    <div ref={menuRef} className="context-menu" style={{ top: pos.y, left: pos.x }} onClick={e => e.stopPropagation()}>
       {items.map((item, i) => (
         <div key={i} className="context-menu-item" onClick={() => { item.onClick(); onClose(); }}>
           {item.label}

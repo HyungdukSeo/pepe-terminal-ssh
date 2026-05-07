@@ -70,11 +70,12 @@ function ensurePasteResultListener() {
     (window as any).api?.onPasteModalResult?.((p: { id: string; action: 'paste' | 'cancel'; text: string }) => {
       const tid = p.id;
       if (p.action === 'paste') {
+        // textarea 가 \r\n → \n 정규화한 결과 → 터미널은 ENTER=\r 기대
+        const text = p.text.replace(/\r?\n/g, '\r');
+        // bracketed paste 래핑 회피 — PTY/SSH 채널로 직접 송신 (Shift+Insert 와 동일 효과)
         try {
-          const entry = termStore.get(tid);
-          if (entry) entry.term.paste(p.text);
-          else if (ptyConnected.has(tid)) (window as any).api.ptyInput(tid, p.text);
-          else (window as any).api.sendSSHInput(tid, p.text);
+          if (ptyConnected.has(tid)) (window as any).api.ptyInput(tid, text);
+          else (window as any).api.sendSSHInput(tid, text);
         } catch {}
       }
       setTimeout(() => focusTerm(tid), 0);
@@ -368,8 +369,21 @@ function getOrCreateTerm(termId: string): { term: Terminal; fit: FitAddon; searc
         el.dispatchEvent(new CustomEvent('term-contextmenu', { detail: { x: e.clientX, y: e.clientY }, bubbles: true }));
       });
     });
-    // 선택 시 자동 클립보드 복사 (설정에 따라)
+    // 선택 시 자동 클립보드 복사 + selectAll 상태 유지
     term.onSelectionChange(() => {
+      // selectAll 활성 상태에서 selection 이 비워지면 즉시 재선택
+      if (selectAllActive.has(termId)) {
+        try {
+          const cur = term.getSelection();
+          if (!cur || cur.length === 0) {
+            _skipAutoCopyOnSelect = true;
+            try { term.selectAll(); } catch {}
+            setTimeout(() => { _skipAutoCopyOnSelect = false; }, 30);
+            return;
+          }
+        } catch {}
+      }
+      if (_skipAutoCopyOnSelect) return;
       const settings = getTerminalSettings();
       if (!settings.autoCopyOnSelect) return;
       let sel = term.getSelection();
@@ -1218,6 +1232,112 @@ function ensurePtySetup(termId: string) {
   });
 }
 
+// 프로그램 호출로 selectAll 할 때 autoCopyOnSelect 건너뛰기 위한 플래그
+let _skipAutoCopyOnSelect = false;
+export function isSelectAllSkippingAutoCopy(): boolean { return _skipAutoCopyOnSelect; }
+// 현재 selectAll 상태인 termId 들 — 스크롤/사용자 입력 시 자동 해제
+const selectAllActive: Set<string> = new Set();
+export function selectAllInTerm(termId: string) {
+  try {
+    _skipAutoCopyOnSelect = true;
+    const entry = termStore.get(termId);
+    if (entry) {
+      try { entry.term.focus(); } catch {}
+      entry.term.selectAll();
+      try { (entry.term as any).refresh?.(0, (entry.term as any).rows - 1); } catch {}
+      selectAllActive.add(termId);
+      const term: any = entry.term;
+      // xterm 내부 selectionService 의 clearSelection 을 패치 — selectAll 활성 시 호출 무시
+      if (!term.__selectAllPatched) {
+        term.__selectAllPatched = true;
+        try {
+          const svc = term._core?._selectionService;
+          if (svc && typeof svc.clearSelection === 'function') {
+            const orig = svc.clearSelection.bind(svc);
+            svc.clearSelection = function() {
+              if (selectAllActive.has(termId)) return; // 무시 — selection 유지
+              return orig();
+            };
+          }
+        } catch {}
+      }
+      // 보조 안전망: requestAnimationFrame 으로 매 프레임 selection 확인 + 재적용
+      if (!term.__selectAllRafLoop) {
+        const tick = () => {
+          if (!selectAllActive.has(termId)) { term.__selectAllRafLoop = null; return; }
+          try {
+            const sel = term.getSelection?.();
+            if (!sel || sel.length === 0) {
+              _skipAutoCopyOnSelect = true;
+              term.selectAll();
+              setTimeout(() => { _skipAutoCopyOnSelect = false; }, 20);
+            }
+          } catch {}
+          term.__selectAllRafLoop = requestAnimationFrame(tick);
+        };
+        term.__selectAllRafLoop = requestAnimationFrame(tick);
+      }
+      if (!term.__selectAllScrollHook) {
+        term.__selectAllScrollHook = true;
+        let reapplyScheduled = false;
+        const reapply = () => {
+          if (!selectAllActive.has(termId)) { reapplyScheduled = false; return; }
+          // 이미 selection 이 살아있으면 재선택 스킵 — 깜박임 방지
+          try {
+            const sel = term.getSelection?.();
+            if (sel && sel.length > 0) { reapplyScheduled = false; return; }
+          } catch {}
+          _skipAutoCopyOnSelect = true;
+          try { term.selectAll(); } catch {}
+          setTimeout(() => { _skipAutoCopyOnSelect = false; reapplyScheduled = false; }, 60);
+        };
+        const scheduleReapply = () => {
+          if (reapplyScheduled) return;
+          reapplyScheduled = true;
+          setTimeout(reapply, 80);
+        };
+        try {
+          term.onScroll(scheduleReapply);
+          const vp = (entry.term as any).element?.querySelector?.('.xterm-viewport');
+          if (vp) {
+            vp.addEventListener('scroll', scheduleReapply);
+            // 스크롤 시작 직전(capture) 에 selectAll 미리 다시 — xterm 내부 deselect 발생 전에
+            const preReapply = () => {
+              if (selectAllActive.has(termId)) {
+                _skipAutoCopyOnSelect = true;
+                try { term.selectAll(); } catch {}
+                setTimeout(() => { _skipAutoCopyOnSelect = false; }, 30);
+              }
+            };
+            vp.addEventListener('wheel', preReapply, { capture: true, passive: true });
+            vp.addEventListener('mousedown', preReapply, { capture: true });
+          }
+          term.onData(() => selectAllActive.delete(termId));
+          (entry.term as any).element?.addEventListener?.('mousedown', (ev: MouseEvent) => {
+            const t = ev.target as HTMLElement | null;
+            if (t && t.closest && t.closest('.xterm-viewport')) return;
+            selectAllActive.delete(termId);
+          });
+        } catch {}
+      }
+    }
+    setTimeout(() => { _skipAutoCopyOnSelect = false; }, 100);
+  } catch {
+    _skipAutoCopyOnSelect = false;
+  }
+}
+export function getSelectionFromTerm(termId: string): string {
+  try {
+    const entry = termStore.get(termId);
+    if (!entry) return '';
+    let sel = entry.term.getSelection() || '';
+    const settings = getTerminalSettings();
+    if (settings.trimTrailingWhitespace) sel = sel.split('\n').map(l => l.trimEnd()).join('\n');
+    if (!settings.includeTrailingNewline) sel = sel.replace(/\n$/, '');
+    return sel;
+  } catch { return ''; }
+}
+
 export function pasteToTerm(termId: string, text: string) {
   try {
     const entry = termStore.get(termId);
@@ -2015,7 +2135,15 @@ export const TerminalPanel: React.FC<Props> = ({
   const [multiPaste, setMultiPaste] = useState<{ termId: string; text: string } | null>(null); void multiPaste;
   const [shellMenu, setShellMenu] = useState<{ x: number; y: number } | null>(null);
   const [fontDialog, setFontDialog] = useState<{ termId: string; family: string; size: number } | null>(null);
-  const showMultiLinePasteDialog = (tid: string, text: string) => setMultiPaste({ termId: tid, text });
+  const showMultiLinePasteDialog = (tid: string, text: string) => {
+    setMultiPaste({ termId: tid, text });
+    // BrowserWindow 모달 직접 띄움 (인라인 모달은 더 이상 사용 안 함)
+    try {
+      const entry = termStore.get(tid);
+      entry?.term?.blur?.();
+    } catch {}
+    try { (window as any).api?.pasteModalOpen?.(tid, text); } catch {}
+  };
   const [renamingTermId, setRenamingTermId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   // 미니탭바 우측 패널 컨트롤(분할/플로팅/투명도) 표시 토글 — 기본 숨김
@@ -2425,18 +2553,17 @@ export const TerminalPanel: React.FC<Props> = ({
                 if (text.includes('\n') && settings.multiLinePaste === 'dialog') {
                   showMultiLinePasteDialog(tid, text);
                 } else {
+                  // vi insert 모드 호환을 위해 ENTER 는 \r 로 송신, bracketed paste 래핑 회피
+                  const fixed = text.replace(/\r?\n/g, '\r');
                   try {
-                    const entry = termStore.get(tid);
-                    if (entry) entry.term.paste(text);
+                    if (ptyConnected.has(tid)) (window as any).api.ptyInput(tid, fixed);
+                    else (window as any).api.sendSSHInput(tid, fixed);
                   } catch {}
                   setTimeout(() => focusTerm(tid), 0);
                 }
               }).catch(() => {});
             }},
-            { label: '전체 선택', onClick: () => {
-              const entry = termStore.get(activeTermId);
-              if (entry) entry.term.selectAll();
-            }},
+            { label: '전체 선택', onClick: () => selectAllInTerm(activeTermId) },
             { label: '화면 지우기', onClick: () => clearScreenInTerm(activeTermId) },
             { label: '스크롤 버퍼 지우기', onClick: () => clearScrollbackInTerm(activeTermId) },
             { label: '스크롤 버퍼 크기 변경...', onClick: () => {

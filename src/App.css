@@ -3796,7 +3796,7 @@ body.popout-options .session-editor h3:first-child {
 /* ── Claude Chat Sidebar ── */
 .claude-chat-sidebar {
   position: fixed;
-  top: 40px;
+  top: 40px;       /* tab-bar-row(40px) 바로 아래 = 패널 영역 상단 */
   bottom: 24px;
   right: 0;
   background: #0d0f10;
@@ -3806,10 +3806,15 @@ body.popout-options .session-editor h3:first-child {
   flex-direction: column;
   min-width: 280px;
   max-width: 1200px;
-  /* Claude 채팅 전용 폰트 (옵션에서 독립 설정 가능) */
   font-family: var(--claude-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
   font-size: var(--claude-font-size, 13px);
 }
+/* 빠른연결 바 표시 시 — QC bar(32px) 만큼 더 내림 (auto-hide 모드만) */
+.app-root.has-quickconnect.has-claude-autohide .claude-chat-sidebar { top: 72px; }
+/* 일괄전송 바 표시 시 — broadcast bar(36px) + 상태바(24px) 만큼 위로 (auto-hide 모드만) */
+.app-root.has-broadcast.has-claude-autohide .claude-chat-sidebar { bottom: 60px; }
+/* 핀 모드일 땐 위/아래 꽉 채움 — 빠른연결/일괄전송이 영역 줄여주므로 사이드바는 전체 높이 */
+.app-root.has-claude-pinned .claude-chat-sidebar { top: 40px; bottom: 24px; }
 .claude-chat-sidebar-resizer {
   position: absolute;
   left: -3px;
@@ -4262,6 +4267,213 @@ body.popout-options .session-editor h3:first-child {
 }
 .claude-chat-streaming-stop:hover { background: #5a2222; color: #fcc; }
 
+.claude-chat-rejected-plan-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  background: #2a2418;
+  border: 1px solid #5a4a22;
+  border-radius: 4px;
+  margin: 0 8px 6px;
+}
+.claude-chat-rejected-plan-btn {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: #ffd966;
+  cursor: pointer;
+  text-align: left;
+  font-size: 12px;
+  padding: 2px 4px;
+}
+.claude-chat-rejected-plan-btn:hover { color: #ffe699; text-decoration: underline; }
+.claude-chat-rejected-plan-dismiss {
+  background: transparent;
+  border: none;
+  color: #888;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 6px;
+}
+.claude-chat-rejected-plan-dismiss:hover { color: #ccc; }
+
+/* 툴 호출 그룹 (collapsible) */
+.claude-chat-tool-group {
+  margin: 4px 8px;
+  border: 1px solid #2a3340;
+  border-radius: 4px;
+  background: #1c2129;
+  overflow: hidden;
+}
+.claude-chat-tool-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 6px 10px;
+  color: #d8e0ea;
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+}
+.claude-chat-tool-group-header:hover { background: #232b36; }
+.claude-chat-tool-group-caret { color: #888; font-family: monospace; width: 10px; display: inline-block; }
+.claude-chat-tool-group-icon { width: 14px; }
+.claude-chat-tool-group-summary { flex: 1; color: #b8c4d4; }
+.claude-chat-tool-group-body { padding: 0 6px 6px; border-top: 1px solid #2a3340; }
+.claude-chat-tool-group .claude-chat-timeline-item {
+  display: block;
+  margin: 4px 0 0;
+}
+.claude-chat-timeline-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 4px 6px;
+  color: #d8e0ea;
+  cursor: pointer;
+  font-size: 11px;
+  text-align: left;
+  border-radius: 3px;
+}
+.claude-chat-timeline-row:hover { background: #232b36; }
+.claude-chat-timeline-caret { color: #888; font-family: monospace; width: 10px; display: inline-block; }
+.claude-chat-timeline-detail {
+  margin: 2px 0 0 24px;
+  padding: 6px 8px;
+  background: #11161e;
+  border-left: 2px solid #3a475a;
+  color: #b8c4d4;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 320px;
+  overflow: auto;
+  border-radius: 0 3px 3px 0;
+}
+
+/* 사용량 패널 — fixed popup, 충분한 grace + invisible bridge */
+.claude-chat-usage-trigger-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  margin-right: auto;
+}
+.claude-chat-usage-tooltip {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  background: #2a3340;
+  color: #e8eef5;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+  z-index: 9998;
+  pointer-events: none;
+}
+.claude-chat-usage-popup {
+  position: fixed;
+  bottom: 60px;
+  right: 20px;
+  width: 460px;
+  max-height: 80vh;
+  overflow: hidden;
+  background: #1a2028;
+  border: 1px solid #3a475a;
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+  z-index: 9999;
+  padding: 8px 12px;
+}
+/* trigger 와 popup 사이 invisible hover bridge — 마우스 이동 중 끊김 방지 */
+.claude-chat-usage-popup::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -40px;
+  height: 40px;
+}
+.claude-chat-usage-trigger {
+  cursor: pointer;
+  color: #8a98ab;
+  font-size: 11px;
+  padding: 2px 8px;
+  margin-right: auto;
+  border-radius: 3px;
+  white-space: nowrap;
+  user-select: none;
+}
+.claude-chat-usage-trigger:hover { background: #232b36; color: #d8e0ea; }
+.claude-chat-usage-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  background: #1a2028;
+  border-bottom: 1px solid #2a3340;
+  font-size: 11px;
+}
+.claude-chat-usage-toggle-btn {
+  background: transparent;
+  border: 1px solid #3a475a;
+  color: #d8e0ea;
+  padding: 2px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 11px;
+}
+.claude-chat-usage-toggle-btn:hover { background: #232b36; }
+.claude-chat-usage-summary { color: #888; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.claude-chat-usage-panel {
+  padding: 8px 12px;
+  background: #15191f;
+  border-bottom: 1px solid #2a3340;
+  font-size: 11px;
+}
+.claude-chat-usage-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 3px 0;
+  color: #d8e0ea;
+}
+.claude-chat-usage-label { color: #8a98ab; }
+.claude-chat-usage-val { color: #e8eef5; font-family: monospace; font-size: 11px; }
+.claude-chat-usage-divider { height: 1px; background: #2a3340; margin: 6px 0; }
+.claude-chat-usage-probe-btn {
+  background: #2b4a6b;
+  border: 1px solid #3a6b9c;
+  color: #fff;
+  padding: 4px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 11px;
+}
+.claude-chat-usage-probe-btn:hover:not(:disabled) { background: #356195; }
+.claude-chat-usage-probe-btn:disabled { opacity: 0.5; cursor: wait; }
+.claude-chat-usage-probe-output {
+  margin: 6px 0 0;
+  padding: 8px;
+  background: #0e1218;
+  border: 1px solid #2a3340;
+  border-radius: 3px;
+  color: #b8c4d4;
+  font-size: 10px;
+  white-space: pre-wrap;
+  max-height: 240px;
+  overflow: auto;
+  font-family: monospace;
+}
+
 /* 메시지 우클릭 컨텍스트 메뉴 */
 .claude-chat-msg-ctx-menu {
   position: fixed;
@@ -4418,6 +4630,7 @@ body.popout-options .session-editor h3:first-child {
   border-top: 1px solid #333;
   padding: 8px;
   flex-shrink: 0;
+  position: relative;
 }
 .claude-chat-attachments {
   margin-bottom: 6px;
