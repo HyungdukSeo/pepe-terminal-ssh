@@ -526,6 +526,10 @@ export function createIosApi() {
     checkContextMenu: async () => false,
 
     // Claude — direct Anthropic API via native HTTP plugin
+    claudeSetApiKey: async (apiKey: string) => {
+      await Claude.setApiKey({ apiKey })
+      return { ok: true }
+    },
     claudeCheck: async () => {
       const r = await Claude.getApiKey().catch(() => ({ hasKey: false, apiKey: '' }))
       return { installed: r.hasKey, available: r.hasKey, version: 'Anthropic API' }

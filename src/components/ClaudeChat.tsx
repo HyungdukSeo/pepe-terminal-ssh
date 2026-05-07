@@ -1205,19 +1205,22 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     return <div className="claude-chat-container"><div className="claude-chat-loading">Claude CLI 확인 중...</div></div>;
   }
   if (!installed) {
-    return (
-      <div className="claude-chat-container">
-        <div className="claude-chat-header">
-          <span>🤖 Claude</span>
-          {onClose && <button className="claude-chat-close" onClick={onClose}>×</button>}
+    const isIos = !!(window as any).api?.claudeSetApiKey;
+    return isIos
+      ? <ApiKeySetup onClose={onClose} onDone={() => setInstalled(true)} />
+      : (
+        <div className="claude-chat-container">
+          <div className="claude-chat-header">
+            <span>🤖 Claude</span>
+            {onClose && <button className="claude-chat-close" onClick={onClose}>×</button>}
+          </div>
+          <div className="claude-chat-notinstalled">
+            <p>Claude Code CLI가 설치되지 않았습니다.</p>
+            <p>설치: <code>npm install -g @anthropic-ai/claude-code</code></p>
+            <p>로그인: 터미널에서 <code>claude</code> 실행</p>
+          </div>
         </div>
-        <div className="claude-chat-notinstalled">
-          <p>Claude Code CLI가 설치되지 않았습니다.</p>
-          <p>설치: <code>npm install -g @anthropic-ai/claude-code</code></p>
-          <p>로그인: 터미널에서 <code>claude</code> 실행</p>
-        </div>
-      </div>
-    );
+      );
   }
 
   const totalAttachSize = attachments.reduce((a, c) => a + c.content.length, 0);
@@ -1650,3 +1653,84 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     </div>
   );
 };
+
+// ─── iOS API Key Setup Screen ────────────────────────────────────────────────
+
+function ApiKeySetup({ onClose, onDone }: { onClose?: () => void; onDone: () => void }) {
+  const [key, setKey] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const save = async () => {
+    const trimmed = key.trim();
+    if (!trimmed.startsWith('sk-ant-')) {
+      setError('API 키는 sk-ant- 로 시작해야 합니다.');
+      return;
+    }
+    setSaving(true);
+    setError('');
+    try {
+      await (window as any).api?.claudeSetApiKey?.(trimmed);
+      onDone();
+    } catch (e: any) {
+      setError(e?.message ?? '저장 실패');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const openConsole = () => {
+    (window as any).open?.('https://console.anthropic.com/settings/keys', '_blank');
+  };
+
+  return (
+    <div className="claude-chat-container">
+      <div className="claude-chat-header">
+        <span>🤖 Claude 설정</span>
+        {onClose && <button className="claude-chat-close" onClick={onClose}>×</button>}
+      </div>
+      <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+        <p style={{ color: '#ccc', fontSize: '13px', margin: 0, lineHeight: 1.6 }}>
+          Anthropic API 키를 입력하면 SSH 서버에서 Claude를 사용할 수 있습니다.
+        </p>
+        <button
+          onClick={openConsole}
+          style={{
+            background: 'transparent', border: '1px solid #444', borderRadius: '6px',
+            color: '#58a6ff', fontSize: '12px', padding: '6px 12px', cursor: 'pointer',
+            alignSelf: 'flex-start',
+          }}
+        >
+          console.anthropic.com에서 키 발급 →
+        </button>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <label style={{ color: '#888', fontSize: '11px' }}>API 키 (sk-ant-...)</label>
+          <input
+            type="password"
+            value={key}
+            onChange={(e) => setKey(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && save()}
+            placeholder="sk-ant-api03-..."
+            style={{
+              background: '#111', border: '1px solid #444', borderRadius: '6px',
+              color: '#fff', fontSize: '13px', padding: '8px 12px', outline: 'none',
+              fontFamily: 'monospace',
+            }}
+          />
+        </div>
+        {error && <p style={{ color: '#e05050', fontSize: '12px', margin: 0 }}>{error}</p>}
+        <button
+          onClick={save}
+          disabled={saving || !key.trim()}
+          style={{
+            background: saving || !key.trim() ? '#333' : '#1a6b3a',
+            border: 'none', borderRadius: '6px', color: '#fff',
+            fontSize: '13px', padding: '10px', cursor: saving ? 'wait' : 'pointer',
+          }}
+        >
+          {saving ? '저장 중...' : '저장'}
+        </button>
+      </div>
+    </div>
+  );
+}
