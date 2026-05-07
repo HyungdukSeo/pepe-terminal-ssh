@@ -17,6 +17,7 @@ public class SFTPPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "readFile", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "writeFile", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setAutoTrack", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "exec", returnType: CAPPluginReturnPromise),
     ]
 
     private struct ConnParams {
@@ -263,9 +264,9 @@ public class SFTPPlugin: CAPPlugin, CAPBridgedPlugin {
                 return
             }
             let entries: [[String: Any]] = items.map { item in
-                let f = item as! NMSFTPFile
+                let f = item
                 return [
-                    "name": f.filename ?? "",
+                    "name": f.filename,
                     "isDirectory": f.isDirectory,
                     "size": f.fileSize?.uint64Value ?? 0,
                     "permissions": f.permissions ?? "",
@@ -378,6 +379,30 @@ public class SFTPPlugin: CAPPlugin, CAPBridgedPlugin {
             }
             let ok = sess.sftp.writeContents(payload, toFileAtPath: path)
             if ok { call.resolve() } else { call.reject("write failed") }
+        }
+    }
+
+    @objc func exec(_ call: CAPPluginCall) {
+        guard let connectionId = call.getString("connectionId"),
+              let command = call.getString("command") else {
+            call.reject("connectionId and command required")
+            return
+        }
+        let timeout = NSNumber(value: call.getInt("timeout") ?? 120)
+        execQueue.async { [weak self] in
+            guard let self = self,
+                  let exec = self.ensureExecSession(for: connectionId) else {
+                call.reject("no exec session")
+                return
+            }
+            let ch = NMSSHChannel(session: exec)
+            var err: NSError?
+            let result = ch.execute(command, error: &err, timeout: timeout)
+            if let e = err {
+                call.reject(e.localizedDescription)
+            } else {
+                call.resolve(["output": result ?? ""])
+            }
         }
     }
 }

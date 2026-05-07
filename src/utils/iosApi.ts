@@ -1,6 +1,7 @@
 import { Preferences } from '@capacitor/preferences'
 import { SSH } from './iosSSHPlugin'
 import { SFTP, type SFTPFile } from './iosSFTPPlugin'
+import { Claude } from './iosClaudePlugin'
 
 type Session = {
   id: string
@@ -524,16 +525,295 @@ export function createIosApi() {
     unregisterContextMenu: asyncNoop,
     checkContextMenu: async () => false,
 
-    // Claude Code CLI — not on iOS (no local CLI)
-    claudeCheck: async () => ({ available: false, reason: 'not supported on iOS' }),
-    claudeSend: asyncNoop,
+    // Claude — direct Anthropic API via native HTTP plugin
+    claudeCheck: async () => {
+      const r = await Claude.getApiKey().catch(() => ({ hasKey: false, apiKey: '' }))
+      return { installed: r.hasKey, available: r.hasKey, version: 'Anthropic API' }
+    },
+    claudeSend: async (
+      sessionId: string,
+      prompt: string,
+      _addDirs?: string[],
+      disallowBash?: boolean,
+      sshTermId?: string,
+      _resumeSessionId?: string | null,
+      _permissionMode?: string,
+      model?: string,
+      _perToolApproval?: boolean,
+      requestId?: string,
+    ) => {
+      const reqId = requestId ?? `req-${Date.now()}`
+      // Fire-and-forget — events stream via onClaudeStream
+      runClaudeConversation({ sessionId, reqId, prompt, sshTermId, disallowBash, model }).catch(() => {})
+      return { success: true }
+    },
+    claudeStop: async (sessionId: string, requestId?: string) => {
+      const reqId = requestId ?? sessionId
+      activeClaudeRequests.delete(reqId)
+      await Claude.cancelRequest({ requestId: reqId }).catch(() => {})
+    },
     claudeHookRespond: asyncNoop,
     onClaudeHookApprovalRequest: eventNoop,
     claudeRegisterMount: asyncNoop,
     claudeUnregisterMount: asyncNoop,
     claudeGetMountPath: async () => null,
-    claudeStop: asyncNoop,
     clipboardWriteImage: asyncNoop,
-    onClaudeStream: eventNoop,
+    onClaudeStream: (cb: (p: any) => void) => {
+      claudeStreamListeners.add(cb)
+      return () => claudeStreamListeners.delete(cb)
+    },
+  }
+}
+
+// ─── Claude conversation engine ────────────────────────────────────────────
+
+const claudeStreamListeners = new Set<(p: any) => void>()
+const activeClaudeRequests = new Set<string>()
+
+// One global SSE listener routed by requestId
+let claudeListenerReady = false
+const pendingStreams = new Map<string, {
+  resolve: (msg: any) => void
+  reject: (e: Error) => void
+  message: Record<string, any>
+  content: any[]
+  accText: string
+  onDelta: (t: string) => void
+}>()
+
+async function ensureClaudeListener() {
+  if (claudeListenerReady) return
+  claudeListenerReady = true
+  await Claude.addListener('stream', (event) => {
+    const req = pendingStreams.get(event.requestId)
+    if (!req) return
+
+    if (event.type === 'sse') {
+      const d = event.data as Record<string, any>
+      switch (d.type) {
+        case 'message_start':
+          req.message = { ...(d.message as object) }
+          break
+        case 'content_block_start':
+          req.content[d.index as number] = { ...(d.content_block as object) }
+          break
+        case 'content_block_delta': {
+          const blk = req.content[d.index as number]
+          const delta = d.delta as Record<string, any>
+          if (delta.type === 'text_delta') {
+            blk.text = (blk.text ?? '') + (delta.text as string)
+            req.accText += delta.text as string
+            req.onDelta(req.accText)
+          } else if (delta.type === 'input_json_delta') {
+            blk._partial = (blk._partial ?? '') + (delta.partial_json as string)
+          }
+          break
+        }
+        case 'content_block_stop': {
+          const blk = req.content[d.index as number]
+          if (blk?.type === 'tool_use' && blk._partial) {
+            try { blk.input = JSON.parse(blk._partial as string) } catch { blk.input = {} }
+            delete blk._partial
+          }
+          break
+        }
+        case 'message_delta':
+          req.message.stop_reason = (d.delta as any)?.stop_reason
+          break
+        case 'message_stop':
+          req.message.content = req.content.filter(Boolean)
+          break
+      }
+    } else if (event.type === 'done') {
+      pendingStreams.delete(event.requestId)
+      req.resolve(req.message)
+    } else if (event.type === 'error') {
+      pendingStreams.delete(event.requestId)
+      req.reject(new Error(event.error ?? 'stream error'))
+    } else if (event.type === 'cancelled') {
+      pendingStreams.delete(event.requestId)
+      req.reject(new Error('cancelled'))
+    }
+  })
+}
+
+async function callAnthropicStream(
+  body: Record<string, unknown>,
+  reqId: string,
+  onDelta: (t: string) => void,
+): Promise<any> {
+  await ensureClaudeListener()
+  const promise = new Promise<any>((resolve, reject) => {
+    pendingStreams.set(reqId, { resolve, reject, message: {}, content: [], accText: '', onDelta })
+  })
+  await Claude.streamChat({ body: JSON.stringify({ ...body, stream: true }), requestId: reqId })
+  return promise
+}
+
+function emitClaudeStream(sessionId: string, reqId: string, message: Record<string, unknown>) {
+  const payload = { sessionId, requestId: reqId, message }
+  claudeStreamListeners.forEach((cb) => { try { cb(payload) } catch { /* ignore */ } })
+}
+
+function claudeTools(disallowBash?: boolean) {
+  const tools: any[] = [
+    {
+      name: 'Read',
+      description: 'Read a file from the remote server.',
+      input_schema: {
+        type: 'object',
+        properties: { file_path: { type: 'string', description: 'Absolute path to the file' } },
+        required: ['file_path'],
+      },
+    },
+    {
+      name: 'Write',
+      description: 'Write content to a file on the remote server (creates or overwrites).',
+      input_schema: {
+        type: 'object',
+        properties: {
+          file_path: { type: 'string', description: 'Absolute path to the file' },
+          content: { type: 'string', description: 'File content to write' },
+        },
+        required: ['file_path', 'content'],
+      },
+    },
+    {
+      name: 'ListDir',
+      description: 'List directory contents on the remote server.',
+      input_schema: {
+        type: 'object',
+        properties: { path: { type: 'string', description: 'Directory path' } },
+        required: ['path'],
+      },
+    },
+  ]
+  if (!disallowBash) {
+    tools.push({
+      name: 'Bash',
+      description: 'Execute a shell command on the remote server. stdout+stderr combined.',
+      input_schema: {
+        type: 'object',
+        properties: { command: { type: 'string', description: 'Shell command to execute' } },
+        required: ['command'],
+      },
+    })
+  }
+  return tools
+}
+
+async function executeClauldeTool(
+  name: string,
+  input: Record<string, any>,
+  sshTermId: string,
+): Promise<{ content: string; is_error: boolean }> {
+  try {
+    if (name === 'Read') {
+      const r = await SFTP.readFile({ connectionId: sshTermId, path: input.file_path as string })
+      return { content: r.content, is_error: false }
+    }
+    if (name === 'Write') {
+      await SFTP.writeFile({ connectionId: sshTermId, path: input.file_path as string, content: input.content as string })
+      return { content: `Written: ${input.file_path as string}`, is_error: false }
+    }
+    if (name === 'ListDir') {
+      const r = await SFTP.listDir({ connectionId: sshTermId, path: input.path as string })
+      const listing = r.files
+        .map((f: SFTPFile) => `${f.isDirectory ? 'd' : '-'} ${f.name}`)
+        .join('\n')
+      return { content: listing || '(empty)', is_error: false }
+    }
+    if (name === 'Bash') {
+      const r = await SFTP.exec({ connectionId: sshTermId, command: `${input.command as string} 2>&1`, timeout: 120 })
+      return { content: r.output, is_error: false }
+    }
+    return { content: `Unknown tool: ${name}`, is_error: true }
+  } catch (e: any) {
+    return { content: (e?.message as string) ?? String(e), is_error: true }
+  }
+}
+
+async function runClaudeConversation(opts: {
+  sessionId: string
+  reqId: string
+  prompt: string
+  sshTermId?: string
+  disallowBash?: boolean
+  model?: string
+}) {
+  const { sessionId, reqId, prompt, sshTermId, disallowBash, model } = opts
+  activeClaudeRequests.add(reqId)
+
+  const messages: any[] = [{ role: 'user', content: prompt }]
+  const tools = claudeTools(disallowBash)
+  const systemPrompt =
+    'You are Claude, an AI assistant embedded in PePe Terminal, an SSH terminal app for iPad. ' +
+    'You are connected to a remote Linux server via SSH/SFTP. Use the available tools to help the user. ' +
+    'Always use absolute paths. When editing files, read them first, then write the complete new content.'
+
+  try {
+    for (let iter = 0; iter < 20; iter++) {
+      if (!activeClaudeRequests.has(reqId)) break
+
+      const iterReqId = iter === 0 ? reqId : `${reqId}-t${iter}`
+      activeClaudeRequests.add(iterReqId)
+
+      const body: Record<string, unknown> = {
+        model: model ?? 'claude-sonnet-4-20250514',
+        max_tokens: 8192,
+        system: systemPrompt,
+        messages,
+        tools: tools.length > 0 ? tools : undefined,
+      }
+
+      const response = await callAnthropicStream(
+        body,
+        iterReqId,
+        (accText) => {
+          emitClaudeStream(sessionId, reqId, {
+            type: 'assistant',
+            message: { id: iterReqId, content: [{ type: 'text', text: accText }] },
+          })
+        },
+      )
+
+      activeClaudeRequests.delete(iterReqId)
+
+      // Emit final assistant message (includes tool_use blocks for UI timeline)
+      if (response?.content?.length) {
+        emitClaudeStream(sessionId, reqId, {
+          type: 'assistant',
+          message: { id: response.id ?? iterReqId, content: response.content },
+        })
+      }
+
+      messages.push({ role: 'assistant', content: response?.content ?? [] })
+
+      if (response?.stop_reason !== 'tool_use') break
+
+      // Execute all tool calls in parallel
+      const toolUses = (response.content as any[]).filter((c: any) => c.type === 'tool_use')
+      const toolResults = await Promise.all(
+        toolUses.map(async (tu: any) => {
+          const result = await executeClauldeTool(tu.name as string, tu.input as Record<string, any>, sshTermId ?? '')
+          return { type: 'tool_result', tool_use_id: tu.id, content: result.content, is_error: result.is_error }
+        }),
+      )
+
+      emitClaudeStream(sessionId, reqId, {
+        type: 'user',
+        message: { content: toolResults },
+      })
+      messages.push({ role: 'user', content: toolResults })
+    }
+
+    emitClaudeStream(sessionId, reqId, { type: 'result' })
+  } catch (e: any) {
+    const msg = (e?.message as string) ?? String(e)
+    if (msg !== 'cancelled') {
+      emitClaudeStream(sessionId, reqId, { type: 'error', text: msg })
+    }
+  } finally {
+    activeClaudeRequests.delete(reqId)
   }
 }
