@@ -418,17 +418,31 @@ function getOrCreateTerm(termId: string): { term: Terminal; fit: FitAddon; searc
     term.loadAddon(search);
     term.loadAddon(unicode11);
     term.unicode.activeVersion = '11';
-    // OSC 7 핸들러 — 원격 쉘이 보낸 file://host/path 를 파싱해서 현재 pwd 저장
+    // OSC 7 핸들러 — 셸이 보낸 file://host/path 를 파싱해서 현재 pwd 저장.
+    // 지원 형식:
+    //   file://host/abs/posix/path        → /abs/posix/path
+    //   file:///C:/Users/foo              → C:/Users/foo (Windows local)
+    //   file:///C:\Users\foo              → C:\Users\foo (Windows local, backslash 도 허용)
     try {
       (term as any).parser?.registerOscHandler?.(7, (data: string) => {
-        const m = data.match(/^file:\/\/[^/]*(\/.*)$/);
-        if (m) {
-          let p = m[1];
-          try { p = decodeURIComponent(p); } catch { /* keep encoded */ }
-          const prev = termCurrentPwd.get(termId);
-          termCurrentPwd.set(termId, p);
-          if (prev !== p) notifyPwdChange(termId, p);
+        // file:// 접두 제거
+        let raw = data.replace(/^file:\/\/[^/]*/, '');
+        if (!raw) return true;
+        // 선두 슬래시가 두 개면 (//) 한 개 제거 — file://localhost//path 케이스
+        try { raw = decodeURIComponent(raw); } catch { /* keep encoded */ }
+        let p: string;
+        // Windows 드라이브: 선두 / 다음 [A-Z]: 면 / 제거
+        const winMatch = raw.match(/^\/([a-zA-Z]:[\\/].*)$/);
+        if (winMatch) {
+          p = winMatch[1];
+          // forward slash → backslash 통일 (Windows fs 호환)
+          p = p.replace(/\//g, '\\');
+        } else {
+          p = raw.startsWith('/') ? raw : '/' + raw;
         }
+        const prev = termCurrentPwd.get(termId);
+        termCurrentPwd.set(termId, p);
+        if (prev !== p) notifyPwdChange(termId, p);
         return true;
       });
     } catch { /* older xterm 없으면 무시 */ }
@@ -1451,6 +1465,7 @@ function ensurePtySetup(termId: string) {
 
   ptyExitHandlers.set(termId, () => {
     ptyConnected.delete(termId);
+    notifyConnectedChange();
     try { term.write('\r\n\x1b[90m셸이 종료되었습니다.\x1b[0m\r\n'); } catch {}
   });
 }
@@ -2168,6 +2183,7 @@ export const TerminalPanel: React.FC<Props> = ({
           // startupCwd는 최초 1회만 사용
           if (cwd) { try { (window as any).api?.clearStartupCwd?.(); } catch {} }
           ptyConnected.add(activeTermId);
+          notifyConnectedChange();
           setTimeout(() => {
             try {
               fit.fit();
@@ -2176,6 +2192,8 @@ export const TerminalPanel: React.FC<Props> = ({
               window.api?.ptyResize?.(activeTermId, c, r);
             } catch {}
           }, 200);
+          // 셸 별 OSC 7 cwd hook 은 main process 의 pty:spawn 에서 셸 인자로 주입 (echo 안 됨).
+          // wsl 등 일부 셸은 main 이 postSpawnInject 으로 stdin 주입하므로 여기서 추가 작업 불필요.
         } catch {}
       } else if (ptyConnected.has(activeTermId)) {
         try { window.api?.ptyResize?.(activeTermId, cols, rows); } catch {}

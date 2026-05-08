@@ -1658,10 +1658,75 @@ ipcMain.handle('pty:list-shells', async () => {
   return shells;
 });
 
+// 셸 별 OSC 7 cwd hook 을 spawn 인자로 주입 — 사용자에게 echo 되지 않음.
+// WSL 등 인자로 주입 불가한 케이스는 postSpawnInject 로 첫 프롬프트 후 stdin 주입.
+function buildShellLaunch(shellPath: string): { args: string[]; postSpawnInject?: string } {
+  const lc = shellPath.toLowerCase();
+  // PowerShell (Windows PowerShell 5.1 / pwsh 7+) — [char]27 사용해 호환
+  if (lc.includes('powershell') || lc.includes('pwsh')) {
+    const psHook = "if (-not $global:__pepePromptOrig) { $global:__pepePromptOrig = $function:prompt }; function global:prompt { [Console]::Write([char]27 + ']7;file:///' + ($PWD.Path -replace '\\\\','/') + [char]27 + '\\'); & $global:__pepePromptOrig }";
+    return { args: ['-NoLogo', '-NoExit', '-Command', psHook] };
+  }
+  // cmd.exe — /K 인자는 echo 안 됨. prompt 명령은 출력 없음.
+  if (lc.endsWith('cmd.exe') || lc.endsWith('\\cmd') || lc.endsWith('/cmd')) {
+    return { args: ['/K', 'prompt $E]7;file:///$P$E\\$P$G'] };
+  }
+  // bash (git bash / Linux / macOS) — --init-file 로 임시 rc 사용 (사용자 .bashrc 도 source).
+  // 단, WSL 진입용 wsl.exe 는 별도 처리.
+  if (lc.endsWith('wsl.exe') || lc.endsWith('\\wsl') || lc.endsWith('/wsl')) {
+    // wsl.exe 는 인자로 inner shell 의 init 을 직접 못 줌 (복잡한 escape 필요).
+    // 대신 첫 프롬프트 후 stdin 주입으로 fallback. echo 가 한 줄 보일 수 있음.
+    const bashHook = " __pepe_osc7() { printf '\\e]7;file://localhost%s\\e\\\\' \"$PWD\"; }; PROMPT_COMMAND=\"__pepe_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"";
+    return { args: [], postSpawnInject: bashHook };
+  }
+  if (lc.includes('bash') || lc.endsWith('/sh') || lc.endsWith('\\sh.exe')) {
+    try {
+      const tmpDir = os.tmpdir();
+      const rcPath = path.join(tmpDir, `pepe-bashrc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.sh`);
+      const rcContent = [
+        '# pepe-terminal: source user rc files first',
+        '[ -f /etc/bash.bashrc ] && . /etc/bash.bashrc',
+        '[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"',
+        '# pepe cwd auto-track (OSC 7)',
+        "__pepe_osc7() { printf '\\e]7;file://localhost%s\\e\\\\' \"$PWD\"; }",
+        'PROMPT_COMMAND="__pepe_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}"',
+      ].join('\n');
+      fs.writeFileSync(rcPath, rcContent, 'utf8');
+      // bash 종료 후 임시 rc 파일 정리는 OS 의 tmp 정리에 맡김
+      return { args: ['--init-file', rcPath] };
+    } catch {
+      return { args: [] };
+    }
+  }
+  // zsh
+  if (lc.includes('zsh')) {
+    try {
+      const tmpDir = os.tmpdir();
+      const dirPath = path.join(tmpDir, `pepe-zdotdir-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+      fs.mkdirSync(dirPath, { recursive: true });
+      const userZdotdir = process.env.ZDOTDIR || process.env.HOME || '';
+      const rcContent = [
+        '# pepe-terminal: source user .zshrc',
+        userZdotdir ? `ZDOTDIR='${userZdotdir}' . '${userZdotdir}/.zshrc' 2>/dev/null` : '',
+        '# pepe cwd auto-track (OSC 7)',
+        "__pepe_osc7() { printf '\\e]7;file://localhost%s\\e\\\\' \"$PWD\"; }",
+        'precmd_functions+=(__pepe_osc7)',
+      ].filter(Boolean).join('\n');
+      fs.writeFileSync(path.join(dirPath, '.zshrc'), rcContent, 'utf8');
+      return { args: [], postSpawnInject: undefined };
+      // zsh 의 경우 ZDOTDIR 는 env 로 전달 — 호출 측에서 setEnv 처리 필요
+    } catch {
+      return { args: [] };
+    }
+  }
+  return { args: [] };
+}
+
 ipcMain.handle('pty:spawn', (_e, { panelId, shell: shellPath, cols, rows, cwd }: { panelId: string; shell?: string; cols?: number; rows?: number; cwd?: string }) => {
   if (ptyProcesses.has(panelId)) return 'already';
   const sh = shellPath || (process.platform === 'win32' ? 'powershell.exe' : process.env.SHELL || '/bin/bash');
-  const proc = pty.spawn(sh, [], {
+  const launch = buildShellLaunch(sh);
+  const proc = pty.spawn(sh, launch.args, {
     name: 'xterm-256color',
     cols: cols || 80,
     rows: rows || 24,
@@ -1676,6 +1741,12 @@ ipcMain.handle('pty:spawn', (_e, { panelId, shell: shellPath, cols, rows, cwd }:
     ptyProcesses.delete(panelId);
     mainWindow?.webContents.send('pty:exit', { panelId, exitCode });
   });
+  // wsl.exe 등 인자 주입 불가 셸: 첫 프롬프트 후 stdin 으로 hook 주입
+  if (launch.postSpawnInject) {
+    setTimeout(() => {
+      try { proc.write(launch.postSpawnInject + '\r'); } catch {}
+    }, 1500);
+  }
   return 'ok';
 });
 

@@ -2486,7 +2486,8 @@ function App() {
             };
             const leaf = findLeaf(activeTab.layout, selectedPanelId);
             const sess = leaf?.panel?.sessions[leaf.panel.activeIdx];
-            if (sess?.sessionId && isTermConnected(sess.termId)) {
+            // SSH 연결된 세션 또는 로컬 PTY 활성 세션이면 파일트리 표시
+            if (sess && ((sess.sessionId && isTermConnected(sess.termId)) || isTermPty(sess.termId))) {
               const onEnterTrigger = () => {
                 if (remoteTreePinned) return;
                 if (remoteTreeHideTimer.current) { clearTimeout(remoteTreeHideTimer.current); remoteTreeHideTimer.current = null; }

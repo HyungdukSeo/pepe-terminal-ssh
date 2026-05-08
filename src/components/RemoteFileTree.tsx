@@ -1,6 +1,6 @@
 // src/components/RemoteFileTree.tsx
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { subscribePwdChange } from './TerminalPanel';
+import { subscribePwdChange, isTermPty, subscribeConnectedChange } from './TerminalPanel';
 
 // 확장자 → 카테고리. CSS 에서 data-cat 으로 색상 매칭.
 const EXT_CAT: Record<string, string> = {
@@ -78,6 +78,15 @@ type Props = {
 };
 
 export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId, initialPath: initialPathProp, onOpenFile, onAttachToClaude }) => {
+  // mode: 'local' (PTY 로컬 셸) or 'remote' (SSH/SFTP)
+  // sessionId 가 있으면 SSH, 없거나 PTY 가 활성이면 local
+  const [mode, setMode] = useState<'local' | 'remote'>(() => (sessionId ? 'remote' : (isTermPty(termId) ? 'local' : 'remote')));
+  useEffect(() => {
+    const recompute = () => setMode(sessionId ? 'remote' : (isTermPty(termId) ? 'local' : 'remote'));
+    recompute();
+    const dispose = subscribeConnectedChange(recompute);
+    return () => { dispose(); };
+  }, [termId, sessionId]);
   // 세션 initialPath 조회 상태 (null=조회중, string=경로, ''=없음/홈사용)
   const [resolvedInitialPath, setResolvedInitialPath] = useState<string | null>(initialPathProp ?? null);
   useEffect(() => {
@@ -94,7 +103,7 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
       } catch { if (!cancelled) setResolvedInitialPath(''); }
     })();
     return () => { cancelled = true; };
-  }, [sessionId, initialPathProp]);
+  }, [sessionId, initialPathProp, mode]);
   const initialPath = resolvedInitialPath;
   const cached = treeStateCache.get(termId);
   const [root, setRoot] = useState<TreeNode | null>(cached?.root || null);
@@ -130,12 +139,14 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
   const loadChildren = useCallback(async (path: string, retries = 3): Promise<TreeNode[]> => {
     try {
       let result: any = null;
-      for (let i = 0; i < retries; i++) {
-        result = await (window as any).api?.feListDir?.('remote', path, termId);
+      // local 모드는 retry 불필요 (즉시 응답). remote 모드만 SFTP 준비 대기 retry.
+      const r = mode === 'local' ? 1 : retries;
+      for (let i = 0; i < r; i++) {
+        result = await (window as any).api?.feListDir?.(mode, path, termId);
         if (result?.files) break;
         // 명시적 에러면 retry 안 함 (SFTP 채널 누적 방지)
         if (result?.error) break;
-        if (i < retries - 1) await new Promise(r => setTimeout(r, 500));
+        if (i < r - 1) await new Promise(rs => setTimeout(rs, 500));
       }
       if (!result || !result.files) {
         return [];
@@ -150,17 +161,29 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
           if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
           return a.name.localeCompare(b.name);
         })
-        .map((f: any) => ({
-          name: f.name,
-          path: path.endsWith('/') ? path + f.name : path + '/' + f.name,
-          isDir: f.isDir,
-        }));
+        .map((f: any) => {
+          // Windows 로컬: 경로 구분자 \ 처리. path 가 드라이브 루트(C:\)면 그대로 결합.
+          let childPath: string;
+          if (mode === 'local' && /^[a-zA-Z]:[\\/]?$/.test(path)) {
+            const base = path.endsWith('\\') || path.endsWith('/') ? path : path + '\\';
+            childPath = base + f.name;
+          } else if (mode === 'local' && path.includes('\\')) {
+            childPath = path.endsWith('\\') ? path + f.name : path + '\\' + f.name;
+          } else {
+            childPath = path.endsWith('/') ? path + f.name : path + '/' + f.name;
+          }
+          return {
+            name: f.name,
+            path: childPath,
+            isDir: f.isDir,
+          };
+        });
       return nodes;
     } catch (err) {
       console.error('[RemoteFileTree] loadChildren error', err);
       return [];
     }
-  }, [termId]);
+  }, [termId, mode]);
 
   const navigateTo = useCallback(async (targetPath: string) => {
     const cleanPath = targetPath.trim() || '/';
@@ -205,16 +228,17 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
     (async () => {
       try {
         let startPath = startTargetPath;
+        const retries = mode === 'local' ? 1 : 5;
         if (!startPath) {
           let home: any = null;
-          for (let i = 0; i < 5; i++) {
-            home = await (window as any).api?.feHomeDir?.('remote', termId);
+          for (let i = 0; i < retries; i++) {
+            home = await (window as any).api?.feHomeDir?.(mode, termId);
             if (home && typeof home === 'string' && home !== '/') break;
-            await new Promise(r => setTimeout(r, 500));
+            if (i < retries - 1) await new Promise(r => setTimeout(r, 500));
           }
           startPath = typeof home === 'string' ? home : (home?.path || '/');
-        } else {
-          // SFTP 준비 대기
+        } else if (mode === 'remote') {
+          // SFTP 준비 대기 — local 은 즉시 가능
           for (let i = 0; i < 5; i++) {
             try {
               const probe: any = await (window as any).api?.feListDir?.('remote', startPath, termId);
@@ -237,7 +261,7 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
         console.error('[RemoteFileTree] init error', err);
       }
     })();
-  }, [termId, initialPath, loadChildren]);
+  }, [termId, initialPath, loadChildren, mode]);
 
   const toggleFolder = async (node: TreeNode) => {
     if (!node.isDir) return;
@@ -476,7 +500,7 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
                 for (const p of paths) {
                   try {
                     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    const r = await (window as any).api?.feDelete?.('remote', p, termId);
+                    const r = await (window as any).api?.feDelete?.(mode, p, termId);
                     if (r?.success) ok++; else fail++;
                   } catch { fail++; }
                 }
@@ -561,7 +585,7 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
             if (!confirm(`${kind}을(를) 삭제하시겠습니까?\n\n${node.path}`)) return;
             try {
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              const r = await (window as any).api?.feDelete?.('remote', node.path, termId);
+              const r = await (window as any).api?.feDelete?.(mode, node.path, termId);
               if (!r?.success) {
                 alert(`삭제 실패: ${r?.error || '알 수 없는 오류'}`);
                 return;
