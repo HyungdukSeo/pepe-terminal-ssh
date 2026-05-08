@@ -1303,15 +1303,41 @@ export function promptPasswordAndConnect(termId: string, sessionId: string, cols
   activePasswordPrompt.set(termId, { dispose: () => disposable.dispose() });
 }
 
+// ── SSH 이벤트 단일 dispatcher (termId 별 listener 누적으로 인한 MaxListenersExceeded 방지) ──
+const sshConnectedHandlers = new Map<string, (p: any) => void>();
+const sshDataHandlers = new Map<string, (p: any) => void>();
+const sshClosedHandlers = new Map<string, (p: any) => void>();
+const sshErrorHandlers = new Map<string, (p: any) => void>();
+const sshAuthPromptHandlers = new Map<string, (p: any) => void>();
+let sshDispatchersInstalled = false;
+function installGlobalSshDispatchers() {
+  if (sshDispatchersInstalled) return;
+  sshDispatchersInstalled = true;
+  window.api?.onSSHConnected?.((p: any) => { try { sshConnectedHandlers.get(p?.panelId)?.(p); } catch {} });
+  window.api?.onSSHData?.((p: any) => { try { sshDataHandlers.get(p?.panelId)?.(p); } catch {} });
+  window.api?.onSSHClosed?.((p: any) => { try { sshClosedHandlers.get(p?.panelId)?.(p); } catch {} });
+  window.api?.onSSHError?.((p: any) => { try { sshErrorHandlers.get(p?.panelId)?.(p); } catch {} });
+  window.api?.onSSHAuthPrompt?.((p: any) => { try { sshAuthPromptHandlers.get(p?.panelId)?.(p); } catch {} });
+}
+/** 외부에서 termId 가 제거될 때 호출 — handler map 에서 제거해 메모리 누수 방지 */
+export function disposeSSHHandlers(termId: string) {
+  sshConnectedHandlers.delete(termId);
+  sshDataHandlers.delete(termId);
+  sshClosedHandlers.delete(termId);
+  sshErrorHandlers.delete(termId);
+  sshAuthPromptHandlers.delete(termId);
+  sshInitialized.delete(termId);
+}
+
 /** termId별로 SSH 리스너를 한 번만 설정 (컴포넌트 lifecycle 밖) */
 function ensureSSHSetup(termId: string) {
   if (sshInitialized.has(termId)) return;
   sshInitialized.add(termId);
+  installGlobalSshDispatchers();
 
   const { term, fit } = getOrCreateTerm(termId);
 
-  window.api?.onSSHConnected?.((p: any) => {
-    if (p.panelId !== termId) return;
+  sshConnectedHandlers.set(termId, () => {
     // 같은 termId에 PTY가 실행 중이면 종료 (Local Shell → SSH 전환)
     if (ptyConnected.has(termId)) {
       window.api?.ptyKill?.(termId);
@@ -1337,14 +1363,11 @@ function ensureSSHSetup(termId: string) {
     }, 300);
   });
 
-  window.api?.onSSHData?.((p: any) => {
-    if (p.panelId !== termId) return;
+  sshDataHandlers.set(termId, (p: any) => {
     try { term.write(p.data); } catch {}
   });
 
-  window.api?.onSSHClosed?.((p: any) => {
-    if (p.panelId !== termId) return;
-    console.log('[onSSHClosed]', termId, { globalConnected: globalConnected.has(termId), sshConnecting: sshConnecting.has(termId), reconnectUserCancelled: reconnectUserCancelled.has(termId) });
+  sshClosedHandlers.set(termId, () => {
     // 이미 종료 처리 완료된 경우 (연결 상태 아닌데 close 중복) 무시
     if (!globalConnected.has(termId) && !sshConnecting.has(termId)) return;
     globalConnected.delete(termId);
@@ -1358,9 +1381,7 @@ function ensureSSHSetup(termId: string) {
   });
 
   // SSH 에러를 터미널에 표시
-  window.api?.onSSHError?.((p: any) => {
-    if (p.panelId !== termId) return;
-    console.log('[onSSHError]', termId, p.error);
+  sshErrorHandlers.set(termId, (p: any) => {
     sshConnecting.delete(termId);
     globalConnected.delete(termId);
     notifyConnectedChange();
@@ -1372,8 +1393,7 @@ function ensureSSHSetup(termId: string) {
   });
 
   // 비밀번호 미저장 세션: keyboard-interactive 인증 프롬프트
-  window.api?.onSSHAuthPrompt?.((p: any) => {
-    if (p.panelId !== termId) return;
+  sshAuthPromptHandlers.set(termId, (p: any) => {
     const promptText = p.prompts?.[0] || 'Password:';
     // prompt() 대신 터미널에 비밀번호 입력 UI
     try {
@@ -1403,20 +1423,33 @@ function ensureSSHSetup(termId: string) {
 // ── 로컬 셸 (PTY) ──
 const ptyInitialized = new Set<string>();
 const ptyConnected = new Set<string>();
+const ptyDataHandlers = new Map<string, (p: any) => void>();
+const ptyExitHandlers = new Map<string, (p: any) => void>();
+let ptyDispatchersInstalled = false;
+function installGlobalPtyDispatchers() {
+  if (ptyDispatchersInstalled) return;
+  ptyDispatchersInstalled = true;
+  window.api?.onPtyData?.((p: any) => { try { ptyDataHandlers.get(p?.panelId)?.(p); } catch {} });
+  window.api?.onPtyExit?.((p: any) => { try { ptyExitHandlers.get(p?.panelId)?.(p); } catch {} });
+}
+export function disposePtyHandlers(termId: string) {
+  ptyDataHandlers.delete(termId);
+  ptyExitHandlers.delete(termId);
+  ptyInitialized.delete(termId);
+}
 
 function ensurePtySetup(termId: string) {
   if (ptyInitialized.has(termId)) return;
   ptyInitialized.add(termId);
+  installGlobalPtyDispatchers();
 
   const { term } = getOrCreateTerm(termId);
 
-  window.api?.onPtyData?.((p: any) => {
-    if (p.panelId !== termId) return;
+  ptyDataHandlers.set(termId, (p: any) => {
     try { term.write(p.data); } catch {}
   });
 
-  window.api?.onPtyExit?.((p: any) => {
-    if (p.panelId !== termId) return;
+  ptyExitHandlers.set(termId, () => {
     ptyConnected.delete(termId);
     try { term.write('\r\n\x1b[90m셸이 종료되었습니다.\x1b[0m\r\n'); } catch {}
   });

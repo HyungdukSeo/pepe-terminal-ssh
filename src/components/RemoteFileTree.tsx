@@ -138,7 +138,6 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
         if (i < retries - 1) await new Promise(r => setTimeout(r, 500));
       }
       if (!result || !result.files) {
-        console.error(`[RemoteFileTree] loadChildren("${path}") returned no files:`, result?.error || result);
         return [];
       }
       const files: FileEntry[] = result.files;
@@ -224,7 +223,6 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
             await new Promise(r => setTimeout(r, 500));
           }
         }
-        console.log('[RemoteFileTree] loading initial path:', startPath, 'for termId:', termId);
         setPathInput(startPath);
         const children = await loadChildren(startPath, 5);
         setRoot({
