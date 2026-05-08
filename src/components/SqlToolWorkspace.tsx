@@ -223,8 +223,10 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName }) =>
   const [copyHint, setCopyHint] = useState<string>('');
   // 현재 편집 중인 셀 — "row,col" 또는 null
   const [editingCell, setEditingCell] = useState<string | null>(null);
+  const [generating, setGenerating] = useState(false);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const connIdRef = useRef<string>(`sql-${sessionId}-${Date.now()}`);
+  const generateDisposeRef = useRef<(() => void) | null>(null);
 
   // 세션 정보 로드
   useEffect(() => {
@@ -496,6 +498,98 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName }) =>
     } catch (e: any) { flashHint(`이미지 복사 실패: ${e?.message || e}`); }
   };
 
+  // 편집창 내용을 Claude agent 에 전달해 SQL 생성 → 편집창 하단부에 추가
+  const onAutoGenerate = useCallback(async () => {
+    const userText = sql.trim();
+    if (!userText) { flashHint('편집창에 요청 내용을 작성한 뒤 누르세요'); return; }
+    if (generating) return;
+    // 이전 리스너 잔여 정리
+    try { generateDisposeRef.current?.(); } catch {}
+    generateDisposeRef.current = null;
+
+    setGenerating(true);
+    flashHint('🤖 AI 쿼리 생성 중...');
+    const requestId = `sqlgen-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const claudeSessionId = `sqltool-${sessionId}`;
+    let collected = '';
+    let finalized = false;
+
+    const tableHint = tables.length > 0
+      ? `\n\n사용 가능한 테이블 목록 (총 ${tables.length}개, 일부):\n${tables.slice(0, 80).join(', ')}`
+      : '';
+    const prompt =
+      `당신은 Altibase DB SQL 작성을 돕는 어시스턴트입니다. ` +
+      `아래 사용자의 요청/메모/미완성 SQL 을 보고, 의도에 맞는 Altibase SQL 쿼리를 작성해 주세요. ` +
+      `결과는 반드시 \`\`\`sql 코드 블록 1개 안에 SQL 만 작성하세요. ` +
+      `설명·주석은 코드 블록 밖에 1~2줄로만 간단히 적어 주세요. ` +
+      `테이블/컬럼이 불명확한 경우 합리적인 가정을 코드 블록 안 -- 주석으로 명시하세요.${tableHint}\n\n` +
+      `--- 사용자 요청 ---\n${userText}`;
+
+    const dispose = (window as any).api?.onClaudeStream?.((p: any) => {
+      if (p.requestId !== requestId) return;
+      const msg = p.message;
+      if (!msg) return;
+      if (msg.type === 'assistant' && msg.message?.content) {
+        const texts = (msg.message.content as any[])
+          .filter(c => c?.type === 'text')
+          .map(c => c.text || '')
+          .join('');
+        if (texts) collected += texts;
+      } else if (msg.type === 'text' && typeof msg.text === 'string') {
+        // 비-JSON 라인 fallback (드물게)
+        collected += msg.text;
+      } else if (msg.type === 'error' && !finalized) {
+        finalized = true;
+        flashHint(`AI 생성 에러: ${(msg.text || '').slice(0, 80)}`);
+        setGenerating(false);
+        try { dispose?.(); } catch {}
+        generateDisposeRef.current = null;
+      } else if ((msg.type === 'result' || msg.type === 'done') && !finalized) {
+        finalized = true;
+        // ```sql ... ``` 블록 추출 — 없으면 응답 전체 사용
+        let extracted = collected.trim();
+        const blockMatch = collected.match(/```(?:sql|SQL)?\s*\n?([\s\S]*?)```/);
+        if (blockMatch) extracted = blockMatch[1].trim();
+        if (!extracted) {
+          flashHint('AI 응답이 비어있음');
+        } else {
+          setSql(s => {
+            const sep = s.length === 0 ? '' : (s.endsWith('\n\n') ? '' : s.endsWith('\n') ? '\n' : '\n\n');
+            return s + sep + extracted + (extracted.endsWith(';') ? '\n' : '');
+          });
+          flashHint('AI 쿼리가 편집창 하단에 추가됨');
+        }
+        setGenerating(false);
+        try { dispose?.(); } catch {}
+        generateDisposeRef.current = null;
+      }
+    });
+    generateDisposeRef.current = dispose || null;
+
+    try {
+      const r = await (window as any).api?.claudeSend?.(
+        claudeSessionId, prompt, undefined, true, undefined, null, 'bypassPermissions', undefined, false, requestId,
+      );
+      if (!r?.success && !finalized) {
+        finalized = true;
+        flashHint(`AI 호출 실패: ${r?.error || '?'}`);
+        setGenerating(false);
+        try { dispose?.(); } catch {}
+        generateDisposeRef.current = null;
+      }
+    } catch (e: any) {
+      if (!finalized) {
+        finalized = true;
+        flashHint(`AI 호출 예외: ${e?.message || e}`);
+        setGenerating(false);
+        try { dispose?.(); } catch {}
+        generateDisposeRef.current = null;
+      }
+    }
+  }, [sql, sessionId, tables, generating]);
+
+  useEffect(() => () => { try { generateDisposeRef.current?.(); } catch {} }, []);
+
   // 변경된 셀 → UPDATE 쿼리 생성 후 commit
   const onApplyChanges = async () => {
     if (!result || edits.size === 0 || !lastTable) return;
@@ -524,13 +618,24 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName }) =>
     const preview = updates.join('\n');
     if (!confirm(`${updates.length}개 행을 UPDATE 합니다.\n\n${preview.slice(0, 500)}${preview.length > 500 ? '\n...' : ''}\n\n진행?`)) return;
     setApplying(true);
+    const t0 = Date.now();
     try {
       const fullSql = updates.join('\n') + '\nCOMMIT;';
       const cmd = buildIsqlCommand(session.dbms, fullSql);
       const r = await (window as any).api?.sqlExec(connIdRef.current, cmd, 60000);
+      const ms = Date.now() - t0;
       if (r?.success) {
         const stdout: string = r.stdout || '';
         const errMatch = stdout.match(/\[(ERR-[A-Z0-9]+)[^\]]*\][^\n]*/i);
+        // 히스토리에 적용한 UPDATE 기록 — 성공/에러 모두
+        setHistory(h => {
+          const next = [
+            { ts: Date.now(), sql: fullSql, rows: updates.length, ms, error: errMatch ? errMatch[0] : undefined },
+            ...h,
+          ];
+          saveHistory(sessionId, next);
+          return next;
+        });
         if (errMatch) {
           // 에러 시 생성된 SQL 도 같이 보여줘서 디버깅 쉽게
           console.error('[SQL apply error]', { error: errMatch[0], stdout, generatedSql: fullSql });
@@ -542,6 +647,14 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName }) =>
           if (lastTable) runSql(`SELECT * FROM ${lastTable}`);
         }
       } else {
+        setHistory(h => {
+          const next = [
+            { ts: Date.now(), sql: fullSql, rows: 0, ms, error: r?.error || 'exec 실패' },
+            ...h,
+          ];
+          saveHistory(sessionId, next);
+          return next;
+        });
         alert(`적용 실패: ${r?.error || '?'}`);
       }
     } finally { setApplying(false); }
@@ -632,6 +745,14 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName }) =>
           </button>
           <button onClick={onCopyImage} disabled={!result || result.columns.length === 0} style={{ background: '#444', color: '#fff', border: 0, padding: '4px 10px', borderRadius: 3, cursor: 'pointer' }} title="결과를 PNG 이미지로 클립보드 복사">
             🖼 이미지로 복사
+          </button>
+          <button
+            onClick={onAutoGenerate}
+            disabled={generating || !sql.trim()}
+            title="편집창의 요청/메모를 Claude agent 에 보내 SQL 을 생성하고 편집창 하단에 추가"
+            style={{ background: generating ? '#555' : '#6f4ab3', color: '#fff', border: 0, padding: '4px 10px', borderRadius: 3, cursor: generating ? 'wait' : 'pointer' }}
+          >
+            {generating ? '🤖 생성 중...' : '🤖 AI 자동생성'}
           </button>
           {copyHint && <span style={{ color: '#9cdcfe', fontSize: 11, marginLeft: 6 }}>{copyHint}</span>}
         </div>
