@@ -1270,6 +1270,18 @@ function App() {
 
   const handleSwitchSession = (nodeId: string, idx: number) => {
     if (!activeTab) return;
+    // 동일 idx 면 layout 변경 안함 — 더블클릭 시 onClick × 2 가 동일 idx 로 호출되어 React 재렌더 cascade 발생하던 문제 회피
+    let alreadySame = false;
+    const findActive = (node: any): void => {
+      if (alreadySame) return;
+      if (node.type === 'leaf' && node.id === nodeId) {
+        if (node.panel.activeIdx === idx) alreadySame = true;
+        return;
+      }
+      if (node.type !== 'leaf') node.children.forEach(findActive);
+    };
+    findActive(activeTab.layout);
+    if (alreadySame) return;
     updateLayout(activeTab.id, layout => switchPanelSession(layout, nodeId, idx));
   };
 
@@ -3079,6 +3091,7 @@ function App() {
           if (claudeChatHideTimer.current) clearTimeout(claudeChatHideTimer.current);
           claudeChatHideTimer.current = setTimeout(() => setClaudeChatVisible(false), 500);
         };
+        void onLeaveTrigger;
         return (
           <>
             {!claudeChatPinned && (

@@ -1601,7 +1601,12 @@ ipcMain.on('ssh:disconnect', (_e, { panelId }) => {
   }
 });
 
+const _lastSshResize = new Map<string, { cols: number; rows: number }>();
 ipcMain.on('ssh:resize', (_e, { panelId, cols, rows }) => {
+  if (!cols || !rows || !isFinite(cols) || !isFinite(rows) || cols < 1 || rows < 1) return;
+  const last = _lastSshResize.get(panelId);
+  if (last && last.cols === cols && last.rows === rows) return;
+  _lastSshResize.set(panelId, { cols, rows });
   getSSHBridge().handleResize(panelId, cols, rows);
 });
 
@@ -1678,7 +1683,12 @@ ipcMain.on('pty:input', (_e, { panelId, data }: { panelId: string; data: string 
   ptyProcesses.get(panelId)?.write(data);
 });
 
+const _lastPtyResize = new Map<string, { cols: number; rows: number }>();
 ipcMain.on('pty:resize', (_e, { panelId, cols, rows }: { panelId: string; cols: number; rows: number }) => {
+  if (!cols || !rows || !isFinite(cols) || !isFinite(rows) || cols < 1 || rows < 1) return;
+  const last = _lastPtyResize.get(panelId);
+  if (last && last.cols === cols && last.rows === rows) return;
+  _lastPtyResize.set(panelId, { cols, rows });
   try { ptyProcesses.get(panelId)?.resize(cols, rows); } catch {}
 });
 

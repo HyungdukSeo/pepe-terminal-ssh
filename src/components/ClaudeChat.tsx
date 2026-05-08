@@ -303,7 +303,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const [usageProbe, setUsageProbe] = useState<string | null>(null);
   const [usageProbeLoading, setUsageProbeLoading] = useState(false);
   const [usageProbeExpanded, setUsageProbeExpanded] = useState(false);
-  const [claudeSettingsModel, setClaudeSettingsModel] = useState<string>('');
+  const [claudeSettingsModel, setClaudeSettingsModel] = useState<string>(''); void claudeSettingsModel;
   // 마운트 시 ~/.claude/settings.json 읽어 model 자동 설정
   useEffect(() => {
     (async () => {
@@ -1733,6 +1733,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                       const u = m[2]?.toLowerCase();
                       return Math.round(v * (u === 'm' ? 1_000_000 : u === 'k' ? 1_000 : 1));
                     };
+                    void toNum;
                     // TUI Session 값들은 별도 표시 (우리 채팅 세션과 다름)
                     if (costMatch) lim.tuiCost = '$' + costMatch[1];
                     if (tokenMatch) {

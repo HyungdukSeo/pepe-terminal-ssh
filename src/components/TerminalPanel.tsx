@@ -50,10 +50,16 @@ const termFontSizes: Map<string, number> = new Map();
 export const termStore: Map<string, { term: Terminal; fit: FitAddon; search: SearchAddon }> = new Map();
 // 마지막 PTY/SSH resize 크기 — 변경 없을 때 SIGWINCH 송신 안 하기 위함 (vim W11 경고 회피)
 const lastResizeMap: Map<string, { cols: number; rows: number }> = new Map();
+// 마지막 fit 시점의 컨테이너 px 사이즈 — 같으면 fit 자체 skip (탭 전환 시 잦은 SIGWINCH 회피)
+const lastContainerSizeMap: Map<string, { w: number; h: number }> = new Map();
+// 탭 활성화 직후 일정 시간 fit/resize 차단 cooldown (per termId)
+const fitCooldownUntil: Map<string, number> = new Map();
+// 직전 fit 결과 — 연속 2회 동일 cols/rows 일 때만 실제 SIGWINCH (layout 안정화 대기)
+const pendingResize: Map<string, { cols: number; rows: number }> = new Map();
 // vim 1002h 첫 수신 시 ttymouse=sgr 자동 주입 플래그 (per termId)
-const ttymouseSgrInjected: Set<string> = new Set();
+const ttymouseSgrInjected: Set<string> = new Set(); void ttymouseSgrInjected;
 // xterm 의 focus reporting (\x1b[I/O) 송신 패치 — vim 의 FocusGained → :checktime → W11 경고 방지
-function patchSuppressFocusEvents(term: any) {
+function patchSuppressFocusEvents(term: any, termId?: string) {
   try {
     const core = term._core;
     if (!core) return;
@@ -134,10 +140,12 @@ function patchSuppressFocusEvents(term: any) {
         } catch {}
         return 'DEFAULT';
       };
+      void getEncoding;
       const sendMouseEvent = (cb: number, col: number, row: number, release: boolean) => {
         // 항상 SGR 형식으로 송신 — legacy X10/xterm2 이 일부 vim 환경에서 안 먹힘
         const seq = `\x1b[<${cb};${col};${row}${release ? 'm' : 'M'}`;
         try {
+          if (!termId) return;
           if (ptyConnected.has(termId)) (window as any).api?.ptyInput?.(termId, seq);
           else (window as any).api?.sendSSHInput?.(termId, seq);
         } catch {}
@@ -378,6 +386,32 @@ function getOrCreateTerm(termId: string): { term: Terminal; fit: FitAddon; searc
     });
     if (!termFontSizes.has(termId)) termFontSizes.set(termId, defaultFontSize);
     const fit = new FitAddon();
+    // FitAddon.fit() 안전 패치 — 컨테이너가 layout 갱신 중 일시적으로 0-size 가 될 때
+    // proposeDimensions 가 {cols:2, rows:1} 같은 비현실 값을 반환 → term.resize(2,1) 가
+    // 호출되면서 xterm 화면이 2-col 로 reflow 됐다가 다시 reflow 되어 프롬프트가 잘려
+    // 보이는 잔상 (예: "[r") 이 발생.
+    // 사용자가 의도적으로 패널을 작게 만든 케이스(작은 cols/rows)는 정상 처리해야 하므로,
+    // cols/rows 가 아니라 부모 컨테이너의 실제 픽셀 크기를 기준으로 판단.
+    try {
+      const origFit = fit.fit.bind(fit);
+      (fit as any).fit = function () {
+        try {
+          // FitAddon 은 term.element.parentElement 를 기준으로 계산
+          const parent = (term as any).element?.parentElement as HTMLElement | undefined;
+          if (parent) {
+            const w = parent.clientWidth;
+            const h = parent.clientHeight;
+            // 부모가 사실상 0-size — 분명히 layout 갱신 중. 사용자가 정상적으로
+            // 만들 수 있는 최소 패널 크기보다 훨씬 작은 임계 (수 픽셀) 만 차단.
+            if (w < 20 || h < 20) return;
+          }
+          // proposeDimensions 결과가 0/NaN 이면 (부모 dimensions 측정 실패) 차단
+          const p = (fit as any).proposeDimensions?.();
+          if (!p || !p.cols || !p.rows || !isFinite(p.cols) || !isFinite(p.rows)) return;
+        } catch { /* 계산 실패 시 그래도 origFit 시도 */ }
+        return origFit();
+      };
+    } catch {}
     const search = new SearchAddon();
     const unicode11 = new Unicode11Addon();
     term.loadAddon(fit);
@@ -545,9 +579,9 @@ function getOrCreateTerm(termId: string): { term: Terminal; fit: FitAddon; searc
     entry = { term, fit, search };
     termStore.set(termId, entry);
     // 동기적으로 즉시 패치 — DA2 query 가 빨리 와도 가로챌 수 있도록
-    patchSuppressFocusEvents(term);
+    patchSuppressFocusEvents(term, termId);
     // 추가 안전망 — _coreService 가 늦게 초기화되는 케이스 대응
-    [0, 10, 50, 200, 500].forEach(ms => setTimeout(() => patchSuppressFocusEvents(term), ms));
+    [0, 10, 50, 200, 500].forEach(ms => setTimeout(() => patchSuppressFocusEvents(term, termId), ms));
   }
   return entry;
 }
@@ -1293,11 +1327,14 @@ function ensureSSHSetup(termId: string) {
     clearInitialConnectWatchdog(termId);
     reconnectUserCancelled.delete(termId);
     notifyConnectedChange();
-    try { fit.fit(); } catch {}
-    try {
-      window.api?.resizeSSH?.(termId, (term as any).cols, (term as any).rows);
-      setTimeout(() => { try { window.api?.resizeSSH?.(termId, (term as any).cols, (term as any).rows); } catch {} }, 200);
-    } catch {}
+    // 연결 직후 fit 은 layout 안정 후 1회만 (이전 다중 호출이 SIGWINCH cascade → bash 부분 prompt artifact 원인)
+    setTimeout(() => {
+      try { fit.fit(); } catch {}
+      try {
+        const c = (term as any).cols, r = (term as any).rows;
+        if (c >= 10 && r >= 5) window.api?.resizeSSH?.(termId, c, r);
+      } catch {}
+    }, 300);
   });
 
   window.api?.onSSHData?.((p: any) => {
@@ -2043,16 +2080,6 @@ export const TerminalPanel: React.FC<Props> = ({
       const rows = (term as any).rows || 24;
       try { term.focus(); } catch {}
 
-      console.log('[initConnect]', activeTermId, {
-        hasSession: !!activeSession,
-        sessionId: activeSession?.sessionId,
-        sshConnecting: sshConnecting.has(activeTermId),
-        globalConnected: globalConnected.has(activeTermId),
-        reconnectState: reconnectState.has(activeTermId),
-        reconnectUserCancelled: reconnectUserCancelled.has(activeTermId),
-        ptyConnected: ptyConnected.has(activeTermId),
-        cachedPw: termPasswordCache.has(activeTermId),
-      });
       if (activeSession && activeSession.sessionId && !sshConnecting.has(activeTermId) && !globalConnected.has(activeTermId) && !reconnectState.has(activeTermId) && !reconnectUserCancelled.has(activeTermId)) {
         // 같은 termId에 PTY가 실행 중이면 종료 (Local Shell → SSH 전환)
         if (ptyConnected.has(activeTermId)) {
@@ -2065,11 +2092,9 @@ export const TerminalPanel: React.FC<Props> = ({
         startInitialConnectWatchdog(activeTermId, activeSession.sessionId, cols, rows);
         try {
           const result = await window.api?.connectSSH?.(activeTermId, activeSession.sessionId, cols, rows);
-          console.log('[initConnect] connectSSH result:', result);
           if (result === 'need-password') {
             sshConnecting.delete(activeTermId);
             const cachedPw = termPasswordCache.get(activeTermId);
-            console.log('[initConnect] need-password, cachedPw:', !!cachedPw);
             if (cachedPw) {
               sshConnecting.add(activeTermId);
               window.api?.connectSSHWithPassword?.(activeTermId, activeSession.sessionId, cachedPw, cols, rows);
@@ -2077,7 +2102,7 @@ export const TerminalPanel: React.FC<Props> = ({
               promptPasswordAndConnect(activeTermId, activeSession.sessionId, cols, rows);
             }
           }
-        } catch (err) { console.error('[initConnect] error:', err); }
+        } catch { /* connect error — already handled by global */ }
         // 연결 확립 후 한 번 더 fit + 실제 cols/rows 로 resize — 초기 fit 이 layout 안정화 전이었던 경우 보정
         setTimeout(() => {
           try {
@@ -2159,8 +2184,8 @@ export const TerminalPanel: React.FC<Props> = ({
     if (!activeTermId) return;
     const { term } = getOrCreateTerm(activeTermId);
     const disp = term.onData((data: string) => {
-      // focus reporting (xterm 의 alt buffer 활성 시 자동 송신) 차단 — vim FocusGained → checktime → W11 회피
       if (data === '\x1b[I' || data === '\x1b[O') return;
+      if (data === '\x1b[r') return;
       // PTY(로컬 셸): IME 가로채기 없이 그대로 전달
       if (ptyConnected.has(activeTermId)) {
         window.api?.ptyInput?.(activeTermId, data);
@@ -2236,14 +2261,62 @@ export const TerminalPanel: React.FC<Props> = ({
     const doFit = () => {
       // 드래그 중에는 fit 자체를 건너뜀 (버퍼 reflow 방지)
       if (suppressPtyResize) return;
+      const cd = fitCooldownUntil.get(activeTermId);
+      if (cd && Date.now() < cd) return;
       try {
         const e = termStore.get(activeTermId);
         if (!e) return;
+        const cont = containerRef.current;
+        if (!cont || cont.clientWidth < 50 || cont.clientHeight < 30) return;
+        const cw = cont.clientWidth, ch = cont.clientHeight;
+        const lastSz = lastContainerSizeMap.get(activeTermId);
+        if (lastSz && lastSz.w === cw && lastSz.h === ch) return;
+        // 먼저 proposeDimensions 로 계산만 하고 검증 (fit.fit() 은 내부적으로 즉시 term.resize 호출하므로 잘못된 size 가 그대로 적용되어 화면이 깨짐).
+        // 사용자가 패널을 작게 만든 정상 case 는 통과해야 하므로 cols/rows 임계는 두지 않고 NaN/0 만 차단.
+        const proposed = (fit as any).proposeDimensions?.();
+        if (!proposed || !proposed.cols || !proposed.rows || !isFinite(proposed.cols) || !isFinite(proposed.rows)) return;
+        lastContainerSizeMap.set(activeTermId, { w: cw, h: ch });
+        // 안전한 사이즈 확인 후 실제 fit 적용
         fit.fit();
         const newCols = (e.term as any).cols;
         const newRows = (e.term as any).rows;
+        // 비정상 사이즈 차단 (proposeDimensions 통과 후에도 체크)
+        if (!newCols || !newRows || !isFinite(newCols) || !isFinite(newRows)) return;
         const last = lastResizeMap.get(activeTermId);
         if (last && last.cols === newCols && last.rows === newRows) return;
+        // 안정화 검증 — 직전 fit 결과와 비교, 다르면 pending 으로 두고 SIGWINCH 보류 (layout 안정 대기)
+        const pending = pendingResize.get(activeTermId);
+        if (!pending || pending.cols !== newCols || pending.rows !== newRows) {
+          pendingResize.set(activeTermId, { cols: newCols, rows: newRows });
+          // 200ms 후 재확인 — 같은 결과면 그때 SIGWINCH
+          setTimeout(() => {
+            try {
+              const e2 = termStore.get(activeTermId);
+              if (!e2) return;
+              const cont2 = containerRef.current;
+              if (!cont2 || cont2.clientWidth < 50 || cont2.clientHeight < 30) return;
+              const proposed2 = (fit as any).proposeDimensions?.();
+              if (!proposed2 || !proposed2.cols || !proposed2.rows || !isFinite(proposed2.cols) || !isFinite(proposed2.rows)) return;
+              fit.fit();
+              const c2 = (e2.term as any).cols, r2 = (e2.term as any).rows;
+              if (!c2 || !r2 || !isFinite(c2) || !isFinite(r2)) return;
+              const p = pendingResize.get(activeTermId);
+              if (!p || p.cols !== c2 || p.rows !== r2) {
+                pendingResize.set(activeTermId, { cols: c2, rows: r2 });
+                return; // 아직 흔들림 — 다음 호출에 처리
+              }
+              const lst = lastResizeMap.get(activeTermId);
+              if (lst && lst.cols === c2 && lst.rows === r2) return;
+              lastResizeMap.set(activeTermId, { cols: c2, rows: r2 });
+              (window as any).__lastResizeTime = (window as any).__lastResizeTime || {};
+              (window as any).__lastResizeTime[activeTermId] = Date.now();
+              if (ptyConnected.has(activeTermId)) window.api?.ptyResize?.(activeTermId, c2, r2);
+              else window.api?.resizeSSH?.(activeTermId, c2, r2);
+            } catch {}
+          }, 200);
+          return;
+        }
+        // pending 과 동일 → 안정화 확인됨, SIGWINCH 송신
         lastResizeMap.set(activeTermId, { cols: newCols, rows: newRows });
         if (ptyConnected.has(activeTermId)) {
           window.api?.ptyResize?.(activeTermId, newCols, newRows);
@@ -2275,8 +2348,13 @@ export const TerminalPanel: React.FC<Props> = ({
     window.addEventListener('focus', forceSyncNow);
     document.addEventListener('visibilitychange', forceSyncNow);
 
-    // 초기 fit 다단계 — 100/300/700/1200ms 에 반복해서 layout 안정 후 정확한 크기 보장
-    const timers = [100, 300, 700, 1200].map(ms => setTimeout(doFit, ms));
+    // 초기 fit — 이 termId 가 한 번이라도 resize 송신된 적 있으면 단일 fit (1번), 아니면 다단계
+    const hasPrevResize = lastResizeMap.has(activeTermId);
+    // 이미 사이즈 알려진 term 의 탭 전환 시 — 500ms cooldown 으로 SIGWINCH cascade 차단
+    if (hasPrevResize) fitCooldownUntil.set(activeTermId, Date.now() + 500);
+    const timers = hasPrevResize
+      ? [setTimeout(doFit, 600)]
+      : [100, 300, 700, 1200].map(ms => setTimeout(doFit, ms));
     setTimeout(() => { try { getOrCreateTerm(activeTermId).term.focus(); } catch {} }, 100);
 
     return () => {
