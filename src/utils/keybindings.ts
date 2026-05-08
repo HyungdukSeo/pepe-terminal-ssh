@@ -5,13 +5,16 @@ export const DEFAULT_KEYBINDINGS: Record<string, string> = {
   'splitSessionV': 'Alt+Shift+V',
   'nextTab': 'Ctrl+Tab',
   'prevTab': 'Ctrl+Shift+Tab',
-  'cloneSplitH': 'Ctrl+Shift+H',
-  'cloneSplitV': 'Ctrl+Shift+V',
+  'cloneSplitH': 'Ctrl+Alt+H',
+  'cloneSplitV': 'Ctrl+Alt+V',
   'find': 'Ctrl+Shift+F',
   'clearScrollback': 'Ctrl+Shift+B',
   'clearScreen': 'Ctrl+Shift+L',
   'clearAll': 'Ctrl+Shift+A',
   'toggleFileTree': 'Ctrl+Shift+E',
+  'copy': 'Ctrl+Shift+C',
+  'paste': 'Ctrl+Shift+V',
+  'selectAll': 'Ctrl+A',
 };
 
 // Action labels for UI
@@ -28,6 +31,9 @@ export const KEYBINDING_LABELS: Record<string, string> = {
   'clearScreen': '화면 지우기',
   'clearAll': '전체 지우기',
   'toggleFileTree': '파일 트리 토글',
+  'copy': '복사 (선택 → 클립보드)',
+  'paste': '붙여넣기 (클립보드 → 터미널)',
+  'selectAll': '전체 선택',
 };
 
 // Current keybindings (merged with defaults)

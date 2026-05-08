@@ -34,14 +34,16 @@ type Folder = {
 
 type Props = {
   onConnect: (sessionId: string, sessionName: string, targetPanelId?: string | null, sessionTheme?: string, fontFamily?: string, fontSize?: number, scrollback?: number) => void;
-  onMultiConnect?: (sessions: Session[], mode: 'minitab' | 'split-h' | 'split-v' | 'split-tile') => void;
+  onMultiConnect?: (sessions: Session[], mode: 'minitab' | 'split-h' | 'split-v' | 'split-tile', opts?: { newWorkspace?: boolean; targetTabId?: string }) => void;
   onFileTransfer?: (sessionId: string, sessionName: string) => void;
   onOpenSqlTool?: (sessionId: string, sessionName: string) => void;
   onDisconnect?: (targetPanelId?: string | null) => void;
   targetPanelId?: string | null;
+  workspaceTabs?: { id: string; title: string }[];
+  activeTabId?: string;
 };
 
-export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisconnect, onFileTransfer, onOpenSqlTool, targetPanelId }) => {
+export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisconnect, onFileTransfer, onOpenSqlTool, targetPanelId, workspaceTabs = [], activeTabId }) => {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [width, setWidth] = useState<number>(() => {
@@ -65,6 +67,8 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
   const [renameValue, setRenameValue] = useState('');
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; id: string; type: 'session' | 'folder'; name: string } | null>(null);
+  // 다중 선택 시 연결할 워크스페이스 — 'current' / 'new' / 특정 탭 id
+  const [multiTargetWs, setMultiTargetWs] = useState<string>('current');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [folderPicker, setFolderPicker] = useState<{ sessionId: string } | null>(null);
 
@@ -622,30 +626,38 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
                 return (
                   <>
                     <div className="context-menu-label">{selectedSessions.length}개 세션 선택됨</div>
-                    <div className="context-menu-item" onClick={() => {
-                      onMultiConnect?.(selectedSessions, 'minitab');
-                      setContextMenu(null); setSelectedIds(new Set());
-                    }}>
-                      📑 미니탭으로 연결
+                    <div className="context-menu-label" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px' }}>
+                      <span style={{ fontSize: 11, color: '#aaa' }}>대상:</span>
+                      <select
+                        value={multiTargetWs}
+                        onChange={e => setMultiTargetWs(e.target.value)}
+                        onClick={e => e.stopPropagation()}
+                        style={{ flex: 1, background: '#222', color: '#eee', border: '1px solid #444', borderRadius: 3, padding: '2px 4px', fontSize: 11 }}
+                      >
+                        <option value="current">현재 워크스페이스</option>
+                        <option value="new">새 워크스페이스</option>
+                        {workspaceTabs.filter(t => t.id !== activeTabId).map(t => (
+                          <option key={t.id} value={t.id}>{t.title}</option>
+                        ))}
+                      </select>
                     </div>
-                    <div className="context-menu-item" onClick={() => {
-                      onMultiConnect?.(selectedSessions, 'split-v');
-                      setContextMenu(null); setSelectedIds(new Set());
-                    }}>
-                      ▐ 세로 분할로 연결
-                    </div>
-                    <div className="context-menu-item" onClick={() => {
-                      onMultiConnect?.(selectedSessions, 'split-h');
-                      setContextMenu(null); setSelectedIds(new Set());
-                    }}>
-                      ▄ 가로 분할로 연결
-                    </div>
-                    <div className="context-menu-item" onClick={() => {
-                      onMultiConnect?.(selectedSessions, 'split-tile');
-                      setContextMenu(null); setSelectedIds(new Set());
-                    }}>
-                      ⊞ 타일 분할로 연결
-                    </div>
+                    {(() => {
+                      const opts = multiTargetWs === 'current' ? undefined
+                        : multiTargetWs === 'new' ? { newWorkspace: true }
+                        : { targetTabId: multiTargetWs };
+                      const doConnect = (mode: 'minitab' | 'split-h' | 'split-v' | 'split-tile') => {
+                        onMultiConnect?.(selectedSessions, mode, opts);
+                        setContextMenu(null); setSelectedIds(new Set());
+                      };
+                      return (
+                        <>
+                          <div className="context-menu-item" onClick={() => doConnect('minitab')}>📑 미니탭으로 연결</div>
+                          <div className="context-menu-item" onClick={() => doConnect('split-v')}>▐ 세로 분할로 연결</div>
+                          <div className="context-menu-item" onClick={() => doConnect('split-h')}>▄ 가로 분할로 연결</div>
+                          <div className="context-menu-item" onClick={() => doConnect('split-tile')}>⊞ 타일 분할로 연결</div>
+                        </>
+                      );
+                    })()}
                     <div className="context-menu-separator" />
                   </>
                 );

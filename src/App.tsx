@@ -13,7 +13,7 @@ import { ClaudeChat } from './components/ClaudeChat';
 import { RemoteFileTree } from './components/RemoteFileTree';
 import { QuickConnectBar, QuickConnectResult } from './components/QuickConnectDialog';
 import { StatusBar } from './components/StatusBar';
-import { resetTermConnectState, clearScrollbackInTerm, clearScreenInTerm, clearAllInTerm, applyThemeToAll, applyThemeToTerm, applyFontToTerm, applyFontToAll, getCurrentThemeName, registerTermSession, getTermSessionInfo, getWordSeparator, setWordSeparator, refitAllTerms, applyScrollbackToAll, applyScrollbackToTerm, cloneTermStyle, isTermConnected, isTermConnecting, isTermPty, subscribeConnectedChange, focusTerm, pasteToTerm, promptPasswordAndConnect, startInitialConnectWatchdog, getCurrentPwdForTerm, refitTerm, searchInTerm, searchNextInTerm, searchPrevInTerm, clearSearchInTerm, highlightAllMatches, clearHighlights, searchFromTop, getAllTermIds, applyCursorStyleToTerm } from './components/TerminalPanel';
+import { resetTermConnectState, clearScrollbackInTerm, clearScreenInTerm, clearAllInTerm, applyThemeToAll, applyThemeToTerm, applyFontToTerm, applyFontToAll, getCurrentThemeName, registerTermSession, getTermSessionInfo, getWordSeparator, setWordSeparator, refitAllTerms, applyScrollbackToAll, applyScrollbackToTerm, cloneTermStyle, isTermConnected, isTermConnecting, isTermPty, subscribeConnectedChange, focusTerm, pasteToTerm, getSelectionFromTerm, selectAllInTerm, promptPasswordAndConnect, startInitialConnectWatchdog, getCurrentPwdForTerm, refitTerm, searchInTerm, searchNextInTerm, searchPrevInTerm, clearSearchInTerm, highlightAllMatches, clearHighlights, searchFromTop, getAllTermIds, applyCursorStyleToTerm } from './components/TerminalPanel';
 import { marked } from 'marked';
 // @ts-ignore — vite ?raw 로 docs/MANUAL.md 를 번들 문자열로 임베드
 import manualMd from '../docs/MANUAL.md?raw';
@@ -478,6 +478,7 @@ function App() {
   const showClaudeChatLoadedRef = useRef(false);
   const claudeChatPinnedLoadedRef = useRef(false);
   const claudeChatHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const claudeChatHoverShowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!showClaudeChatLoadedRef.current) return;
     try { (window as any).api?.setUIPrefs?.({ showClaudeChat }); } catch {}
@@ -1059,6 +1060,20 @@ function App() {
       if (matchKeybinding(e, 'clearScrollback')) { e.preventDefault(); clearScrollbackInTerm(termId); }
       else if (matchKeybinding(e, 'clearScreen')) { e.preventDefault(); clearScreenInTerm(termId); }
       else if (matchKeybinding(e, 'clearAll')) { e.preventDefault(); clearAllInTerm(termId); }
+      else if (matchKeybinding(e, 'copy')) {
+        const sel = getSelectionFromTerm(termId);
+        if (sel) { e.preventDefault(); navigator.clipboard.writeText(sel).catch(() => {}); }
+      }
+      else if (matchKeybinding(e, 'paste')) {
+        e.preventDefault();
+        navigator.clipboard.readText().then(text => {
+          if (text) pasteToTerm(termId, text);
+        }).catch(() => {});
+      }
+      else if (matchKeybinding(e, 'selectAll')) {
+        e.preventDefault();
+        selectAllInTerm(termId);
+      }
     };
     window.addEventListener('keydown', handler, true); // capture phase
     return () => window.removeEventListener('keydown', handler, true);
@@ -1256,6 +1271,18 @@ function App() {
 
   const handleSwitchSession = (nodeId: string, idx: number) => {
     if (!activeTab) return;
+    // 동일 idx 면 layout 변경 안함 — 더블클릭 시 onClick × 2 가 동일 idx 로 호출되어 React 재렌더 cascade 발생하던 문제 회피
+    let alreadySame = false;
+    const findActive = (node: any): void => {
+      if (alreadySame) return;
+      if (node.type === 'leaf' && node.id === nodeId) {
+        if (node.panel.activeIdx === idx) alreadySame = true;
+        return;
+      }
+      if (node.type !== 'leaf') node.children.forEach(findActive);
+    };
+    findActive(activeTab.layout);
+    if (alreadySame) return;
     updateLayout(activeTab.id, layout => switchPanelSession(layout, nodeId, idx));
   };
 
@@ -1276,7 +1303,17 @@ function App() {
 
   // 세션(터미널)을 다른 워크스페이스로 통째로 이동 — 단일 상태 업데이트로 termId 유지하며 옮김
   const handleMoveSessionToWorkspace = (fromNodeId: string, termId: string, targetTabId: string) => {
-    if (!activeTab || activeTab.id === targetTabId) return;
+    if (!activeTab) return;
+    // 새 워크스페이스 생성 옵션
+    if (targetTabId === '__new__') {
+      const newId = `tab-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      const newTab = { id: newId, title: `Workspace ${tabs.length + 1}`, layout: createInitialLayout(newId) } as any;
+      setTabs(prev => [...prev, newTab]);
+      // 다음 tick 에 이동 진행
+      setTimeout(() => handleMoveSessionToWorkspace(fromNodeId, termId, newId), 30);
+      return;
+    }
+    if (activeTab.id === targetTabId) return;
     setTabs(prev => {
       const fromTab = prev.find(t => t.id === activeTab.id);
       const toTab = prev.find(t => t.id === targetTabId);
@@ -2010,7 +2047,7 @@ function App() {
 
   return (
     <div
-      className={`app-root${showBroadcast ? ' has-broadcast' : ''}${showQuickConnect ? ' has-quickconnect' : ''}${fullscreenTermId ? ' term-fullscreen' : ''}${showClaudeChat && claudeChatPinned ? ' has-claude-pinned' : ''}${showClaudeChat && !claudeChatPinned ? ' has-claude-autohide' : ''}${topPanel ? ' top-panel-' + topPanel : ''}`}
+      className={`app-root${showBroadcast ? ' has-broadcast' : ''}${showQuickConnect ? ' has-quickconnect' : ''}${fullscreenTermId ? ' term-fullscreen' : ''}${showClaudeChat && claudeChatPinned ? ' has-claude-pinned' : ''}${showClaudeChat && !claudeChatPinned ? ' has-claude-autohide' : ''}${showClaudeChat && !claudeChatPinned && claudeChatVisible ? ' has-claude-visible' : ''}${topPanel ? ' top-panel-' + topPanel : ''}`}
       onMouseMove={e => {
         // 세션/파일트리 모두 unpinned 상태에서 마우스 위치에 따라 topPanel 전환
         const t = e.target as HTMLElement | null;
@@ -2026,14 +2063,36 @@ function App() {
     >
       <SessionList
         onConnect={(sid, name, panelId, sessTheme, ff, fs, sb) => handleConnectSession(sid, name, panelId, sessTheme, ff, fs, sb)}
-        onMultiConnect={(sessList, mode) => {
-          if (!activeTab || sessList.length === 0) return;
-          const panelId = selectedPanelId || findFirstLeafId(activeTab.layout);
-          if (!panelId) return;
+        workspaceTabs={tabs.map(t => ({ id: t.id, title: t.title }))}
+        activeTabId={activeTabId}
+        onMultiConnect={(sessList, mode, opts) => {
+          if (sessList.length === 0) return;
+          let targetTabId: string;
+          let targetPanelId: string | null = null;
+          if (opts?.newWorkspace) {
+            const newTabId = `tab-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+            const newTab = { id: newTabId, title: `Workspace ${tabs.length + 1}`, layout: createInitialLayout(newTabId) } as any;
+            setTabs(prev => [...prev, newTab]);
+            setActiveTabId(newTabId);
+            targetTabId = newTabId;
+            targetPanelId = findFirstLeafId(newTab.layout);
+          } else if (opts?.targetTabId) {
+            const wsTab = tabs.find(t => t.id === opts.targetTabId);
+            if (!wsTab) return;
+            targetTabId = wsTab.id;
+            setActiveTabId(wsTab.id);
+            targetPanelId = findFirstLeafId(wsTab.layout);
+          } else {
+            if (!activeTab) return;
+            targetTabId = activeTab.id;
+            targetPanelId = selectedPanelId || findFirstLeafId(activeTab.layout);
+          }
+          if (!targetPanelId) return;
+          const panelId = targetPanelId;
           if (mode === 'minitab') {
             // 한 번의 layout 업데이트로 모든 세션을 미니탭에 추가
             const newTermIds: string[] = [];
-            updateLayout(activeTab.id, layout => {
+            updateLayout(targetTabId, layout => {
               let current = layout;
               for (const s of sessList) {
                 const result = addSessionToPanel(current, panelId, s.id, s.name);
@@ -2072,7 +2131,7 @@ function App() {
               sessionId: s.id,
               sessionName: s.name,
             }));
-            updateLayout(activeTab.id, layout =>
+            updateLayout(targetTabId, layout =>
               addSessionsAsTile(layout, panelId, panelSessions[0], panelSessions.slice(1))
             );
             setTimeout(() => {
@@ -2102,7 +2161,7 @@ function App() {
             // 모든 세션의 termId를 미리 생성
             const newTermIds = sessList.map(() => `term-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
             // 첫 번째는 현재 패널에 세션 추가, 나머지는 분할 패널 생성 — 한 번의 layout 업데이트로 처리
-            updateLayout(activeTab.id, layout => {
+            updateLayout(targetTabId, layout => {
               // 첫 번째 세션을 현재 패널에 추가
               const result = addSessionToPanel(layout, panelId, sessList[0].id, sessList[0].name);
               // 첫 번째 세션의 termId를 교체
@@ -2443,7 +2502,8 @@ function App() {
             };
             const leaf = findLeaf(activeTab.layout, selectedPanelId);
             const sess = leaf?.panel?.sessions[leaf.panel.activeIdx];
-            if (sess?.termId && isTermConnected(sess.termId)) {
+            // SSH 연결된 세션 또는 로컬 PTY 활성 세션이면 파일트리 표시
+            if (sess && ((sess.sessionId && isTermConnected(sess.termId)) || isTermPty(sess.termId))) {
               const onEnterTrigger = () => {
                 if (remoteTreePinned) return;
                 if (remoteTreeHideTimer.current) { clearTimeout(remoteTreeHideTimer.current); remoteTreeHideTimer.current = null; }
@@ -3019,10 +3079,20 @@ function App() {
           }
         }
 
-        const onEnterTrigger = () => {
+        const onClickTrigger = () => {
           if (claudeChatPinned) return;
           if (claudeChatHideTimer.current) { clearTimeout(claudeChatHideTimer.current); claudeChatHideTimer.current = null; }
-          setClaudeChatVisible(true);
+          if (claudeChatHoverShowTimer.current) { clearTimeout(claudeChatHoverShowTimer.current); claudeChatHoverShowTimer.current = null; }
+          setClaudeChatVisible(v => !v);
+        };
+        const onEnterTriggerHover = () => {
+          if (claudeChatPinned) return;
+          if (claudeChatHideTimer.current) { clearTimeout(claudeChatHideTimer.current); claudeChatHideTimer.current = null; }
+          if (claudeChatHoverShowTimer.current) clearTimeout(claudeChatHoverShowTimer.current);
+          claudeChatHoverShowTimer.current = setTimeout(() => setClaudeChatVisible(true), 2500);
+        };
+        const onLeaveTriggerHover = () => {
+          if (claudeChatHoverShowTimer.current) { clearTimeout(claudeChatHoverShowTimer.current); claudeChatHoverShowTimer.current = null; }
         };
         const onEnterSidebar = () => {
           if (claudeChatPinned) return;
@@ -3038,11 +3108,12 @@ function App() {
           if (claudeChatHideTimer.current) clearTimeout(claudeChatHideTimer.current);
           claudeChatHideTimer.current = setTimeout(() => setClaudeChatVisible(false), 500);
         };
+        void onLeaveTrigger;
         return (
           <>
             {!claudeChatPinned && (
               <div className="claude-chat-sidebar-trigger">
-                <div className="claude-chat-sidebar-trigger-top" onMouseEnter={onEnterTrigger} onMouseLeave={onLeaveTrigger}>
+                <div className="claude-chat-sidebar-trigger-top" onClick={onClickTrigger} onMouseEnter={onEnterTriggerHover} onMouseLeave={onLeaveTriggerHover} style={{ cursor: 'pointer' }} title="클릭=토글 / 2.5초 오버=자동 열림">
                   <span className="claude-chat-sidebar-trigger-text">🤖 Claude</span>
                 </div>
                 <div className="claude-chat-sidebar-trigger-bottom" />

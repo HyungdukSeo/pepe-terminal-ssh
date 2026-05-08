@@ -1629,7 +1629,12 @@ ipcMain.on('ssh:disconnect', (_e, { panelId }) => {
   }
 });
 
+const _lastSshResize = new Map<string, { cols: number; rows: number }>();
 ipcMain.on('ssh:resize', (_e, { panelId, cols, rows }) => {
+  if (!cols || !rows || !isFinite(cols) || !isFinite(rows) || cols < 1 || rows < 1) return;
+  const last = _lastSshResize.get(panelId);
+  if (last && last.cols === cols && last.rows === rows) return;
+  _lastSshResize.set(panelId, { cols, rows });
   getSSHBridge().handleResize(panelId, cols, rows);
 });
 
@@ -1699,6 +1704,70 @@ function ensurePtyHelperExecutable() {
   } catch (e: any) { console.warn('[pty] chmod helper failed:', e?.message || e); }
 }
 
+// 셸 별 OSC 7 cwd hook 을 spawn 인자로 주입 — 사용자에게 echo 되지 않음.
+// zsh 의 경우 임시 ZDOTDIR 를 만들어 두고, 호출 측에서 env.ZDOTDIR 로 주입해야 함 (zdotdir 필드 반환).
+// WSL 등 인자로 주입 불가한 케이스는 postSpawnInject 로 첫 프롬프트 후 stdin 주입.
+function buildShellLaunch(shellPath: string): { args: string[]; postSpawnInject?: string; zdotdir?: string } {
+  const lc = shellPath.toLowerCase();
+  // PowerShell (Windows PowerShell 5.1 / pwsh 7+) — [char]27 사용해 호환
+  if (lc.includes('powershell') || lc.includes('pwsh')) {
+    const psHook = "if (-not $global:__pepePromptOrig) { $global:__pepePromptOrig = $function:prompt }; function global:prompt { [Console]::Write([char]27 + ']7;file:///' + ($PWD.Path -replace '\\\\','/') + [char]27 + '\\'); & $global:__pepePromptOrig }";
+    return { args: ['-NoLogo', '-NoExit', '-Command', psHook] };
+  }
+  // cmd.exe — /K 인자는 echo 안 됨. prompt 명령은 출력 없음.
+  if (lc.endsWith('cmd.exe') || lc.endsWith('\\cmd') || lc.endsWith('/cmd')) {
+    return { args: ['/K', 'prompt $E]7;file:///$P$E\\$P$G'] };
+  }
+  // wsl.exe 진입은 인자로 inner shell init 주입 불가 → 첫 프롬프트 후 stdin 주입 fallback.
+  if (lc.endsWith('wsl.exe') || lc.endsWith('\\wsl') || lc.endsWith('/wsl')) {
+    const bashHook = " __pepe_osc7() { printf '\\e]7;file://localhost%s\\e\\\\' \"$PWD\"; }; PROMPT_COMMAND=\"__pepe_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"";
+    return { args: [], postSpawnInject: bashHook };
+  }
+  // bash (git bash / Linux / macOS) — --init-file 로 임시 rc 사용 (사용자 .bashrc 도 source).
+  // 주의: --init-file 은 non-login interactive 에서만 ~/.bashrc 자리를 대체. -l 과 함께 쓰면 무시되므로 login 모드는 사용 안 함.
+  if (lc.includes('bash') || lc.endsWith('/sh') || lc.endsWith('\\sh.exe')) {
+    try {
+      const tmpDir = os.tmpdir();
+      const rcPath = path.join(tmpDir, `pepe-bashrc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.sh`);
+      const rcContent = [
+        '# pepe-terminal: source user rc files first',
+        '[ -f /etc/bash.bashrc ] && . /etc/bash.bashrc',
+        '[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"',
+        // macOS bash 사용자는 보통 ~/.bash_profile 만 두므로 그것도 시도
+        '[ -f "$HOME/.bash_profile" ] && . "$HOME/.bash_profile"',
+        '# pepe cwd auto-track (OSC 7)',
+        "__pepe_osc7() { printf '\\e]7;file://localhost%s\\e\\\\' \"$PWD\"; }",
+        'PROMPT_COMMAND="__pepe_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}"',
+      ].join('\n');
+      fs.writeFileSync(rcPath, rcContent, 'utf8');
+      return { args: ['--init-file', rcPath] };
+    } catch {
+      return { args: [] };
+    }
+  }
+  // zsh — ZDOTDIR 를 임시 디렉토리로 바꿔 .zshrc 에 hook 주입. 호출 측에서 env.ZDOTDIR 설정 필수.
+  if (lc.includes('zsh')) {
+    try {
+      const tmpDir = os.tmpdir();
+      const dirPath = path.join(tmpDir, `pepe-zdotdir-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+      fs.mkdirSync(dirPath, { recursive: true });
+      const userZdotdir = process.env.ZDOTDIR || process.env.HOME || '';
+      const rcContent = [
+        '# pepe-terminal: source user .zshrc',
+        userZdotdir ? `ZDOTDIR='${userZdotdir}' . '${userZdotdir}/.zshrc' 2>/dev/null` : '',
+        '# pepe cwd auto-track (OSC 7)',
+        "__pepe_osc7() { printf '\\e]7;file://localhost%s\\e\\\\' \"$PWD\"; }",
+        'precmd_functions+=(__pepe_osc7)',
+      ].filter(Boolean).join('\n');
+      fs.writeFileSync(path.join(dirPath, '.zshrc'), rcContent, 'utf8');
+      return { args: [], zdotdir: dirPath };
+    } catch {
+      return { args: [] };
+    }
+  }
+  return { args: [] };
+}
+
 ipcMain.handle('pty:spawn', (_e, { panelId, shell: shellPath, cols, rows, cwd }: { panelId: string; shell?: string; cols?: number; rows?: number; cwd?: string }) => {
   if (ptyProcesses.has(panelId)) return 'already';
   ensurePtyHelperExecutable();
@@ -1711,15 +1780,17 @@ ipcMain.handle('pty:spawn', (_e, { panelId, shell: shellPath, cols, rows, cwd }:
     else if (isDarwin) sh = process.env.SHELL || '/bin/zsh';
     else sh = process.env.SHELL || '/bin/bash';
   }
-  // Unix shell 인자: macOS Terminal.app 과 동일하게 login(-l) 모드. -i 는 빼서 .profile 충돌 회피.
+  // 셸별 OSC 7 hook 인자 — bash 는 --init-file, zsh 는 ZDOTDIR(env), powershell/cmd 는 -Command/-K, 기타는 빈 args
+  const launch = buildShellLaunch(sh);
   const baseName = (sh.split('/').pop() || sh).toLowerCase();
   const isUnixShell = !isWin && /^(zsh|bash|sh|fish|ksh|dash)$/.test(baseName);
-  const args: string[] = isUnixShell ? ['-l'] : [];
   const spawnEnv: Record<string, string> = { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' } as Record<string, string>;
   if (isUnixShell) spawnEnv.SHELL = sh;
   if (!spawnEnv.HOME && process.env.USERPROFILE) spawnEnv.HOME = process.env.USERPROFILE;
+  // zsh 는 임시 ZDOTDIR 를 환경변수로 주입해야 OSC 7 hook 적용됨
+  if (launch.zdotdir) spawnEnv.ZDOTDIR = launch.zdotdir;
   const spawnCwd = cwd || spawnEnv.HOME || process.env.HOME || process.env.USERPROFILE || (isWin ? 'C:\\' : '/');
-  console.log('[pty:spawn]', { panelId, sh, args, cwd: spawnCwd, hasShellEnv: !!process.env.SHELL });
+  console.log('[pty:spawn]', { panelId, sh, args: launch.args, cwd: spawnCwd, hasShellEnv: !!process.env.SHELL });
   const trySpawn = (shellPath: string, shellArgs: string[]): pty.IPty | Error => {
     try {
       return pty.spawn(shellPath, shellArgs, {
@@ -1731,14 +1802,17 @@ ipcMain.handle('pty:spawn', (_e, { panelId, shell: shellPath, cols, rows, cwd }:
       });
     } catch (e: any) { return e; }
   };
-  let proc = trySpawn(sh, args);
-  // ENOENT 등으로 실패 시 macOS/Linux 기본 셸로 재시도
-  if (proc instanceof Error && process.platform !== 'win32') {
+  let proc = trySpawn(sh, launch.args);
+  // ENOENT 등으로 실패 시 macOS/Linux 기본 셸로 재시도 (이때는 OSC 7 hook 없이라도 우선 살림)
+  if (proc instanceof Error && !isWin) {
     console.warn('[pty:spawn] first attempt failed:', proc.message, '— falling back to /bin/zsh');
-    const fb = trySpawn('/bin/zsh', ['-l']);
+    const fbLaunch = buildShellLaunch('/bin/zsh');
+    if (fbLaunch.zdotdir) spawnEnv.ZDOTDIR = fbLaunch.zdotdir;
+    const fb = trySpawn('/bin/zsh', fbLaunch.args);
     if (!(fb instanceof Error)) proc = fb;
     else {
-      const fb2 = trySpawn('/bin/bash', ['-l']);
+      const fb2Launch = buildShellLaunch('/bin/bash');
+      const fb2 = trySpawn('/bin/bash', fb2Launch.args);
       if (!(fb2 instanceof Error)) proc = fb2;
     }
   }
@@ -1755,6 +1829,12 @@ ipcMain.handle('pty:spawn', (_e, { panelId, shell: shellPath, cols, rows, cwd }:
     ptyProcesses.delete(panelId);
     mainWindow?.webContents.send('pty:exit', { panelId, exitCode });
   });
+  // wsl.exe 등 인자 주입 불가 셸: 첫 프롬프트 후 stdin 으로 hook 주입
+  if (launch.postSpawnInject) {
+    setTimeout(() => {
+      try { proc.write(launch.postSpawnInject + '\r'); } catch {}
+    }, 1500);
+  }
   return 'ok';
 });
 
@@ -1762,7 +1842,12 @@ ipcMain.on('pty:input', (_e, { panelId, data }: { panelId: string; data: string 
   ptyProcesses.get(panelId)?.write(data);
 });
 
+const _lastPtyResize = new Map<string, { cols: number; rows: number }>();
 ipcMain.on('pty:resize', (_e, { panelId, cols, rows }: { panelId: string; cols: number; rows: number }) => {
+  if (!cols || !rows || !isFinite(cols) || !isFinite(rows) || cols < 1 || rows < 1) return;
+  const last = _lastPtyResize.get(panelId);
+  if (last && last.cols === cols && last.rows === rows) return;
+  _lastPtyResize.set(panelId, { cols, rows });
   try { ptyProcesses.get(panelId)?.resize(cols, rows); } catch {}
 });
 
@@ -1906,7 +1991,7 @@ ipcMain.handle('claude:get-mount-path', async (_e, { panelId, remotePath }: { pa
 });
 
 // claude CLI 실행 + 스트리밍 응답 (print 모드)
-ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowBash, sshTermId, resumeSessionId, permissionMode, model, perToolApproval, requestId }: { sessionId: string; prompt: string; addDirs?: string[]; disallowBash?: boolean; sshTermId?: string; resumeSessionId?: string | null; permissionMode?: string; model?: string; perToolApproval?: boolean; requestId?: string }) => {
+ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowBash, sshTermId, resumeSessionId, permissionMode, model, perToolApproval, requestId, effort }: { sessionId: string; prompt: string; addDirs?: string[]; disallowBash?: boolean; sshTermId?: string; resumeSessionId?: string | null; permissionMode?: string; model?: string; perToolApproval?: boolean; requestId?: string; effort?: string }) => {
   try {
     const { spawn } = require('child_process');
     // requestId 가 있으면 그걸 프로세스 키로 사용 — 동일 sessionId 안에서 여러 대화가 동시에 진행될 수 있음.
@@ -2013,6 +2098,7 @@ ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowB
 
     // 모델 선택 (--model)
     const modelFlag = (model && model !== 'default') ? `--model ${model}` : '';
+    const effortFlag = (effort && ['low', 'medium', 'high', 'max'].includes(effort)) ? `--effort ${effort}` : '';
     console.log('[claude] model:', model || 'default');
 
     // 툴 단위 승인 (hooks) — perToolApproval true 일 때만 활성화
@@ -2051,8 +2137,8 @@ ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowB
     // shell 커맨드로 파이프 구성 (claude 는 PATHEXT 로 .cmd 자동 해석)
     // Windows: chcp 65001 로 UTF-8 코드페이지 전환 (한글 깨짐 방지)
     const shellCmd = isWin
-      ? `chcp 65001 >nul && type "${tmpFile}" | claude -p ${resumeFlag} ${modelFlag} ${permFlag} ${allowedFlag} ${disallowedFlag} ${settingsFlag} ${mcpConfigArg} ${addDirArgs} --output-format stream-json --verbose`
-      : `cat "${tmpFile}" | claude -p ${resumeFlag} ${modelFlag} ${permFlag} ${allowedFlag} ${disallowedFlag} ${settingsFlag} ${mcpConfigArg} ${addDirArgs} --output-format stream-json --verbose`;
+      ? `chcp 65001 >nul && type "${tmpFile}" | claude -p ${resumeFlag} ${modelFlag} ${effortFlag} ${permFlag} ${allowedFlag} ${disallowedFlag} ${settingsFlag} ${mcpConfigArg} ${addDirArgs} --output-format stream-json --verbose`
+      : `cat "${tmpFile}" | claude -p ${resumeFlag} ${modelFlag} ${effortFlag} ${permFlag} ${allowedFlag} ${disallowedFlag} ${settingsFlag} ${mcpConfigArg} ${addDirArgs} --output-format stream-json --verbose`;
     console.log('[claude] shell cmd:', shellCmd);
     console.log('[claude] PATH has npm:', augmentedPath.toLowerCase().includes('npm'));
 
@@ -2106,6 +2192,232 @@ ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowB
   } catch (err: any) {
     console.log('[claude] exception:', err);
     return { success: false, error: String(err) };
+  }
+});
+
+// claude 설정 읽기 (model 변형으로 컨텍스트 max 추론 — opus[1m] 등)
+ipcMain.handle('claude:read-settings', async () => {
+  const fs = require('fs');
+  const pathMod = require('path');
+  const os = require('os');
+  try {
+    const p = pathMod.join(os.homedir(), '.claude', 'settings.json');
+    const obj = JSON.parse(fs.readFileSync(p, 'utf-8'));
+    return { success: true, settings: obj };
+  } catch (e: any) {
+    return { success: false, error: String(e?.message || e) };
+  }
+});
+
+// Anthropic 모델 목록 조회 — /v1/models
+ipcMain.handle('claude:fetch-models', async () => {
+  const fs = require('fs');
+  const pathMod = require('path');
+  const os = require('os');
+  const credPath = pathMod.join(os.homedir(), '.claude', '.credentials.json');
+  let token: string | null = null;
+  try {
+    const raw = fs.readFileSync(credPath, 'utf-8');
+    const obj = JSON.parse(raw);
+    token = obj?.claudeAiOauth?.accessToken;
+  } catch {}
+  if (!token) return { success: false, error: 'no token' };
+  try {
+    const fetchFn: any = (global as any).fetch;
+    const resp = await fetchFn('https://api.anthropic.com/v1/models', {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'oauth-2025-04-20',
+      },
+    });
+    const text = await resp.text();
+    if (!resp.ok) return { success: false, error: `HTTP ${resp.status}`, body: text.slice(0, 300) };
+    const data = JSON.parse(text);
+    return { success: true, models: data.data || [] };
+  } catch (e: any) {
+    return { success: false, error: String(e?.message || e) };
+  }
+});
+
+// Anthropic OAuth API 직접 호출 — ~/.claude/.credentials.json 의 accessToken 사용
+ipcMain.handle('claude:fetch-usage-api', async () => {
+  const fs = require('fs');
+  const pathMod = require('path');
+  const os = require('os');
+  const credPath = pathMod.join(os.homedir(), '.claude', '.credentials.json');
+  let token: string | null = null;
+  try {
+    const raw = fs.readFileSync(credPath, 'utf-8');
+    const obj = JSON.parse(raw);
+    token = obj?.claudeAiOauth?.accessToken;
+  } catch (e: any) {
+    return { success: false, error: 'credentials 읽기 실패: ' + e?.message };
+  }
+  if (!token) return { success: false, error: 'accessToken 없음 (claude login 필요)' };
+  try {
+    const fetchFn: any = (global as any).fetch;
+    if (!fetchFn) return { success: false, error: 'fetch 미지원 (Node 18+ 필요)' };
+    const resp = await fetchFn('https://api.anthropic.com/api/oauth/usage', {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'anthropic-beta': 'oauth-2025-04-20',
+        'User-Agent': 'claude-code/oauth',
+      },
+    });
+    const status = resp.status;
+    const text = await resp.text();
+    if (!resp.ok) return { success: false, error: `HTTP ${status}`, body: text.slice(0, 500) };
+    const data = JSON.parse(text);
+    return { success: true, data };
+  } catch (e: any) {
+    return { success: false, error: String(e?.message || e) };
+  }
+});
+
+// claude TUI 를 PTY 로 띄우고 /usage 명령 보내서 출력 캡처 (Anthropic 구독 한도 정보)
+ipcMain.handle('claude:probe-usage-tui', async () => {
+  return new Promise((resolve) => {
+    let proc: any = null;
+    let buf = '';
+    let resolved = false;
+    const finish = (result: any) => {
+      if (resolved) return;
+      resolved = true;
+      try { proc?.write?.('\x03'); } catch {}
+      try { proc?.write?.('/exit\n'); } catch {}
+      setTimeout(() => { try { proc?.kill?.(); } catch {} }, 300);
+      resolve(result);
+    };
+    try {
+      const { execSync } = require('child_process');
+      const isWin = process.platform === 'win32';
+      // claude 실행 경로 직접 찾기 (cmd.exe wrapper 우회)
+      let claudeBin = 'claude';
+      try {
+        const which = execSync(isWin ? 'where claude' : 'which claude', { encoding: 'utf-8' }).split(/\r?\n/)[0].trim();
+        if (which) claudeBin = which;
+      } catch {}
+      proc = pty.spawn(claudeBin, [], {
+        name: 'xterm-256color',
+        cols: 120,
+        rows: 40,
+        cwd: process.env.USERPROFILE || process.env.HOME || process.cwd(),
+        env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' } as any,
+      });
+    } catch (e: any) {
+      return resolve({ success: false, error: 'PTY spawn 실패: ' + (e?.message || e) });
+    }
+    let trustHandled = false;
+    let usageStartLen = 0;
+    let usageSent = false;
+    const captureAndFinish = () => {
+      const after = usageStartLen ? buf.slice(usageStartLen) : buf;
+      const stripped = after
+        .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
+        .replace(/\x1b\][^\x07]*\x07/g, '')
+        .replace(/\x1b[()][AB012]/g, '')
+        .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
+      finish({ success: true, raw: stripped, length: buf.length });
+    };
+    proc.onData((d: string) => {
+      buf += d;
+      if (!trustHandled && /trust this folder|이 폴더를 신뢰|1\.\s*Yes/i.test(buf)) {
+        trustHandled = true;
+        try { proc.write('1\r'); } catch {}
+      }
+      // /usage 패널 완성 감지 — "Esc to cancel" 마커 (TUI 패널 완전히 그려진 시점)
+      if (usageSent && /Esc\s*to\s*cancel/i.test(buf.slice(usageStartLen))) {
+        setTimeout(captureAndFinish, 200);
+      }
+    });
+    proc.onExit(() => {});
+    // 5초 후 /usage 송신 — 우선 더미 키(스페이스+백스페이스)로 입력 박스 활성화
+    setTimeout(() => {
+      if (usageSent) return;
+      usageSent = true;
+      // 입력 박스 깨우기 — 스페이스 후 백스페이스
+      try { proc.write(' '); } catch {}
+      setTimeout(() => { try { proc.write('\b'); } catch {} }, 100);
+      setTimeout(() => {
+        usageStartLen = buf.length;
+        const cmd = '/usage';
+        let i = 0;
+        const typer = () => {
+          if (i < cmd.length) {
+            try { proc.write(cmd[i]); } catch {}
+            i++;
+            setTimeout(typer, 50);
+          } else {
+            // ENTER 두 번 시도 — \r 와 \n 모두
+            setTimeout(() => { try { proc.write('\r\n'); } catch {} }, 300);
+          }
+        };
+        typer();
+      }, 300);
+    }, 5000);
+    // 최대 12초 후 무조건 캡처
+    setTimeout(captureAndFinish, 12000);
+    // 안전 타임아웃
+    setTimeout(() => finish({ success: false, error: 'timeout', raw: buf }), 15000);
+  });
+});
+
+// ~/.claude/projects 의 모든 세션 jsonl 을 스캔해 usage 합산 (전체 누적 사용량)
+ipcMain.handle('claude:probe-usage', async () => {
+  const fs = require('fs');
+  const pathMod = require('path');
+  const os = require('os');
+  const claudeDir = pathMod.join(os.homedir(), '.claude', 'projects');
+  let totalIn = 0, totalOut = 0, totalCacheCreate = 0, totalCacheRead = 0, sessionCount = 0, msgCount = 0;
+  const projectStats: { project: string; in: number; out: number; cacheRead: number; sessions: number }[] = [];
+  try {
+    if (!fs.existsSync(claudeDir)) return { success: false, error: '~/.claude/projects 폴더 없음' };
+    const projects = fs.readdirSync(claudeDir);
+    for (const proj of projects) {
+      const projPath = pathMod.join(claudeDir, proj);
+      let stat;
+      try { stat = fs.statSync(projPath); } catch { continue; }
+      if (!stat.isDirectory()) continue;
+      let projIn = 0, projOut = 0, projCacheRead = 0, projSessions = 0;
+      const walk = (dir: string) => {
+        let items: string[] = [];
+        try { items = fs.readdirSync(dir); } catch { return; }
+        for (const it of items) {
+          const full = pathMod.join(dir, it);
+          let s; try { s = fs.statSync(full); } catch { continue; }
+          if (s.isDirectory()) { walk(full); continue; }
+          if (!it.endsWith('.jsonl')) continue;
+          projSessions++;
+          sessionCount++;
+          let content = '';
+          try { content = fs.readFileSync(full, 'utf-8'); } catch { continue; }
+          for (const line of content.split('\n')) {
+            if (!line.trim()) continue;
+            try {
+              const obj = JSON.parse(line);
+              const u = obj?.message?.usage;
+              if (u) {
+                msgCount++;
+                projIn += u.input_tokens || 0;
+                projOut += u.output_tokens || 0;
+                projCacheRead += u.cache_read_input_tokens || 0;
+                totalIn += u.input_tokens || 0;
+                totalOut += u.output_tokens || 0;
+                totalCacheCreate += u.cache_creation_input_tokens || 0;
+                totalCacheRead += u.cache_read_input_tokens || 0;
+              }
+            } catch {}
+          }
+        }
+      };
+      walk(projPath);
+      if (projIn || projOut) projectStats.push({ project: proj, in: projIn, out: projOut, cacheRead: projCacheRead, sessions: projSessions });
+    }
+    projectStats.sort((a, b) => (b.in + b.out) - (a.in + a.out));
+    return { success: true, totalIn, totalOut, totalCacheCreate, totalCacheRead, sessionCount, msgCount, projects: projectStats.slice(0, 20) };
+  } catch (e: any) {
+    return { success: false, error: String(e?.message || e) };
   }
 });
 

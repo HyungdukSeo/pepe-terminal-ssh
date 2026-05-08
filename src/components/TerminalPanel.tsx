@@ -48,6 +48,163 @@ let currentWordSeparator = localStorage.getItem('terminalWordSeparator') ?? DEFA
 const termFontSizes: Map<string, number> = new Map();
 
 export const termStore: Map<string, { term: Terminal; fit: FitAddon; search: SearchAddon }> = new Map();
+// 마지막 PTY/SSH resize 크기 — 변경 없을 때 SIGWINCH 송신 안 하기 위함 (vim W11 경고 회피)
+const lastResizeMap: Map<string, { cols: number; rows: number }> = new Map();
+// 마지막 fit 시점의 컨테이너 px 사이즈 — 같으면 fit 자체 skip (탭 전환 시 잦은 SIGWINCH 회피)
+const lastContainerSizeMap: Map<string, { w: number; h: number }> = new Map();
+// 탭 활성화 직후 일정 시간 fit/resize 차단 cooldown (per termId)
+const fitCooldownUntil: Map<string, number> = new Map();
+// 직전 fit 결과 — 연속 2회 동일 cols/rows 일 때만 실제 SIGWINCH (layout 안정화 대기)
+const pendingResize: Map<string, { cols: number; rows: number }> = new Map();
+// vim 1002h 첫 수신 시 ttymouse=sgr 자동 주입 플래그 (per termId)
+const ttymouseSgrInjected: Set<string> = new Set(); void ttymouseSgrInjected;
+// xterm 의 focus reporting (\x1b[I/O) 송신 패치 — vim 의 FocusGained → :checktime → W11 경고 방지
+function patchSuppressFocusEvents(term: any, termId?: string) {
+  try {
+    const core = term._core;
+    if (!core) return;
+    const cs = core.coreService || core._coreService;
+    if (!cs) return;
+    if (cs && typeof cs.triggerDataEvent === 'function' && !cs.__focusPatched) {
+      cs.__focusPatched = true;
+      const orig = cs.triggerDataEvent.bind(cs);
+      cs.triggerDataEvent = function(data: string, wasUserInput?: boolean) {
+        if (data === '\x1b[I' || data === '\x1b[O') return;
+        if (typeof data === 'string' && data.includes('\x1b[?1004')) return;
+        // DA2 응답 (xterm 버전) 을 380 으로 높여서 vim 이 ttymouse=sgr 자동 선택하도록
+        if (typeof data === 'string') {
+          const m = data.match(/^\x1b\[>(\d+);(\d+);(\d+)c$/);
+          if (m) data = `\x1b[>${m[1]};380;${m[3]}c`;
+        }
+        return orig(data, wasUserInput);
+      };
+    }
+    if (cs?.decPrivateModes && !cs.__sendFocusFrozen) {
+      try {
+        cs.decPrivateModes.sendFocus = false;
+        Object.defineProperty(cs.decPrivateModes, 'sendFocus', {
+          get() { return false; },
+          set() {},
+          configurable: false,
+        });
+        // 1007 alt-scroll mode 도 강제 false — 휠 → 화살표 변환 차단
+        // (vim 에서 휠 스크롤이 cursor 이동으로 변환되어 CursorMoved → checktime 트리거되는 문제)
+        try {
+          cs.decPrivateModes.altSendsEscape = cs.decPrivateModes.altSendsEscape;
+          if ('altSendsEscape' in cs.decPrivateModes) { /* keep */ }
+        } catch {}
+        cs.__sendFocusFrozen = true;
+      } catch {}
+    }
+    // alt-scroll mode (DECSET 1007) 비활성화 — term.options.altClickMovesCursor 와는 별도
+    try {
+      if (term.options) (term.options as any).fastScrollModifier = 'none';
+    } catch {}
+    // wheel 이벤트 capture phase 에서 가로채 alt 버퍼면 직접 scrollLines 처리
+    // 마우스 이벤트 직접 forwarding — xterm v5.3 의 1002 mode click 미작동 회피
+    const elem = (term as any).element as HTMLElement | undefined;
+    if (elem && !(elem as any).__mouseForwardInstalled) {
+      (elem as any).__mouseForwardInstalled = true;
+      const getMouseMode = (): string => {
+        try {
+          const core = term._core;
+          if (!core) return 'none';
+          const cms = core.coreMouseService || core._mouseService || (core as any)._coreMouseService;
+          if (cms) {
+            const ap = cms.activeProtocol || cms._activeProtocol;
+            if (ap && ap !== 'NONE') return ap;
+          }
+        } catch {}
+        return 'none';
+      };
+      const getCellPos = (ev: MouseEvent): { col: number; row: number } | null => {
+        try {
+          const rs = term._core?._renderService;
+          const cellW = rs?.dimensions?.css?.cell?.width ?? 9;
+          const cellH = rs?.dimensions?.css?.cell?.height ?? 17;
+          const screen = elem.querySelector('.xterm-screen') as HTMLElement | null;
+          const rect = (screen || elem).getBoundingClientRect();
+          const col = Math.max(1, Math.floor((ev.clientX - rect.left) / cellW) + 1);
+          const row = Math.max(1, Math.floor((ev.clientY - rect.top) / cellH) + 1);
+          return { col, row };
+        } catch { return null; }
+      };
+      const isActive = (m: string) => m === 'X10' || m === 'VT200' || m === 'DRAG' || m === 'ANY';
+      const isDragMode = (m: string) => m === 'DRAG' || m === 'ANY';
+      const getEncoding = (): 'DEFAULT' | 'SGR' => {
+        try {
+          const core = term._core;
+          const cms = core?.coreMouseService || core?._mouseService || core?._coreMouseService;
+          const enc = cms?.activeEncoding || cms?._activeEncoding;
+          if (enc === 'SGR' || enc === 'SGR_PIXELS') return 'SGR';
+        } catch {}
+        return 'DEFAULT';
+      };
+      void getEncoding;
+      const sendMouseEvent = (cb: number, col: number, row: number, release: boolean) => {
+        // 항상 SGR 형식으로 송신 — legacy X10/xterm2 이 일부 vim 환경에서 안 먹힘
+        const seq = `\x1b[<${cb};${col};${row}${release ? 'm' : 'M'}`;
+        try {
+          if (!termId) return;
+          if (ptyConnected.has(termId)) (window as any).api?.ptyInput?.(termId, seq);
+          else (window as any).api?.sendSSHInput?.(termId, seq);
+        } catch {}
+      };
+      let dragging = false;
+      let lastBtn = 0;
+      elem.addEventListener('mousedown', (ev: MouseEvent) => {
+        const mode = getMouseMode();
+        if (!isActive(mode)) return;
+        // 우클릭(button=2) — 앱 컨텍스트 메뉴 띄움
+        if (ev.button === 2) return;
+        // Shift+클릭 — vim mouse 모드 bypass, xterm 자체 선택/복사 사용 가능
+        if (ev.shiftKey) return;
+        const pos = getCellPos(ev);
+        if (!pos) return;
+        const btn = ev.button;
+        lastBtn = btn;
+        sendMouseEvent(btn, pos.col, pos.row, false);
+        dragging = isDragMode(mode);
+        ev.preventDefault();
+      }, true);
+      elem.addEventListener('mouseup', (ev: MouseEvent) => {
+        const mode = getMouseMode();
+        if (!isActive(mode) || !dragging) return;
+        if (ev.shiftKey) return;
+        const pos = getCellPos(ev);
+        if (!pos) return;
+        sendMouseEvent(lastBtn, pos.col, pos.row, true);
+        dragging = false;
+      }, true);
+      elem.addEventListener('mousemove', (ev: MouseEvent) => {
+        if (!dragging) return;
+        const mode = getMouseMode();
+        if (!isDragMode(mode)) return;
+        const pos = getCellPos(ev);
+        if (!pos) return;
+        sendMouseEvent(lastBtn + 32, pos.col, pos.row, false);
+      }, true);
+      // 휠은 vim 으로 forwarding 안 함 — alt 버퍼에서 native scroll
+      elem.addEventListener('wheel', (ev: WheelEvent) => {
+        if (ev.ctrlKey || ev.metaKey) return; // Ctrl+wheel = 폰트 zoom
+        try {
+          const buf = (term as any).buffer?.active;
+          if (!buf || buf.type !== 'alternate') return;
+          ev.preventDefault();
+          ev.stopImmediatePropagation();
+          term.scrollLines(ev.deltaY > 0 ? 3 : -3);
+        } catch {}
+      }, { capture: true });
+    }
+    // textarea 의 focus/blur 이벤트 자체에서도 송신 안하도록 핸들러 추가 — capture phase 에서 전파 차단
+    const ta = term.textarea as HTMLTextAreaElement | undefined;
+    if (ta && !(ta as any).__focusBlockerInstalled) {
+      (ta as any).__focusBlockerInstalled = true;
+      // xterm 의 focus listener 가 등록되기 전에 추가하기 위해 즉시 적용
+      // 단순히 listener 하나 더 — xterm 이 \x1b[I/O 송신해도 위 패치가 차단
+    }
+  } catch {}
+}
 
 // 비활성 워크스페이스/패널의 xterm DOM 을 보관하는 hidden stash — detach 시 scrollbar/viewport 상태 보존
 function getXtermStash(): HTMLElement {
@@ -70,11 +227,12 @@ function ensurePasteResultListener() {
     (window as any).api?.onPasteModalResult?.((p: { id: string; action: 'paste' | 'cancel'; text: string }) => {
       const tid = p.id;
       if (p.action === 'paste') {
+        // textarea 가 \r\n → \n 정규화한 결과 → 터미널은 ENTER=\r 기대
+        const text = p.text.replace(/\r?\n/g, '\r');
+        // bracketed paste 래핑 회피 — PTY/SSH 채널로 직접 송신 (Shift+Insert 와 동일 효과)
         try {
-          const entry = termStore.get(tid);
-          if (entry) entry.term.paste(p.text);
-          else if (ptyConnected.has(tid)) (window as any).api.ptyInput(tid, p.text);
-          else (window as any).api.sendSSHInput(tid, p.text);
+          if (ptyConnected.has(tid)) (window as any).api.ptyInput(tid, text);
+          else (window as any).api.sendSSHInput(tid, text);
         } catch {}
       }
       setTimeout(() => focusTerm(tid), 0);
@@ -228,23 +386,63 @@ function getOrCreateTerm(termId: string): { term: Terminal; fit: FitAddon; searc
     });
     if (!termFontSizes.has(termId)) termFontSizes.set(termId, defaultFontSize);
     const fit = new FitAddon();
+    // FitAddon.fit() 안전 패치 — 컨테이너가 layout 갱신 중 일시적으로 0-size 가 될 때
+    // proposeDimensions 가 {cols:2, rows:1} 같은 비현실 값을 반환 → term.resize(2,1) 가
+    // 호출되면서 xterm 화면이 2-col 로 reflow 됐다가 다시 reflow 되어 프롬프트가 잘려
+    // 보이는 잔상 (예: "[r") 이 발생.
+    // 사용자가 의도적으로 패널을 작게 만든 케이스(작은 cols/rows)는 정상 처리해야 하므로,
+    // cols/rows 가 아니라 부모 컨테이너의 실제 픽셀 크기를 기준으로 판단.
+    try {
+      const origFit = fit.fit.bind(fit);
+      (fit as any).fit = function () {
+        try {
+          // FitAddon 은 term.element.parentElement 를 기준으로 계산
+          const parent = (term as any).element?.parentElement as HTMLElement | undefined;
+          if (parent) {
+            const w = parent.clientWidth;
+            const h = parent.clientHeight;
+            // 부모가 사실상 0-size — 분명히 layout 갱신 중. 사용자가 정상적으로
+            // 만들 수 있는 최소 패널 크기보다 훨씬 작은 임계 (수 픽셀) 만 차단.
+            if (w < 20 || h < 20) return;
+          }
+          // proposeDimensions 결과가 0/NaN 이면 (부모 dimensions 측정 실패) 차단
+          const p = (fit as any).proposeDimensions?.();
+          if (!p || !p.cols || !p.rows || !isFinite(p.cols) || !isFinite(p.rows)) return;
+        } catch { /* 계산 실패 시 그래도 origFit 시도 */ }
+        return origFit();
+      };
+    } catch {}
     const search = new SearchAddon();
     const unicode11 = new Unicode11Addon();
     term.loadAddon(fit);
     term.loadAddon(search);
     term.loadAddon(unicode11);
     term.unicode.activeVersion = '11';
-    // OSC 7 핸들러 — 원격 쉘이 보낸 file://host/path 를 파싱해서 현재 pwd 저장
+    // OSC 7 핸들러 — 셸이 보낸 file://host/path 를 파싱해서 현재 pwd 저장.
+    // 지원 형식:
+    //   file://host/abs/posix/path        → /abs/posix/path
+    //   file:///C:/Users/foo              → C:/Users/foo (Windows local)
+    //   file:///C:\Users\foo              → C:\Users\foo (Windows local, backslash 도 허용)
     try {
       (term as any).parser?.registerOscHandler?.(7, (data: string) => {
-        const m = data.match(/^file:\/\/[^/]*(\/.*)$/);
-        if (m) {
-          let p = m[1];
-          try { p = decodeURIComponent(p); } catch { /* keep encoded */ }
-          const prev = termCurrentPwd.get(termId);
-          termCurrentPwd.set(termId, p);
-          if (prev !== p) notifyPwdChange(termId, p);
+        // file:// 접두 제거
+        let raw = data.replace(/^file:\/\/[^/]*/, '');
+        if (!raw) return true;
+        // 선두 슬래시가 두 개면 (//) 한 개 제거 — file://localhost//path 케이스
+        try { raw = decodeURIComponent(raw); } catch { /* keep encoded */ }
+        let p: string;
+        // Windows 드라이브: 선두 / 다음 [A-Z]: 면 / 제거
+        const winMatch = raw.match(/^\/([a-zA-Z]:[\\/].*)$/);
+        if (winMatch) {
+          p = winMatch[1];
+          // forward slash → backslash 통일 (Windows fs 호환)
+          p = p.replace(/\//g, '\\');
+        } else {
+          p = raw.startsWith('/') ? raw : '/' + raw;
         }
+        const prev = termCurrentPwd.get(termId);
+        termCurrentPwd.set(termId, p);
+        if (prev !== p) notifyPwdChange(termId, p);
         return true;
       });
     } catch { /* older xterm 없으면 무시 */ }
@@ -362,14 +560,27 @@ function getOrCreateTerm(termId: string): { term: Terminal; fit: FitAddon; searc
           }
         }
       }, true);
-      // 우클릭 → 컨텍스트 메뉴 이벤트 발행 (컴포넌트에서 처리)
+      // 우클릭 → 항상 앱 컨텍스트 메뉴 (mouse mode 여부 무관, 복사/붙여넣기 등 사용 가능)
       el.addEventListener('contextmenu', (e: MouseEvent) => {
         e.preventDefault();
         el.dispatchEvent(new CustomEvent('term-contextmenu', { detail: { x: e.clientX, y: e.clientY }, bubbles: true }));
       });
     });
-    // 선택 시 자동 클립보드 복사 (설정에 따라)
+    // 선택 시 자동 클립보드 복사 + selectAll 상태 유지
     term.onSelectionChange(() => {
+      // selectAll 활성 상태에서 selection 이 비워지면 즉시 재선택
+      if (selectAllActive.has(termId)) {
+        try {
+          const cur = term.getSelection();
+          if (!cur || cur.length === 0) {
+            _skipAutoCopyOnSelect = true;
+            try { term.selectAll(); } catch {}
+            setTimeout(() => { _skipAutoCopyOnSelect = false; }, 30);
+            return;
+          }
+        } catch {}
+      }
+      if (_skipAutoCopyOnSelect) return;
       const settings = getTerminalSettings();
       if (!settings.autoCopyOnSelect) return;
       let sel = term.getSelection();
@@ -381,6 +592,10 @@ function getOrCreateTerm(termId: string): { term: Terminal; fit: FitAddon; searc
     });
     entry = { term, fit, search };
     termStore.set(termId, entry);
+    // 동기적으로 즉시 패치 — DA2 query 가 빨리 와도 가로챌 수 있도록
+    patchSuppressFocusEvents(term, termId);
+    // 추가 안전망 — _coreService 가 늦게 초기화되는 케이스 대응
+    [0, 10, 50, 200, 500].forEach(ms => setTimeout(() => patchSuppressFocusEvents(term, termId), ms));
   }
   return entry;
 }
@@ -1102,15 +1317,41 @@ export function promptPasswordAndConnect(termId: string, sessionId: string, cols
   activePasswordPrompt.set(termId, { dispose: () => disposable.dispose() });
 }
 
+// ── SSH 이벤트 단일 dispatcher (termId 별 listener 누적으로 인한 MaxListenersExceeded 방지) ──
+const sshConnectedHandlers = new Map<string, (p: any) => void>();
+const sshDataHandlers = new Map<string, (p: any) => void>();
+const sshClosedHandlers = new Map<string, (p: any) => void>();
+const sshErrorHandlers = new Map<string, (p: any) => void>();
+const sshAuthPromptHandlers = new Map<string, (p: any) => void>();
+let sshDispatchersInstalled = false;
+function installGlobalSshDispatchers() {
+  if (sshDispatchersInstalled) return;
+  sshDispatchersInstalled = true;
+  window.api?.onSSHConnected?.((p: any) => { try { sshConnectedHandlers.get(p?.panelId)?.(p); } catch {} });
+  window.api?.onSSHData?.((p: any) => { try { sshDataHandlers.get(p?.panelId)?.(p); } catch {} });
+  window.api?.onSSHClosed?.((p: any) => { try { sshClosedHandlers.get(p?.panelId)?.(p); } catch {} });
+  window.api?.onSSHError?.((p: any) => { try { sshErrorHandlers.get(p?.panelId)?.(p); } catch {} });
+  window.api?.onSSHAuthPrompt?.((p: any) => { try { sshAuthPromptHandlers.get(p?.panelId)?.(p); } catch {} });
+}
+/** 외부에서 termId 가 제거될 때 호출 — handler map 에서 제거해 메모리 누수 방지 */
+export function disposeSSHHandlers(termId: string) {
+  sshConnectedHandlers.delete(termId);
+  sshDataHandlers.delete(termId);
+  sshClosedHandlers.delete(termId);
+  sshErrorHandlers.delete(termId);
+  sshAuthPromptHandlers.delete(termId);
+  sshInitialized.delete(termId);
+}
+
 /** termId별로 SSH 리스너를 한 번만 설정 (컴포넌트 lifecycle 밖) */
 function ensureSSHSetup(termId: string) {
   if (sshInitialized.has(termId)) return;
   sshInitialized.add(termId);
+  installGlobalSshDispatchers();
 
   const { term, fit } = getOrCreateTerm(termId);
 
-  window.api?.onSSHConnected?.((p: any) => {
-    if (p.panelId !== termId) return;
+  sshConnectedHandlers.set(termId, () => {
     // 같은 termId에 PTY가 실행 중이면 종료 (Local Shell → SSH 전환)
     if (ptyConnected.has(termId)) {
       window.api?.ptyKill?.(termId);
@@ -1126,21 +1367,21 @@ function ensureSSHSetup(termId: string) {
     clearInitialConnectWatchdog(termId);
     reconnectUserCancelled.delete(termId);
     notifyConnectedChange();
-    try { fit.fit(); } catch {}
-    try {
-      window.api?.resizeSSH?.(termId, (term as any).cols, (term as any).rows);
-      setTimeout(() => { try { window.api?.resizeSSH?.(termId, (term as any).cols, (term as any).rows); } catch {} }, 200);
-    } catch {}
+    // 연결 직후 fit 은 layout 안정 후 1회만 (이전 다중 호출이 SIGWINCH cascade → bash 부분 prompt artifact 원인)
+    setTimeout(() => {
+      try { fit.fit(); } catch {}
+      try {
+        const c = (term as any).cols, r = (term as any).rows;
+        if (c >= 10 && r >= 5) window.api?.resizeSSH?.(termId, c, r);
+      } catch {}
+    }, 300);
   });
 
-  window.api?.onSSHData?.((p: any) => {
-    if (p.panelId !== termId) return;
+  sshDataHandlers.set(termId, (p: any) => {
     try { term.write(p.data); } catch {}
   });
 
-  window.api?.onSSHClosed?.((p: any) => {
-    if (p.panelId !== termId) return;
-    console.log('[onSSHClosed]', termId, { globalConnected: globalConnected.has(termId), sshConnecting: sshConnecting.has(termId), reconnectUserCancelled: reconnectUserCancelled.has(termId) });
+  sshClosedHandlers.set(termId, () => {
     // 이미 종료 처리 완료된 경우 (연결 상태 아닌데 close 중복) 무시
     if (!globalConnected.has(termId) && !sshConnecting.has(termId)) return;
     globalConnected.delete(termId);
@@ -1154,9 +1395,7 @@ function ensureSSHSetup(termId: string) {
   });
 
   // SSH 에러를 터미널에 표시
-  window.api?.onSSHError?.((p: any) => {
-    if (p.panelId !== termId) return;
-    console.log('[onSSHError]', termId, p.error);
+  sshErrorHandlers.set(termId, (p: any) => {
     sshConnecting.delete(termId);
     globalConnected.delete(termId);
     notifyConnectedChange();
@@ -1168,8 +1407,7 @@ function ensureSSHSetup(termId: string) {
   });
 
   // 비밀번호 미저장 세션: keyboard-interactive 인증 프롬프트
-  window.api?.onSSHAuthPrompt?.((p: any) => {
-    if (p.panelId !== termId) return;
+  sshAuthPromptHandlers.set(termId, (p: any) => {
     const promptText = p.prompts?.[0] || 'Password:';
     // prompt() 대신 터미널에 비밀번호 입력 UI
     try {
@@ -1199,23 +1437,151 @@ function ensureSSHSetup(termId: string) {
 // ── 로컬 셸 (PTY) ──
 const ptyInitialized = new Set<string>();
 const ptyConnected = new Set<string>();
+const ptyDataHandlers = new Map<string, (p: any) => void>();
+const ptyExitHandlers = new Map<string, (p: any) => void>();
+let ptyDispatchersInstalled = false;
+function installGlobalPtyDispatchers() {
+  if (ptyDispatchersInstalled) return;
+  ptyDispatchersInstalled = true;
+  window.api?.onPtyData?.((p: any) => { try { ptyDataHandlers.get(p?.panelId)?.(p); } catch {} });
+  window.api?.onPtyExit?.((p: any) => { try { ptyExitHandlers.get(p?.panelId)?.(p); } catch {} });
+}
+export function disposePtyHandlers(termId: string) {
+  ptyDataHandlers.delete(termId);
+  ptyExitHandlers.delete(termId);
+  ptyInitialized.delete(termId);
+}
 
 function ensurePtySetup(termId: string) {
   if (ptyInitialized.has(termId)) return;
   ptyInitialized.add(termId);
+  installGlobalPtyDispatchers();
 
   const { term } = getOrCreateTerm(termId);
 
-  window.api?.onPtyData?.((p: any) => {
-    if (p.panelId !== termId) return;
+  ptyDataHandlers.set(termId, (p: any) => {
     try { term.write(p.data); } catch {}
   });
 
-  window.api?.onPtyExit?.((p: any) => {
-    if (p.panelId !== termId) return;
+  ptyExitHandlers.set(termId, () => {
     ptyConnected.delete(termId);
+    notifyConnectedChange();
     try { term.write('\r\n\x1b[90m셸이 종료되었습니다.\x1b[0m\r\n'); } catch {}
   });
+}
+
+// 프로그램 호출로 selectAll 할 때 autoCopyOnSelect 건너뛰기 위한 플래그
+let _skipAutoCopyOnSelect = false;
+export function isSelectAllSkippingAutoCopy(): boolean { return _skipAutoCopyOnSelect; }
+// 현재 selectAll 상태인 termId 들 — 스크롤/사용자 입력 시 자동 해제
+const selectAllActive: Set<string> = new Set();
+export function selectAllInTerm(termId: string) {
+  try {
+    _skipAutoCopyOnSelect = true;
+    const entry = termStore.get(termId);
+    if (entry) {
+      try { entry.term.focus(); } catch {}
+      entry.term.selectAll();
+      try { (entry.term as any).refresh?.(0, (entry.term as any).rows - 1); } catch {}
+      selectAllActive.add(termId);
+      const term: any = entry.term;
+      // xterm 내부 selectionService 의 clearSelection 을 패치 — selectAll 활성 시 호출 무시
+      if (!term.__selectAllPatched) {
+        term.__selectAllPatched = true;
+        try {
+          const svc = term._core?._selectionService;
+          if (svc && typeof svc.clearSelection === 'function') {
+            const orig = svc.clearSelection.bind(svc);
+            svc.clearSelection = function() {
+              if (selectAllActive.has(termId)) return; // 무시 — selection 유지
+              return orig();
+            };
+          }
+        } catch {}
+      }
+      // 보조 안전망: requestAnimationFrame 으로 매 프레임 selection 확인 + 재적용
+      if (!term.__selectAllRafLoop) {
+        const tick = () => {
+          if (!selectAllActive.has(termId)) { term.__selectAllRafLoop = null; return; }
+          try {
+            const sel = term.getSelection?.();
+            if (!sel || sel.length === 0) {
+              _skipAutoCopyOnSelect = true;
+              term.selectAll();
+              setTimeout(() => { _skipAutoCopyOnSelect = false; }, 20);
+            }
+          } catch {}
+          term.__selectAllRafLoop = requestAnimationFrame(tick);
+        };
+        term.__selectAllRafLoop = requestAnimationFrame(tick);
+      }
+      if (!term.__selectAllScrollHook) {
+        term.__selectAllScrollHook = true;
+        let reapplyScheduled = false;
+        const reapply = () => {
+          if (!selectAllActive.has(termId)) { reapplyScheduled = false; return; }
+          // 이미 selection 이 살아있으면 재선택 스킵 — 깜박임 방지
+          try {
+            const sel = term.getSelection?.();
+            if (sel && sel.length > 0) { reapplyScheduled = false; return; }
+          } catch {}
+          _skipAutoCopyOnSelect = true;
+          try { term.selectAll(); } catch {}
+          setTimeout(() => { _skipAutoCopyOnSelect = false; reapplyScheduled = false; }, 60);
+        };
+        const scheduleReapply = () => {
+          if (reapplyScheduled) return;
+          reapplyScheduled = true;
+          setTimeout(reapply, 80);
+        };
+        try {
+          term.onScroll(scheduleReapply);
+          const vp = (entry.term as any).element?.querySelector?.('.xterm-viewport');
+          if (vp) {
+            vp.addEventListener('scroll', scheduleReapply);
+            // 스크롤 시작 직전(capture) 에 selectAll 미리 다시 — xterm 내부 deselect 발생 전에
+            const preReapply = () => {
+              if (selectAllActive.has(termId)) {
+                _skipAutoCopyOnSelect = true;
+                try { term.selectAll(); } catch {}
+                setTimeout(() => { _skipAutoCopyOnSelect = false; }, 30);
+              }
+            };
+            vp.addEventListener('wheel', preReapply, { capture: true, passive: true });
+            // mousedown 은 selectAll 유지 위해 가로채지 않음 — 정상 드래그-선택과 충돌
+          }
+          term.onData(() => selectAllActive.delete(termId));
+          // 모든 마우스 클릭 시 selectAll 해제 (xterm 의 정상 드래그-선택과 충돌 방지)
+          // 단, scrollbar 자체 클릭은 유지 — clientX 가 viewport 우측 가장자리 근처일 때만
+          (entry.term as any).element?.addEventListener?.('mousedown', (ev: MouseEvent) => {
+            try {
+              const vp = (entry.term as any).element?.querySelector?.('.xterm-viewport') as HTMLElement | null;
+              if (vp) {
+                const r = vp.getBoundingClientRect();
+                // 스크롤바는 보통 16px 너비 (브라우저 기본). 그 영역이면 selectAll 유지
+                if (ev.clientX >= r.right - 20 && ev.clientX <= r.right + 4) return;
+              }
+            } catch {}
+            selectAllActive.delete(termId);
+          });
+        } catch {}
+      }
+    }
+    setTimeout(() => { _skipAutoCopyOnSelect = false; }, 100);
+  } catch {
+    _skipAutoCopyOnSelect = false;
+  }
+}
+export function getSelectionFromTerm(termId: string): string {
+  try {
+    const entry = termStore.get(termId);
+    if (!entry) return '';
+    let sel = entry.term.getSelection() || '';
+    const settings = getTerminalSettings();
+    if (settings.trimTrailingWhitespace) sel = sel.split('\n').map(l => l.trimEnd()).join('\n');
+    if (!settings.includeTrailingNewline) sel = sel.replace(/\n$/, '');
+    return sel;
+  } catch { return ''; }
 }
 
 export function pasteToTerm(termId: string, text: string) {
@@ -1762,16 +2128,6 @@ export const TerminalPanel: React.FC<Props> = ({
       const rows = (term as any).rows || 24;
       try { term.focus(); } catch {}
 
-      console.log('[initConnect]', activeTermId, {
-        hasSession: !!activeSession,
-        sessionId: activeSession?.sessionId,
-        sshConnecting: sshConnecting.has(activeTermId),
-        globalConnected: globalConnected.has(activeTermId),
-        reconnectState: reconnectState.has(activeTermId),
-        reconnectUserCancelled: reconnectUserCancelled.has(activeTermId),
-        ptyConnected: ptyConnected.has(activeTermId),
-        cachedPw: termPasswordCache.has(activeTermId),
-      });
       if (activeSession && activeSession.sessionId && !sshConnecting.has(activeTermId) && !globalConnected.has(activeTermId) && !reconnectState.has(activeTermId) && !reconnectUserCancelled.has(activeTermId)) {
         // 같은 termId에 PTY가 실행 중이면 종료 (Local Shell → SSH 전환)
         if (ptyConnected.has(activeTermId)) {
@@ -1784,11 +2140,9 @@ export const TerminalPanel: React.FC<Props> = ({
         startInitialConnectWatchdog(activeTermId, activeSession.sessionId, cols, rows);
         try {
           const result = await window.api?.connectSSH?.(activeTermId, activeSession.sessionId, cols, rows);
-          console.log('[initConnect] connectSSH result:', result);
           if (result === 'need-password') {
             sshConnecting.delete(activeTermId);
             const cachedPw = termPasswordCache.get(activeTermId);
-            console.log('[initConnect] need-password, cachedPw:', !!cachedPw);
             if (cachedPw) {
               sshConnecting.add(activeTermId);
               window.api?.connectSSHWithPassword?.(activeTermId, activeSession.sessionId, cachedPw, cols, rows);
@@ -1796,7 +2150,7 @@ export const TerminalPanel: React.FC<Props> = ({
               promptPasswordAndConnect(activeTermId, activeSession.sessionId, cols, rows);
             }
           }
-        } catch (err) { console.error('[initConnect] error:', err); }
+        } catch { /* connect error — already handled by global */ }
         // 연결 확립 후 한 번 더 fit + 실제 cols/rows 로 resize — 초기 fit 이 layout 안정화 전이었던 경우 보정
         setTimeout(() => {
           try {
@@ -1829,6 +2183,7 @@ export const TerminalPanel: React.FC<Props> = ({
           // startupCwd는 최초 1회만 사용
           if (cwd) { try { (window as any).api?.clearStartupCwd?.(); } catch {} }
           ptyConnected.add(activeTermId);
+          notifyConnectedChange();
           setTimeout(() => {
             try {
               fit.fit();
@@ -1837,6 +2192,8 @@ export const TerminalPanel: React.FC<Props> = ({
               window.api?.ptyResize?.(activeTermId, c, r);
             } catch {}
           }, 200);
+          // 셸 별 OSC 7 cwd hook 은 main process 의 pty:spawn 에서 셸 인자로 주입 (echo 안 됨).
+          // wsl 등 일부 셸은 main 이 postSpawnInject 으로 stdin 주입하므로 여기서 추가 작업 불필요.
         } catch {}
       } else if (ptyConnected.has(activeTermId)) {
         try { window.api?.ptyResize?.(activeTermId, cols, rows); } catch {}
@@ -1878,6 +2235,8 @@ export const TerminalPanel: React.FC<Props> = ({
     if (!activeTermId) return;
     const { term } = getOrCreateTerm(activeTermId);
     const disp = term.onData((data: string) => {
+      if (data === '\x1b[I' || data === '\x1b[O') return;
+      if (data === '\x1b[r') return;
       // PTY(로컬 셸): IME 가로채기 없이 그대로 전달
       if (ptyConnected.has(activeTermId)) {
         window.api?.ptyInput?.(activeTermId, data);
@@ -1953,12 +2312,63 @@ export const TerminalPanel: React.FC<Props> = ({
     const doFit = () => {
       // 드래그 중에는 fit 자체를 건너뜀 (버퍼 reflow 방지)
       if (suppressPtyResize) return;
+      const cd = fitCooldownUntil.get(activeTermId);
+      if (cd && Date.now() < cd) return;
       try {
         const e = termStore.get(activeTermId);
         if (!e) return;
+        const cont = containerRef.current;
+        if (!cont || cont.clientWidth < 50 || cont.clientHeight < 30) return;
+        const cw = cont.clientWidth, ch = cont.clientHeight;
+        const lastSz = lastContainerSizeMap.get(activeTermId);
+        if (lastSz && lastSz.w === cw && lastSz.h === ch) return;
+        // 먼저 proposeDimensions 로 계산만 하고 검증 (fit.fit() 은 내부적으로 즉시 term.resize 호출하므로 잘못된 size 가 그대로 적용되어 화면이 깨짐).
+        // 사용자가 패널을 작게 만든 정상 case 는 통과해야 하므로 cols/rows 임계는 두지 않고 NaN/0 만 차단.
+        const proposed = (fit as any).proposeDimensions?.();
+        if (!proposed || !proposed.cols || !proposed.rows || !isFinite(proposed.cols) || !isFinite(proposed.rows)) return;
+        lastContainerSizeMap.set(activeTermId, { w: cw, h: ch });
+        // 안전한 사이즈 확인 후 실제 fit 적용
         fit.fit();
         const newCols = (e.term as any).cols;
         const newRows = (e.term as any).rows;
+        // 비정상 사이즈 차단 (proposeDimensions 통과 후에도 체크)
+        if (!newCols || !newRows || !isFinite(newCols) || !isFinite(newRows)) return;
+        const last = lastResizeMap.get(activeTermId);
+        if (last && last.cols === newCols && last.rows === newRows) return;
+        // 안정화 검증 — 직전 fit 결과와 비교, 다르면 pending 으로 두고 SIGWINCH 보류 (layout 안정 대기)
+        const pending = pendingResize.get(activeTermId);
+        if (!pending || pending.cols !== newCols || pending.rows !== newRows) {
+          pendingResize.set(activeTermId, { cols: newCols, rows: newRows });
+          // 200ms 후 재확인 — 같은 결과면 그때 SIGWINCH
+          setTimeout(() => {
+            try {
+              const e2 = termStore.get(activeTermId);
+              if (!e2) return;
+              const cont2 = containerRef.current;
+              if (!cont2 || cont2.clientWidth < 50 || cont2.clientHeight < 30) return;
+              const proposed2 = (fit as any).proposeDimensions?.();
+              if (!proposed2 || !proposed2.cols || !proposed2.rows || !isFinite(proposed2.cols) || !isFinite(proposed2.rows)) return;
+              fit.fit();
+              const c2 = (e2.term as any).cols, r2 = (e2.term as any).rows;
+              if (!c2 || !r2 || !isFinite(c2) || !isFinite(r2)) return;
+              const p = pendingResize.get(activeTermId);
+              if (!p || p.cols !== c2 || p.rows !== r2) {
+                pendingResize.set(activeTermId, { cols: c2, rows: r2 });
+                return; // 아직 흔들림 — 다음 호출에 처리
+              }
+              const lst = lastResizeMap.get(activeTermId);
+              if (lst && lst.cols === c2 && lst.rows === r2) return;
+              lastResizeMap.set(activeTermId, { cols: c2, rows: r2 });
+              (window as any).__lastResizeTime = (window as any).__lastResizeTime || {};
+              (window as any).__lastResizeTime[activeTermId] = Date.now();
+              if (ptyConnected.has(activeTermId)) window.api?.ptyResize?.(activeTermId, c2, r2);
+              else window.api?.resizeSSH?.(activeTermId, c2, r2);
+            } catch {}
+          }, 200);
+          return;
+        }
+        // pending 과 동일 → 안정화 확인됨, SIGWINCH 송신
+        lastResizeMap.set(activeTermId, { cols: newCols, rows: newRows });
         if (ptyConnected.has(activeTermId)) {
           window.api?.ptyResize?.(activeTermId, newCols, newRows);
         } else {
@@ -1989,8 +2399,13 @@ export const TerminalPanel: React.FC<Props> = ({
     window.addEventListener('focus', forceSyncNow);
     document.addEventListener('visibilitychange', forceSyncNow);
 
-    // 초기 fit 다단계 — 100/300/700/1200ms 에 반복해서 layout 안정 후 정확한 크기 보장
-    const timers = [100, 300, 700, 1200].map(ms => setTimeout(doFit, ms));
+    // 초기 fit — 이 termId 가 한 번이라도 resize 송신된 적 있으면 단일 fit (1번), 아니면 다단계
+    const hasPrevResize = lastResizeMap.has(activeTermId);
+    // 이미 사이즈 알려진 term 의 탭 전환 시 — 500ms cooldown 으로 SIGWINCH cascade 차단
+    if (hasPrevResize) fitCooldownUntil.set(activeTermId, Date.now() + 500);
+    const timers = hasPrevResize
+      ? [setTimeout(doFit, 600)]
+      : [100, 300, 700, 1200].map(ms => setTimeout(doFit, ms));
     setTimeout(() => { try { getOrCreateTerm(activeTermId).term.focus(); } catch {} }, 100);
 
     return () => {
@@ -2015,7 +2430,15 @@ export const TerminalPanel: React.FC<Props> = ({
   const [multiPaste, setMultiPaste] = useState<{ termId: string; text: string } | null>(null); void multiPaste;
   const [shellMenu, setShellMenu] = useState<{ x: number; y: number } | null>(null);
   const [fontDialog, setFontDialog] = useState<{ termId: string; family: string; size: number } | null>(null);
-  const showMultiLinePasteDialog = (tid: string, text: string) => setMultiPaste({ termId: tid, text });
+  const showMultiLinePasteDialog = (tid: string, text: string) => {
+    setMultiPaste({ termId: tid, text });
+    // BrowserWindow 모달 직접 띄움 (인라인 모달은 더 이상 사용 안 함)
+    try {
+      const entry = termStore.get(tid);
+      entry?.term?.blur?.();
+    } catch {}
+    try { (window as any).api?.pasteModalOpen?.(tid, text); } catch {}
+  };
   const [renamingTermId, setRenamingTermId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   // 미니탭바 우측 패널 컨트롤(분할/플로팅/투명도) 표시 토글 — 기본 숨김
@@ -2379,7 +2802,7 @@ export const TerminalPanel: React.FC<Props> = ({
                 }
               } catch {}
             }},
-            ...(workspaceList && workspaceList.length > 1 && onMoveSessionToWorkspace ? [{
+            ...(onMoveSessionToWorkspace ? [{
               label: '다른 워크스페이스로 이동...',
               onClick: () => {
                 setMoveWorkspaceCtx({ x: miniCtx.x, y: miniCtx.y, termId: miniCtx.termId });
@@ -2389,16 +2812,17 @@ export const TerminalPanel: React.FC<Props> = ({
           ]}
         />
       )}
-      {moveWorkspaceCtx && workspaceList && onMoveSessionToWorkspace && (
+      {moveWorkspaceCtx && onMoveSessionToWorkspace && (
         <ContextMenu
           x={moveWorkspaceCtx.x} y={moveWorkspaceCtx.y}
           onClose={() => setMoveWorkspaceCtx(null)}
-          items={workspaceList.filter(w => w.id !== currentWorkspaceId).map(w => ({
-            label: `→ ${w.title}`,
-            onClick: () => {
-              onMoveSessionToWorkspace(nodeId, moveWorkspaceCtx.termId, w.id);
-            },
-          }))}
+          items={[
+            ...((workspaceList || []).filter(w => w.id !== currentWorkspaceId).map(w => ({
+              label: `→ ${w.title}`,
+              onClick: () => onMoveSessionToWorkspace(nodeId, moveWorkspaceCtx.termId, w.id),
+            }))),
+            { label: '+ 새 워크스페이스로 이동', onClick: () => onMoveSessionToWorkspace(nodeId, moveWorkspaceCtx.termId, '__new__') },
+          ]}
         />
       )}
       {/* 여러 줄 붙여넣기 — 별도 BrowserWindow 로 띄워짐 (main process 가 관리) */}
@@ -2425,18 +2849,17 @@ export const TerminalPanel: React.FC<Props> = ({
                 if (text.includes('\n') && settings.multiLinePaste === 'dialog') {
                   showMultiLinePasteDialog(tid, text);
                 } else {
+                  // vi insert 모드 호환을 위해 ENTER 는 \r 로 송신, bracketed paste 래핑 회피
+                  const fixed = text.replace(/\r?\n/g, '\r');
                   try {
-                    const entry = termStore.get(tid);
-                    if (entry) entry.term.paste(text);
+                    if (ptyConnected.has(tid)) (window as any).api.ptyInput(tid, fixed);
+                    else (window as any).api.sendSSHInput(tid, fixed);
                   } catch {}
                   setTimeout(() => focusTerm(tid), 0);
                 }
               }).catch(() => {});
             }},
-            { label: '전체 선택', onClick: () => {
-              const entry = termStore.get(activeTermId);
-              if (entry) entry.term.selectAll();
-            }},
+            { label: '전체 선택', onClick: () => selectAllInTerm(activeTermId) },
             { label: '화면 지우기', onClick: () => clearScreenInTerm(activeTermId) },
             { label: '스크롤 버퍼 지우기', onClick: () => clearScrollbackInTerm(activeTermId) },
             { label: '스크롤 버퍼 크기 변경...', onClick: () => {

@@ -99,8 +99,21 @@ function autoConvertTablesInMd(md: string): string {
   return out.join('\n');
 }
 
+// 텍스트 줄 바로 다음에 `===+` 또는 `---+` 만 있는 라인이 오면 marked 가 setext heading 으로 해석해서
+// 글자가 거대하게 렌더됨 (사용자가 붙인 SSH 출력에 자주 발생). 그 경우만 ZWSP 프리픽스로 중화.
+function neutralizeSetextHeadings(text: string): string {
+  const lines = text.split('\n');
+  for (let i = 1; i < lines.length; i++) {
+    const cur = lines[i];
+    const prev = lines[i - 1];
+    if ((/^=+\s*$/.test(cur) || /^-+\s*$/.test(cur)) && cur.trim().length >= 3) {
+      if (prev.trim().length > 0) lines[i] = '​' + cur;
+    }
+  }
+  return lines.join('\n');
+}
 function renderMd(content: string): string {
-  return marked.parse(autoConvertTablesInMd(autoFenceMermaid(content)), { breaks: true }) as string;
+  return marked.parse(autoConvertTablesInMd(autoFenceMermaid(neutralizeSetextHeadings(content))), { breaks: true }) as string;
 }
 
 type Message = {
@@ -120,6 +133,21 @@ type ChatHistoryEntry = {
   pendingRequestId?: string | null; // 진행 중 send 의 requestId
   streaming?: boolean; // 진행 중인지
   toolTimeline?: ToolTimelineItem[]; // 툴 호출 타임라인 (대화별 영속)
+  lastRejectedPlan?: string | null; // 거부한 계획 (대화별 보존)
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationTokens: number;
+    cacheReadTokens: number;
+    totalCostUsd: number;
+    turns: number;
+    lastTurnInput: number;
+    lastTurnOutput: number;
+    lastTurnFreshInput: number;
+    lastTurnCacheRead: number;
+    lastTurnCacheCreate: number;
+    model: string;
+  };
 };
 
 export type FileContextItem = { fileName: string; remotePath: string; content: string };
@@ -169,8 +197,171 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const [toolTimeline, setToolTimeline] = useState<ToolTimelineItem[]>([]);
   // 승인 대기 중인 계획 (ExitPlanMode 수신 시)
   const [pendingPlan, setPendingPlan] = useState<string | null>(null);
+  // 최근 거부한 계획 (실수 방지 — 다시 보기/재승인 가능)
+  const [lastRejectedPlan, setLastRejectedPlan] = useState<string | null>(null);
+  // 사용량 추적 — stream-json result 이벤트에서 누적
+  type UsageStat = {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationTokens: number;
+    cacheReadTokens: number;
+    totalCostUsd: number;
+    turns: number;
+    lastTurnInput: number;
+    lastTurnOutput: number;
+    lastTurnFreshInput: number;
+    lastTurnCacheRead: number;
+    lastTurnCacheCreate: number;
+    model: string;
+  };
+  const [usage, setUsage] = useState<UsageStat>({ inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, totalCostUsd: 0, turns: 0, lastTurnInput: 0, lastTurnOutput: 0, lastTurnFreshInput: 0, lastTurnCacheRead: 0, lastTurnCacheCreate: 0, model: '' });
+  const [showUsagePanel, setShowUsagePanel] = useState<boolean>(false);
+  const [showUsageTooltip, setShowUsageTooltip] = useState<boolean>(false);
+  const [usagePopupPos, setUsagePopupPos] = useState<{ left: number; bottom: number } | null>(null);
+  // 외부 클릭 시 popup 닫기
+  useEffect(() => {
+    if (!showUsagePanel) return;
+    const handler = (e: MouseEvent) => {
+      const t = e.target as HTMLElement;
+      if (!t) return;
+      // popup 내부 클릭 또는 trigger 클릭은 무시
+      if (t.closest('.claude-chat-usage-popup')) return;
+      if (t.closest('.claude-chat-usage-trigger-wrap')) return;
+      setShowUsagePanel(false);
+    };
+    // mousedown 이 클릭 직전에 발생 — 외부 클릭 즉시 감지
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showUsagePanel]);
+  const usagePanelHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const usageTriggerRef = useRef<HTMLDivElement | null>(null);
+  const showUsage = () => {
+    if (usagePanelHideTimerRef.current) { clearTimeout(usagePanelHideTimerRef.current); usagePanelHideTimerRef.current = null; }
+    if (usageTriggerRef.current) {
+      const r = usageTriggerRef.current.getBoundingClientRect();
+      setUsagePopupPos({
+        left: Math.max(8, r.left),
+        bottom: Math.max(8, window.innerHeight - r.top + 4),
+      });
+    }
+    setShowUsagePanel(true);
+  };
+  const usageApiCacheRef = useRef<{ data: any; ts: number } | null>(null);
+  // API 직접 호출 (trigger 클릭 시 + API 직접 버튼 클릭 시 공용) — 60s 캐시
+  const fetchUsageApi = async (force: boolean = false) => {
+    // 캐시 hit (60초 내) — API 재호출 안 함
+    if (!force && usageApiCacheRef.current && Date.now() - usageApiCacheRef.current.ts < 60_000) {
+      const d = usageApiCacheRef.current.data;
+      const age = Math.round((Date.now() - usageApiCacheRef.current.ts) / 1000);
+      setUsageProbe(`⚡ 캐시된 응답 (${age}초 전)\n────────────────────────\n${JSON.stringify(d, null, 2)}`);
+      return;
+    }
+    setUsageProbeLoading(true);
+    setUsageProbe('⏳ Anthropic API 호출 중...');
+    try {
+      const r: any = await (window as any).api?.claudeFetchUsageApi?.();
+      if (r?.success && r.data) {
+        const d = r.data;
+        usageApiCacheRef.current = { data: d, ts: Date.now() };
+        const fmtPct = (v: any) => v == null ? null : Math.round(v.utilization || 0) + '%';
+        const fmtReset = (v: any) => {
+          if (!v?.resets_at) return null;
+          const dt = new Date(v.resets_at);
+          if (isNaN(dt.getTime())) return null;
+          const diffMs = dt.getTime() - Date.now();
+          if (diffMs <= 0) return '곧 초기화';
+          const mins = Math.round(diffMs / 60000);
+          const hours = Math.round(diffMs / 3_600_000);
+          const days = Math.round(diffMs / 86_400_000);
+          if (days >= 1) return `${days}일 후 초기화`;
+          if (hours >= 1) return `${hours}시간 후 초기화`;
+          return `${mins}분 후 초기화`;
+        };
+        setSubLimits({
+          fiveHourPct: fmtPct(d.five_hour) || undefined,
+          fiveHourReset: fmtReset(d.five_hour) || undefined,
+          weeklyAllPct: fmtPct(d.seven_day) || undefined,
+          weeklyAllReset: fmtReset(d.seven_day) || undefined,
+          sonnetOnlyPct: fmtPct(d.seven_day_sonnet) || undefined,
+          sonnetOnlyReset: fmtReset(d.seven_day_sonnet) || undefined,
+          weeklyDesignPct: fmtPct(d.seven_day_oauth_apps) ?? '0%',
+        });
+        setUsageProbe(`✅ Anthropic OAuth API 응답\n────────────────────────\n${JSON.stringify(d, null, 2)}`);
+      } else {
+        setUsageProbe(`❌ ${r?.error || '실패'}\n${r?.body || ''}`);
+      }
+    } catch (e: any) {
+      setUsageProbe(`❌ ${e?.message || e}`);
+    }
+    setUsageProbeLoading(false);
+  };
+  const hideUsageDelayed = () => {
+    if (usagePanelHideTimerRef.current) clearTimeout(usagePanelHideTimerRef.current);
+    usagePanelHideTimerRef.current = setTimeout(() => setShowUsagePanel(false), 800);
+  };
+  // /usage 명령 결과 (옵션 B — claude /usage 출력 파싱 시도)
+  const [usageProbe, setUsageProbe] = useState<string | null>(null);
+  const [usageProbeLoading, setUsageProbeLoading] = useState(false);
+  const [usageProbeExpanded, setUsageProbeExpanded] = useState(false);
+  const [claudeSettingsModel, setClaudeSettingsModel] = useState<string>(''); void claudeSettingsModel;
+  // 마운트 시 ~/.claude/settings.json 읽어 model 자동 설정
+  useEffect(() => {
+    (async () => {
+      try {
+        const r: any = await (window as any).api?.claudeReadSettings?.();
+        if (r?.success && r.settings?.model) {
+          const m = String(r.settings.model);
+          setClaudeSettingsModel(m);
+          // settings 의 model 값을 select 옵션으로 매핑
+          // "claude-opus-4-7[1m]" / "opus[1m]" → "opus[1m]"
+          // "claude-sonnet-4-6[1m]" / "sonnet[1m]" → "sonnet[1m]"
+          // "opus" / "claude-opus-4-7" → "opus", 등
+          const normalize = (raw: string): string => {
+            const lower = raw.toLowerCase();
+            const has1m = /\[1m\]/i.test(lower);
+            if (lower.includes('opusplan') || lower.includes('opus-plan')) return 'opusplan';
+            if (lower.includes('haiku')) return 'haiku';
+            if (lower.includes('sonnet')) return has1m ? 'sonnet[1m]' : 'sonnet';
+            if (lower.includes('opus')) return has1m ? 'opus[1m]' : 'opus';
+            return 'default';
+          };
+          // 초기 로드 시에만 settings.json 값으로 model 설정
+          setModel(normalize(m));
+        }
+      } catch {}
+    })();
+  }, []);
+  // 구독 한도 (TUI /usage 파싱 결과 — 채팅 세션 누적과 별개)
+  const [subLimits, setSubLimits] = useState<{
+    contextUsed?: string;
+    contextMax?: string;
+    contextPct?: string;
+    planUsage?: string;
+    fiveHourPct?: string;
+    fiveHourReset?: string;
+    weeklyAllPct?: string;
+    weeklyAllReset?: string;
+    weeklyDesignPct?: string;
+    sonnetOnlyPct?: string;
+    sonnetOnlyReset?: string;
+    modelLabel?: string;
+    tuiCost?: string;
+    tuiInput?: string;
+    tuiOutput?: string;
+    tuiCacheRead?: string;
+    tuiCacheWrite?: string;
+  } | null>(null);
+
+  // 툴 그룹 / 항목 확장 상태 — 기본 축소
+  const [expandedToolGroups, setExpandedToolGroups] = useState<Set<string>>(new Set());
+  const [expandedToolItems, setExpandedToolItems] = useState<Set<string>>(new Set());
+  const toggleToolGroup = (gid: string) => setExpandedToolGroups(prev => { const n = new Set(prev); n.has(gid) ? n.delete(gid) : n.add(gid); return n; });
+  const toggleToolItem = (id: string) => setExpandedToolItems(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   // 툴 단위 승인 모드 (hooks)
-  const [perToolApproval, setPerToolApproval] = useState(false);
+  const [perToolApproval, setPerToolApproval] = useState(() => {
+    try { const v = localStorage.getItem('claudePerToolApproval'); return v === null ? true : v === '1'; } catch { return true; }
+  });
+  useEffect(() => { try { localStorage.setItem('claudePerToolApproval', perToolApproval ? '1' : '0'); } catch {} }, [perToolApproval]);
   // 현재 대기 중인 툴 승인 요청 (hook 에서 전달)
   const [pendingToolApproval, setPendingToolApproval] = useState<{ approvalId: string; toolName: string; toolInput: any } | null>(null);
   const [sessionId] = useState(() => `claude-${Date.now()}-${sessionCounter++}`);
@@ -241,8 +432,45 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const recentLocalPathsRef = useRef<Set<string>>(new Set());
   // 권한 모드: default(기본, 요청 시) / acceptEdits(편집만 자동) / plan(실행 없이 계획만) / bypassPermissions(모두 허용)
   const [permissionMode, setPermissionMode] = useState<'bypassPermissions' | 'acceptEdits' | 'plan' | 'default'>('default');
+  // 작업량 (effort) — claude --effort 플래그로 전달
+  const [effort, setEffort] = useState<string>(() => {
+    try { return localStorage.getItem('claudeEffort') || 'medium'; } catch { return 'medium'; }
+  });
+  useEffect(() => { try { localStorage.setItem('claudeEffort', effort); } catch {} }, [effort]);
+  // 동적 모델 목록 (Anthropic /v1/models)
+  type AnthropicModel = { id: string; display_name: string; max_input_tokens?: number; capabilities?: any };
+  const [availableModels, setAvailableModels] = useState<AnthropicModel[]>([]);
+  useEffect(() => {
+    (async () => {
+      try {
+        // 캐시 사용 — 1시간 이내면 재사용
+        const cached = localStorage.getItem('claudeModelsCache');
+        if (cached) {
+          const o = JSON.parse(cached);
+          if (o.ts && Date.now() - o.ts < 3600_000 && Array.isArray(o.models)) {
+            setAvailableModels(o.models);
+          }
+        }
+      } catch {}
+      try {
+        const r: any = await (window as any).api?.claudeFetchModels?.();
+        if (r?.success && Array.isArray(r.models)) {
+          setAvailableModels(r.models);
+          try { localStorage.setItem('claudeModelsCache', JSON.stringify({ ts: Date.now(), models: r.models })); } catch {}
+        }
+      } catch {}
+    })();
+  }, []);
+  // 모드 진입 시 툴별 승인 자동 토글: default/plan 은 ON, bypass/acceptEdits 는 OFF
+  useEffect(() => {
+    if (permissionMode === 'bypassPermissions' || permissionMode === 'acceptEdits') {
+      if (perToolApproval) setPerToolApproval(false);
+    } else if (permissionMode === 'default' || permissionMode === 'plan') {
+      if (!perToolApproval) setPerToolApproval(true);
+    }
+  }, [permissionMode]);
   // 모델 선택 — claude CLI --model 플래그
-  const [model, setModel] = useState<string>('default');
+  const [model, setModel] = useState<string>('opus');
   const [commandMenuOpen, setCommandMenuOpen] = useState(false);
   const [commandFilter, setCommandFilter] = useState('');
   const [commandHighlight, setCommandHighlight] = useState(0);
@@ -337,6 +565,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           let newStreaming = h.streaming;
           let newSessId = h.claudeSessionId;
           let newTimeline: ToolTimelineItem[] = h.toolTimeline ? [...h.toolTimeline] : [];
+          let newUsage = h.usage ? { ...h.usage } : { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, totalCostUsd: 0, turns: 0, lastTurnInput: 0, lastTurnOutput: 0, lastTurnFreshInput: 0, lastTurnCacheRead: 0, lastTurnCacheCreate: 0, model: '' };
           if (msg.session_id && !newSessId) newSessId = msg.session_id;
           if (msg.type === 'assistant' && msg.message?.content) {
             const msgId = msg.message.id || `asst-${Date.now()}`;
@@ -351,6 +580,22 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               if (newTimeline.find(x => x.id === t.id)) continue;
               const args = JSON.stringify(t.input).slice(0, 120);
               newTimeline.push({ id: t.id, label: `🔧 ${t.name}(${args}${args.length >= 120 ? '…' : ''})`, status: 'running', seq: nextSeq() });
+            }
+            const u = (msg.message as any).usage;
+            if (u) {
+              newUsage = {
+                ...newUsage,
+                inputTokens: newUsage.inputTokens + (u.input_tokens || 0),
+                outputTokens: newUsage.outputTokens + (u.output_tokens || 0),
+                cacheCreationTokens: newUsage.cacheCreationTokens + (u.cache_creation_input_tokens || 0),
+                cacheReadTokens: newUsage.cacheReadTokens + (u.cache_read_input_tokens || 0),
+                lastTurnInput: (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0),
+                lastTurnOutput: u.output_tokens || 0,
+                lastTurnFreshInput: u.input_tokens || 0,
+                lastTurnCacheRead: u.cache_read_input_tokens || 0,
+                lastTurnCacheCreate: u.cache_creation_input_tokens || 0,
+                model: (msg.message as any).model || newUsage.model,
+              };
             }
           } else if (msg.type === 'user' && msg.message?.content) {
             const results = Array.isArray(msg.message.content) ? msg.message.content.filter((c: any) => c.type === 'tool_result') : [];
@@ -369,8 +614,12 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             newMsgs = [...newMsgs, { role: 'assistant', content: `❌ ${msg.text}`, id: `err-${Date.now()}`, seq: nextSeq() }];
             newStreaming = false;
           }
+          if (msg.type === 'result' || msg.type === 'done') {
+            const cost = (msg as any).total_cost_usd ?? (msg as any).cost_usd ?? 0;
+            newUsage = { ...newUsage, totalCostUsd: newUsage.totalCostUsd + (typeof cost === 'number' ? cost : 0), turns: newUsage.turns + 1, model: (msg as any).model || newUsage.model };
+          }
           const done = (msg.type === 'result' || msg.type === 'done' || msg.type === 'error');
-          return { ...h, messages: newMsgs, toolTimeline: newTimeline, streaming: newStreaming, pendingRequestId: done ? null : h.pendingRequestId, claudeSessionId: newSessId, updatedAt: Date.now() };
+          return { ...h, messages: newMsgs, toolTimeline: newTimeline, usage: newUsage, streaming: newStreaming, pendingRequestId: done ? null : h.pendingRequestId, claudeSessionId: newSessId, updatedAt: Date.now() };
         }));
         if (msg.type === 'result' || msg.type === 'done' || msg.type === 'error') {
           if (reqId) requestToHistoryRef.current.delete(reqId);
@@ -387,6 +636,25 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         const texts = msg.message.content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('');
         const toolUses = msg.message.content.filter((c: any) => c.type === 'tool_use');
         const thinkings = msg.message.content.filter((c: any) => c.type === 'thinking');
+        // 각 assistant 메시지의 usage 누적 (result 이벤트 못 받아도 실시간 반영)
+        try {
+          const u = (msg.message as any).usage;
+          if (u) {
+            setUsage(prev => ({
+              ...prev,
+              inputTokens: prev.inputTokens + (u.input_tokens || 0),
+              outputTokens: prev.outputTokens + (u.output_tokens || 0),
+              cacheCreationTokens: prev.cacheCreationTokens + (u.cache_creation_input_tokens || 0),
+              cacheReadTokens: prev.cacheReadTokens + (u.cache_read_input_tokens || 0),
+              lastTurnInput: (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0),
+              lastTurnOutput: u.output_tokens || 0,
+              lastTurnFreshInput: u.input_tokens || 0,
+              lastTurnCacheRead: u.cache_read_input_tokens || 0,
+              lastTurnCacheCreate: u.cache_creation_input_tokens || 0,
+              model: (msg.message as any).model || prev.model,
+            }));
+          }
+        } catch {}
 
         // 툴 호출을 타임라인에 추가 (각 tool_use id 별)
         if (toolUses.length > 0) {
@@ -434,6 +702,16 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           setActivity('');
         }
       } else if (msg.type === 'result' || msg.type === 'done') {
+        // result 이벤트는 cost / turn 카운트만 (토큰은 assistant 이벤트에서 이미 누적)
+        try {
+          const cost = (msg as any).total_cost_usd ?? (msg as any).cost_usd ?? 0;
+          setUsage(prev => ({
+            ...prev,
+            totalCostUsd: prev.totalCostUsd + (typeof cost === 'number' ? cost : 0),
+            turns: prev.turns + 1,
+            model: (msg as any).model || prev.model,
+          }));
+        } catch {}
         setStreaming(false);
         setActivity('');
         currentAsstIdRef.current = null;
@@ -482,6 +760,12 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       r.querySelectorAll<HTMLElement>('code.language-mermaid:not([data-mermaid-rendered])').forEach(el => codeBlocks.push(el));
     }
     if (codeBlocks.length === 0) return;
+    // body 직속 stale mermaid element 청소 (이전 렌더 실패가 남긴 것)
+    try {
+      document.querySelectorAll('body > [id^="mermaid-"], body > [id^="dmermaid-"]').forEach(el => {
+        if (el.parentElement === document.body) el.remove();
+      });
+    } catch {}
     (async () => {
       for (let i = 0; i < codeBlocks.length; i++) {
         const codeEl = codeBlocks[i];
@@ -651,6 +935,14 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           err1.className = 'claude-chat-mermaid-error';
           err1.textContent = `[Mermaid 렌더 실패] ${String(err).slice(0, 200)}`;
           if (pre && pre.parentElement) pre.parentElement.insertBefore(err1, pre);
+          // mermaid 가 body 에 남긴 에러 SVG/임시 element 정리 (id 기반)
+          try {
+            const stale = document.getElementById(id);
+            stale?.parentElement?.removeChild(stale);
+            // 추가 안전장치: 'd' + id 형태의 임시 element 도 mermaid 가 사용
+            const stale2 = document.getElementById('d' + id);
+            stale2?.parentElement?.removeChild(stale2);
+          } catch {}
         }
       }
     })();
@@ -671,9 +963,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       return;
     }
     setChatHistory(h => h.map(x => x.id === activeHistoryId
-      ? { ...x, messages, toolTimeline, updatedAt: Date.now(), claudeSessionId: claudeSessionIdRef.current ?? x.claudeSessionId }
+      ? { ...x, messages, toolTimeline, usage, lastRejectedPlan, updatedAt: Date.now(), claudeSessionId: claudeSessionIdRef.current ?? x.claudeSessionId }
       : x));
-  }, [messages, toolTimeline, activeHistoryId]);
+  }, [messages, toolTimeline, usage, lastRejectedPlan, activeHistoryId]);
 
   const send = useCallback(async (text: string, contextItems: FileContextItem[]) => {
     if (!text.trim() || streaming) return;
@@ -949,7 +1241,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     // 전송 후 로컬 파일 첨부는 해제
     setLocalFileAttachments([]);
     try {
-      await (window as any).api?.claudeSend?.(sessionId, prompt, addDirs, disallowBash, sshTermId, resumeSessionId, effectivePermMode, model, perToolApproval, requestId);
+      await (window as any).api?.claudeSend?.(sessionId, prompt, addDirs, disallowBash, sshTermId, resumeSessionId, effectivePermMode, model, perToolApproval, requestId, effort);
     } catch (err: any) {
       setMessages(prev => [...prev, { role: 'assistant', content: `❌ ${err}`, id: `err-${Date.now()}`, seq: nextSeq() }]);
       setStreaming(false);
@@ -1005,6 +1297,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     recentLocalPathsRef.current.clear();
     currentAsstIdRef.current = null;
     setActiveHist(null);
+    setUsage({ inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, totalCostUsd: 0, turns: 0, lastTurnInput: 0, lastTurnOutput: 0, lastTurnFreshInput: 0, lastTurnCacheRead: 0, lastTurnCacheCreate: 0, model: '' });
+    setLastRejectedPlan(null);
   };
   const startNewConversation = () => {
     clear();
@@ -1026,6 +1320,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     recentLocalPathsRef.current.clear();
     setActiveHist(h.id);
     setToolTimeline(h.toolTimeline || []);
+    setLastRejectedPlan(h.lastRejectedPlan || null);
+    // 사용량 복원 (없으면 0 으로 초기화)
+    setUsage(h.usage || { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, totalCostUsd: 0, turns: 0, lastTurnInput: 0, lastTurnOutput: 0, lastTurnFreshInput: 0, lastTurnCacheRead: 0, lastTurnCacheCreate: 0, model: '' });
     // h.streaming 이 true 라도 실제 진행 중 프로세스 매핑(requestToHistoryRef) 에 없으면 stale → 입력 잠김 방지
     const reallyStreaming = !!(h.streaming && h.pendingRequestId && requestToHistoryRef.current.get(h.pendingRequestId) === h.id);
     setStreaming(reallyStreaming);
@@ -1062,6 +1359,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const pendingApprovalSendRef = useRef<string | null>(null);
   const approvePlan = () => {
     setPendingPlan(null);
+    setLastRejectedPlan(null);
     const text = '위 계획대로 진행해줘';
     console.log('[ClaudeChat] approvePlan, streaming=', streaming);
     if (streaming) {
@@ -1083,8 +1381,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     }
   }, [streaming, send]);
   const rejectPlan = () => {
-    setPendingPlan(null);
-    setMessages(prev => [...prev, { role: 'assistant', content: '❌ 계획이 거부되었습니다. 다시 요청하시거나 수정 사항을 말씀해 주세요.', id: `reject-${Date.now()}` }]);
+    setPendingPlan(prev => { if (prev) setLastRejectedPlan(prev); return null; });
+    setMessages(prev => [...prev, { role: 'assistant', content: '❌ 계획이 거부되었습니다. 실수로 거부했다면 아래 "📋 거부한 계획 다시 보기" 버튼으로 재확인할 수 있습니다.', id: `reject-${Date.now()}` }]);
   };
 
   // 툴 단위 승인/거부
@@ -1157,17 +1455,43 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     { id: 'attach-file', section: 'Context', label: 'Attach file...', desc: '로컬 파일 첨부', run: () => fileUploadRef.current?.click() },
     { id: 'attach-folder', section: 'Context', label: 'Attach folder...', desc: '로컬 폴더 첨부 (재귀)', run: () => folderUploadRef.current?.click() },
     { id: 'clear', section: 'Context', label: 'Clear conversation', desc: '대화 및 컨텍스트 초기화', run: () => clear() },
-    // Model
-    { id: 'model-default', section: 'Model', label: 'Model: 기본', run: () => setModel('default') },
-    { id: 'model-opus', section: 'Model', label: 'Model: Opus', desc: '최고 성능', run: () => setModel('opus') },
-    { id: 'model-sonnet', section: 'Model', label: 'Model: Sonnet', desc: '균형', run: () => setModel('sonnet') },
-    { id: 'model-haiku', section: 'Model', label: 'Model: Haiku', desc: '빠름', run: () => setModel('haiku') },
-    { id: 'model-opusplan', section: 'Model', label: 'Model: Opus Plan', desc: '계획 Opus', run: () => setModel('opusplan') },
-    // Permission
-    { id: 'perm-default', section: 'Permission', label: '🖐 편집 전 확인', run: () => setPermissionMode('default') },
-    { id: 'perm-accept', section: 'Permission', label: '✏️ 편집 자동 수락', run: () => setPermissionMode('acceptEdits') },
-    { id: 'perm-plan', section: 'Permission', label: '🗺 계획 모드', run: () => setPermissionMode('plan') },
-    { id: 'perm-bypass', section: 'Permission', label: '⚡ 모두 허용', run: () => setPermissionMode('bypassPermissions') },
+    // Model — Anthropic /v1/models 결과로 동적 생성, 없으면 fallback
+    ...(availableModels.length > 0
+      ? (() => {
+          const tier = (id: string) => /opus/i.test(id) ? 0 : /sonnet/i.test(id) ? 1 : /haiku/i.test(id) ? 2 : 3;
+          const sorted = [...availableModels].sort((a, b) => {
+            const t = tier(a.id) - tier(b.id);
+            return t !== 0 ? t : b.id.localeCompare(a.id);
+          });
+          const acts: PaletteAction[] = [];
+          for (const m of sorted) {
+            const has1M = (m.max_input_tokens || 0) >= 1_000_000;
+            const shortAlias = /opus-4-7/i.test(m.id) ? 'opus' : /sonnet-4-6/i.test(m.id) ? 'sonnet' : /haiku-4-5/i.test(m.id) ? 'haiku' : m.id;
+            if (has1M) {
+              acts.push({ id: `model-${m.id}-200k`, section: 'Model', label: `Model: ${m.display_name}`, desc: '200k context', run: () => setModel(shortAlias) });
+              acts.push({ id: `model-${m.id}-1m`, section: 'Model', label: `Model: ${m.display_name} 1M`, desc: '1M context', run: () => setModel(`${shortAlias}[1m]`) });
+            } else {
+              acts.push({ id: `model-${m.id}`, section: 'Model', label: `Model: ${m.display_name}`, run: () => setModel(shortAlias) });
+            }
+          }
+          return acts;
+        })()
+      : [
+          { id: 'model-opus', section: 'Model', label: 'Model: Opus 4.7', run: () => setModel('opus') },
+          { id: 'model-opus-1m', section: 'Model', label: 'Model: Opus 4.7 1M', run: () => setModel('opus[1m]') },
+          { id: 'model-sonnet', section: 'Model', label: 'Model: Sonnet 4.6', run: () => setModel('sonnet') },
+          { id: 'model-haiku', section: 'Model', label: 'Model: Haiku 4.5', run: () => setModel('haiku') },
+          { id: 'model-opus-legacy', section: 'Model', label: 'Model: Opus 4.6 레거시', run: () => setModel('claude-opus-4-6') },
+        ]),
+    // Effort
+    { id: 'effort-low', section: 'Effort', label: '작업량: 낮음', run: () => setEffort('low') },
+    { id: 'effort-medium', section: 'Effort', label: '작업량: 보통', run: () => setEffort('medium') },
+    { id: 'effort-high', section: 'Effort', label: '작업량: 높음', run: () => setEffort('high') },
+    { id: 'effort-max', section: 'Effort', label: '작업량: Max', run: () => setEffort('max') },
+    // Permission (모드 3종으로 정리 — bypass 제거됨)
+    { id: 'perm-default', section: 'Permission', label: '🖐 권한 요청', run: () => setPermissionMode('default') },
+    { id: 'perm-accept', section: 'Permission', label: '✏️ 편집 수락', run: () => setPermissionMode('acceptEdits') },
+    { id: 'perm-plan', section: 'Permission', label: '📋 계획 모드', run: () => setPermissionMode('plan') },
     // Slash Commands (프롬프트 삽입)
     ...commandPresets.map(p => ({
       id: `slash-${p.label}`,
@@ -1273,6 +1597,205 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           </div>
         </div>
       )}
+      {showUsagePanel && (
+        <div className="claude-chat-usage-panel claude-chat-usage-popup"
+          style={usagePopupPos ? { left: usagePopupPos.left, bottom: usagePopupPos.bottom, right: 'auto' } : undefined}
+          onMouseEnter={showUsage}
+          onMouseLeave={hideUsageDelayed}
+        >
+          {/* 컨텍스트 분해 — 마지막 turn 시점의 누적 컨텍스트 구성 */}
+          {(() => {
+            // 사용자가 선택한 모델 기준으로 max 결정
+            const is1M = /\[1m\]/i.test(model) || /1m/i.test(usage.model);
+            const maxCtx = is1M ? 1_000_000 : 200_000;
+            // 마지막 turn 의 누적 컨텍스트 = fresh + cache_read + cache_create
+            const used = usage.lastTurnInput;
+            const cacheHit = usage.lastTurnCacheRead;
+            const cacheCreate = usage.lastTurnCacheCreate;
+            const messages = usage.lastTurnFreshInput;
+            const free = Math.max(0, maxCtx - used);
+            const fmt = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+            const pct = (n: number) => ((n / maxCtx) * 100).toFixed(1) + '%';
+            const Bar: React.FC<{ color: string; label: string; n: number }> = ({ color, label, n }) => (
+              <div className="claude-chat-usage-row">
+                <span className="claude-chat-usage-label">
+                  <span style={{ display: 'inline-block', width: 10, height: 10, background: color, marginRight: 6, borderRadius: 2, verticalAlign: 'middle' }} />
+                  {label}
+                </span>
+                <span className="claude-chat-usage-val">{fmt(n)}  {pct(n)}</span>
+              </div>
+            );
+            return (
+              <>
+                <div className="claude-chat-usage-divider" />
+                <div className="claude-chat-usage-row" style={{ color: '#9cc' }}>
+                  <span className="claude-chat-usage-label">━ 컨텍스트 분해 (이 세션)</span>
+                  <span className="claude-chat-usage-val">{fmt(used)} / {fmt(maxCtx)} ({Math.round((used/maxCtx)*100)}%)</span>
+                </div>
+                <Bar color="#3a8bc8" label="신규 입력 (Messages)" n={messages} />
+                <Bar color="#7a8fa8" label="캐시 적중" n={cacheHit} />
+                <Bar color="#9b7ac8" label="캐시 생성" n={cacheCreate} />
+                <Bar color="#3a3a3a" label="여유 공간" n={free} />
+              </>
+            );
+          })()}
+          {subLimits && (
+            <>
+              <div className="claude-chat-usage-divider" />
+              <div className="claude-chat-usage-row" style={{ color: '#9cc' }}>
+                <span className="claude-chat-usage-label">━ Claude /usage API</span>
+                <span className="claude-chat-usage-val">{subLimits.modelLabel || ''}</span>
+              </div>
+              {subLimits.fiveHourPct && (
+                <div className="claude-chat-usage-row">
+                  <span className="claude-chat-usage-label">5시간 제한</span>
+                  <span className="claude-chat-usage-val">{subLimits.fiveHourPct}{subLimits.fiveHourReset ? ` · ${subLimits.fiveHourReset}` : ''}</span>
+                </div>
+              )}
+              {subLimits.weeklyAllPct && (
+                <div className="claude-chat-usage-row">
+                  <span className="claude-chat-usage-label">주간 · 전체 모델</span>
+                  <span className="claude-chat-usage-val">{subLimits.weeklyAllPct}{subLimits.weeklyAllReset ? ` · ${subLimits.weeklyAllReset}` : ''}</span>
+                </div>
+              )}
+              {subLimits.weeklyDesignPct && (
+                <div className="claude-chat-usage-row">
+                  <span className="claude-chat-usage-label">주간 · Claude Design</span>
+                  <span className="claude-chat-usage-val">{subLimits.weeklyDesignPct}</span>
+                </div>
+              )}
+              {subLimits.sonnetOnlyPct && (
+                <div className="claude-chat-usage-row">
+                  <span className="claude-chat-usage-label">Sonnet 만</span>
+                  <span className="claude-chat-usage-val">{subLimits.sonnetOnlyPct}{subLimits.sonnetOnlyReset ? ` · ${subLimits.sonnetOnlyReset}` : ''}</span>
+                </div>
+              )}
+            </>
+          )}
+          <div className="claude-chat-usage-divider" />
+          <div className="claude-chat-usage-row">
+            <button
+              className="claude-chat-usage-probe-btn"
+              disabled={usageProbeLoading}
+              onClick={async () => {
+                setUsageProbeLoading(true);
+                setUsageProbe(null);
+                try {
+                  const r: any = await (window as any).api?.claudeProbeUsage?.();
+                  if (r?.success) {
+                    const fmt = (n: number) => n.toLocaleString();
+                    let out = `📊 전체 누적 (~/.claude/projects 스캔)\n`;
+                    out += `─────────────────────────\n`;
+                    out += `세션 수    : ${r.sessionCount}\n`;
+                    out += `메시지 수  : ${r.msgCount}\n`;
+                    out += `입력 토큰  : ${fmt(r.totalIn)}\n`;
+                    out += `출력 토큰  : ${fmt(r.totalOut)}\n`;
+                    out += `캐시 생성  : ${fmt(r.totalCacheCreate)}\n`;
+                    out += `캐시 읽기  : ${fmt(r.totalCacheRead)}\n`;
+                    out += `─────────────────────────\n`;
+                    out += `📁 프로젝트별 Top ${r.projects?.length || 0}\n`;
+                    for (const p of r.projects || []) {
+                      out += `  ${p.project.slice(0, 60)}\n    in ${fmt(p.in)} / out ${fmt(p.out)} / cache ${fmt(p.cacheRead)} (${p.sessions} 세션)\n`;
+                    }
+                    setUsageProbe(out);
+                  } else {
+                    setUsageProbe(`❌ ${r?.error || '실패'}`);
+                  }
+                } catch (e: any) {
+                  setUsageProbe(`❌ ${e?.message || e}`);
+                }
+                setUsageProbeLoading(false);
+              }}
+              title="~/.claude/projects 의 모든 세션 jsonl 을 스캔해 프로젝트별 누적 사용량 집계"
+            >{usageProbeLoading ? '⏳ 스캔 중...' : '📁 프로젝트 스캔'}</button>
+            {false && (<button
+              className="claude-chat-usage-probe-btn"
+              style={{ marginLeft: 8, display: 'none' }}
+              disabled={usageProbeLoading}
+              onClick={async () => {
+                setUsageProbeLoading(true);
+                setUsageProbe('⏳ Claude TUI 로딩 중...');
+                try {
+                  const r: any = await (window as any).api?.claudeProbeUsageTui?.();
+                  if (r?.success && r.raw) {
+                    const raw: string = r.raw;
+                    // ANSI/box-drawing 제거 + 공백 정규화
+                    const cleaned = raw.replace(/[│┃║┊┆╎├─━┯┴┐┌┘└┤▓░▒█▏▎▍▌▋▊▉◐◑●○✔]+/g, ' ').replace(/\s+/g, ' ');
+                    const lim: typeof subLimits = {};
+                    // Total cost: $X
+                    const costMatch = cleaned.match(/Total\s*cost\s*[:：]\s*\$\s*([\d.]+)/i);
+                    // Usage: A input, B output, C cache read, D cache write
+                    const tokenMatch = cleaned.match(/Usage\s*[:：]?\s*(\d+(?:\.\d+)?[kKmM]?)\s*input\s*,?\s*(\d+(?:\.\d+)?[kKmM]?)\s*output\s*,?\s*(\d+(?:\.\d+)?[kKmM]?)\s*cache\s*read\s*,?\s*(\d+(?:\.\d+)?[kKmM]?)\s*cache\s*write/i);
+                    const toNum = (s: string) => {
+                      const m = s.match(/^([\d.]+)([kKmM]?)$/);
+                      if (!m) return 0;
+                      const v = parseFloat(m[1]);
+                      const u = m[2]?.toLowerCase();
+                      return Math.round(v * (u === 'm' ? 1_000_000 : u === 'k' ? 1_000 : 1));
+                    };
+                    void toNum;
+                    // TUI Session 값들은 별도 표시 (우리 채팅 세션과 다름)
+                    if (costMatch) lim.tuiCost = '$' + costMatch[1];
+                    if (tokenMatch) {
+                      lim.tuiInput = tokenMatch[1];
+                      lim.tuiOutput = tokenMatch[2];
+                      lim.tuiCacheRead = tokenMatch[3];
+                      lim.tuiCacheWrite = tokenMatch[4];
+                    }
+                    // Current session XX% used Resets ...
+                    const sessionMatch = cleaned.match(/Current\s*session[^%]*?(\d+(?:\.\d+)?)\s*%\s*used\s*Rese[a-z]*\s*([^E]*?(?:am|pm|\(Asia[^)]+\)|\(UTC[^)]+\)))/i);
+                    if (sessionMatch) { lim.fiveHourPct = sessionMatch[1] + '%'; lim.fiveHourReset = sessionMatch[2].trim(); }
+                    // Current week (all models)
+                    const weekAllMatch = cleaned.match(/Current\s*week\s*\(?all\s*models\)?[^%]*?(\d+(?:\.\d+)?)\s*%\s*used\s*Rese[a-z]*\s*([^E]*?(?:am|pm|\(Asia[^)]+\)|\(UTC[^)]+\)))/i);
+                    if (weekAllMatch) { lim.weeklyAllPct = weekAllMatch[1] + '%'; lim.weeklyAllReset = weekAllMatch[2].trim(); }
+                    // Sonnet only (글자 손실 대응 — "Curnt week(Sonnetonly)" 등)
+                    const sonnetMatch = cleaned.match(/Sonnet\s*only[^%]*?(\d+(?:\.\d+)?)\s*%\s*used\s*Rese[a-z]*\s*([^E]*?(?:am|pm|\(Asia[^)]+\)|\(UTC[^)]+\)))/i);
+                    if (sonnetMatch) { lim.sonnetOnlyPct = sonnetMatch[1] + '%'; lim.sonnetOnlyReset = sonnetMatch[2].trim(); }
+                    // Context display — "X / Y (Z%)" 형식
+                    const ctxMatch = cleaned.match(/(\d+(?:\.\d+)?)\s*([kKmM])\s*\/\s*(\d+(?:\.\d+)?)\s*([kKmM])\s*\(\s*(\d+)\s*%\s*\)/);
+                    if (ctxMatch) {
+                      lim.contextUsed = ctxMatch[1] + ctxMatch[2].toLowerCase();
+                      lim.contextMax = ctxMatch[3] + ctxMatch[4].toLowerCase();
+                      lim.contextPct = ctxMatch[5] + '%';
+                    }
+                    // 모델 레이블 — "Opus 4.7 (1M context)" 처럼 버전+괄호 형식만 허용
+                    const modelMatch = cleaned.match(/(Opus|Sonnet|Haiku)\s*\d+(?:\.\d+)?\s*\((1M\s*context|200k|400k)\)/i);
+                    if (modelMatch) lim.modelLabel = modelMatch[0].replace(/\s+/g, ' ').trim();
+                    setSubLimits(Object.keys(lim).length ? lim : null);
+                    // 키워드 라인 요약
+                    const wanted: string[] = [];
+                    for (const ln of raw.split(/\r?\n/)) {
+                      const t = ln.replace(/[│┃║┊┆╎├─━┯┴┐┌┘└┤▓░▒█▏▎▍▌▋▊▉◐◑●○]+/g, ' ').replace(/\s{2,}/g, '  ').trim();
+                      if (!t || t.length < 4 || t.length > 200) continue;
+                      if (/(컨텍스트|context|플랜|plan|5시간|5-?hour|주간|weekly|sonnet|opus|haiku|초기화|reset|tokens?|\d+%)/i.test(t)) wanted.push(t);
+                    }
+                    const summary = wanted.length > 0 ? [...new Set(wanted)].join('\n') : '(/usage 출력 파싱 실패 — raw 참고)';
+                    setUsageProbe(`📊 /usage TUI 결과\n─────────────────────\n${summary}\n\n──── RAW (디버그, 마지막 4000자) ────\n${raw.slice(-4000)}`);
+                  } else {
+                    setUsageProbe(`❌ ${r?.error || '실패'}\n\n${(r?.raw || '').slice(0, 1000)}`);
+                  }
+                } catch (e: any) {
+                  setUsageProbe(`❌ ${e?.message || e}`);
+                }
+                setUsageProbeLoading(false);
+              }}
+              title="claude TUI 인터랙티브 spawn 후 /usage 명령 캡처"
+            >{usageProbeLoading ? '⏳' : '📊 구독 한도 (TUI)'}</button>)}
+          </div>
+          {usageProbe && (
+            <>
+              <button
+                className="claude-chat-usage-probe-toggle"
+                onClick={() => setUsageProbeExpanded(v => !v)}
+                style={{ marginTop: 6, background: 'transparent', border: '1px solid #3a475a', color: '#aaa', padding: '2px 8px', borderRadius: 3, cursor: 'pointer', fontSize: 11 }}
+              >{usageProbeExpanded ? '⌄ 실행 결과 접기' : '› 실행 결과 펼치기'}</button>
+              {usageProbeExpanded && (
+                <pre className="claude-chat-usage-probe-output">{usageProbe}</pre>
+              )}
+            </>
+          )}
+        </div>
+      )}
       <div className="claude-chat-active-session">
         🔗 SSH 컨텍스트:
         <select
@@ -1345,17 +1868,28 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             ...toolTimeline.map((t, i) => ({ kind: 'tool' as const, t, seq: t.seq ?? (messages.length * 2 + i * 2 + 1) })),
           ];
           items.sort((a, b) => a.seq - b.seq);
-          return items.map(item => item.kind === 'msg' ? (
+          // 연속된 tool 항목들을 그룹으로 묶기
+          type Group = { kind: 'msg'; m: Message; key: string } | { kind: 'tools'; tools: ToolTimelineItem[]; key: string };
+          const groups: Group[] = [];
+          for (const item of items) {
+            if (item.kind === 'msg') {
+              groups.push({ kind: 'msg', m: item.m, key: `m-${item.m.id}` });
+            } else {
+              const last = groups[groups.length - 1];
+              if (last && last.kind === 'tools') last.tools.push(item.t);
+              else groups.push({ kind: 'tools', tools: [item.t], key: `tg-${item.t.id}` });
+            }
+          }
+          return groups.map(g => g.kind === 'msg' ? (
             <div
-              key={`m-${item.m.id}`}
-              className={`claude-chat-msg ${item.m.role}`}
+              key={g.key}
+              className={`claude-chat-msg ${g.m.role}`}
               onContextMenu={e => {
-                // mermaid 다이어그램 영역은 자체 컨텍스트 메뉴를 갖고 있으므로 무시
                 const t = e.target as HTMLElement | null;
                 if (t && t.closest && t.closest('.claude-chat-mermaid')) return;
                 e.preventDefault();
                 e.stopPropagation();
-                setMsgCtxMenu({ x: e.clientX, y: e.clientY, msgId: item.m.id, content: item.m.content });
+                setMsgCtxMenu({ x: e.clientX, y: e.clientY, msgId: g.m.id, content: g.m.content });
               }}
               onMouseDown={e => {
                 if (e.button === 2) {
@@ -1363,25 +1897,64 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                   if (t && t.closest && t.closest('.claude-chat-mermaid')) return;
                   e.preventDefault();
                   e.stopPropagation();
-                  setMsgCtxMenu({ x: e.clientX, y: e.clientY, msgId: item.m.id, content: item.m.content });
+                  setMsgCtxMenu({ x: e.clientX, y: e.clientY, msgId: g.m.id, content: g.m.content });
                 }
               }}
             >
-              <div className="claude-chat-msg-role">{item.m.role === 'user' ? '👤 You' : '🤖 Claude'}</div>
+              <div className="claude-chat-msg-role">{g.m.role === 'user' ? '👤 You' : '🤖 Claude'}</div>
               <div
                 className="claude-chat-msg-content"
-                dangerouslySetInnerHTML={{ __html: renderMd(item.m.content) }}
+                dangerouslySetInnerHTML={{ __html: renderMd(g.m.content) }}
               />
             </div>
-          ) : (
-            <div key={`t-${item.t.id}`} className={`claude-chat-timeline-item inline ${item.t.status}`}>
-              <span className="claude-chat-timeline-status">
-                {item.t.status === 'running' ? '⏳' : item.t.status === 'done' ? '✓' : '✕'}
-              </span>
-              <span className="claude-chat-timeline-label" title={item.t.label}>{item.t.label}</span>
-              {item.t.resultPreview && <span className="claude-chat-timeline-preview" title={item.t.resultPreview}>→ {item.t.resultPreview}</span>}
-            </div>
-          ));
+          ) : (() => {
+            const groupKey = g.key;
+            const expanded = expandedToolGroups.has(groupKey);
+            const summary = (() => {
+              // 툴 이름별 카운트로 요약 — "검색함 Read 2개, Bash 1개" 식
+              const counts: Record<string, number> = {};
+              for (const t of g.tools) {
+                const m = (t.label || '').match(/^([A-Za-z_][A-Za-z0-9_]*)/);
+                const name = m ? m[1] : '도구';
+                counts[name] = (counts[name] || 0) + 1;
+              }
+              return Object.entries(counts).map(([k, v]) => `${k} ${v}개`).join(', ');
+            })();
+            const anyRunning = g.tools.some(t => t.status === 'running');
+            const anyError = g.tools.some(t => t.status === 'error');
+            const headerIcon = anyRunning ? '⏳' : anyError ? '✕' : '✓';
+            return (
+              <div key={g.key} className={`claude-chat-tool-group ${expanded ? 'expanded' : 'collapsed'}`}>
+                <button className="claude-chat-tool-group-header" onClick={() => toggleToolGroup(groupKey)} title={expanded ? '접기' : '펼치기'}>
+                  <span className="claude-chat-tool-group-caret">{expanded ? '⌄' : '›'}</span>
+                  <span className="claude-chat-tool-group-icon">{headerIcon}</span>
+                  <span className="claude-chat-tool-group-summary">{summary}</span>
+                </button>
+                {expanded && (
+                  <div className="claude-chat-tool-group-body">
+                    {g.tools.map(t => {
+                      const isOpen = expandedToolItems.has(t.id);
+                      const labelShort = t.label.length > 80 ? t.label.slice(0, 80) + '…' : t.label;
+                      return (
+                        <div key={`t-${t.id}`} className={`claude-chat-timeline-item ${t.status} ${isOpen ? 'open' : 'closed'}`}>
+                          <button className="claude-chat-timeline-row" onClick={() => toggleToolItem(t.id)} title={isOpen ? '접기' : '펼치기'}>
+                            <span className="claude-chat-timeline-caret">{isOpen ? '⌄' : '›'}</span>
+                            <span className="claude-chat-timeline-status">
+                              {t.status === 'running' ? '⏳' : t.status === 'done' ? '✓' : '✕'}
+                            </span>
+                            <span className="claude-chat-timeline-label">{isOpen ? t.label : labelShort}</span>
+                          </button>
+                          {isOpen && t.resultPreview && (
+                            <pre className="claude-chat-timeline-detail">{t.resultPreview}</pre>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })());
         })()}
       </div>
       {streaming && !showHistoryPanel && (
@@ -1392,6 +1965,20 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         </div>
       )}
       <div className="claude-chat-input-area" style={showHistoryPanel ? { display: 'none' } : undefined}>
+        {lastRejectedPlan && !pendingPlan && (
+          <div className="claude-chat-rejected-plan-bar">
+            <button
+              className="claude-chat-rejected-plan-btn"
+              onClick={() => { setPendingPlan(lastRejectedPlan); }}
+              title="실수로 거부했을 때 — 계획을 다시 띄워 재승인할 수 있음"
+            >📋 거부한 계획 다시 보기</button>
+            <button
+              className="claude-chat-rejected-plan-dismiss"
+              onClick={() => setLastRejectedPlan(null)}
+              title="이 계획 제거"
+            >✕</button>
+          </div>
+        )}
         {mountEntries.length > 0 && (
           <div className="claude-chat-attachments staged">
             <div className="claude-chat-attachments-header">
@@ -1531,11 +2118,52 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             onChange={e => setModel(e.target.value)}
             title="모델 선택"
           >
-            <option value="default">🧠 기본 모델</option>
-            <option value="opus">🟣 Opus (최고 성능)</option>
-            <option value="sonnet">🔵 Sonnet (균형)</option>
-            <option value="haiku">⚡ Haiku (빠름)</option>
-            <option value="opusplan">🎯 Opus Plan (계획 Opus)</option>
+            {availableModels.length > 0 ? (() => {
+              // API 응답을 정렬 — 최신 (created_at desc), Opus → Sonnet → Haiku 순
+              const tier = (id: string) => /opus/i.test(id) ? 0 : /sonnet/i.test(id) ? 1 : /haiku/i.test(id) ? 2 : 3;
+              const sorted = [...availableModels].sort((a, b) => {
+                const t = tier(a.id) - tier(b.id);
+                if (t !== 0) return t;
+                return (b.id.localeCompare(a.id));
+              });
+              const opts: JSX.Element[] = [];
+              for (const m of sorted) {
+                const icon = /opus/i.test(m.id) ? '🟣' : /sonnet/i.test(m.id) ? '🔵' : /haiku/i.test(m.id) ? '⚡' : '🤖';
+                const has1M = (m.max_input_tokens || 0) >= 1_000_000;
+                // 짧은 alias 가 있으면 그것을 value 로 — opus, sonnet, haiku
+                const shortAlias = /opus-4-7/i.test(m.id) ? 'opus' : /sonnet-4-6/i.test(m.id) ? 'sonnet' : /haiku-4-5/i.test(m.id) ? 'haiku' : m.id;
+                if (has1M) {
+                  opts.push(<option key={m.id + '-200k'} value={shortAlias}>{icon} {m.display_name} (200k)</option>);
+                  opts.push(<option key={m.id + '-1m'} value={shortAlias === m.id ? `${shortAlias}[1m]` : `${shortAlias}[1m]`}>{icon} {m.display_name} 1M</option>);
+                } else {
+                  opts.push(<option key={m.id} value={shortAlias}>{icon} {m.display_name}</option>);
+                }
+              }
+              return opts;
+            })() : (
+              <>
+                <option value="opus">🟣 Opus 4.7</option>
+                <option value="opus[1m]">🟣 Opus 4.7 1M</option>
+                <option value="sonnet">🔵 Sonnet 4.6</option>
+                <option value="haiku">⚡ Haiku 4.5</option>
+                <option value="claude-opus-4-6">🕘 Opus 4.6 레거시</option>
+              </>
+            )}
+          </select>
+          <select
+            className="claude-chat-perm-select"
+            value={effort}
+            onChange={e => setEffort(e.target.value)}
+            title="작업량 (Effort) — 모델이 출력에 쓰는 thinking 양"
+          >
+            {(() => {
+              // 모델별 지원 effort 레벨 — 첫 번째 모델의 capabilities.effort 참고
+              const supported = availableModels[0]?.capabilities?.effort;
+              const labels: Record<string, string> = { low: '낮음', medium: '보통', high: '높음', max: 'Max' };
+              const all = ['low', 'medium', 'high', 'max'];
+              const enabled = supported ? all.filter(k => supported[k]?.supported) : all;
+              return enabled.map(v => <option key={v} value={v}>{labels[v]}</option>);
+            })()}
           </select>
           <label className="claude-chat-tool-approval-label" title="각 Bash/Edit/Write 툴 호출마다 승인 요청">
             <input type="checkbox" checked={perToolApproval} onChange={e => setPerToolApproval(e.target.checked)} />
@@ -1547,10 +2175,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             onChange={e => setPermissionMode(e.target.value as any)}
             title="권한 모드 — 편집 전 확인(기본)은 계획을 먼저 보여주고, '실행' 또는 '진행' 등으로 답하면 실행합니다"
           >
-            <option value="default">🖐 편집 전 확인 (계획 → 승인)</option>
-            <option value="acceptEdits">✏️ 편집 자동 수락</option>
-            <option value="plan">🗺 계획 모드 (실행 X)</option>
-            <option value="bypassPermissions">⚡ 자동 모드 (모두 허용)</option>
+            <option value="default">🖐 권한 요청</option>
+            <option value="acceptEdits">✏️ 편집 수락</option>
+            <option value="plan">📋 계획 모드</option>
           </select>
         </div>
         <textarea
@@ -1568,6 +2195,32 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           disabled={streaming}
         />
         <div className="claude-chat-input-actions">
+          <div
+            ref={usageTriggerRef}
+            className="claude-chat-usage-trigger-wrap"
+            onMouseEnter={() => { setShowUsageTooltip(true); fetchUsageApi(); /* 캐시 hit 면 호출 안 함 */ }}
+            onMouseLeave={() => setShowUsageTooltip(false)}
+            onClick={() => { showUsage(); fetchUsageApi(); }}
+          >
+            <span className="claude-chat-usage-trigger" title="클릭=상세 패널 / 마우스 오버=간단 요약">
+              {(() => {
+                const label = model === 'opus[1m]' ? 'Opus 4.7 1M' : model === 'opus' ? 'Opus 4.7' : model === 'sonnet[1m]' ? 'Sonnet 4.6 1M' : model === 'sonnet' ? 'Sonnet 4.6' : model === 'haiku' ? 'Haiku 4.5' : model === 'opusplan' ? 'Opus Plan' : model;
+                return `📊 ${label}`;
+              })()}
+            </span>
+            {showUsageTooltip && !showUsagePanel && (() => {
+              const is1M = /\[1m\]/i.test(model) || /1m/i.test(usage.model);
+              const maxCtx = is1M ? 1_000_000 : 200_000;
+              const fmt = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+              const ctxPct = Math.round((usage.lastTurnInput / maxCtx) * 100);
+              const planPct = subLimits?.fiveHourPct;
+              return (
+                <div className="claude-chat-usage-tooltip">
+                  <div><b>Context</b> {fmt(usage.lastTurnInput)} / {fmt(maxCtx)} ({ctxPct}%){planPct ? ` · Plan ${planPct}` : ''}</div>
+                </div>
+              );
+            })()}
+          </div>
           {streaming ? (
             <button className="claude-chat-btn stop" onClick={stop}>중단</button>
           ) : (
