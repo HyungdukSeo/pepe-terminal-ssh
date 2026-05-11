@@ -6,6 +6,7 @@ export type MenuItem = {
   onClick?: () => void;
   separator?: boolean;
   header?: boolean;
+  disabled?: boolean;
   submenu?: MenuItem[];
 };
 
@@ -19,7 +20,6 @@ type Props = {
 export const ContextMenu: React.FC<Props> = ({ x, y, items, onClose }) => {
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState({ x, y });
-  const [openSub, setOpenSub] = useState<{ idx: number; x: number; y: number } | null>(null);
 
   React.useEffect(() => {
     if (!menuRef.current) return;
@@ -51,48 +51,47 @@ export const ContextMenu: React.FC<Props> = ({ x, y, items, onClose }) => {
     };
   }, [onClose]);
 
+  // 호버 중인 서브메뉴 인덱스 + 부모 row 의 위치
+  const [openSub, setOpenSub] = useState<{ idx: number; top: number; left: number } | null>(null);
+
   return (
-    <>
-      <div ref={menuRef} className="context-menu" style={{ top: pos.y, left: pos.x }} onClick={e => e.stopPropagation()}>
-        {items.map((item, i) => {
-          if (item.separator) return <div key={i} style={{ height: 1, background: '#3a3a3a', margin: '4px 0' }} />;
-          if (item.header) return <div key={i} style={{ padding: '4px 12px', fontSize: 10, color: '#888', textTransform: 'uppercase', letterSpacing: 0.5 }}>{item.label}</div>;
-          if (item.submenu && item.submenu.length > 0) {
-            return (
-              <div
-                key={i}
-                className="context-menu-item"
-                onMouseEnter={e => {
-                  const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                  setOpenSub({ idx: i, x: r.right - 2, y: r.top });
-                }}
-                style={{ display: 'flex', alignItems: 'center', gap: 8 }}
-              >
-                <span style={{ flex: 1 }}>{item.label}</span>
-                <span style={{ color: '#888', fontSize: 10 }}>▶</span>
-              </div>
-            );
-          }
-          return (
-            <div
-              key={i}
-              className="context-menu-item"
-              onMouseEnter={() => setOpenSub(null)}
-              onClick={() => { item.onClick?.(); onClose(); }}
-            >
-              {item.label}
-            </div>
-          );
-        })}
-      </div>
-      {openSub && items[openSub.idx]?.submenu && (
-        <ContextMenu
-          x={openSub.x}
-          y={openSub.y}
-          items={items[openSub.idx].submenu!}
-          onClose={onClose}
-        />
-      )}
-    </>
+    <div ref={menuRef} className="context-menu" style={{ top: pos.y, left: pos.x }} onClick={e => e.stopPropagation()}>
+      {items.map((item, i) => {
+        if (item.separator) return <div key={i} className="context-menu-separator" />;
+        if (item.header) return <div key={i} style={{ padding: '4px 12px', fontSize: 10, color: '#888', textTransform: 'uppercase', letterSpacing: 0.5 }}>{item.label}</div>;
+        const hasSub = !!(item.submenu && item.submenu.length > 0);
+        return (
+          <div
+            key={i}
+            className={`context-menu-item ${item.disabled ? 'disabled' : ''} ${hasSub ? 'has-submenu' : ''} ${openSub?.idx === i ? 'submenu-open' : ''}`}
+            onMouseEnter={(e) => {
+              if (hasSub) {
+                const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                setOpenSub({ idx: i, top: r.top, left: r.right - 2 });
+              } else {
+                setOpenSub(null);
+              }
+            }}
+            onClick={() => {
+              if (item.disabled) return;
+              if (hasSub) return; // 서브메뉴 부모는 클릭으로 닫지 않음
+              item.onClick?.();
+              onClose();
+            }}
+          >
+            <span className="context-menu-label-text">{item.label}</span>
+            {hasSub && <span className="context-menu-arrow">▶</span>}
+            {hasSub && openSub?.idx === i && (
+              <ContextMenu
+                x={openSub.left}
+                y={openSub.top}
+                items={item.submenu!}
+                onClose={onClose}
+              />
+            )}
+          </div>
+        );
+      })}
+    </div>
   );
 };

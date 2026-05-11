@@ -8,6 +8,7 @@ import type { MenuDef } from './components/MenuBar';
 import { Layout } from './components/Layout';
 import { SearchBar } from './components/SearchBar';
 import { FileExplorer } from './components/FileExplorer';
+import { ConflictDialogQueue } from './components/ConflictDialog';
 import { FileEditor } from './components/FileEditor';
 import { ClaudeChat } from './components/ClaudeChat';
 import { RemoteFileTree } from './components/RemoteFileTree';
@@ -64,6 +65,9 @@ function App() {
   const [tabs, setTabs] = useState<Tab[]>(() => {
     return [{ id: 'tab-1', title: 'Workspace 1', layout: createInitialLayout('tab-1') }];
   });
+  // 빈 deps useEffect 에서 최신 tabs 참조용 — state 변경 시마다 ref 동기화
+  const tabsRef = useRef(tabs);
+  useEffect(() => { tabsRef.current = tabs; }, [tabs]);
   const [activeTabId, setActiveTabId] = useState<TabId>('tab-1');
   // 탭별로 선택된 패널 ID 기억
   const [selectedPanelByTab, setSelectedPanelByTab] = useState<Record<string, string | null>>({});
@@ -577,6 +581,29 @@ function App() {
   const [, setConnectedTick] = useState(0);
   // 글로벌 연결 상태 변경시 일괄전송 카운트 등 재계산을 위해 강제 리렌더
   useEffect(() => subscribeConnectedChange(() => setConnectedTick(n => n + 1)), []);
+  // 세션 설정 변경 (X11 forwarding 등) 이벤트 — 활성 연결을 즉시 재접속해서 새 설정 반영
+  useEffect(() => {
+    const onSettingChanged = (e: any) => {
+      const d = e?.detail || {};
+      if (!d.sessionId || !d.requiresReconnect) return;
+      const sessionId: string = d.sessionId;
+      // 현재 모든 탭에서 이 sessionId 로 연결된 termId 수집 (안내용)
+      let affectedCount = 0;
+      for (const t of tabsRef.current) {
+        if (t.type === 'fileExplorer' || t.type === 'fileEditor') continue;
+        for (const s of collectAllSessions(t.layout)) {
+          if (s.sessionId === sessionId && (isTermConnected(s.termId) || isTermConnecting(s.termId))) {
+            affectedCount += 1;
+          }
+        }
+      }
+      if (affectedCount === 0) return;
+      // 자동 재접속 안 함 — 안내만 (SSH X11 은 shell 채널 생성 시점에 설정되므로 재접속 필요)
+      showToast(`X11 설정이 변경되었습니다. 적용하려면 활성 세션 ${affectedCount}개를 수동으로 재접속하세요. (미니탭 우클릭 → 세션 재연결)`, 6000);
+    };
+    window.addEventListener('session-setting-changed', onSettingChanged as any);
+    return () => window.removeEventListener('session-setting-changed', onSettingChanged as any);
+  }, []);
   const [isMaximized, setIsMaximized] = useState(false);
   useEffect(() => {
     (window as any).api?.windowIsMaximized?.().then((m: boolean) => setIsMaximized(!!m)).catch(() => {});
@@ -2859,11 +2886,22 @@ function App() {
           session={editSessionCtx.session}
           folders={editSessionFolders}
           onSave={async (s: any) => {
+            // 변경 전 세션 — X11 forwarding 등 재접속 필요 설정 비교
+            const prev = editSessionCtx.session as any;
             try { await (window as any).api?.saveSession?.(s); } catch {}
             // 활성 터미널에 실시간 반영
             applySessionToTerm(s, editSessionCtx.termId);
             // 편집 컨텍스트 갱신 (창 유지)
             setEditSessionCtx({ session: s, termId: editSessionCtx.termId });
+            // X11 forwarding 변경 시 안내 (수동 재접속 권유)
+            const x11Changed = !!prev && (!!prev.x11Forward !== !!s.x11Forward || (prev.x11Display ?? 0) !== (s.x11Display ?? 0));
+            if (x11Changed) {
+              try {
+                window.dispatchEvent(new CustomEvent('session-setting-changed', {
+                  detail: { sessionId: s.id, fields: ['x11Forward', 'x11Display'], requiresReconnect: true },
+                }));
+              } catch {}
+            }
           }}
           onSaveAndConnect={async (s: any) => {
             try { await (window as any).api?.saveSession?.(s); } catch {}
@@ -3149,19 +3187,8 @@ function App() {
         );
       })()}
 
-      {sftpProgress && (
-        <div className="sftp-progress-bar">
-          <span className="sftp-progress-text">
-            {sftpProgress.direction === 'download' ? '⬇' : '⬆'} {sftpProgress.filename}
-          </span>
-          <div className="sftp-progress-track">
-            <div className="sftp-progress-fill" style={{ width: `${sftpProgress.total > 0 ? (sftpProgress.transferred / sftpProgress.total * 100) : 0}%` }} />
-          </div>
-          <span className="sftp-progress-pct">
-            {sftpProgress.total > 0 ? Math.round(sftpProgress.transferred / sftpProgress.total * 100) : 0}%
-          </span>
-        </div>
-      )}
+      {/* 하단 상태바 SFTP 진행률 — 파일전송 탭의 TransferLog 로 대체됨 */}
+      <ConflictDialogQueue />
       {showClaudeChat && (() => {
         // 모든 연결된 SSH 세션 수집 (panel.sessions 내의 termId 들)
         const connectedSessions: { termId: string; label: string }[] = [];

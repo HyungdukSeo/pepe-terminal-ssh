@@ -1154,9 +1154,32 @@ body.popout-options .session-editor h3:first-child {
   transition: background 0.1s;
 }
 
-.context-menu-item:hover {
+.context-menu-item:hover:not(.disabled) {
   background: #2b6b9b;
   color: #fff;
+}
+.context-menu-item.disabled {
+  color: #555;
+  cursor: default;
+}
+.context-menu-item.has-submenu {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  position: relative;
+}
+.context-menu-item.submenu-open {
+  background: #2b6b9b;
+  color: #fff;
+}
+.context-menu-arrow {
+  font-size: 9px;
+  color: inherit;
+  margin-left: auto;
+}
+.context-menu-label-text {
+  flex: 1;
 }
 .context-menu-label {
   padding: 4px 14px 2px;
@@ -2964,6 +2987,18 @@ body.popout-options .session-editor h3:first-child {
   color: #fff;
 }
 
+.fe-drive-select {
+  background: #222;
+  border: 1px solid #333;
+  color: #aaa;
+  border-radius: 3px;
+  padding: 2px 4px;
+  font-size: 12px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.fe-drive-select:hover { background: #333; color: #fff; }
+
 .fe-path-display {
   flex: 1;
   color: #ccc;
@@ -2999,6 +3034,7 @@ body.popout-options .session-editor h3:first-child {
   color: #888;
   user-select: none;
   flex-shrink: 0;
+  align-items: center;
 }
 
 .fe-file-header span {
@@ -3009,9 +3045,34 @@ body.popout-options .session-editor h3:first-child {
   color: #ccc;
 }
 
-.fe-col-name { flex: 3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: 4px; }
-.fe-col-size { flex: 1; text-align: right; min-width: 70px; }
-.fe-col-date { flex: 1.5; text-align: right; min-width: 120px; }
+.fe-col-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.fe-col-size { text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
+.fe-col-type { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
+.fe-col-date { text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
+.fe-col-mode { font-family: 'Consolas', monospace; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
+.fe-col-owner { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
+
+/* 컬럼 리사이즈 핸들 */
+.fe-col-resize {
+  width: 5px;
+  height: 16px;
+  cursor: col-resize;
+  flex-shrink: 0;
+  border-right: 1px solid #2a2a2a;
+  margin: 0 3px;
+}
+.fe-col-resize:hover {
+  border-right-color: #2b6b9b;
+  background: rgba(43, 107, 155, 0.2);
+}
+.fe-col-resize-active {
+  border-right-color: #2b6b9b !important;
+  background: rgba(43, 107, 155, 0.4) !important;
+}
+.fe-file-row .fe-col-resize {
+  border-right: none;
+  pointer-events: none;
+}
 
 .fe-file-list {
   flex: 1;
@@ -3039,6 +3100,8 @@ body.popout-options .session-editor h3:first-child {
   color: #ccc;
   cursor: pointer;
   transition: background 0.08s;
+  white-space: nowrap;
+  align-items: center;
 }
 
 .fe-file-row:hover {
@@ -3053,6 +3116,17 @@ body.popout-options .session-editor h3:first-child {
 .fe-file-icon {
   font-size: 13px;
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+.fe-file-icon-img {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  display: block;
 }
 
 .fe-file-name {
@@ -3150,8 +3224,10 @@ body.popout-options .session-editor h3:first-child {
 
 .fe-transfers {
   background: #111;
-  overflow-y: auto;
+  overflow: hidden;
   flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .fe-transfers-header {
@@ -3239,6 +3315,562 @@ body.popout-options .session-editor h3:first-child {
   font-size: 11px;
   min-width: 35px;
   text-align: right;
+}
+
+/* ── 전송 로그 (TransferLog) ── */
+.tl-root {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #0d0f10;
+  color: #d4d4d4;
+  font-size: 11px;
+  overflow: hidden;
+}
+.tl-tabs {
+  display: flex;
+  align-items: center;
+  background: #1a1c1e;
+  border-bottom: 1px solid #2a2d30;
+  flex-shrink: 0;
+}
+.tl-tab {
+  background: transparent;
+  color: #aaa;
+  border: none;
+  padding: 6px 14px;
+  font-size: 11px;
+  cursor: pointer;
+  border-right: 1px solid #2a2d30;
+}
+.tl-tab.active {
+  background: #0d0f10;
+  color: #fff;
+  border-bottom: 2px solid #2b6b9b;
+}
+.tl-tab:hover:not(.active) {
+  background: #22262a;
+}
+.tl-tab-spacer {
+  flex: 1;
+}
+.tl-clear-btn {
+  background: transparent;
+  border: 1px solid #444;
+  color: #aaa;
+  font-size: 10px;
+  padding: 2px 8px;
+  margin-right: 6px;
+  cursor: pointer;
+  border-radius: 2px;
+}
+.tl-clear-btn:hover {
+  background: #2b6b9b;
+  color: #fff;
+  border-color: #2b6b9b;
+}
+
+.tl-table {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+.tl-header {
+  font-weight: 600;
+  background: #1a1c1e;
+  color: #aaa;
+  border-bottom: 1px solid #2a2d30;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+.tl-body {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+}
+.tl-row {
+  display: grid;
+  grid-template-columns:
+    minmax(150px, 1.6fr)   /* 이름 */
+    60px                    /* 상태 */
+    minmax(110px, 1fr)      /* 진행률 */
+    minmax(100px, 0.9fr)    /* 크기 */
+    minmax(120px, 1.3fr)    /* 로컬 경로 */
+    32px                    /* <-> */
+    minmax(120px, 1.3fr)    /* 원격 경로 */
+    minmax(70px, 0.7fr)     /* 속도 */
+    70px                    /* 남은 시간 */
+    70px;                   /* 경과 시간 */
+  align-items: center;
+  padding: 2px 6px;
+  border-bottom: 1px solid #1d1f22;
+  white-space: nowrap;
+}
+.tl-row-group {
+  background: rgba(43, 107, 155, 0.06);
+}
+.tl-row-group.done {
+  background: rgba(60, 60, 60, 0.2);
+  color: #888;
+}
+.tl-row-group.error,
+.tl-row-group.cancelled {
+  background: rgba(180, 50, 50, 0.15);
+  color: #f6a5a5;
+}
+.tl-row-group.skipped {
+  background: rgba(120, 120, 60, 0.12);
+  color: #d6c275;
+}
+.tl-row-file.skipped {
+  color: #b09d4f;
+}
+.tl-row-group.active {
+  background: rgba(43, 107, 155, 0.13);
+}
+.tl-row-file {
+  font-size: 10.5px;
+  color: #bbb;
+}
+.tl-row-file.done {
+  color: #777;
+}
+.tl-row-file.error {
+  color: #f6a5a5;
+}
+.tl-col {
+  padding: 0 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tl-col-name {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.tl-name-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tl-toggle {
+  display: inline-block;
+  width: 12px;
+  font-size: 9px;
+  cursor: pointer;
+  color: #888;
+  user-select: none;
+}
+.tl-toggle:hover {
+  color: #fff;
+}
+.tl-toggle-spacer {
+  display: inline-block;
+  width: 12px;
+}
+.tl-row-icon {
+  font-size: 12px;
+}
+.tl-col-progress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tl-bar {
+  flex: 1;
+  height: 12px;
+  background: #2a2d30;
+  border-radius: 2px;
+  overflow: hidden;
+  min-width: 30px;
+}
+.tl-bar-fill {
+  height: 100%;
+  background: linear-gradient(180deg, #4a9fdb 0%, #2b6b9b 100%);
+  transition: width 0.2s;
+}
+.tl-row-group.done .tl-bar-fill {
+  background: #4a7a4a;
+}
+.tl-row-group.error .tl-bar-fill {
+  background: #9b3a3a;
+}
+.tl-bar-pct {
+  font-size: 10px;
+  color: #ccc;
+  min-width: 30px;
+  text-align: right;
+}
+.tl-col-status,
+.tl-col-size,
+.tl-col-speed,
+.tl-col-eta,
+.tl-col-elapsed {
+  font-size: 10.5px;
+  color: #bbb;
+}
+.tl-col-dir {
+  text-align: center;
+}
+.tl-arrow {
+  font-size: 13px;
+  font-weight: bold;
+}
+.tl-arrow.tl-up { color: #d94c4c; }
+.tl-arrow.tl-down { color: #4cc44c; }
+.tl-empty {
+  padding: 20px;
+  color: #555;
+  text-align: center;
+  font-size: 11px;
+}
+
+.tl-log {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 8px;
+  font-family: 'Consolas', monospace;
+  font-size: 11px;
+}
+.tl-log-line {
+  display: flex;
+  gap: 8px;
+  padding: 1px 0;
+}
+.tl-log-line.error {
+  color: #f6a5a5;
+}
+.tl-log-time {
+  color: #666;
+  flex-shrink: 0;
+}
+.tl-log-text {
+  color: #ccc;
+  flex: 1;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
+/* ── 파일 충돌 다이얼로그 ── */
+.cf-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 12000;
+}
+.cf-dialog {
+  background: #2b2d30;
+  color: #e0e0e0;
+  border: 1px solid #1a1c1e;
+  border-radius: 4px;
+  min-width: 520px;
+  max-width: 720px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  outline: none;
+  display: flex;
+  flex-direction: column;
+}
+.cf-titlebar {
+  background: #1e1f22;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #111;
+}
+.cf-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+.cf-close {
+  background: transparent;
+  color: #aaa;
+  border: none;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+.cf-close:hover {
+  background: #c12c2c;
+  color: #fff;
+}
+.cf-body {
+  padding: 14px 16px 8px;
+  font-size: 12px;
+}
+.cf-row {
+  display: flex;
+  align-items: flex-start;
+  margin-bottom: 10px;
+  gap: 10px;
+}
+.cf-row-msg {
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.cf-warn-ico {
+  font-size: 28px;
+  color: #f0a020;
+  flex-shrink: 0;
+}
+.cf-label {
+  flex-shrink: 0;
+  width: 70px;
+  color: #bbb;
+  padding-top: 2px;
+}
+.cf-value {
+  color: #fff;
+  font-weight: 500;
+}
+.cf-target {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+.cf-icon {
+  font-size: 20px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.cf-sub {
+  font-size: 10.5px;
+  color: #888;
+  margin-top: 2px;
+}
+.cf-path {
+  max-width: 480px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cf-row-action {
+  align-items: center;
+  margin-top: 14px;
+  border-top: 1px solid #3a3c40;
+  padding-top: 12px;
+}
+.cf-select {
+  background: #1a1c1e;
+  border: 1px solid #444;
+  color: #fff;
+  padding: 4px 8px;
+  border-radius: 2px;
+  font-size: 12px;
+  min-width: 140px;
+}
+.cf-apply-all {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 16px;
+  color: #ccc;
+  cursor: pointer;
+}
+.cf-apply-all input {
+  cursor: pointer;
+}
+.cf-row-rename {
+  align-items: center;
+}
+.cf-input {
+  flex: 1;
+  background: #1a1c1e;
+  border: 1px solid #444;
+  color: #fff;
+  padding: 4px 8px;
+  border-radius: 2px;
+  font-size: 12px;
+}
+.cf-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 16px 12px;
+  background: #25272a;
+  border-top: 1px solid #111;
+}
+.cf-btn {
+  background: #3a3c40;
+  color: #e0e0e0;
+  border: 1px solid #4a4c50;
+  padding: 5px 18px;
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 2px;
+  min-width: 70px;
+}
+.cf-btn:hover {
+  background: #4a4c50;
+}
+.cf-btn-primary {
+  background: #2b6b9b;
+  border-color: #2b6b9b;
+  color: #fff;
+}
+.cf-btn-primary:hover {
+  background: #3a8bc5;
+  border-color: #3a8bc5;
+}
+.cf-btn-primary:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* ── 권한 변경 다이얼로그 ── */
+.chmod-dialog {
+  min-width: 380px;
+  max-width: 460px;
+}
+.chmod-octal-row {
+  align-items: center;
+  margin-bottom: 14px;
+}
+.chmod-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 10px;
+  background: #1a1c1e;
+  border: 1px solid #3a3c40;
+  border-radius: 3px;
+}
+.chmod-col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.chmod-col-title {
+  font-weight: 600;
+  font-size: 12px;
+  color: #ccc;
+  margin-bottom: 4px;
+}
+.chmod-col label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.chmod-recursive {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  margin-bottom: 8px;
+}
+.chmod-note {
+  font-size: 11px;
+  color: #888;
+  margin-bottom: 8px;
+  padding-top: 6px;
+  border-top: 1px solid #2a2d30;
+}
+.chmod-error {
+  font-size: 11px;
+  color: #f6a5a5;
+  margin-bottom: 8px;
+}
+.chmod-target-list {
+  font-size: 10.5px;
+  color: #888;
+  word-break: break-all;
+  max-height: 60px;
+  overflow-y: auto;
+}
+
+/* ── 이름 변경 다이얼로그 ── */
+.rn-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 12500;
+}
+.rn-dialog {
+  background: #2b2d30;
+  color: #e0e0e0;
+  border: 1px solid #1a1c1e;
+  border-radius: 4px;
+  min-width: 360px;
+  max-width: 540px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+}
+.rn-title {
+  background: #1e1f22;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  border-bottom: 1px solid #111;
+}
+.rn-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.rn-label {
+  font-size: 12px;
+  color: #bbb;
+}
+.rn-input {
+  background: #1a1c1e;
+  border: 1px solid #2b6b9b;
+  color: #fff;
+  padding: 6px 10px;
+  border-radius: 2px;
+  font-size: 13px;
+  outline: none;
+}
+.rn-input:focus {
+  border-color: #4a9fdb;
+}
+.rn-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 16px 12px;
+  background: #25272a;
+  border-top: 1px solid #111;
+}
+.rn-btn {
+  background: #3a3c40;
+  color: #e0e0e0;
+  border: 1px solid #4a4c50;
+  padding: 5px 18px;
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 2px;
+  min-width: 70px;
+}
+.rn-btn:hover {
+  background: #4a4c50;
+}
+.rn-btn-primary {
+  background: #2b6b9b;
+  border-color: #2b6b9b;
+  color: #fff;
+}
+.rn-btn-primary:hover {
+  background: #3a8bc5;
+  border-color: #3a8bc5;
 }
 
 /* ── SFTP Progress ── */
