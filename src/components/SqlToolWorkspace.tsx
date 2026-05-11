@@ -616,7 +616,10 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName }) =>
       updates.push(`UPDATE ${lastTable} SET ${setParts.join(', ')} WHERE ${whereParts.join(' AND ')};`);
     });
     const preview = updates.join('\n');
-    if (!confirm(`${updates.length}개 행을 UPDATE 합니다.\n\n${preview.slice(0, 500)}${preview.length > 500 ? '\n...' : ''}\n\n진행?`)) return;
+    const refocus = () => { try { (window as any).api?.refocusWindow?.(); } catch {} };
+    const ok = confirm(`${updates.length}개 행을 UPDATE 합니다.\n\n${preview.slice(0, 500)}${preview.length > 500 ? '\n...' : ''}\n\n진행?`);
+    refocus();
+    if (!ok) return;
     setApplying(true);
     const t0 = Date.now();
     try {
@@ -640,8 +643,10 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName }) =>
           // 에러 시 생성된 SQL 도 같이 보여줘서 디버깅 쉽게
           console.error('[SQL apply error]', { error: errMatch[0], stdout, generatedSql: fullSql });
           alert(`UPDATE 중 에러:\n${errMatch[0]}\n\n생성된 SQL (앞 500자):\n${fullSql.slice(0, 500)}\n\nisql 출력 (마지막 500자):\n${stdout.slice(-500)}`);
+          refocus();
         } else {
           alert(`적용 완료. ${updates.length}개 UPDATE + COMMIT.\n\n${stdout.slice(-300)}`);
+          refocus();
           setEdits(new Map());
           // 동일 SELECT 재실행해서 결과 갱신
           if (lastTable) runSql(`SELECT * FROM ${lastTable}`);
@@ -656,6 +661,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName }) =>
           return next;
         });
         alert(`적용 실패: ${r?.error || '?'}`);
+        refocus();
       }
     } finally { setApplying(false); }
   };
@@ -821,9 +827,10 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName }) =>
                         const isEditing = editingCell === key;
                         return (
                           <td key={j} style={{ padding: 0, border: '1px solid #3f3f46', borderTop: 0, borderLeft: 0, background: edited ? '#3d2a14' : (i % 2 ? '#222' : '#1e1e1e'), maxWidth: isEditing ? 'none' : 360, position: 'relative' }}>
-                            {isEditing ? (
-                              <input
-                                autoFocus
+                            <input
+                              readOnly={!isEditing}
+                                onMouseDown={() => { if (!isEditing) setEditingCell(key); }}
+                                onFocus={() => { if (!isEditing) setEditingCell(key); }}
                                 value={value}
                                 onChange={e => {
                                   const v = e.target.value;
@@ -839,15 +846,9 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName }) =>
                                   if (e.key === 'Escape' || e.key === 'Enter') { e.preventDefault(); setEditingCell(null); }
                                 }}
                                 spellCheck={false}
-                                style={{ width: '100%', boxSizing: 'border-box', background: '#1a1a1a', color: edited ? '#ffd680' : '#d4d4d4', border: '1px solid #569cd6', padding: '3px 11px', fontFamily: 'monospace', fontSize: 12, outline: 'none', display: 'block' }}
-                              />
-                            ) : (
-                              <div
-                                onClick={() => setEditingCell(key)}
-                                title={value.length > 40 ? value : undefined}
-                                style={{ padding: '4px 12px', color: edited ? '#ffd680' : '#d4d4d4', fontFamily: 'monospace', fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', cursor: 'text' }}
-                              >{value || ' '}</div>
-                            )}
+                                title={!isEditing && value.length > 40 ? value : undefined}
+                                style={{ width: '100%', boxSizing: 'border-box', background: isEditing ? '#1a1a1a' : 'transparent', color: edited ? '#ffd680' : '#d4d4d4', border: isEditing ? '1px solid #569cd6' : '1px solid transparent', padding: isEditing ? '3px 11px' : '4px 12px', fontFamily: 'monospace', fontSize: 12, outline: 'none', display: 'block', cursor: isEditing ? 'text' : 'pointer', textOverflow: 'ellipsis', whiteSpace: 'nowrap', overflow: 'hidden' }}
+                            />
                           </td>
                         );
                       })}

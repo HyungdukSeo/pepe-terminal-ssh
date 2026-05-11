@@ -282,6 +282,14 @@ ipcMain.handle('app:get-release-notes', () => {
   }
   return null;
 });
+// Electron native confirm/alert 후 Chromium renderer focus 가 멈춰서 caret 이 안 그려지는 버그 우회.
+// OS 레벨 blur → focus 사이클을 강제로 한 번 돌리면 alt-tab 한 효과와 동일하게 focus 정상 복귀.
+ipcMain.handle('win:refocus', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win.isDestroyed()) return;
+  try { win.blur(); win.focus(); } catch {}
+});
+
 ipcMain.handle('app:startup-cwd', () => startupCwd);
 ipcMain.handle('app:clear-startup-cwd', () => {
   startupCwd = null;

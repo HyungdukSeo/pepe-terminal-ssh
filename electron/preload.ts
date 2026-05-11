@@ -104,6 +104,7 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('ssh:set-auto-track', { panelId, enabled }),
 
   // App
+  refocusWindow: () => ipcRenderer.invoke('win:refocus'),
   getAppVersion: () => ipcRenderer.invoke('app:get-version'),
   getReleaseNotes: () => ipcRenderer.invoke('app:get-release-notes'),
   getStartupCwd: () => ipcRenderer.invoke('app:startup-cwd'),

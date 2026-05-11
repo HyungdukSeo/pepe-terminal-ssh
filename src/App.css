@@ -2385,6 +2385,28 @@ body.popout-options .session-editor h3:first-child {
   white-space: nowrap;
 }
 
+.session-editor-grid .dbms-checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  justify-self: start;
+  font-size: 13px;
+  color: #eee;
+  text-align: left;
+  padding-right: 0;
+  white-space: nowrap;
+  min-height: 30px;
+}
+.session-editor-grid .dbms-checkbox-label input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+
 .password-field {
   display: flex;
   align-items: center;

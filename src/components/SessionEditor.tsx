@@ -481,7 +481,7 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
             {category === 'dbms' && (
               <div className="session-editor-grid">
                 <label>Altibase 사용</label>
-                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', justifySelf: 'start' }}>
+                <label className="dbms-checkbox-label">
                   <input type="checkbox" checked={dbmsEnabled} onChange={e => setDbmsEnabled(e.target.checked)} />
                   <span>SQL Tool 활성화</span>
                 </label>
