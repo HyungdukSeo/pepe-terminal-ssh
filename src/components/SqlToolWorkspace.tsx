@@ -64,8 +64,34 @@ function saveHistory(sessionId: string, entries: HistoryEntry[]) {
 //   1           foo
 //   2           bar
 //   2 rows selected.
-function parseIsqlOutput(stdout: string): ParsedResult {
+// 거대 출력 안전 캡 — 이 이상이면 잘라 렌더러 sync 락 방지
+const MAX_PARSE_BYTES = 10 * 1024 * 1024;
+// 그리드에 렌더할 최대 행 수 — div 로 셀 렌더하므로 1만행도 부담스럽지 않지만,
+// SELECT 결과 확인+간단 편집 용도이므로 2000 정도가 실용적 상한
+const MAX_DISPLAY_ROWS = 2000;
+
+function parseIsqlOutput(stdoutRaw: string): ParsedResult {
+  try {
+    return parseIsqlOutputUnsafe(stdoutRaw);
+  } catch (e: any) {
+    console.error('[SqlTool] parse 실패 — raw 텍스트로 fallback:', e);
+    const tail = (stdoutRaw || '').slice(-2000);
+    return { columns: [], rows: [], affectedText: `⚠ 결과 파싱 실패: ${e?.message || e}`, raw: tail };
+  }
+}
+
+function parseIsqlOutputUnsafe(stdoutRaw: string): ParsedResult {
+  const truncated = (stdoutRaw?.length || 0) > MAX_PARSE_BYTES;
+  const stdout = truncated ? stdoutRaw.slice(0, MAX_PARSE_BYTES) : (stdoutRaw || '');
   const lines = stdout.split(/\r?\n/);
+  // 안전상 라인 수 한도
+  const MAX_LINES = 1_000_000;
+  if (lines.length > MAX_LINES) lines.length = MAX_LINES;
+  // 개별 라인이 비정상적으로 길면 (헤더가 한 줄에 다 들어온 비정상 출력) regex 백트래킹 폭주 방지로 잘라냄
+  const MAX_LINE_LEN = 100_000;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].length > MAX_LINE_LEN) lines[i] = lines[i].slice(0, MAX_LINE_LEN);
+  }
   // "---" 구분선 찾기
   let sepIdx = -1;
   for (let i = 0; i < lines.length; i++) {
@@ -145,6 +171,13 @@ function parseIsqlOutput(stdout: string): ParsedResult {
     } else {
       rows.push(cells);
     }
+    if (rows.length >= MAX_DISPLAY_ROWS) {
+      affected = `⚠ 출력 ${rows.length}행에서 잘림 (그리드 렌더 보호). LIMIT/WHERE 직접 사용 권장.`;
+      break;
+    }
+  }
+  if (truncated && !affected) {
+    affected = `⚠ 출력 ${Math.floor(MAX_PARSE_BYTES / (1024*1024))}MB 이상이라 잘림. LIMIT/WHERE 직접 사용 권장.`;
   }
   return { columns, rows, affectedText: affected, raw: stdout };
 }
@@ -228,6 +261,68 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName }) =>
   const connIdRef = useRef<string>(`sql-${sessionId}-${Date.now()}`);
   const generateDisposeRef = useRef<(() => void) | null>(null);
 
+  // 자동 페이지네이션 임계치/페이지 크기. SELECT 대용량 결과를 한 번에 로드하지 않고
+  // COUNT 로 전체 행수 확인 후 페이지 단위로 점진 로딩.
+  const PAGE_SIZE = 1000;
+  const SINGLE_SHOT_THRESHOLD = 2000;
+  // SELECT 이면서 LIMIT 없고 단일행 집계도 아닐 때만 페이지네이션 대상.
+  const isPaginableSelect = (sqlText: string): boolean => {
+    const t = sqlText.trim().replace(/;+\s*$/, '');
+    if (!/^\s*select\b/i.test(t)) return false;
+    if (/\blimit\s+\d/i.test(t)) return false;
+    // 단일행 집계 (단일 컬럼만) — SELECT COUNT(*) FROM ...
+    if (/^\s*select\s+(count|sum|avg|min|max)\s*\(/i.test(t)
+        && !/,/.test((t.split(/\bfrom\b/i)[0] || ''))) return false;
+    return true;
+  };
+  const wrapForCount = (sqlText: string): string => {
+    const t = sqlText.trim().replace(/;+\s*$/, '');
+    // Altibase 서브쿼리는 alias 필수
+    return `SELECT COUNT(*) FROM (${t}) _pepe_cnt`;
+  };
+  const wrapWithLimit = (sqlText: string, offset: number, count: number): string => {
+    const t = sqlText.trim().replace(/;+\s*$/, '');
+    return `${t} LIMIT ${offset}, ${count}`;
+  };
+  // 진행 중인 페이지네이션 식별 — 새 runSql 호출 시 이전 작업 무효화
+  const runIdRef = useRef<number>(0);
+
+  // SSH 연결이 끊겼는지 판단하는 에러 패턴 — 죽은 connId 는 영구히 죽어서 재연결 필요
+  const isDeadConnError = (msg: string): boolean => {
+    if (!msg) return false;
+    return /not connected|channel.*open failed|channel.*closed|connection.*(reset|lost|closed|refused)|ECONNRESET|EPIPE|ENOTCONN|not authenticated|client.*not connected/i.test(msg);
+  };
+  // sqlExec 실행 + 연결 끊김 자동 감지/재연결.
+  // 끊김으로 판단되면 새 connId 로 재연결하고 한 번 더 같은 명령을 재시도. 성공/실패 결과 그대로 반환.
+  const sqlExecWithRetry = useCallback(async (command: string, timeoutMs?: number): Promise<{ success: boolean; stdout?: string; stderr?: string; error?: string }> => {
+    const api = (window as any).api;
+    const tryOnce = () => api?.sqlExec(connIdRef.current, command, timeoutMs);
+    let r = await tryOnce();
+    if (r?.success) return r;
+    if (!isDeadConnError(r?.error || '')) return r;
+    // 연결 끊김 → 새 connId 로 재연결 후 1회 재시도
+    if (!session?.dbms) return r;
+    setConnected(false);
+    try { api?.feSftpDisconnect?.(connIdRef.current); } catch {}
+    connIdRef.current = `sql-${sessionId}-${Date.now()}`;
+    setConnecting(true);
+    try {
+      const jumpOpts = session.jumpTargetHost
+        ? { host: session.jumpTargetHost, user: session.jumpTargetUser, port: session.jumpTargetPort, password: session.jumpTargetPassword }
+        : undefined;
+      const cr = await api?.feSftpConnect(connIdRef.current, session.host, session.port || 22, session.username, session.auth, jumpOpts);
+      if (!cr?.success) {
+        setConnectError(cr?.error || '재연결 실패');
+        return r; // 원래 에러 그대로 반환
+      }
+      setConnected(true);
+      setConnectError('');
+    } finally {
+      setConnecting(false);
+    }
+    return await tryOnce();
+  }, [session, sessionId]);
+
   // 세션 정보 로드
   useEffect(() => {
     (async () => {
@@ -295,19 +390,34 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName }) =>
   const runSql = useCallback(async (sqlText: string, isAuto = false) => {
     if (!session?.dbms || !connected) return;
     if (!sqlText.trim()) return;
+    const myRunId = ++runIdRef.current;
     setRunning(true);
     setResultError('');
     setEdits(new Map());
     if (!isAuto) {
       setResult(null);
-      // SELECT FROM <table> 추출 — UPDATE 적용용. JOIN/서브쿼리는 미지원.
       const m = sqlText.match(/from\s+([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)?)/i);
       setLastTable(m ? m[1] : '');
     }
-    const cmd = buildIsqlCommand(session.dbms, sqlText);
     const t0 = Date.now();
-    try {
-      const r = await (window as any).api?.sqlExec(connIdRef.current, cmd, 60000);
+    // 절대 timeout — 어떤 시나리오라도 5분 이상 진행되면 강제로 runId 무효화하여 중단
+    // completed 플래그로 정상 종료 후 race fire 방지
+    const ABS_TIMEOUT_MS = 5 * 60 * 1000;
+    let completed = false;
+    const absTimer = setTimeout(() => {
+      if (completed) return;
+      if (runIdRef.current === myRunId) {
+        runIdRef.current++;
+        setResultError('⚠ 5분 절대 timeout — 쿼리 중단됨. WHERE/LIMIT 으로 좁혀 다시 시도.');
+        setRunning(false);
+      }
+    }, ABS_TIMEOUT_MS);
+
+    // 직접 한 번 실행 (페이지네이션 미적용 경로) — 기존 로직 그대로
+    const runSingleShot = async (effectiveSql: string, note: string = '') => {
+      const cmd = buildIsqlCommand(session.dbms!, effectiveSql);
+      const r = await sqlExecWithRetry(cmd, 60000);
+      if (runIdRef.current !== myRunId) return; // 더 새로운 runSql 이 시작됨 — 결과 무시
       const ms = Date.now() - t0;
       if (!r?.success) {
         setResultError(r?.error || 'exec 실패');
@@ -319,14 +429,13 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName }) =>
       }
       const stdout: string = r.stdout || '';
       const stderr: string = r.stderr || '';
-      // isql 에러는 stdout 에도 "ERR-..." 형태로 들어옴
       const errMatch = stdout.match(/\[(ERR-[A-Z0-9]+|ERR \d+)[^\]]*\][^\n]*/i) || stdout.match(/^\s*ERROR.*$/im);
       const parsed = parseIsqlOutput(stdout);
       if (errMatch && parsed.rows.length === 0) {
         setResultError(errMatch[0] + (stderr ? `\n${stderr}` : ''));
         setResult({ columns: [], rows: [], affectedText: stdout.trim().split('\n').slice(-5).join('\n'), raw: stdout });
       } else {
-        setResult(parsed);
+        setResult({ ...parsed, affectedText: [note, parsed.affectedText].filter(Boolean).join('\n') });
       }
       if (!isAuto) {
         setHistory(h => {
@@ -334,20 +443,134 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName }) =>
           saveHistory(sessionId, next); return next;
         });
       }
+    };
+
+    try {
+      // 페이지네이션 대상 아닌 SQL (DDL/DML/이미 LIMIT 있음/집계) — 한 번에 실행
+      if (!isPaginableSelect(sqlText)) {
+        await runSingleShot(sqlText);
+        return;
+      }
+      // 1) COUNT 먼저 — 전체 행 수 파악. 큰 테이블에선 COUNT 자체가 느릴 수 있어 진행 표시.
+      setResult({ columns: [], rows: [], affectedText: '📊 전체 행 수 확인 중...', raw: '' });
+      console.log('[SqlTool] COUNT 시작:', wrapForCount(sqlText));
+      const countCmd = buildIsqlCommand(session.dbms!, wrapForCount(sqlText));
+      const cr = await sqlExecWithRetry(countCmd, 60000);
+      console.log('[SqlTool] COUNT 응답:', { success: cr?.success, stdoutBytes: cr?.stdout?.length || 0, stdoutHead: (cr?.stdout || '').slice(0, 300), error: cr?.error });
+      if (runIdRef.current !== myRunId) return;
+      if (!cr?.success) {
+        console.warn('[SqlTool] COUNT failed, falling back to LIMIT 2000:', cr?.error);
+        // 원본 그대로 실행하면 IPC 가 거대 payload 로 락 — LIMIT 으로 안전 cap
+        await runSingleShot(wrapWithLimit(sqlText, 0, SINGLE_SHOT_THRESHOLD), `⚠ COUNT 단계 실패 (${cr?.error || '?'}) — 안전상 ${SINGLE_SHOT_THRESHOLD}행 까지만 표시`);
+        return;
+      }
+      const countStdout = cr.stdout || '';
+      if (/\[(ERR-[A-Z0-9]+|ERR \d+)/i.test(countStdout)) {
+        // COUNT wrap 자체가 syntax 에러일 수도 — 원본 LIMIT 으로 안전 실행
+        await runSingleShot(wrapWithLimit(sqlText, 0, SINGLE_SHOT_THRESHOLD), `⚠ COUNT wrap 실패 — 안전상 ${SINGLE_SHOT_THRESHOLD}행 까지만 표시`);
+        return;
+      }
+      const countParsed = parseIsqlOutput(countStdout);
+      const totalStr = (countParsed.rows[0]?.[0] || '0').replace(/[^\d-]/g, '');
+      const total = parseInt(totalStr, 10) || 0;
+
+      if (total === 0) {
+        setResult({ columns: [], rows: [], affectedText: '0 rows', raw: '' });
+        setHistory(h => {
+          const next = [{ ts: Date.now(), sql: sqlText, rows: 0, ms: Date.now() - t0, error: undefined }, ...h];
+          saveHistory(sessionId, next); return next;
+        });
+        return;
+      }
+
+      // 2) 임계치 이하 — 한 번에 가져오기 (round-trip 절약)
+      if (total <= SINGLE_SHOT_THRESHOLD) {
+        await runSingleShot(sqlText, `총 ${total}행`);
+        return;
+      }
+
+      // 3) 큰 결과 — 페이지 단위로 점진 로딩. 그리드 layout 락 방지로 MAX_DISPLAY_ROWS 에서 중단.
+      let allRows: string[][] = [];
+      let columns: string[] = [];
+      let cappedAt = -1;
+      const MAX_PAGES = Math.ceil(MAX_DISPLAY_ROWS / PAGE_SIZE) + 1; // 어떤 경우에도 이 이상 페이지는 받지 않음 (무한 루프 방어)
+      let pageCount = 0;
+      console.log('[SqlTool] 페이지네이션 시작:', { total, PAGE_SIZE, MAX_PAGES });
+      for (let off = 0; off < total; off += PAGE_SIZE) {
+        if (++pageCount > MAX_PAGES) { cappedAt = allRows.length; break; }
+        if (runIdRef.current !== myRunId) return; // 취소됨
+        console.log(`[SqlTool] 페이지 ${pageCount} 시작 (offset=${off})`);
+        const pageCmd = buildIsqlCommand(session.dbms!, wrapWithLimit(sqlText, off, PAGE_SIZE));
+        const pr = await sqlExecWithRetry(pageCmd, 60000);
+        console.log(`[SqlTool] 페이지 ${pageCount} 응답:`, { success: pr?.success, stdoutBytes: pr?.stdout?.length || 0, error: pr?.error });
+        if (runIdRef.current !== myRunId) return;
+        if (!pr?.success) {
+          setResultError(`페이지 (offset=${off}) 로드 실패: ${pr?.error || '?'}\n이미 받은 ${allRows.length}행은 표시됩니다.`);
+          break;
+        }
+        const ps = pr.stdout || '';
+        const pErrMatch = ps.match(/\[(ERR-[A-Z0-9]+|ERR \d+)[^\]]*\][^\n]*/i);
+        if (pErrMatch && off === 0) {
+          // 첫 페이지부터 에러 — 그대로 원본 실행으로 fallback
+          await runSingleShot(sqlText);
+          return;
+        }
+        const parsed = parseIsqlOutput(ps);
+        if (columns.length === 0) columns = parsed.columns;
+        allRows = allRows.concat(parsed.rows);
+        // 점진 표시. setResult 가 자주 일어나면 layout 부담 — 매 페이지 그대로 두되 cap 도달 시 중단.
+        setResult({
+          columns,
+          rows: allRows,
+          affectedText: `📥 ${allRows.length.toLocaleString()} / ${total.toLocaleString()} 행 로딩 중...`,
+          raw: '',
+        });
+        // 그리드 보호: MAX_DISPLAY_ROWS 도달 시 중단 (인풋 element 가 너무 많아지면 layout 락)
+        if (allRows.length >= MAX_DISPLAY_ROWS) {
+          cappedAt = allRows.length;
+          allRows = allRows.slice(0, MAX_DISPLAY_ROWS);
+          break;
+        }
+        // 한 페이지가 PAGE_SIZE 보다 작게 왔으면 더 받을 게 없음
+        if (parsed.rows.length < PAGE_SIZE) break;
+        // 이벤트 루프에 양보 — 취소 버튼 등 UI 이벤트 처리 시간 확보
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+      if (runIdRef.current !== myRunId) return;
+      const ms = Date.now() - t0;
+      const cappedNote = cappedAt > 0
+        ? ` ⚠ 그리드 보호로 ${MAX_DISPLAY_ROWS.toLocaleString()}행 까지만 표시. 더 보려면 WHERE/ORDER BY+LIMIT 직접 지정.`
+        : '';
+      setResult({
+        columns,
+        rows: allRows,
+        affectedText: `✓ 총 ${allRows.length.toLocaleString()}${total !== allRows.length ? ` / ${total.toLocaleString()}` : ''} 행 (${ms}ms)${cappedNote}`,
+        raw: '',
+      });
+      if (!isAuto) {
+        setHistory(h => {
+          const next = [{ ts: Date.now(), sql: sqlText, rows: allRows.length, ms, error: undefined }, ...h];
+          saveHistory(sessionId, next); return next;
+        });
+      }
     } catch (e: any) {
-      setResultError(String(e?.message || e));
+      console.error('[SqlTool] runSql 예외:', e);
+      if (runIdRef.current === myRunId) setResultError(String(e?.message || e));
     } finally {
-      setRunning(false);
+      completed = true;
+      clearTimeout(absTimer);
+      // 새 runSql 이 시작됐다면 그쪽의 running 상태를 보존
+      if (runIdRef.current === myRunId) setRunning(false);
     }
-  }, [session, connected, sessionId]);
+  }, [session, connected, sessionId, sqlExecWithRetry]);
 
   // 테이블 목록 로드 — Altibase SYSTEM_.SYS_TABLES_
   const loadTables = useCallback(async () => {
     if (!session?.dbms || !connected) return;
     setTablesLoading(true);
     try {
-      const cmd = buildIsqlCommand(session.dbms, "SELECT TABLE_NAME FROM SYSTEM_.SYS_TABLES_ WHERE TABLE_TYPE = 'T' ORDER BY TABLE_NAME");
-      const r = await (window as any).api?.sqlExec(connIdRef.current, cmd, 30000);
+      const cmd = buildIsqlCommand(session.dbms!, "SELECT TABLE_NAME FROM SYSTEM_.SYS_TABLES_ WHERE TABLE_TYPE = 'T' ORDER BY TABLE_NAME");
+      const r = await sqlExecWithRetry(cmd, 30000);
       if (r?.success && r.stdout) {
         const parsed = parseIsqlOutput(r.stdout);
         setTables(parsed.rows.map(row => (row[0] || '').trim()).filter(Boolean));
@@ -624,8 +847,8 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName }) =>
     const t0 = Date.now();
     try {
       const fullSql = updates.join('\n') + '\nCOMMIT;';
-      const cmd = buildIsqlCommand(session.dbms, fullSql);
-      const r = await (window as any).api?.sqlExec(connIdRef.current, cmd, 60000);
+      const cmd = buildIsqlCommand(session.dbms!, fullSql);
+      const r = await sqlExecWithRetry(cmd, 60000);
       const ms = Date.now() - t0;
       if (r?.success) {
         const stdout: string = r.stdout || '';
@@ -743,6 +966,15 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName }) =>
           <button onClick={() => runSql(sql)} disabled={!connected || running} style={{ background: '#3a7d3a', color: '#fff', border: 0, padding: '4px 12px', borderRadius: 3, cursor: running ? 'wait' : 'pointer' }} title="Ctrl+Shift+Enter — 전체 실행">
             전체 실행
           </button>
+          {running && (
+            <button
+              onClick={() => { runIdRef.current++; setRunning(false); setResult(prev => prev ? { ...prev, affectedText: '✕ 사용자 취소' } : null); }}
+              style={{ background: '#a33', color: '#fff', border: 0, padding: '4px 10px', borderRadius: 3, cursor: 'pointer' }}
+              title="실행 중인 쿼리 결과 무시 — 서버에서는 계속 돌지만 UI 는 즉시 반환"
+            >
+              ⏹ 취소
+            </button>
+          )}
           <button onClick={onSaveCsv} disabled={!result || result.columns.length === 0} style={{ background: '#444', color: '#fff', border: 0, padding: '4px 10px', borderRadius: 3, cursor: 'pointer' }} title="결과를 CSV 파일로 저장">
             💾 CSV로 저장
           </button>
@@ -827,10 +1059,9 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName }) =>
                         const isEditing = editingCell === key;
                         return (
                           <td key={j} style={{ padding: 0, border: '1px solid #3f3f46', borderTop: 0, borderLeft: 0, background: edited ? '#3d2a14' : (i % 2 ? '#222' : '#1e1e1e'), maxWidth: isEditing ? 'none' : 360, position: 'relative' }}>
-                            <input
-                              readOnly={!isEditing}
-                                onMouseDown={() => { if (!isEditing) setEditingCell(key); }}
-                                onFocus={() => { if (!isEditing) setEditingCell(key); }}
+                            {isEditing ? (
+                              <input
+                                autoFocus
                                 value={value}
                                 onChange={e => {
                                   const v = e.target.value;
@@ -845,10 +1076,23 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName }) =>
                                 onKeyDown={e => {
                                   if (e.key === 'Escape' || e.key === 'Enter') { e.preventDefault(); setEditingCell(null); }
                                 }}
+                                ref={el => {
+                                  if (el && document.activeElement !== el) {
+                                    // Chromium caret stuck 우회 — IPC 로 window blur/focus 강제 → 한 박자 뒤 focus+select
+                                    (window as any).api?.refocusWindow?.();
+                                    setTimeout(() => { try { el.focus(); el.select(); } catch {} }, 30);
+                                  }
+                                }}
                                 spellCheck={false}
-                                title={!isEditing && value.length > 40 ? value : undefined}
-                                style={{ width: '100%', boxSizing: 'border-box', background: isEditing ? '#1a1a1a' : 'transparent', color: edited ? '#ffd680' : '#d4d4d4', border: isEditing ? '1px solid #569cd6' : '1px solid transparent', padding: isEditing ? '3px 11px' : '4px 12px', fontFamily: 'monospace', fontSize: 12, outline: 'none', display: 'block', cursor: isEditing ? 'text' : 'pointer', textOverflow: 'ellipsis', whiteSpace: 'nowrap', overflow: 'hidden' }}
-                            />
+                                style={{ width: '100%', boxSizing: 'border-box', background: '#1a1a1a', color: edited ? '#ffd680' : '#d4d4d4', border: '1px solid #569cd6', padding: '3px 11px', fontFamily: 'monospace', fontSize: 12, outline: 'none', display: 'block' }}
+                              />
+                            ) : (
+                              <div
+                                onClick={() => setEditingCell(key)}
+                                title={value.length > 40 ? value : undefined}
+                                style={{ padding: '4px 12px', color: edited ? '#ffd680' : '#d4d4d4', fontFamily: 'monospace', fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', cursor: 'text' }}
+                              >{value || ' '}</div>
+                            )}
                           </td>
                         );
                       })}

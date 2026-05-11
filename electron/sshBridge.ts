@@ -1121,22 +1121,51 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
   }
 
   // SSH exec 채널로 임의 명령을 실행하고 stdout/stderr 를 모아서 반환 (SQL Tool 용)
-  handleSQLExec(connId: string, command: string, timeoutMs = 60000): Promise<{ stdout: string; stderr: string; code: number | null }> {
+  handleSQLExec(connId: string, command: string, timeoutMs = 60000): Promise<{ stdout: string; stderr: string; code: number | null; truncated?: boolean }> {
     return new Promise((resolve, reject) => {
       const rec = this.clients.get(connId);
       if (!rec?.conn) return reject(new Error('not connected'));
-      rec.conn.exec(command, (err: any, stream: any) => {
-        if (err) return reject(err);
-        let stdout = '';
-        let stderr = '';
-        let code: number | null = null;
-        const timer = setTimeout(() => { try { stream.close(); } catch {} reject(new Error('timeout')); }, timeoutMs);
-        stream.on('data', (d: Buffer) => { stdout += d.toString('utf8'); });
-        stream.stderr.on('data', (d: Buffer) => { stderr += d.toString('utf8'); });
-        stream.on('exit', (c: number) => { code = c; });
-        stream.on('close', () => { clearTimeout(timer); resolve({ stdout, stderr, code }); });
-        stream.on('error', (e: any) => { clearTimeout(timer); reject(e); });
-      });
+      // 메인 프로세스 메모리 보호 — stdout/stderr 한도. 초과 시 stream.close() 로 강제 종료
+      // (huge isql 출력이 main 프로세스 락걸지 않도록)
+      const MAX_BYTES = 20 * 1024 * 1024; // 20MB
+      let stdout = '';
+      let stderr = '';
+      let stdoutBytes = 0;
+      let stderrBytes = 0;
+      let truncated = false;
+      let code: number | null = null;
+      let closed = false;
+      const safeClose = () => { if (closed) return; closed = true; try { stream.close(); } catch {} };
+      let stream: any;
+      try {
+        rec.conn.exec(command, (err: any, s: any) => {
+          if (err) return reject(err);
+          stream = s;
+          const timer = setTimeout(() => { safeClose(); reject(new Error('timeout')); }, timeoutMs);
+          stream.on('data', (d: Buffer) => {
+            if (truncated) return;
+            const n = d.length;
+            if (stdoutBytes + n > MAX_BYTES) {
+              const left = MAX_BYTES - stdoutBytes;
+              if (left > 0) { stdout += d.subarray(0, left).toString('utf8'); stdoutBytes += left; }
+              truncated = true;
+              safeClose();
+              return;
+            }
+            stdout += d.toString('utf8'); stdoutBytes += n;
+          });
+          stream.stderr.on('data', (d: Buffer) => {
+            if (stderrBytes >= MAX_BYTES) return;
+            const n = Math.min(d.length, MAX_BYTES - stderrBytes);
+            stderr += d.subarray(0, n).toString('utf8'); stderrBytes += n;
+          });
+          stream.on('exit', (c: number) => { code = c; });
+          stream.on('close', () => { clearTimeout(timer); resolve({ stdout, stderr, code, truncated }); });
+          stream.on('error', (e: any) => { clearTimeout(timer); reject(e); });
+        });
+      } catch (e: any) {
+        reject(e);
+      }
     });
   }
 

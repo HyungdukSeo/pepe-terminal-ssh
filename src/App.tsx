@@ -10,6 +10,7 @@ import { SearchBar } from './components/SearchBar';
 import { FileExplorer } from './components/FileExplorer';
 import { FileEditor } from './components/FileEditor';
 import { SqlToolWorkspace } from './components/SqlToolWorkspace';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { ClaudeChat } from './components/ClaudeChat';
 import { RemoteFileTree } from './components/RemoteFileTree';
 import { QuickConnectBar, QuickConnectResult } from './components/QuickConnectDialog';
@@ -2600,7 +2601,9 @@ function App() {
         {/* SQL Tool 탭들 - 마운트 유지 */}
         {tabs.filter(t => t.type === 'sqlTool' && t.sqlTool).map(t => (
           <div key={t.id} style={{ display: activeTab?.id === t.id ? 'flex' : 'none', flex: 1, minHeight: 0 }}>
-            <SqlToolWorkspace sessionId={t.sqlTool!.sessionId} sessionName={t.sqlTool!.sessionName} />
+            <ErrorBoundary label={`SQL Tool — ${t.sqlTool!.sessionName}`}>
+              <SqlToolWorkspace sessionId={t.sqlTool!.sessionId} sessionName={t.sqlTool!.sessionName} />
+            </ErrorBoundary>
           </div>
         ))}
 
