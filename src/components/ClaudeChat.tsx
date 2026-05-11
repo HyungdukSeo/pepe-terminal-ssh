@@ -2025,7 +2025,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             </div>
           ) : (() => {
             const groupKey = g.key;
-            const expanded = expandedToolGroups.has(groupKey);
+            // 실행 중인 도구가 있으면 자동 펼침 (사용자가 보고 있을 수 있는 진행 상황)
+            const anyRunningInGroup = g.tools.some(t => t.status === 'running');
+            const expanded = expandedToolGroups.has(groupKey) || anyRunningInGroup;
             const summary = (() => {
               // 툴 이름별 카운트로 요약 — "검색함 Read 2개, Bash 1개" 식
               const counts: Record<string, number> = {};
@@ -2036,9 +2038,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               }
               return Object.entries(counts).map(([k, v]) => `${k} ${tt('toolCount', { count: v })}`).join(', ');
             })();
-            const anyRunning = g.tools.some(t => t.status === 'running');
             const anyError = g.tools.some(t => t.status === 'error');
-            const headerIcon = anyRunning ? '⏳' : anyError ? '✕' : '✓';
+            const headerIcon = anyRunningInGroup ? '⏳' : anyError ? '✕' : '✓';
             return (
               <div key={g.key} className={`claude-chat-tool-group ${expanded ? 'expanded' : 'collapsed'}`}>
                 <button className="claude-chat-tool-group-header" onClick={() => toggleToolGroup(groupKey)} title={expanded ? tt('collapse') : tt('expand')}>
@@ -2049,7 +2050,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                 {expanded && (
                   <div className="claude-chat-tool-group-body">
                     {g.tools.map(t => {
-                      const isOpen = expandedToolItems.has(t.id);
+                      // 실행 중인 도구는 자동 펼침 (진행 상황 보이도록)
+                      const isOpen = expandedToolItems.has(t.id) || t.status === 'running';
                       const labelShort = t.label.length > 80 ? t.label.slice(0, 80) + '…' : t.label;
                       return (
                         <div key={`t-${t.id}`} className={`claude-chat-timeline-item ${t.status} ${isOpen ? 'open' : 'closed'}`}>
