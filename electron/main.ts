@@ -1602,10 +1602,11 @@ ipcMain.on('ssh:disconnect', (_e, { panelId }) => {
 });
 
 const _lastSshResize = new Map<string, { cols: number; rows: number }>();
-ipcMain.on('ssh:resize', (_e, { panelId, cols, rows }) => {
+ipcMain.on('ssh:resize', (_e, { panelId, cols, rows, force }: { panelId: string; cols: number; rows: number; force?: boolean }) => {
   if (!cols || !rows || !isFinite(cols) || !isFinite(rows) || cols < 1 || rows < 1) return;
   const last = _lastSshResize.get(panelId);
-  if (last && last.cols === cols && last.rows === rows) return;
+  // force 가 명시되면 dedup 우회 (vim 등 alt-buffer 진입 시 PTY 사이즈 재동기화)
+  if (!force && last && last.cols === cols && last.rows === rows) return;
   _lastSshResize.set(panelId, { cols, rows });
   getSSHBridge().handleResize(panelId, cols, rows);
 });

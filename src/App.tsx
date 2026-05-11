@@ -1,5 +1,6 @@
 // src/App.tsx
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import './App.css';
 import { TabBar } from './components/TabBar';
 import { MenuBar } from './components/MenuBar';
@@ -12,7 +13,7 @@ import { ClaudeChat } from './components/ClaudeChat';
 import { RemoteFileTree } from './components/RemoteFileTree';
 import { QuickConnectBar, QuickConnectResult } from './components/QuickConnectDialog';
 import { StatusBar } from './components/StatusBar';
-import { resetTermConnectState, clearScrollbackInTerm, clearScreenInTerm, clearAllInTerm, applyThemeToAll, applyThemeToTerm, applyFontToTerm, applyFontToAll, getCurrentThemeName, registerTermSession, getTermSessionInfo, getWordSeparator, setWordSeparator, refitAllTerms, applyScrollbackToAll, applyScrollbackToTerm, cloneTermStyle, isTermConnected, isTermConnecting, isTermPty, subscribeConnectedChange, focusTerm, pasteToTerm, getSelectionFromTerm, selectAllInTerm, promptPasswordAndConnect, startInitialConnectWatchdog, getCurrentPwdForTerm, refitTerm, searchInTerm, searchNextInTerm, searchPrevInTerm, clearSearchInTerm, highlightAllMatches, clearHighlights, searchFromTop, getAllTermIds, applyCursorStyleToTerm } from './components/TerminalPanel';
+import { resetTermConnectState, clearScrollbackInTerm, clearScreenInTerm, clearAllInTerm, applyThemeToAll, applyThemeToTerm, applyFontToTerm, applyFontToAll, getCurrentThemeName, registerTermSession, getTermSessionInfo, getWordSeparator, setWordSeparator, refitAllTerms, applyScrollbackToAll, applyScrollbackToTerm, cloneTermStyle, isTermConnected, isTermConnecting, isTermPty, subscribeConnectedChange, focusTerm, pasteToTerm, getSelectionFromTerm, selectAllInTerm, promptPasswordAndConnect, startInitialConnectWatchdog, getCurrentPwdForTerm, refitTerm, searchInTerm, searchNextInTerm, searchPrevInTerm, clearSearchInTerm, highlightAllMatches, clearHighlights, searchFromTop, getAllTermIds, applyCursorStyleToTerm, markQuickConnectPending } from './components/TerminalPanel';
 import { marked } from 'marked';
 // @ts-ignore — vite ?raw 로 docs/MANUAL.md 를 번들 문자열로 임베드
 import manualMd from '../docs/MANUAL.md?raw';
@@ -114,6 +115,59 @@ function App() {
     }
   }, [selectedPanelId, activeTabId]);
   const [showSearch, setShowSearch] = useState(false);
+  // 비밀번호 저장 권유 모달 — 'ssh-fresh-password-success' 이벤트로 트리거됨
+  const [savePwdPrompt, setSavePwdPrompt] = useState<{ termId: string; sessionId: string; password: string; hostHint?: string } | null>(null);
+  // 비밀번호 입력 모달들 — 동시에 여러 세션 비밀번호 입력 가능 (단일 모달이 다른 세션
+  // 더블클릭을 막지 않도록). 배경은 pointer-events:none 으로 통과시킴.
+  type AskPwdItem = { termId: string; sessionId: string; hostHint?: string; userHint?: string; resolve: (pw: string | null) => void; input: string };
+  const [askPwdPrompts, setAskPwdPrompts] = useState<AskPwdItem[]>([]);
+  // portal 마운트 타깃(.layout-leaf) 이 활성 세션 변경 후 한 tick 늦게 등장할 수 있어
+  // 첫 렌더에서 targetEl=null 이면 다음 frame 에 재시도하기 위한 강제 리렌더 tick.
+  const [, setLayoutTick] = useState(0);
+  useEffect(() => {
+    if (askPwdPrompts.length === 0) return;
+    let rafId = 0;
+    const tick = () => { setLayoutTick(n => n + 1); rafId = requestAnimationFrame(tick); };
+    rafId = requestAnimationFrame(tick);
+    // 짧게 몇 frame 만 돌고 멈춤 — 평소엔 CSS 가 처리, 첫 마운트만 보조
+    setTimeout(() => cancelAnimationFrame(rafId), 200);
+    return () => cancelAnimationFrame(rafId);
+  }, [askPwdPrompts.length, selectedPanelId, activeTabId]);
+  useEffect(() => {
+    const onFresh = (e: any) => {
+      const d = e?.detail || {};
+      if (!d.sessionId || typeof d.password !== 'string') return;
+      setSavePwdPrompt({ termId: d.termId, sessionId: d.sessionId, password: d.password });
+    };
+    const onAsk = (e: any) => {
+      const d = e?.detail || {};
+      if (typeof d.resolve !== 'function') return;
+      setAskPwdPrompts(prev => {
+        // 같은 termId 가 이미 있으면 교체 (중복 방지)
+        const filtered = prev.filter(x => x.termId !== d.termId);
+        return [...filtered, { termId: d.termId, sessionId: d.sessionId, hostHint: d.hostHint, userHint: d.userHint, resolve: d.resolve, input: '' }];
+      });
+    };
+    window.addEventListener('ssh-fresh-password-success', onFresh as any);
+    window.addEventListener('ssh-password-prompt', onAsk as any);
+    return () => {
+      window.removeEventListener('ssh-fresh-password-success', onFresh as any);
+      window.removeEventListener('ssh-password-prompt', onAsk as any);
+    };
+  }, []);
+  const closeAskPwd = (termId: string, password: string | null) => {
+    setAskPwdPrompts(prev => {
+      const target = prev.find(x => x.termId === termId);
+      if (target) {
+        try { target.resolve(password); } catch {}
+        setTimeout(() => focusTerm(termId), 0);
+      }
+      return prev.filter(x => x.termId !== termId);
+    });
+  };
+  const updateAskPwdInput = (termId: string, value: string) => {
+    setAskPwdPrompts(prev => prev.map(x => x.termId === termId ? { ...x, input: value } : x));
+  };
   const [themeName, setThemeName] = useState(getCurrentThemeName);
   const [wordSepValue, setWordSepValue] = useState('');
   const [termSettings, setTermSettings] = useState<TerminalSettings>(getTerminalSettings);
@@ -1398,6 +1452,8 @@ function App() {
     cloneTermStyle(termId, newTermId);
     updateLayout(activeTab.id, layout => appendSessionsToPanel(layout, nodeId, [sess], true));
     registerTermSession(newTermId, info.sessionId || '', info.sessionName, info.host, info.quickSession);
+    // 복제 대상이 quick connect 세션이면 PTY 스폰 차단 표식
+    if (!info.sessionId && info.quickSession) markQuickConnectPending(newTermId);
     setTimeout(async () => {
       try {
         if (info.sessionId) {
@@ -1701,6 +1757,8 @@ function App() {
     };
 
     const connect = (tid: string) => {
+      // 빠른연결은 sessionId='' 이지만 SSH 핸드셰이크 진행 중 — PTY 스폰 차단 표식
+      markQuickConnectPending(tid);
       setTimeout(() => (window as any).api?.quickConnectSSH?.(tid, info), 100);
       registerTermSession(tid, '', displayName, info.host, info);
     };
@@ -3534,6 +3592,106 @@ function App() {
                 }}>
                 {bcastXferInProgress ? '전송 중...' : '전송'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* 비밀번호 입력 모달 — 현재 활성 세션(termId) 의 모달만 표시.
+          여러 세션 동시 진행 가능, 각 세션 탭으로 전환하면 해당 비밀번호 카드가 보임.
+          위치는 활성 세션 패널(.layout-leaf) 의 중앙. */}
+      {askPwdPrompts.length > 0 && (() => {
+        // 현재 활성 termId 찾기 — activeTab + selectedPanelId + activeIdx
+        let activeTid: string | null = null;
+        try {
+          if (activeTab) {
+            const findLeaf = (n: any, id: string | null): any => {
+              if (n.type === 'leaf') return (!id || n.id === id) ? n : null;
+              for (const c of n.children) { const r = findLeaf(c, id); if (r) return r; }
+              return null;
+            };
+            const leaf = findLeaf(activeTab.layout, selectedPanelId || null);
+            if (leaf) activeTid = leaf.panel.sessions[leaf.panel.activeIdx]?.termId || null;
+          }
+        } catch {}
+        const item = activeTid ? askPwdPrompts.find(x => x.termId === activeTid) : null;
+        if (!item) return null;
+        // React portal 로 활성 세션 패널(.layout-leaf) 내부에 모달 렌더 — CSS 가 패널 내 중앙 자동 정렬.
+        // 분할창 변경/세션 전환 후에도 항상 해당 패널의 정중앙에 위치 보장.
+        const targetEl = (() => {
+          try { return document.querySelector(`.layout-leaf[data-active-term="${activeTid}"]`) as HTMLElement | null; } catch { return null; }
+        })();
+        if (!targetEl) return null;
+        return createPortal(
+          <div className="ask-pwd-stack">
+            <div key={item.termId} className="ask-pwd-card">
+              <div className="ask-pwd-header">
+                <span className="ask-pwd-icon">🔐</span>
+                <span className="ask-pwd-title">비밀번호 입력</span>
+                <button className="ask-pwd-close" title="취소" onClick={() => closeAskPwd(item.termId, null)}>✕</button>
+              </div>
+              <div className="ask-pwd-desc">
+                {item.hostHint ? <><b>{item.hostHint}</b> 에 연결</> : '연결을 위해 비밀번호가 필요합니다.'}
+              </div>
+              <input
+                type="password"
+                className="save-pwd-input ask-pwd-input"
+                autoFocus
+                value={item.input}
+                onChange={e => updateAskPwdInput(item.termId, e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') { e.preventDefault(); closeAskPwd(item.termId, item.input); }
+                  else if (e.key === 'Escape') { e.preventDefault(); closeAskPwd(item.termId, null); }
+                }}
+                placeholder="••••••••"
+              />
+              <div className="ask-pwd-actions">
+                <button onClick={() => closeAskPwd(item.termId, null)}>취소</button>
+                <button className="primary" onClick={() => closeAskPwd(item.termId, item.input)}>연결</button>
+              </div>
+              {askPwdPrompts.length > 1 && (
+                <div className="ask-pwd-hint">
+                  대기 중 {askPwdPrompts.length - 1}개 — 다른 세션 탭에서 입력 가능
+                </div>
+              )}
+            </div>
+          </div>,
+          targetEl,
+        );
+      })()}
+      {/* 비밀번호 저장 권유 모달 */}
+      {savePwdPrompt && (
+        <div className="save-pwd-backdrop" onClick={() => { setSavePwdPrompt(null); setTimeout(() => focusTerm(savePwdPrompt.termId), 0); }}>
+          <div className="save-pwd-modal" onClick={e => e.stopPropagation()}>
+            <div className="save-pwd-icon">🔑</div>
+            <div className="save-pwd-title">비밀번호를 세션에 저장할까요?</div>
+            <div className="save-pwd-desc">다음 접속부터는 비밀번호 입력 없이 바로 연결됩니다.</div>
+            <div className="save-pwd-actions">
+              <button
+                onClick={() => {
+                  const tid = savePwdPrompt.termId;
+                  setSavePwdPrompt(null);
+                  setTimeout(() => focusTerm(tid), 0);
+                }}
+              >저장 안 함</button>
+              <button
+                className="primary"
+                onClick={async () => {
+                  const { sessionId, password, termId } = savePwdPrompt;
+                  setSavePwdPrompt(null);
+                  try {
+                    const data: any = await (window as any).api?.listSessions?.();
+                    const list: any[] = Array.isArray(data) ? data : (data?.sessions || []);
+                    const sess = list.find((s: any) => s.id === sessionId);
+                    if (sess) {
+                      const updated = { ...sess, auth: { ...(sess.auth || {}), type: 'password', password } };
+                      await (window as any).api?.saveSession?.(updated);
+                      try { window.dispatchEvent(new Event('sessions-reload')); } catch {}
+                      showToast('비밀번호가 세션에 저장되었습니다.');
+                    }
+                  } catch {}
+                  setTimeout(() => focusTerm(termId), 0);
+                }}
+              >저장</button>
             </div>
           </div>
         </div>

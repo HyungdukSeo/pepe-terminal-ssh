@@ -92,8 +92,8 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.send('ssh:input', { panelId, data, b64 }),
   disconnectSSH: (panelId: string) =>
     ipcRenderer.send('ssh:disconnect', { panelId }),
-  resizeSSH: (panelId: string, cols: number, rows: number) =>
-    ipcRenderer.send('ssh:resize', { panelId, cols, rows }),
+  resizeSSH: (panelId: string, cols: number, rows: number, force?: boolean) =>
+    ipcRenderer.send('ssh:resize', { panelId, cols, rows, force }),
   setSSHEncoding: (panelId: string, encoding: string) =>
     ipcRenderer.invoke('ssh:set-encoding', { panelId, encoding }),
   getSSHEncoding: (panelId: string) =>
