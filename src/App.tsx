@@ -513,6 +513,7 @@ function App() {
   const [topPanel, setTopPanel] = useState<'session' | 'filetree' | null>(null);
   const remoteTreePinnedLoadedRef = useRef(false);
   const remoteTreeHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const remoteTreeHoverShowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 세션 트리거 top 버튼 하단 y 좌표 (파일 트리 트리거의 top 위치 맞추기용)
   const [fileTreeTriggerTop, setFileTreeTriggerTop] = useState<number>(135);
   useEffect(() => {
@@ -2053,8 +2054,14 @@ function App() {
         { label: 'PePe Terminal(SSH) 정보', action: async () => {
           let sessPath = '';
           try { sessPath = await (window as any).api.getSessionsPath(); } catch {}
+          // 버전은 Electron 에서 동적으로 가져옴 (package.json 기반 — 빌드시마다 자동 반영)
+          let version = '';
+          try { version = await (window as any).api?.getAppVersion?.() || ''; } catch {}
+          // 최신 릴리즈 노트도 동적으로 — docs/RELEASE_v{version}.md 가 있으면 사용
+          let releaseNotes = '';
+          try { releaseNotes = await (window as any).api?.getReleaseNotes?.() || ''; } catch {}
           setInfoModal({ title: 'ℹ PePe Terminal(SSH) 정보', text: (
-          'PePe Terminal(SSH) v2.0.7\n\n' +
+          `PePe Terminal(SSH) v${version || '?'}\n\n` +
           '만든이: Claude (feat. ghjeong[prompt])\n\n' +
           '── 터미널 기본 ──\n' +
           'SSH/SFTP 원격 접속 (비밀번호/키/Expect-Send 로그인)\n' +
@@ -2158,7 +2165,8 @@ function App() {
           'marked (Markdown), iconv-lite (인코딩)\n' +
           'Claude Code CLI (@anthropic-ai/claude-code)\n\n' +
           '── 세션 저장 경로 ──\n' +
-          (sessPath || '(알 수 없음)')
+          (sessPath || '(알 수 없음)') +
+          (releaseNotes ? `\n\n──────────────────────────────\n📋 v${version} 릴리즈 노트\n──────────────────────────────\n${releaseNotes}` : '')
         ) }); } },
       ],
     },
@@ -2608,11 +2616,19 @@ function App() {
             const sess = leaf?.panel?.sessions[leaf.panel.activeIdx];
             // SSH 연결된 세션 또는 로컬 PTY 활성 세션이면 파일트리 표시
             if (sess && ((sess.sessionId && isTermConnected(sess.termId)) || isTermPty(sess.termId))) {
+              const onClickTrigger = () => {
+                if (remoteTreePinned) return;
+                if (remoteTreeHideTimer.current) { clearTimeout(remoteTreeHideTimer.current); remoteTreeHideTimer.current = null; }
+                if (remoteTreeHoverShowTimer.current) { clearTimeout(remoteTreeHoverShowTimer.current); remoteTreeHoverShowTimer.current = null; }
+                setRemoteTreeVisible(v => !v);
+                setTopPanel('filetree');
+              };
               const onEnterTrigger = () => {
                 if (remoteTreePinned) return;
                 if (remoteTreeHideTimer.current) { clearTimeout(remoteTreeHideTimer.current); remoteTreeHideTimer.current = null; }
-                setRemoteTreeVisible(true);
-                setTopPanel('filetree');
+                if (remoteTreeHoverShowTimer.current) clearTimeout(remoteTreeHoverShowTimer.current);
+                // 2.5 초 hover 시 자동 열림 (Claude 트리거 패턴)
+                remoteTreeHoverShowTimer.current = setTimeout(() => { setRemoteTreeVisible(true); setTopPanel('filetree'); }, 2500);
               };
               const onEnterTree = () => {
                 if (remoteTreePinned) return;
@@ -2626,8 +2642,7 @@ function App() {
               };
               const onLeaveTrigger = () => {
                 if (remoteTreePinned) return;
-                if (remoteTreeHideTimer.current) clearTimeout(remoteTreeHideTimer.current);
-                remoteTreeHideTimer.current = setTimeout(() => setRemoteTreeVisible(false), 500);
+                if (remoteTreeHoverShowTimer.current) { clearTimeout(remoteTreeHoverShowTimer.current); remoteTreeHoverShowTimer.current = null; }
               };
               fileTreeNode = (
                 <>
@@ -2636,7 +2651,7 @@ function App() {
                       className="workspace-file-tree-trigger"
                       style={{ ['--file-tree-trigger-top' as any]: `${fileTreeTriggerTop}px` }}
                     >
-                      <div className="workspace-file-tree-trigger-top" onMouseEnter={onEnterTrigger} onMouseLeave={onLeaveTrigger}>
+                      <div className="workspace-file-tree-trigger-top" onClick={onClickTrigger} onMouseEnter={onEnterTrigger} onMouseLeave={onLeaveTrigger} style={{ cursor: 'pointer' }} title="클릭=토글 / 2.5초 오버=자동 열림">
                         <span className="workspace-file-tree-trigger-text">📁 파일 트리</span>
                       </div>
                       <div className="workspace-file-tree-trigger-bottom" />
@@ -2698,9 +2713,9 @@ function App() {
             }
           }
           return (
-            <div style={{ display: 'flex', flex: 1, minHeight: 0, position: 'relative' }}>
+            <div className="workspace-content-row" style={{ display: 'flex', flex: 1, minHeight: 0, position: 'relative' }}>
               {fileTreeNode}
-              <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+              <div className="workspace-content-col" style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
           <Layout root={activeTab.layout}
             selectedPanelId={selectedPanelId}
             onSplit={(nodeId, dir) => openSplitSessionPicker(dir, nodeId)}
@@ -3225,7 +3240,7 @@ function App() {
             )}
             <div
               className={`claude-chat-sidebar ${!claudeChatPinned ? 'auto-hide' : ''} ${!claudeChatPinned && !claudeChatVisible ? 'hidden' : ''}`}
-              style={{ width: `${claudeChatWidth}px` }}
+              style={{ width: `${claudeChatWidth}px`, right: claudeChatPinned ? '0px' : '20px' }}
               onMouseEnter={onEnterSidebar}
               onMouseLeave={onLeaveSidebar}
             >

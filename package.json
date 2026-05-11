@@ -69,6 +69,11 @@
       {
         "from": "resources/x11-server/README.txt",
         "to": "x11-server/README.txt"
+      },
+      {
+        "from": "docs",
+        "to": "docs",
+        "filter": ["RELEASE_v*.md"]
       }
     ],
     "asarUnpack": [

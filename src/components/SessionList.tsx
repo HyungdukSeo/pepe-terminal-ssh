@@ -413,11 +413,21 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
   };
 
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hoverShowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleClickTrigger = () => {
+    if (pinned) return;
+    if (hideTimer.current) { clearTimeout(hideTimer.current); hideTimer.current = null; }
+    if (hoverShowTimer.current) { clearTimeout(hoverShowTimer.current); hoverShowTimer.current = null; }
+    setVisible(v => !v);
+  };
 
   const handleMouseEnterTrigger = () => {
     if (pinned) return;
     if (hideTimer.current) { clearTimeout(hideTimer.current); hideTimer.current = null; }
-    setVisible(true);
+    if (hoverShowTimer.current) clearTimeout(hoverShowTimer.current);
+    // 2.5 초 hover 시 자동 열림 (Claude 트리거와 동일 UX)
+    hoverShowTimer.current = setTimeout(() => setVisible(true), 2500);
   };
 
   const handleMouseLeaveSidebar = () => {
@@ -433,8 +443,7 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
 
   const handleMouseLeaveTrigger = () => {
     if (pinned) return;
-    if (hideTimer.current) clearTimeout(hideTimer.current);
-    hideTimer.current = setTimeout(() => setVisible(false), 500);
+    if (hoverShowTimer.current) { clearTimeout(hoverShowTimer.current); hoverShowTimer.current = null; }
   };
 
   return (
@@ -442,7 +451,7 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
       {/* 자동숨기기 모드: 세로 탭 트리거 */}
       {!pinned && (
         <div className="session-sidebar-trigger">
-          <div className="session-sidebar-trigger-top" onMouseEnter={handleMouseEnterTrigger} onMouseLeave={handleMouseLeaveTrigger}>
+          <div className="session-sidebar-trigger-top" onClick={handleClickTrigger} onMouseEnter={handleMouseEnterTrigger} onMouseLeave={handleMouseLeaveTrigger} style={{ cursor: 'pointer' }} title="클릭=토글 / 2.5초 오버=자동 열림">
             <span className="session-sidebar-trigger-text">📡 세션 관리</span>
           </div>
           <div className="session-sidebar-trigger-bottom" />

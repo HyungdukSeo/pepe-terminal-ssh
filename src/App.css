@@ -518,7 +518,8 @@ html, body {
 }
 
 /* ── App Layout ── */
-/* 터미널 투명도 활성 시 — 터미널 영역만 투명화 */
+/* 터미널 투명도 활성 시 — 실제 desktop see-through 를 위해 윈도우 전체 투명 체인.
+   UI 영역(사이드바/툴바/탭바/Claude 패널 등)은 자체 불투명 배경 강제 유지. */
 .term-transparent-active,
 .term-transparent-active body,
 .term-transparent-active #root,
@@ -528,10 +529,49 @@ html, body {
 }
 .term-transparent-active .layout-container,
 .term-transparent-active .layout-child,
+.term-transparent-active .layout-row,
+.term-transparent-active .layout-column,
+.term-transparent-active .layout-leaf,
 .term-transparent-active .layout-leaf-inner,
-.term-transparent-active .panel-terminal-area {
+.term-transparent-active .panel-terminal-area,
+.term-transparent-active .panel-terminal-split,
+.term-transparent-active .workspace-content-row,
+.term-transparent-active .workspace-content-col {
   background: transparent !important;
 }
+/* UI 영역 — 자체 불투명 배경 강제 */
+.term-transparent-active .tab-bar-row { background: #1a1a2e !important; }
+.term-transparent-active .tool-toolbar,
+.term-transparent-active .quick-connect-bar,
+.term-transparent-active .broadcast-bar,
+.term-transparent-active .quickconnect-row { background: #1a1a1a !important; }
+.term-transparent-active .session-sidebar,
+.term-transparent-active .session-sidebar-inner,
+.term-transparent-active .session-sidebar-trigger { background: #0d0f10 !important; }
+.term-transparent-active .workspace-file-tree,
+.term-transparent-active .workspace-file-tree-trigger,
+.term-transparent-active .workspace-file-tree-toolbar { background: #0d0f10 !important; }
+/* Claude 사이드바 — 자기 자신 + 모든 자손까지 inherit 으로 강제 불투명 */
+.term-transparent-active .claude-chat-sidebar,
+.term-transparent-active .claude-chat-sidebar * { background-color: inherit; }
+.term-transparent-active .claude-chat-sidebar { background-color: #0d0f10 !important; }
+.term-transparent-active .claude-chat-sidebar-trigger,
+.term-transparent-active .claude-chat-sidebar-trigger * { background-color: inherit; }
+.term-transparent-active .claude-chat-sidebar-trigger { background-color: #0d0f10 !important; }
+.term-transparent-active .claude-chat-header { background-color: #1a1a2e !important; }
+.term-transparent-active .claude-chat-history-panel { background-color: #111824 !important; }
+.term-transparent-active .claude-chat-history-item.active { background-color: #1e3a5c !important; }
+.term-transparent-active .claude-chat-history-item:hover { background-color: #1a2535 !important; }
+.term-transparent-active .claude-chat-sidebar button { background-color: transparent !important; }
+.term-transparent-active .claude-chat-sidebar input,
+.term-transparent-active .claude-chat-sidebar textarea,
+.term-transparent-active .claude-chat-sidebar select { background-color: #15151f !important; }
+.term-transparent-active .panel-status-bar,
+.term-transparent-active .panel-mini-tab-bar,
+.term-transparent-active .panel-mini-tab,
+.term-transparent-active .broadcast-input-row,
+.term-transparent-active .broadcast-actions,
+.term-transparent-active .status-bar { background: #1a1a1a !important; }
 /* layout-leaf는 padding 1px만큼 #333 테두리 유지 (분할 구분) */
 
 /* popout=session-editor 모드 — 외곽 테두리/그림자 제거 (BrowserWindow 자체가 경계) */
@@ -640,7 +680,7 @@ body.popout-options .session-editor h3:first-child {
   margin-right: 0 !important;
 }
 
-/* Claude 사이드바가 고정 모드일 때: 메인/브로드캐스트바를 사이드바 너비만큼 줄임 */
+/* Claude 사이드바 고정 모드 — 트리거 없이 패널이 right: 0 으로 자리잡음 */
 .app-root.has-claude-pinned .app-main {
   margin-right: var(--claude-chat-width, 360px);
 }
@@ -2373,12 +2413,24 @@ body.popout-options .session-editor h3:first-child {
 .session-editor-auth {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 16px;
 }
 
 .session-editor-auth label {
   text-align: left;
   padding-right: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+
+.session-editor-auth label input[type="radio"] {
+  margin: 0;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
   cursor: pointer;
 }
 
@@ -3799,7 +3851,7 @@ body.popout-options .session-editor h3:first-child {
   position: fixed;
   top: 40px;       /* tab-bar-row(40px) 바로 아래 = 패널 영역 상단 */
   bottom: 24px;
-  right: 0;
+  right: 20px; /* 트리거(20px) 자리 비워둠 — session sidebar 패턴 (left:22px) 과 동일. pinned 시엔 inline style 로 0px 오버라이드 */
   background: #0d0f10;
   border-left: 1px solid #333;
   z-index: 1300;
@@ -3814,7 +3866,7 @@ body.popout-options .session-editor h3:first-child {
 .app-root.has-quickconnect.has-claude-autohide .claude-chat-sidebar { top: 72px; }
 /* 일괄전송 바 표시 시 — broadcast bar(36px) + 상태바(24px) 만큼 위로 (auto-hide 모드만) */
 .app-root.has-broadcast.has-claude-autohide .claude-chat-sidebar { bottom: 60px; }
-/* 핀 모드일 땐 위/아래 꽉 채움 — 빠른연결/일괄전송이 영역 줄여주므로 사이드바는 전체 높이 */
+/* 핀 모드일 땐 위/아래 꽉 채움. right 값은 inline style 에서 처리 (pinned 면 0, 아니면 20). */
 .app-root.has-claude-pinned .claude-chat-sidebar { top: 40px; bottom: 24px; }
 .claude-chat-sidebar-resizer {
   position: absolute;
@@ -3832,26 +3884,30 @@ body.popout-options .session-editor h3:first-child {
   background: rgba(74, 144, 226, 0.4);
 }
 
-/* auto-hide 모드 */
+/* auto-hide 모드 — clip-path 로 트리거(우측) 쪽에서 좌측으로 펼쳐지듯 등장 */
 .claude-chat-sidebar.auto-hide {
-  transition: transform 0.2s ease-out;
   z-index: 1350;
+  transition: clip-path 0.2s ease-out;
+  clip-path: inset(0 0 0 0);
+  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.5);
 }
 .claude-chat-sidebar.auto-hide.hidden {
-  transform: translateX(100%);
+  /* 왼쪽 인셋을 100% 로 — 우측 트리거 쪽에서 좌측으로 펼쳐지는 reveal 효과 */
+  clip-path: inset(0 0 0 100%);
   pointer-events: none;
 }
 
-/* 오른쪽 세로 트리거 (auto-hide 모드일 때만) */
+/* 오른쪽 세로 트리거 (auto-hide 모드일 때만) — 풀-높이로 20px 컬럼 전체를 채워서
+   투명 모드에서 트리거 아닌 영역이 desktop 으로 새는 문제 방지 (왼쪽 session-sidebar-trigger 와 동일 패턴) */
 .claude-chat-sidebar-trigger {
   position: fixed;
-  bottom: 28px;
+  top: 40px;        /* tab-bar-row 바로 아래 (갭 0) */
+  bottom: 24px;     /* status-bar 바로 위 (갭 0) — 투명 모드에서 desktop 안 새도록 */
   right: 0;
   width: 20px;
   background: #0d0f10;
   border-left: 1px solid #333;
-  border-top-left-radius: 10px;
-  border-bottom-left-radius: 10px;
+  /* border-radius 제거 — 둥근 모서리 바깥쪽이 투명 모드에서 desktop 보이는 문제 방지 */
   z-index: 1340;
   display: flex;
   flex-direction: column;
@@ -3859,31 +3915,28 @@ body.popout-options .session-editor h3:first-child {
   overflow: hidden;
 }
 .claude-chat-sidebar-trigger > * { pointer-events: auto; }
-/* 일괄 전송바 있으면 트리거 하단을 그 위까지만 (status 24 + broadcast 36 + 4 여유) */
-.app-root.has-broadcast .claude-chat-sidebar-trigger {
-  bottom: 64px;
-}
-/* 하단쪽 정렬 — 일괄전송바 바로 위 아이콘 버튼 */
+/* 트리거는 top:40px ~ bottom:24px 풀-높이 유지 (퀵커넥트/브로드캐스트와 horizontal 으로
+   안 겹치므로 위치 변동 불필요). 이렇게 해야 우측 20px 컬럼 전체가 #0d0f10 로 채워져서
+   투명 모드에서 desktop 안 새도록 함. */
+/* 상단 아이콘 버튼 (session-sidebar-trigger-top 과 동일 패턴) */
 .claude-chat-sidebar-trigger-top {
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  padding: 4px 0;
+  padding: 8px 0;
   transition: background 0.15s;
-  border-top: 1px solid #333;
   border-bottom: 1px solid #333;
-  background: #0d0f10;
 }
 .claude-chat-sidebar-trigger-top:hover {
-  background: #1a2030;
+  background: #1a1a2e;
 }
 .claude-chat-sidebar-trigger-top:hover .claude-chat-sidebar-trigger-text {
-  color: #cff;
+  color: #ccc;
 }
-/* 하단: 비활성 공간 채움 (중앙 정렬 시 미사용) */
+/* 하단: 빈 공간 채움 — 세션 사이드바와 동일 */
 .claude-chat-sidebar-trigger-bottom {
-  display: none;
+  flex: 1;
 }
 .claude-chat-sidebar-trigger-text {
   writing-mode: vertical-rl;

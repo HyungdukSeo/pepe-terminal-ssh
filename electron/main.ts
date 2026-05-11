@@ -265,6 +265,23 @@ ipcMain.handle('sessions:open-editor', () => {
 ipcMain.handle('ui-prefs:get', () => loadUIPrefs());
 ipcMain.handle('ui-prefs:set', (_e, prefs: Record<string, any>) => { saveUIPrefs(prefs); return true; });
 
+ipcMain.handle('app:get-version', () => app.getVersion());
+ipcMain.handle('app:get-release-notes', () => {
+  // 빌드 후 패키지된 release notes 파일들 — 최신 버전 우선 매칭
+  const v = app.getVersion();
+  const candidates = [
+    path.join(process.resourcesPath, 'docs', `RELEASE_v${v}.md`),
+    path.join(app.getAppPath(), 'docs', `RELEASE_v${v}.md`),
+    path.join(__dirname, '..', '..', 'docs', `RELEASE_v${v}.md`),
+    path.join(__dirname, '..', 'docs', `RELEASE_v${v}.md`),
+  ];
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) return fs.readFileSync(p, 'utf8');
+    } catch {}
+  }
+  return null;
+});
 ipcMain.handle('app:startup-cwd', () => startupCwd);
 ipcMain.handle('app:clear-startup-cwd', () => {
   startupCwd = null;
