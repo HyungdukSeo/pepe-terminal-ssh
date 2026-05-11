@@ -1578,7 +1578,11 @@ ipcMain.handle('ssh:connect-with-password', (_e, { panelId, sessionId, password,
 ipcMain.handle('ssh:quick-connect', (_e, { panelId, session, cols, rows }) => {
   if (connectingPanels.has(panelId)) return 'already';
   if (connectedPanels.has(panelId)) return 'already';
-  if (!session || !session.host || !session.username) throw new Error('Invalid session');
+  if (!session || !session.host) throw new Error('Invalid session');
+  // username 이나 비밀번호가 비어있으면 renderer 에 자격증명 요청
+  if (!session.username) return 'need-credentials';
+  const needsPassword = !session.auth || (session.auth.type === 'password' && !session.auth.password);
+  if (needsPassword) return 'need-password';
 
   connectingPanels.add(panelId);
   const bridge = getSSHBridge();

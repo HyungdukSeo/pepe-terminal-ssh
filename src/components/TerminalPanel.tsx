@@ -297,6 +297,8 @@ const connectedListeners = new Set<() => void>();
 // 빠른연결 등 'sessionId 가 비어 있지만 곧 SSH 연결될' 종류의 termId.
 // PTY 스폰 분기를 차단하고 SSH 핸드셰이크 결과를 기다리게 함.
 const quickConnectPending = new Set<string>();
+// "▶ SSH 연결을 시도하는 중..." placeholder 메시지를 termId 당 1회만 출력하기 위한 표식
+const quickConnectPlaceholderShown = new Set<string>();
 export function markQuickConnectPending(termId: string) {
   quickConnectPending.add(termId);
 }
@@ -1393,6 +1395,7 @@ export function disposeSSHHandlers(termId: string) {
   sshErrorHandlers.delete(termId);
   sshAuthPromptHandlers.delete(termId);
   sshInitialized.delete(termId);
+  quickConnectPlaceholderShown.delete(termId);
 }
 
 /** termId별로 SSH 리스너를 한 번만 설정 (컴포넌트 lifecycle 밖) */
@@ -1405,6 +1408,7 @@ function ensureSSHSetup(termId: string) {
 
   sshConnectedHandlers.set(termId, () => {
     quickConnectPending.delete(termId);
+    quickConnectPlaceholderShown.delete(termId);
     // 새로 입력한 비밀번호로 접속 성공 → App 레벨 커스텀 모달에 저장 여부 묻기.
     // (native confirm 은 Electron BrowserWindow 포커스를 망가뜨림. 인앱 모달이면 안전.)
     const fresh = freshlyEnteredPassword.get(termId);
@@ -1416,8 +1420,10 @@ function ensureSSHSetup(termId: string) {
         }));
       } catch {}
     }
-    // 같은 termId에 PTY가 실행 중이면 종료 (Local Shell → SSH 전환)
+    // 같은 termId에 PTY가 실행 중이면 종료 (Local Shell → SSH 전환).
+    // pty:exit 핸들러가 "셸이 종료되었습니다." 메시지를 쓰는 걸 막기 위해 suppress 플래그 설정.
     if (ptyConnected.has(termId)) {
+      ptyExitSuppressed.add(termId);
       window.api?.ptyKill?.(termId);
       ptyConnected.delete(termId);
       ptyInitialized.delete(termId);
@@ -1478,12 +1484,55 @@ function ensureSSHSetup(termId: string) {
       try { term.write(`\r\n\x1b[91m✕ 인증 실패: 비밀번호가 올바르지 않습니다.\x1b[0m\r\n`); } catch {}
       const info = termSessionMap.get(termId);
       if (info?.sessionId) {
-        // 약간 늦춰서 비밀번호 입력 모달 다시 띄움 (SSH disconnect cleanup 시간 확보)
+        // 저장 세션 — 약간 늦춰서 비밀번호 입력 모달 다시 띄움 (SSH disconnect cleanup 시간 확보)
         setTimeout(() => {
           const entry = termStore.get(termId);
           const cols = entry ? (entry.term as any).cols : 80;
           const rows = entry ? (entry.term as any).rows : 24;
           promptPasswordAndConnect(termId, info.sessionId, cols, rows);
+        }, 200);
+      } else if (info?.quickSession) {
+        // 빠른연결 — 같은 이벤트 디스패치 메커니즘으로 모달 재호출
+        setTimeout(() => {
+          const tryQuickConnect = (sessInfo: any): void => {
+            quickConnectPending.add(termId);
+            (window as any).api?.quickConnectSSH?.(termId, sessInfo).then((r: string) => {
+              if (r === 'need-credentials' || r === 'need-password') {
+                const needUsername = r === 'need-credentials';
+                window.dispatchEvent(new CustomEvent('ssh-password-prompt', {
+                  detail: {
+                    termId,
+                    sessionId: '',
+                    hostHint: sessInfo.host,
+                    userHint: sessInfo.username,
+                    needUsername,
+                    resolve: (result: any) => {
+                      if (result === null) {
+                        quickConnectPending.delete(termId);
+                        try { term.write('\r\n\x1b[90m✕ 연결 취소됨.\x1b[0m\r\n'); } catch {}
+                        return;
+                      }
+                      let nextUsername = sessInfo.username;
+                      let nextPassword = '';
+                      if (typeof result === 'string') nextPassword = result;
+                      else if (result && typeof result === 'object') {
+                        nextUsername = result.username || sessInfo.username;
+                        nextPassword = result.password || '';
+                      }
+                      const next = {
+                        ...sessInfo,
+                        username: nextUsername,
+                        name: nextUsername ? `${nextUsername}@${sessInfo.host}` : sessInfo.host,
+                        auth: { type: 'password', password: nextPassword },
+                      };
+                      tryQuickConnect(next);
+                    },
+                  },
+                }));
+              }
+            }).catch(() => {});
+          };
+          tryQuickConnect(info.quickSession);
         }, 200);
       }
       return;
@@ -1526,6 +1575,8 @@ function ensureSSHSetup(termId: string) {
 // ── 로컬 셸 (PTY) ──
 const ptyInitialized = new Set<string>();
 const ptyConnected = new Set<string>();
+// SSH 가 PTY 를 takeover 할 때 pty:exit 의 "셸이 종료되었습니다" 메시지를 1회 억제하기 위한 플래그
+const ptyExitSuppressed = new Set<string>();
 const ptyDataHandlers = new Map<string, (p: any) => void>();
 const ptyExitHandlers = new Map<string, (p: any) => void>();
 let ptyDispatchersInstalled = false;
@@ -1539,6 +1590,7 @@ export function disposePtyHandlers(termId: string) {
   ptyDataHandlers.delete(termId);
   ptyExitHandlers.delete(termId);
   ptyInitialized.delete(termId);
+  ptyExitSuppressed.delete(termId);
 }
 
 function ensurePtySetup(termId: string) {
@@ -1555,6 +1607,11 @@ function ensurePtySetup(termId: string) {
   ptyExitHandlers.set(termId, () => {
     ptyConnected.delete(termId);
     notifyConnectedChange();
+    // SSH takeover 등으로 suppress 표식이 있으면 메시지 생략
+    if (ptyExitSuppressed.has(termId)) {
+      ptyExitSuppressed.delete(termId);
+      return;
+    }
     try { term.write('\r\n\x1b[90m셸이 종료되었습니다.\x1b[0m\r\n'); } catch {}
   });
 }
@@ -2024,6 +2081,13 @@ const MultiPasteModal: React.FC<MultiPasteModalProps> = ({ text, onChange, onCan
   );
 };
 
+// 외부에서 특정 termId 의 xterm 에 문자열을 직접 write — 시스템 안내 메시지 출력용
+export function writeToTerm(termId: string, text: string) {
+  const entry = termStore.get(termId);
+  if (!entry) return;
+  try { entry.term.write(text); } catch {}
+}
+
 export function focusTerm(termId: string) {
   const entry = termStore.get(termId);
   if (!entry) return;
@@ -2262,7 +2326,14 @@ export const TerminalPanel: React.FC<Props> = ({
       } else if (quickConnectPending.has(activeTermId)) {
         // 빠른연결 SSH 핸드셰이크 대기 중 — PTY 스폰 금지. 사용자에게 placeholder 표시
         // (실제 "▶ host:port (user) 연결 중..." 은 sshBridge 가 곧 보냄).
-        try { term.write('\r\n\x1b[96m▶ SSH 연결을 시도하는 중...\x1b[0m\r\n'); } catch {}
+        // 1회만 표시 — tab 전환 등으로 initConnect 가 재실행돼도 중복 출력 안 함.
+        if (!quickConnectPlaceholderShown.has(activeTermId)) {
+          quickConnectPlaceholderShown.add(activeTermId);
+          try { term.write('\r\n\x1b[96m▶ SSH 연결을 시도하는 중...\x1b[0m\r\n'); } catch {}
+        }
+      } else if (termSessionMap.get(activeTermId)?.quickSession) {
+        // 빠른연결로 등록된 termId 인데 quickConnectPending 플래그가 없는 경우 (재시도 사이 윈도우 등) —
+        // 그래도 PTY 는 띄우면 안 됨. quickConnectPending 가 다시 set 될 때까지 placeholder 유지.
       } else if (activeSession && !activeSession.sessionId && !ptyConnected.has(activeTermId)) {
         (term.options as any).windowsPty = { backend: 'conpty', buildNumber: 26200 };
         ensurePtySetup(activeTermId);
