@@ -8,7 +8,7 @@
   "type": "commonjs",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build && node -e \"require('fs').copyFileSync('electron/mcpSshServer.cjs','dist-electron/mcpSshServer.cjs')\" && electron-builder",
+    "build": "tsc && vite build && node -e \"require('fs').copyFileSync('electron/mcpSshServer.cjs','dist-electron/mcpSshServer.cjs')\" && node scripts/patch-nsis-template.js && electron-builder",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview"
   },

@@ -10,7 +10,10 @@ import { app } from 'electron';
 // 같은 display 번호로 이미 띄운 인스턴스 재사용
 const _running: Map<number, ChildProcess> = new Map();
 
-// resources/x11-server.zip 이 있고 풀어진 폴더가 없으면 풀어둠 (포터블 빌드 대응 — NSIS 안 거치는 경우)
+// resources/x11-server.zip 이 있고 풀어진 폴더가 없으면 풀어둠.
+// 최신 빌드는 폴더를 직접 번들하므로 이 함수는 보통 no-op.
+// 구버전(zip 만 있는) 설치본에서 업데이트 안 한 케이스만 동작 — Windows 10+ 내장 tar.exe 사용
+// (PowerShell Expand-Archive 는 50MB zip 에 30초+ 걸려서 사용자 대기시간 길었음).
 function ensureExtracted(log?: (m: string) => void): void {
   const zipCandidates = [
     path.join(process.resourcesPath, 'x11-server.zip'),
@@ -21,15 +24,25 @@ function ensureExtracted(log?: (m: string) => void): void {
       if (!fs.existsSync(zip)) continue;
       const target = path.join(path.dirname(zip), 'x11-server');
       if (fs.existsSync(path.join(target, 'vcxsrv.exe'))) return; // 이미 풀려있음
-      log?.(`X11 서버 압축 해제 중: ${zip} → ${target}`);
+      log?.(`X11 서버 압축 해제 중 (tar): ${zip} → ${target}`);
+      try { fs.mkdirSync(target, { recursive: true }); } catch {}
       try {
-        require('child_process').execFileSync('powershell', [
-          '-NoProfile', '-ExecutionPolicy', 'Bypass',
-          '-Command', `Expand-Archive -Path "${zip}" -DestinationPath "${target}" -Force`,
+        // Windows 10 1803+ 내장 tar.exe (bsdtar) — zip 도 처리 가능, Expand-Archive 보다 훨씬 빠름
+        require('child_process').execFileSync('tar', [
+          '-xf', zip, '-C', target,
         ], { windowsHide: true });
         log?.(`X11 서버 압축 해제 완료`);
       } catch (e: any) {
-        log?.(`압축 해제 실패: ${e.message}`);
+        log?.(`tar 압축 해제 실패 (${e.message}) — PowerShell 폴백`);
+        try {
+          require('child_process').execFileSync('powershell', [
+            '-NoProfile', '-ExecutionPolicy', 'Bypass',
+            '-Command', `Expand-Archive -Path "${zip}" -DestinationPath "${target}" -Force`,
+          ], { windowsHide: true });
+          log?.(`X11 서버 압축 해제 완료 (PowerShell)`);
+        } catch (e2: any) {
+          log?.(`PowerShell 압축 해제도 실패: ${e2.message}`);
+        }
       }
       return;
     } catch {}

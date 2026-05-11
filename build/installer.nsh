@@ -13,12 +13,18 @@
 
 ; 부드러운 진행 바 — 퍼센티지 갱신 부드럽게
 !define MUI_INSTFILESPAGE_PROGRESSBAR "smooth"
+; install/uninstall 페이지 자동 닫힘 방지 → 사용자가 detail 확인 가능
+!define MUI_FINISHPAGE_NOAUTOCLOSE
+!define MUI_UNFINISHPAGE_NOAUTOCLOSE
 
 !macro customInstall
+  ; install 단계 진입 시 detail 출력 활성 (ShowInstDetails 는 section 밖 customHeader 에서만 가능)
   SetDetailsPrint both
+  SetAutoClose false
 
   DetailPrint "─────────────────────────────────────────"
-  DetailPrint "✓ 1단계 완료: PePe Terminal 본체 파일 복사 (약 170MB)"
+  DetailPrint "✓ 1단계 완료: PePe Terminal 본체 파일 복사"
+  DetailPrint "  (X11 서버 포함 약 5천 개 파일)"
   DetailPrint "─────────────────────────────────────────"
 
   DetailPrint "▶ 2단계: 탐색기 우클릭 메뉴 등록..."
@@ -30,11 +36,26 @@
   WriteRegStr HKCU "Software\Classes\Directory\shell\PepeTerminal\command" "" '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" "%1"'
   DetailPrint "  ✓ 우클릭 메뉴 등록 완료"
 
+  ; X11 서버(VcXsrv) 번들 압축 해제 — Windows 10+ 내장 tar.exe (bsdtar) 로 빠르게 (~3초)
   IfFileExists "$INSTDIR\resources\x11-server.zip" 0 lbl_no_x11
-    DetailPrint "▶ 3단계: X11 서버(VcXsrv) 번들 설치중"
-    nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -Path \"$INSTDIR\resources\x11-server.zip\" -DestinationPath \"$INSTDIR\resources\x11-server\" -Force"'
-    Delete "$INSTDIR\resources\x11-server.zip"
-    DetailPrint "  ✓ X11 서버 설치 완료 (Qt/GTK X 앱 호환)"
+    DetailPrint "▶ 3단계: X11 서버(VcXsrv) 번들 설치 중..."
+    DetailPrint "  (50MB → ~5천 개 파일 압축 해제)"
+    nsExec::ExecToLog 'cmd /c tar -xf "$INSTDIR\resources\x11-server.zip" -C "$INSTDIR\resources\x11-server"'
+    Pop $0
+    ${If} $0 == 0
+      DetailPrint "  ✓ X11 서버 설치 완료 (tar.exe, Qt/GTK X11 앱 호환)"
+      Delete "$INSTDIR\resources\x11-server.zip"
+    ${Else}
+      DetailPrint "  ⚠ tar.exe 실패 (code=$0) — PowerShell 폴백"
+      nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -Path \"$INSTDIR\resources\x11-server.zip\" -DestinationPath \"$INSTDIR\resources\x11-server\" -Force"'
+      Pop $0
+      ${If} $0 == 0
+        DetailPrint "  ✓ X11 서버 설치 완료 (PowerShell)"
+        Delete "$INSTDIR\resources\x11-server.zip"
+      ${Else}
+        DetailPrint "  ✕ X11 서버 압축 해제 실패 — 첫 X11 사용 시 자동 재시도"
+      ${EndIf}
+    ${EndIf}
   lbl_no_x11:
 
   DetailPrint "─────────────────────────────────────────"
