@@ -477,6 +477,8 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
     setContextMenu({ x: e.clientX, y: e.clientY, file });
   };
 
+  // 에러 알림 — 네이티브 alert() 은 OS 포커스를 잃게 만들기 때문에 React 모달로 처리
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   // 삭제 확인 — 네이티브 confirm() 은 OS 포커스를 잃게 만들기 때문에 React 모달로 처리
   const [deleteConfirm, setDeleteConfirm] = useState<{ targets: string[] } | null>(null);
   const handleDelete = (name: string) => {
@@ -576,7 +578,7 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
       const filePath = currentPath.endsWith(sep) ? currentPath + name : currentPath + sep + name;
       const r = await api.feCreateFile?.(source.mode, filePath, source.termId);
       if (r && r.success === false) {
-        alert(`파일 생성 실패: ${r.error}`);
+        setErrorMessage(`파일 생성 실패: ${r.error}`);
         return;
       }
       // ★ 중복 케이스에서는 rename 모드를 loadDir(아이콘 PowerShell spawn 트리거) 보다 먼저 켜서
@@ -592,7 +594,7 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
         el?.scrollIntoView({ block: 'nearest' });
       }, 30);
     } catch (err: any) {
-      alert(`파일 생성 실패: ${err?.message || err}`);
+      setErrorMessage(`파일 생성 실패: ${err?.message || err}`);
     }
   };
 
@@ -604,7 +606,7 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
       const dirPath = currentPath.endsWith(sep) ? currentPath + name : currentPath + sep + name;
       const r = await api.feMkdir?.(source.mode, dirPath, source.termId);
       if (r && r.success === false) {
-        alert(`폴더 생성 실패: ${r.error}`);
+        setErrorMessage(`폴더 생성 실패: ${r.error}`);
         return;
       }
       console.log(`[ps-dbg] handleMkdir feMkdir DONE hasFocus=${document.hasFocus()}`);
@@ -622,7 +624,7 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
         el?.scrollIntoView({ block: 'nearest' });
       }, 30);
     } catch (err: any) {
-      alert(`폴더 생성 실패: ${err?.message || err}`);
+      setErrorMessage(`폴더 생성 실패: ${err?.message || err}`);
     }
   };
 
@@ -638,14 +640,14 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
       const r = await api.feRename?.(source.mode, oldPath, newPath, source.termId);
       setRenamingFile(null);
       if (r && r.success === false) {
-        alert(`이름 변경 실패: ${r.error}`);
+        setErrorMessage(`이름 변경 실패: ${r.error}`);
       } else {
         onSelectionChange(new Set([newName]));
       }
       loadDir(currentPath);
     } catch (err: any) {
       setRenamingFile(null);
-      alert(`이름 변경 실패: ${err?.message || err}`);
+      setErrorMessage(`이름 변경 실패: ${err?.message || err}`);
     } finally {
       renameInFlight.current = false;
     }
@@ -1016,6 +1018,26 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
           />
         );
       })()}
+      {errorMessage && createPortal(
+        <div className="rn-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setErrorMessage(null); }}>
+          <div className="rn-dialog" onMouseDown={e => e.stopPropagation()}>
+            <div className="rn-title">오류</div>
+            <div className="rn-body" style={{ maxWidth: 480 }}>
+              <div style={{ fontSize: 12, lineHeight: '1.5em', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                {errorMessage}
+              </div>
+            </div>
+            <div className="rn-actions">
+              <button className="rn-btn rn-btn-primary"
+                ref={el => { if (el) setTimeout(() => el.focus(), 0); }}
+                onClick={() => setErrorMessage(null)}
+                onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') { e.preventDefault(); setErrorMessage(null); } }}
+              >확인</button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
       {deleteConfirm && createPortal(
         <div className="rn-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setDeleteConfirm(null); }}>
           <div className="rn-dialog" onMouseDown={e => e.stopPropagation()}>
