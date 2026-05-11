@@ -29,18 +29,20 @@ export const QuickConnectBar: React.FC<Props> = ({ onConnect, onCancel, forcePro
   const protocol = forceProtocol ?? protocolState;
 
   const hostValid = host.trim() === '' || isValidHost(host);
-  const canConnect = !!host.trim() && !!username.trim() && hostValid;
+  // 호스트만 있으면 연결 시도 — username/password 빠진 건 입력 모달에서 물어봄
+  const canConnect = !!host.trim() && hostValid;
 
   const submit = () => {
     if (!canConnect) return;
     localStorage.setItem('quickConnectEncoding', encoding);
     localStorage.setItem('quickConnectProtocol', protocol);
     const normHost = normalizeHost(host);
+    const u = username.trim();
     onConnect({
-      name: `${username}@${normHost}`,
+      name: u ? `${u}@${normHost}` : normHost,
       host: normHost,
       port: Number(port) || 22,
-      username: username.trim(),
+      username: u,
       auth: { type: 'password', password },
       encoding,
       protocol,

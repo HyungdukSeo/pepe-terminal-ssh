@@ -294,6 +294,17 @@ export function refitTerm(termId: string) {
 const sshInitialized = new Set<string>();
 const globalConnected = new Set<string>();
 const connectedListeners = new Set<() => void>();
+// 빠른연결 등 'sessionId 가 비어 있지만 곧 SSH 연결될' 종류의 termId.
+// PTY 스폰 분기를 차단하고 SSH 핸드셰이크 결과를 기다리게 함.
+const quickConnectPending = new Set<string>();
+// "▶ SSH 연결을 시도하는 중..." placeholder 메시지를 termId 당 1회만 출력하기 위한 표식
+const quickConnectPlaceholderShown = new Set<string>();
+export function markQuickConnectPending(termId: string) {
+  quickConnectPending.add(termId);
+}
+export function clearQuickConnectPending(termId: string) {
+  quickConnectPending.delete(termId);
+}
 // IME 조합 상태: 조합 중에는 onData를 건너뛰고, 완료 시 최종 텍스트를 1회 전송
 // 파일 트리 표시 여부 — 전역 플래그 (예전엔 termId 별 Map 이었는데 패널 전환 시
 // 각 패널이 따로 토글 상태 가져서 불편 → 전체 앱 단위 단일 값으로 변경).
@@ -418,6 +429,35 @@ function getOrCreateTerm(termId: string): { term: Terminal; fit: FitAddon; searc
     term.loadAddon(search);
     term.loadAddon(unicode11);
     term.unicode.activeVersion = '11';
+    // Alt-buffer 진입 감지 (DECSET 1049 / 47 / 1047) — vim/less/htop 등 풀스크린 TUI 가
+    // 열릴 때마다 PTY 사이즈를 강제 재동기화. 초기 fit 이 비활성 탭/숨김 컨테이너에서
+    // 실패했어도 vim 이 작은 사이즈로 렌더되지 않도록 안전망.
+    try {
+      const csiHandler = (params: any) => {
+        try {
+          const arr = Array.isArray(params) ? params : (params?.params || []);
+          const p = arr[0];
+          if (p === 1049 || p === 47 || p === 1047) {
+            // 다음 마이크로태스크에 fit + force resize — buffer 전환이 완료된 후
+            setTimeout(() => {
+              try {
+                const entry = termStore.get(termId);
+                if (!entry) return;
+                entry.fit.fit();
+                const c = (entry.term as any).cols;
+                const r = (entry.term as any).rows;
+                if (c && r && isFinite(c) && isFinite(r)) {
+                  if (ptyConnected.has(termId)) (window as any).api?.ptyResize?.(termId, c, r);
+                  else (window as any).api?.resizeSSH?.(termId, c, r, true);
+                }
+              } catch {}
+            }, 0);
+          }
+        } catch {}
+        return false; // xterm 이 정상적으로 계속 처리하도록
+      };
+      (term as any).parser?.registerCsiHandler?.({ final: 'h', prefix: '?' }, csiHandler);
+    } catch { /* 미지원 xterm 버전 무시 */ }
     // OSC 7 핸들러 — 셸이 보낸 file://host/path 를 파싱해서 현재 pwd 저장.
     // 지원 형식:
     //   file://host/abs/posix/path        → /abs/posix/path
@@ -1285,36 +1325,50 @@ export function clearAllInTerm(termId: string) {
 const activePasswordPrompt: Map<string, { dispose: () => void }> = new Map();
 
 /** 비밀번호 미저장 세션: 터미널에서 비밀번호 입력 후 연결 */
+// 비밀번호가 처음 입력된 termId → 입력값 매핑. 접속 성공 시 "비밀번호 저장할까요?"
+// 묻기 위해 사용. 접속 실패 / 끊김 / disposeTerm 시 정리.
+const freshlyEnteredPassword = new Map<string, { sessionId: string; password: string }>();
 export function promptPasswordAndConnect(termId: string, sessionId: string, cols?: number, rows?: number) {
   // 이미 프롬프트가 활성화 중이면 스킵
   if (activePasswordPrompt.has(termId)) return;
-
   const rec = termStore.get(termId);
   if (!rec) return;
   const { term } = rec;
   const c = cols ?? (term as any).cols ?? 80;
   const r = rows ?? (term as any).rows ?? 24;
-  term.write('\x1b[93mPassword: \x1b[0m');
-  let pwBuf = '';
-  const cleanup = () => { disposable.dispose(); activePasswordPrompt.delete(termId); };
-  const disposable = term.onData((data: string) => {
-    if (data === '\r' || data === '\n') {
-      cleanup();
-      term.write('\r\n');
-      termPasswordCache.set(termId, pwBuf);
-      sshConnecting.add(termId);
-      window.api?.connectSSHWithPassword?.(termId, sessionId, pwBuf, c, r);
-    } else if (data === '\x7f' || data === '\b') {
-      if (pwBuf.length > 0) { pwBuf = pwBuf.slice(0, -1); term.write('\b \b'); }
-    } else if (data === '\x03') {
-      cleanup();
-      term.write('\r\n\x1b[90m취소\x1b[0m\r\n');
-    } else {
-      pwBuf += data;
-      term.write('*');
+  // 세션 정보로부터 표시용 호스트/유저 가져옴 (있으면 모달에 표시)
+  let hostHint = '';
+  let userHint = '';
+  try {
+    const info = termSessionMap.get(termId);
+    if (info?.host) hostHint = info.host;
+  } catch {}
+  // 모달이 종료되면 disposable 도 해제 — 토큰 객체에 cancel 콜백 저장
+  let resolved = false;
+  const resolve = (password: string | null) => {
+    if (resolved) return;
+    resolved = true;
+    activePasswordPrompt.delete(termId);
+    if (password === null) {
+      // 취소 — 그냥 정리만
+      try { term.write('\r\n\x1b[90m연결 취소\x1b[0m\r\n'); } catch {}
+      sshConnecting.delete(termId);
+      try { window.dispatchEvent(new Event('term-connect-changed')); } catch {}
+      return;
     }
-  });
-  activePasswordPrompt.set(termId, { dispose: () => disposable.dispose() });
+    termPasswordCache.set(termId, password);
+    if (sessionId) freshlyEnteredPassword.set(termId, { sessionId, password });
+    sshConnecting.add(termId);
+    window.api?.connectSSHWithPassword?.(termId, sessionId, password, c, r);
+  };
+  activePasswordPrompt.set(termId, { dispose: () => resolve(null) });
+  try {
+    window.dispatchEvent(new CustomEvent('ssh-password-prompt', {
+      detail: { termId, sessionId, hostHint, userHint, resolve },
+    }));
+  } catch {
+    resolve(null);
+  }
 }
 
 // ── SSH 이벤트 단일 dispatcher (termId 별 listener 누적으로 인한 MaxListenersExceeded 방지) ──
@@ -1341,6 +1395,7 @@ export function disposeSSHHandlers(termId: string) {
   sshErrorHandlers.delete(termId);
   sshAuthPromptHandlers.delete(termId);
   sshInitialized.delete(termId);
+  quickConnectPlaceholderShown.delete(termId);
 }
 
 /** termId별로 SSH 리스너를 한 번만 설정 (컴포넌트 lifecycle 밖) */
@@ -1352,8 +1407,23 @@ function ensureSSHSetup(termId: string) {
   const { term, fit } = getOrCreateTerm(termId);
 
   sshConnectedHandlers.set(termId, () => {
-    // 같은 termId에 PTY가 실행 중이면 종료 (Local Shell → SSH 전환)
+    quickConnectPending.delete(termId);
+    quickConnectPlaceholderShown.delete(termId);
+    // 새로 입력한 비밀번호로 접속 성공 → App 레벨 커스텀 모달에 저장 여부 묻기.
+    // (native confirm 은 Electron BrowserWindow 포커스를 망가뜨림. 인앱 모달이면 안전.)
+    const fresh = freshlyEnteredPassword.get(termId);
+    if (fresh) {
+      freshlyEnteredPassword.delete(termId);
+      try {
+        window.dispatchEvent(new CustomEvent('ssh-fresh-password-success', {
+          detail: { termId, sessionId: fresh.sessionId, password: fresh.password },
+        }));
+      } catch {}
+    }
+    // 같은 termId에 PTY가 실행 중이면 종료 (Local Shell → SSH 전환).
+    // pty:exit 핸들러가 "셸이 종료되었습니다." 메시지를 쓰는 걸 막기 위해 suppress 플래그 설정.
     if (ptyConnected.has(termId)) {
+      ptyExitSuppressed.add(termId);
       window.api?.ptyKill?.(termId);
       ptyConnected.delete(termId);
       ptyInitialized.delete(termId);
@@ -1367,12 +1437,13 @@ function ensureSSHSetup(termId: string) {
     clearInitialConnectWatchdog(termId);
     reconnectUserCancelled.delete(termId);
     notifyConnectedChange();
-    // 연결 직후 fit 은 layout 안정 후 1회만 (이전 다중 호출이 SIGWINCH cascade → bash 부분 prompt artifact 원인)
+    // 연결 직후 fit — 초기 1회는 force=true 로 dedup 우회 (PTY 초기 사이즈가
+    // 기본 80x24 로 잡힌 케이스 보정. 이전 [r artifact 는 FitAddon 패치로 별도 차단됨)
     setTimeout(() => {
       try { fit.fit(); } catch {}
       try {
         const c = (term as any).cols, r = (term as any).rows;
-        if (c >= 10 && r >= 5) window.api?.resizeSSH?.(termId, c, r);
+        if (c >= 10 && r >= 5) window.api?.resizeSSH?.(termId, c, r, true);
       } catch {}
     }, 300);
   });
@@ -1396,10 +1467,77 @@ function ensureSSHSetup(termId: string) {
 
   // SSH 에러를 터미널에 표시
   sshErrorHandlers.set(termId, (p: any) => {
+    quickConnectPending.delete(termId);
+    // 잘못된 비밀번호로 실패 — 저장 권유 안 함
+    freshlyEnteredPassword.delete(termId);
     sshConnecting.delete(termId);
     globalConnected.delete(termId);
     notifyConnectedChange();
-    // 초기 연결 watchdog 이 재시도할 수 있도록 즉시 트리거 (transient 에러 회복)
+    const errMsg = String(p.error || '');
+    // 인증 실패 (캐시된/방금 입력한 비밀번호가 틀림) — 자동 재시도 대신 비밀번호 다시 묻기
+    const isAuthFailure = /authentication\s+methods\s+failed|all\s+configured\s+authentication|permission\s+denied/i.test(errMsg);
+    if (isAuthFailure) {
+      // 잘못된 비밀번호 캐시 제거 → 재프롬프트
+      termPasswordCache.delete(termId);
+      // watchdog 도 중단 (자동 재시도 사이클 멈춤)
+      try { clearInitialConnectWatchdog(termId); } catch {}
+      try { term.write(`\r\n\x1b[91m✕ 인증 실패: 비밀번호가 올바르지 않습니다.\x1b[0m\r\n`); } catch {}
+      const info = termSessionMap.get(termId);
+      if (info?.sessionId) {
+        // 저장 세션 — 약간 늦춰서 비밀번호 입력 모달 다시 띄움 (SSH disconnect cleanup 시간 확보)
+        setTimeout(() => {
+          const entry = termStore.get(termId);
+          const cols = entry ? (entry.term as any).cols : 80;
+          const rows = entry ? (entry.term as any).rows : 24;
+          promptPasswordAndConnect(termId, info.sessionId, cols, rows);
+        }, 200);
+      } else if (info?.quickSession) {
+        // 빠른연결 — 같은 이벤트 디스패치 메커니즘으로 모달 재호출
+        setTimeout(() => {
+          const tryQuickConnect = (sessInfo: any): void => {
+            quickConnectPending.add(termId);
+            (window as any).api?.quickConnectSSH?.(termId, sessInfo).then((r: string) => {
+              if (r === 'need-credentials' || r === 'need-password') {
+                const needUsername = r === 'need-credentials';
+                window.dispatchEvent(new CustomEvent('ssh-password-prompt', {
+                  detail: {
+                    termId,
+                    sessionId: '',
+                    hostHint: sessInfo.host,
+                    userHint: sessInfo.username,
+                    needUsername,
+                    resolve: (result: any) => {
+                      if (result === null) {
+                        quickConnectPending.delete(termId);
+                        try { term.write('\r\n\x1b[90m✕ 연결 취소됨.\x1b[0m\r\n'); } catch {}
+                        return;
+                      }
+                      let nextUsername = sessInfo.username;
+                      let nextPassword = '';
+                      if (typeof result === 'string') nextPassword = result;
+                      else if (result && typeof result === 'object') {
+                        nextUsername = result.username || sessInfo.username;
+                        nextPassword = result.password || '';
+                      }
+                      const next = {
+                        ...sessInfo,
+                        username: nextUsername,
+                        name: nextUsername ? `${nextUsername}@${sessInfo.host}` : sessInfo.host,
+                        auth: { type: 'password', password: nextPassword },
+                      };
+                      tryQuickConnect(next);
+                    },
+                  },
+                }));
+              }
+            }).catch(() => {});
+          };
+          tryQuickConnect(info.quickSession);
+        }, 200);
+      }
+      return;
+    }
+    // 그 외 일시적 오류는 watchdog 재시도
     const ok = tryInitialReconnect(termId);
     if (!ok) {
       try { term.write(`\r\n\x1b[91mSSH 오류: ${p.error || 'Unknown error'}\x1b[0m\r\n`); } catch {}
@@ -1437,6 +1575,8 @@ function ensureSSHSetup(termId: string) {
 // ── 로컬 셸 (PTY) ──
 const ptyInitialized = new Set<string>();
 const ptyConnected = new Set<string>();
+// SSH 가 PTY 를 takeover 할 때 pty:exit 의 "셸이 종료되었습니다" 메시지를 1회 억제하기 위한 플래그
+const ptyExitSuppressed = new Set<string>();
 const ptyDataHandlers = new Map<string, (p: any) => void>();
 const ptyExitHandlers = new Map<string, (p: any) => void>();
 let ptyDispatchersInstalled = false;
@@ -1450,6 +1590,7 @@ export function disposePtyHandlers(termId: string) {
   ptyDataHandlers.delete(termId);
   ptyExitHandlers.delete(termId);
   ptyInitialized.delete(termId);
+  ptyExitSuppressed.delete(termId);
 }
 
 function ensurePtySetup(termId: string) {
@@ -1466,6 +1607,11 @@ function ensurePtySetup(termId: string) {
   ptyExitHandlers.set(termId, () => {
     ptyConnected.delete(termId);
     notifyConnectedChange();
+    // SSH takeover 등으로 suppress 표식이 있으면 메시지 생략
+    if (ptyExitSuppressed.has(termId)) {
+      ptyExitSuppressed.delete(termId);
+      return;
+    }
     try { term.write('\r\n\x1b[90m셸이 종료되었습니다.\x1b[0m\r\n'); } catch {}
   });
 }
@@ -1603,7 +1749,9 @@ export function isTermPty(termId: string): boolean {
 // SSH 연결 시작 추적
 const sshConnecting = new Set<string>();
 export function isTermConnecting(termId: string): boolean {
-  return sshConnecting.has(termId);
+  // 비밀번호 프롬프트 대기 중 / 빠른연결 대기 중도 "연결 중" 으로 간주 — 다른 세션이
+  // 이 termId 를 재사용해버리면 사용자가 입력 중이던 흐름이 끊김.
+  return sshConnecting.has(termId) || activePasswordPrompt.has(termId) || quickConnectPending.has(termId);
 }
 // 사용자가 재연결을 명시적으로 취소한 termId (자동 재연결 방지)
 const reconnectUserCancelled = new Set<string>();
@@ -1933,6 +2081,13 @@ const MultiPasteModal: React.FC<MultiPasteModalProps> = ({ text, onChange, onCan
   );
 };
 
+// 외부에서 특정 termId 의 xterm 에 문자열을 직접 write — 시스템 안내 메시지 출력용
+export function writeToTerm(termId: string, text: string) {
+  const entry = termStore.get(termId);
+  if (!entry) return;
+  try { entry.term.write(text); } catch {}
+}
+
 export function focusTerm(termId: string) {
   const entry = termStore.get(termId);
   if (!entry) return;
@@ -2151,25 +2306,34 @@ export const TerminalPanel: React.FC<Props> = ({
             }
           }
         } catch { /* connect error — already handled by global */ }
-        // 연결 확립 후 한 번 더 fit + 실제 cols/rows 로 resize — 초기 fit 이 layout 안정화 전이었던 경우 보정
-        setTimeout(() => {
+        // 연결 확립 후 여러 시점에 fit + force resize — 초기 fit 이 layout 안정화 전
+        // (또는 비활성 탭이라 컨테이너 hidden) 이었던 경우를 보정.
+        // force=true 로 dedup 우회해서 PTY 사이즈를 확실히 동기화.
+        const forceResyncSize = () => {
           try {
             fit.fit();
             const c = (term as any).cols || cols;
             const r = (term as any).rows || rows;
-            window.api?.resizeSSH?.(activeTermId, c, r);
+            if (c >= 10 && r >= 5) window.api?.resizeSSH?.(activeTermId, c, r, true);
           } catch {}
-        }, 200);
-        setTimeout(() => {
-          try {
-            fit.fit();
-            const c = (term as any).cols || cols;
-            const r = (term as any).rows || rows;
-            window.api?.resizeSSH?.(activeTermId, c, r);
-          } catch {}
-        }, 600);
+        };
+        setTimeout(forceResyncSize, 200);
+        setTimeout(forceResyncSize, 600);
+        setTimeout(forceResyncSize, 1500);
+        setTimeout(forceResyncSize, 3000);
       } else if (globalConnected.has(activeTermId)) {
         try { window.api?.resizeSSH?.(activeTermId, cols, rows); } catch {}
+      } else if (quickConnectPending.has(activeTermId)) {
+        // 빠른연결 SSH 핸드셰이크 대기 중 — PTY 스폰 금지. 사용자에게 placeholder 표시
+        // (실제 "▶ host:port (user) 연결 중..." 은 sshBridge 가 곧 보냄).
+        // 1회만 표시 — tab 전환 등으로 initConnect 가 재실행돼도 중복 출력 안 함.
+        if (!quickConnectPlaceholderShown.has(activeTermId)) {
+          quickConnectPlaceholderShown.add(activeTermId);
+          try { term.write('\r\n\x1b[96m▶ SSH 연결을 시도하는 중...\x1b[0m\r\n'); } catch {}
+        }
+      } else if (termSessionMap.get(activeTermId)?.quickSession) {
+        // 빠른연결로 등록된 termId 인데 quickConnectPending 플래그가 없는 경우 (재시도 사이 윈도우 등) —
+        // 그래도 PTY 는 띄우면 안 됨. quickConnectPending 가 다시 set 될 때까지 placeholder 유지.
       } else if (activeSession && !activeSession.sessionId && !ptyConnected.has(activeTermId)) {
         (term.options as any).windowsPty = { backend: 'conpty', buildNumber: 26200 };
         ensurePtySetup(activeTermId);
@@ -2798,6 +2962,7 @@ export const TerminalPanel: React.FC<Props> = ({
                 if (info.sessionId) {
                   await window.api?.connectSSH?.(tid, info.sessionId, cols, rows);
                 } else if (info.quickSession) {
+                  quickConnectPending.add(tid);
                   await (window as any).api?.quickConnectSSH?.(tid, info.quickSession, cols, rows);
                 }
               } catch {}

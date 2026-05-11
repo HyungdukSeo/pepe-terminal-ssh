@@ -518,7 +518,8 @@ html, body {
 }
 
 /* ── App Layout ── */
-/* 터미널 투명도 활성 시 — 터미널 영역만 투명화 */
+/* 터미널 투명도 활성 시 — 실제 desktop see-through 를 위해 윈도우 전체 투명 체인.
+   UI 영역(사이드바/툴바/탭바/Claude 패널 등)은 자체 불투명 배경 강제 유지. */
 .term-transparent-active,
 .term-transparent-active body,
 .term-transparent-active #root,
@@ -528,10 +529,49 @@ html, body {
 }
 .term-transparent-active .layout-container,
 .term-transparent-active .layout-child,
+.term-transparent-active .layout-row,
+.term-transparent-active .layout-column,
+.term-transparent-active .layout-leaf,
 .term-transparent-active .layout-leaf-inner,
-.term-transparent-active .panel-terminal-area {
+.term-transparent-active .panel-terminal-area,
+.term-transparent-active .panel-terminal-split,
+.term-transparent-active .workspace-content-row,
+.term-transparent-active .workspace-content-col {
   background: transparent !important;
 }
+/* UI 영역 — 자체 불투명 배경 강제 */
+.term-transparent-active .tab-bar-row { background: #1a1a2e !important; }
+.term-transparent-active .tool-toolbar,
+.term-transparent-active .quick-connect-bar,
+.term-transparent-active .broadcast-bar,
+.term-transparent-active .quickconnect-row { background: #1a1a1a !important; }
+.term-transparent-active .session-sidebar,
+.term-transparent-active .session-sidebar-inner,
+.term-transparent-active .session-sidebar-trigger { background: #0d0f10 !important; }
+.term-transparent-active .workspace-file-tree,
+.term-transparent-active .workspace-file-tree-trigger,
+.term-transparent-active .workspace-file-tree-toolbar { background: #0d0f10 !important; }
+/* Claude 사이드바 — 자기 자신 + 모든 자손까지 inherit 으로 강제 불투명 */
+.term-transparent-active .claude-chat-sidebar,
+.term-transparent-active .claude-chat-sidebar * { background-color: inherit; }
+.term-transparent-active .claude-chat-sidebar { background-color: #0d0f10 !important; }
+.term-transparent-active .claude-chat-sidebar-trigger,
+.term-transparent-active .claude-chat-sidebar-trigger * { background-color: inherit; }
+.term-transparent-active .claude-chat-sidebar-trigger { background-color: #0d0f10 !important; }
+.term-transparent-active .claude-chat-header { background-color: #1a1a2e !important; }
+.term-transparent-active .claude-chat-history-panel { background-color: #111824 !important; }
+.term-transparent-active .claude-chat-history-item.active { background-color: #1e3a5c !important; }
+.term-transparent-active .claude-chat-history-item:hover { background-color: #1a2535 !important; }
+.term-transparent-active .claude-chat-sidebar button { background-color: transparent !important; }
+.term-transparent-active .claude-chat-sidebar input,
+.term-transparent-active .claude-chat-sidebar textarea,
+.term-transparent-active .claude-chat-sidebar select { background-color: #15151f !important; }
+.term-transparent-active .panel-status-bar,
+.term-transparent-active .panel-mini-tab-bar,
+.term-transparent-active .panel-mini-tab,
+.term-transparent-active .broadcast-input-row,
+.term-transparent-active .broadcast-actions,
+.term-transparent-active .status-bar { background: #1a1a1a !important; }
 /* layout-leaf는 padding 1px만큼 #333 테두리 유지 (분할 구분) */
 
 /* popout=session-editor 모드 — 외곽 테두리/그림자 제거 (BrowserWindow 자체가 경계) */
@@ -640,7 +680,7 @@ body.popout-options .session-editor h3:first-child {
   margin-right: 0 !important;
 }
 
-/* Claude 사이드바가 고정 모드일 때: 메인/브로드캐스트바를 사이드바 너비만큼 줄임 */
+/* Claude 사이드바 고정 모드 — 트리거 없이 패널이 right: 0 으로 자리잡음 */
 .app-root.has-claude-pinned .app-main {
   margin-right: var(--claude-chat-width, 360px);
 }
@@ -1785,6 +1825,7 @@ body.popout-options .session-editor h3:first-child {
   padding: 0;
   box-sizing: border-box;
   background: transparent;
+  position: relative; /* .ask-pwd-stack 등 absolute 자식의 기준 컨테이너 */
 }
 
 /* 플로팅 확대 — 현재 layout-root 영역을 꽉 채우며 다른 모든 leaf 위로 */
@@ -2372,12 +2413,24 @@ body.popout-options .session-editor h3:first-child {
 .session-editor-auth {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 16px;
 }
 
 .session-editor-auth label {
   text-align: left;
   padding-right: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+
+.session-editor-auth label input[type="radio"] {
+  margin: 0;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
   cursor: pointer;
 }
 
@@ -3798,7 +3851,7 @@ body.popout-options .session-editor h3:first-child {
   position: fixed;
   top: 40px;       /* tab-bar-row(40px) 바로 아래 = 패널 영역 상단 */
   bottom: 24px;
-  right: 0;
+  right: 20px; /* 트리거(20px) 자리 비워둠 — session sidebar 패턴 (left:22px) 과 동일. pinned 시엔 inline style 로 0px 오버라이드 */
   background: #0d0f10;
   border-left: 1px solid #333;
   z-index: 1300;
@@ -3813,7 +3866,7 @@ body.popout-options .session-editor h3:first-child {
 .app-root.has-quickconnect.has-claude-autohide .claude-chat-sidebar { top: 72px; }
 /* 일괄전송 바 표시 시 — broadcast bar(36px) + 상태바(24px) 만큼 위로 (auto-hide 모드만) */
 .app-root.has-broadcast.has-claude-autohide .claude-chat-sidebar { bottom: 60px; }
-/* 핀 모드일 땐 위/아래 꽉 채움 — 빠른연결/일괄전송이 영역 줄여주므로 사이드바는 전체 높이 */
+/* 핀 모드일 땐 위/아래 꽉 채움. right 값은 inline style 에서 처리 (pinned 면 0, 아니면 20). */
 .app-root.has-claude-pinned .claude-chat-sidebar { top: 40px; bottom: 24px; }
 .claude-chat-sidebar-resizer {
   position: absolute;
@@ -3831,26 +3884,30 @@ body.popout-options .session-editor h3:first-child {
   background: rgba(74, 144, 226, 0.4);
 }
 
-/* auto-hide 모드 */
+/* auto-hide 모드 — clip-path 로 트리거(우측) 쪽에서 좌측으로 펼쳐지듯 등장 */
 .claude-chat-sidebar.auto-hide {
-  transition: transform 0.2s ease-out;
   z-index: 1350;
+  transition: clip-path 0.2s ease-out;
+  clip-path: inset(0 0 0 0);
+  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.5);
 }
 .claude-chat-sidebar.auto-hide.hidden {
-  transform: translateX(100%);
+  /* 왼쪽 인셋을 100% 로 — 우측 트리거 쪽에서 좌측으로 펼쳐지는 reveal 효과 */
+  clip-path: inset(0 0 0 100%);
   pointer-events: none;
 }
 
-/* 오른쪽 세로 트리거 (auto-hide 모드일 때만) */
+/* 오른쪽 세로 트리거 (auto-hide 모드일 때만) — 풀-높이로 20px 컬럼 전체를 채워서
+   투명 모드에서 트리거 아닌 영역이 desktop 으로 새는 문제 방지 (왼쪽 session-sidebar-trigger 와 동일 패턴) */
 .claude-chat-sidebar-trigger {
   position: fixed;
-  bottom: 28px;
+  top: 40px;        /* tab-bar-row 바로 아래 (갭 0) */
+  bottom: 24px;     /* status-bar 바로 위 (갭 0) — 투명 모드에서 desktop 안 새도록 */
   right: 0;
   width: 20px;
   background: #0d0f10;
   border-left: 1px solid #333;
-  border-top-left-radius: 10px;
-  border-bottom-left-radius: 10px;
+  /* border-radius 제거 — 둥근 모서리 바깥쪽이 투명 모드에서 desktop 보이는 문제 방지 */
   z-index: 1340;
   display: flex;
   flex-direction: column;
@@ -3858,31 +3915,28 @@ body.popout-options .session-editor h3:first-child {
   overflow: hidden;
 }
 .claude-chat-sidebar-trigger > * { pointer-events: auto; }
-/* 일괄 전송바 있으면 트리거 하단을 그 위까지만 (status 24 + broadcast 36 + 4 여유) */
-.app-root.has-broadcast .claude-chat-sidebar-trigger {
-  bottom: 64px;
-}
-/* 하단쪽 정렬 — 일괄전송바 바로 위 아이콘 버튼 */
+/* 트리거는 top:40px ~ bottom:24px 풀-높이 유지 (퀵커넥트/브로드캐스트와 horizontal 으로
+   안 겹치므로 위치 변동 불필요). 이렇게 해야 우측 20px 컬럼 전체가 #0d0f10 로 채워져서
+   투명 모드에서 desktop 안 새도록 함. */
+/* 상단 아이콘 버튼 (session-sidebar-trigger-top 과 동일 패턴) */
 .claude-chat-sidebar-trigger-top {
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  padding: 4px 0;
+  padding: 8px 0;
   transition: background 0.15s;
-  border-top: 1px solid #333;
   border-bottom: 1px solid #333;
-  background: #0d0f10;
 }
 .claude-chat-sidebar-trigger-top:hover {
-  background: #1a2030;
+  background: #1a1a2e;
 }
 .claude-chat-sidebar-trigger-top:hover .claude-chat-sidebar-trigger-text {
-  color: #cff;
+  color: #ccc;
 }
-/* 하단: 비활성 공간 채움 (중앙 정렬 시 미사용) */
+/* 하단: 빈 공간 채움 — 세션 사이드바와 동일 */
 .claude-chat-sidebar-trigger-bottom {
-  display: none;
+  flex: 1;
 }
 .claude-chat-sidebar-trigger-text {
   writing-mode: vertical-rl;
@@ -4896,3 +4950,194 @@ body.popout-options .session-editor h3:first-child {
   border-radius: 4px;
 }
 .keybinding-reset { margin-top: 8px; }
+
+/* 비밀번호 저장 권유 모달 */
+.save-pwd-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(2px);
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: save-pwd-fade-in 0.15s ease-out;
+}
+@keyframes save-pwd-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.save-pwd-modal {
+  background: linear-gradient(180deg, #232336 0%, #1a1a28 100%);
+  border: 1px solid #3a3a5a;
+  border-radius: 12px;
+  padding: 24px 28px 20px;
+  min-width: 360px;
+  max-width: 420px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(100, 120, 240, 0.15);
+  text-align: center;
+  animation: save-pwd-pop 0.18s ease-out;
+}
+@keyframes save-pwd-pop {
+  from { transform: scale(0.92); opacity: 0; }
+  to   { transform: scale(1);    opacity: 1; }
+}
+.save-pwd-icon {
+  font-size: 36px;
+  line-height: 1;
+  margin-bottom: 10px;
+}
+.save-pwd-title {
+  font-size: 15px;
+  color: #f0f0f5;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.save-pwd-desc {
+  font-size: 12.5px;
+  color: #999aaf;
+  margin-bottom: 18px;
+  line-height: 1.5;
+}
+.save-pwd-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: #15151f;
+  border: 1px solid #3a3a5a;
+  border-radius: 6px;
+  padding: 9px 12px;
+  font-size: 14px;
+  color: #e8e8f0;
+  margin-bottom: 16px;
+  letter-spacing: 2px;
+  outline: none;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+.save-pwd-input:focus {
+  border-color: #5a88e0;
+  box-shadow: 0 0 0 2px rgba(90, 136, 224, 0.2);
+}
+.save-pwd-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+.save-pwd-actions button {
+  min-width: 100px;
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: 1px solid #444460;
+  background: #2a2a3e;
+  color: #d0d0e0;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, transform 0.08s;
+}
+.save-pwd-actions button:hover {
+  background: #34344a;
+  border-color: #55557a;
+}
+.save-pwd-actions button:active { transform: translateY(1px); }
+.save-pwd-actions button.primary {
+  background: linear-gradient(180deg, #4a7ad8 0%, #3964c0 100%);
+  border-color: #5a88e0;
+  color: #fff;
+  font-weight: 600;
+}
+.save-pwd-actions button.primary:hover {
+  background: linear-gradient(180deg, #5a8ae8 0%, #4974d0 100%);
+  border-color: #7098f0;
+}
+
+/* 비밀번호 입력 모달 — React portal 로 활성 세션 패널(.layout-leaf) 내부에 마운트.
+   부모 기준 absolute 중앙. backdrop 없이 카드만 표시. */
+.ask-pwd-stack {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  pointer-events: none;
+}
+.ask-pwd-card {
+  pointer-events: auto;
+  width: 360px;
+  background: linear-gradient(180deg, #232336 0%, #1a1a28 100%);
+  border: 1px solid #3a3a5a;
+  border-radius: 12px;
+  padding: 18px 22px 16px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(100, 120, 240, 0.18);
+  animation: ask-pwd-pop 0.18s ease-out;
+}
+@keyframes ask-pwd-pop {
+  from { transform: scale(0.92); opacity: 0; }
+  to   { transform: scale(1);    opacity: 1; }
+}
+.ask-pwd-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.ask-pwd-icon { font-size: 18px; }
+.ask-pwd-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  color: #f0f0f5;
+}
+.ask-pwd-close {
+  background: transparent;
+  border: none;
+  color: #888;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: background 0.1s, color 0.1s;
+}
+.ask-pwd-close:hover { background: #2a2a3e; color: #fff; }
+.ask-pwd-desc {
+  font-size: 11.5px;
+  color: #999aaf;
+  margin-bottom: 10px;
+  line-height: 1.4;
+}
+.ask-pwd-desc b { color: #b8b8c8; }
+.ask-pwd-input { margin-bottom: 10px; padding: 7px 10px; font-size: 13px; }
+.ask-pwd-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.ask-pwd-actions button {
+  min-width: 70px;
+  padding: 6px 12px;
+  font-size: 12px;
+  border-radius: 5px;
+  border: 1px solid #444460;
+  background: #2a2a3e;
+  color: #d0d0e0;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.ask-pwd-actions button:hover { background: #34344a; border-color: #55557a; }
+.ask-pwd-actions button.primary {
+  background: linear-gradient(180deg, #4a7ad8 0%, #3964c0 100%);
+  border-color: #5a88e0;
+  color: #fff;
+  font-weight: 600;
+}
+.ask-pwd-actions button.primary:hover {
+  background: linear-gradient(180deg, #5a8ae8 0%, #4974d0 100%);
+  border-color: #7098f0;
+}
+.ask-pwd-hint {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed #3a3a5a;
+  font-size: 10.5px;
+  color: #888aa0;
+  text-align: center;
+}

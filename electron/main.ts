@@ -265,6 +265,23 @@ ipcMain.handle('sessions:open-editor', () => {
 ipcMain.handle('ui-prefs:get', () => loadUIPrefs());
 ipcMain.handle('ui-prefs:set', (_e, prefs: Record<string, any>) => { saveUIPrefs(prefs); return true; });
 
+ipcMain.handle('app:get-version', () => app.getVersion());
+ipcMain.handle('app:get-release-notes', () => {
+  // 빌드 후 패키지된 release notes 파일들 — 최신 버전 우선 매칭
+  const v = app.getVersion();
+  const candidates = [
+    path.join(process.resourcesPath, 'docs', `RELEASE_v${v}.md`),
+    path.join(app.getAppPath(), 'docs', `RELEASE_v${v}.md`),
+    path.join(__dirname, '..', '..', 'docs', `RELEASE_v${v}.md`),
+    path.join(__dirname, '..', 'docs', `RELEASE_v${v}.md`),
+  ];
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) return fs.readFileSync(p, 'utf8');
+    } catch {}
+  }
+  return null;
+});
 ipcMain.handle('app:startup-cwd', () => startupCwd);
 ipcMain.handle('app:clear-startup-cwd', () => {
   startupCwd = null;
@@ -1606,7 +1623,11 @@ ipcMain.handle('ssh:connect-with-password', (_e, { panelId, sessionId, password,
 ipcMain.handle('ssh:quick-connect', (_e, { panelId, session, cols, rows }) => {
   if (connectingPanels.has(panelId)) return 'already';
   if (connectedPanels.has(panelId)) return 'already';
-  if (!session || !session.host || !session.username) throw new Error('Invalid session');
+  if (!session || !session.host) throw new Error('Invalid session');
+  // username 이나 비밀번호가 비어있으면 renderer 에 자격증명 요청
+  if (!session.username) return 'need-credentials';
+  const needsPassword = !session.auth || (session.auth.type === 'password' && !session.auth.password);
+  if (needsPassword) return 'need-password';
 
   connectingPanels.add(panelId);
   const bridge = getSSHBridge();
@@ -1630,10 +1651,11 @@ ipcMain.on('ssh:disconnect', (_e, { panelId }) => {
 });
 
 const _lastSshResize = new Map<string, { cols: number; rows: number }>();
-ipcMain.on('ssh:resize', (_e, { panelId, cols, rows }) => {
+ipcMain.on('ssh:resize', (_e, { panelId, cols, rows, force }: { panelId: string; cols: number; rows: number; force?: boolean }) => {
   if (!cols || !rows || !isFinite(cols) || !isFinite(rows) || cols < 1 || rows < 1) return;
   const last = _lastSshResize.get(panelId);
-  if (last && last.cols === cols && last.rows === rows) return;
+  // force 가 명시되면 dedup 우회 (vim 등 alt-buffer 진입 시 PTY 사이즈 재동기화)
+  if (!force && last && last.cols === cols && last.rows === rows) return;
   _lastSshResize.set(panelId, { cols, rows });
   getSSHBridge().handleResize(panelId, cols, rows);
 });

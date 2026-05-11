@@ -1,5 +1,6 @@
 // src/App.tsx
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import './App.css';
 import { TabBar } from './components/TabBar';
 import { MenuBar } from './components/MenuBar';
@@ -13,7 +14,7 @@ import { ClaudeChat } from './components/ClaudeChat';
 import { RemoteFileTree } from './components/RemoteFileTree';
 import { QuickConnectBar, QuickConnectResult } from './components/QuickConnectDialog';
 import { StatusBar } from './components/StatusBar';
-import { resetTermConnectState, clearScrollbackInTerm, clearScreenInTerm, clearAllInTerm, applyThemeToAll, applyThemeToTerm, applyFontToTerm, applyFontToAll, getCurrentThemeName, registerTermSession, getTermSessionInfo, getWordSeparator, setWordSeparator, refitAllTerms, applyScrollbackToAll, applyScrollbackToTerm, cloneTermStyle, isTermConnected, isTermConnecting, isTermPty, subscribeConnectedChange, focusTerm, pasteToTerm, getSelectionFromTerm, selectAllInTerm, promptPasswordAndConnect, startInitialConnectWatchdog, getCurrentPwdForTerm, refitTerm, searchInTerm, searchNextInTerm, searchPrevInTerm, clearSearchInTerm, highlightAllMatches, clearHighlights, searchFromTop, getAllTermIds, applyCursorStyleToTerm } from './components/TerminalPanel';
+import { resetTermConnectState, clearScrollbackInTerm, clearScreenInTerm, clearAllInTerm, applyThemeToAll, applyThemeToTerm, applyFontToTerm, applyFontToAll, getCurrentThemeName, registerTermSession, getTermSessionInfo, getWordSeparator, setWordSeparator, refitAllTerms, applyScrollbackToAll, applyScrollbackToTerm, cloneTermStyle, isTermConnected, isTermConnecting, isTermPty, subscribeConnectedChange, focusTerm, pasteToTerm, getSelectionFromTerm, selectAllInTerm, promptPasswordAndConnect, startInitialConnectWatchdog, getCurrentPwdForTerm, refitTerm, searchInTerm, searchNextInTerm, searchPrevInTerm, clearSearchInTerm, highlightAllMatches, clearHighlights, searchFromTop, getAllTermIds, applyCursorStyleToTerm, markQuickConnectPending, clearQuickConnectPending, writeToTerm } from './components/TerminalPanel';
 import { marked } from 'marked';
 // @ts-ignore — vite ?raw 로 docs/MANUAL.md 를 번들 문자열로 임베드
 import manualMd from '../docs/MANUAL.md?raw';
@@ -115,6 +116,75 @@ function App() {
     }
   }, [selectedPanelId, activeTabId]);
   const [showSearch, setShowSearch] = useState(false);
+  // 비밀번호 저장 권유 모달 — 'ssh-fresh-password-success' 이벤트로 트리거됨
+  const [savePwdPrompt, setSavePwdPrompt] = useState<{ termId: string; sessionId: string; password: string; hostHint?: string } | null>(null);
+  // 비밀번호 입력 모달들 — 동시에 여러 세션 비밀번호 입력 가능 (단일 모달이 다른 세션
+  // 더블클릭을 막지 않도록). 배경은 pointer-events:none 으로 통과시킴.
+  type AskPwdItem = { termId: string; sessionId: string; hostHint?: string; userHint?: string; needUsername?: boolean; resolve: (result: any) => void; input: string; userInput: string };
+  const [askPwdPrompts, setAskPwdPrompts] = useState<AskPwdItem[]>([]);
+  // portal 마운트 타깃(.layout-leaf) 이 활성 세션 변경 후 한 tick 늦게 등장할 수 있어
+  // 첫 렌더에서 targetEl=null 이면 다음 frame 에 재시도하기 위한 강제 리렌더 tick.
+  const [, setLayoutTick] = useState(0);
+  // activeTab.layout 의 active idx 변경 감지를 위한 키 — 모달 표시 위치 갱신용
+  // (실제 activeTab 객체는 아래에서 선언됨. 여기선 tabs/activeTabId 만 사용해서 시리얼라이즈)
+  const layoutSignature = (() => {
+    const t = tabs.find(x => x.id === activeTabId);
+    if (!t) return '';
+    const walk = (n: any): string => {
+      if (n.type === 'leaf') return `${n.id}@${n.panel.activeIdx}:${n.panel.sessions.map((s: any) => s.termId).join(',')}`;
+      return n.children.map(walk).join('|');
+    };
+    return walk(t.layout);
+  })();
+  useEffect(() => {
+    if (askPwdPrompts.length === 0) return;
+    let rafId = 0;
+    const tick = () => { setLayoutTick(n => n + 1); rafId = requestAnimationFrame(tick); };
+    rafId = requestAnimationFrame(tick);
+    setTimeout(() => cancelAnimationFrame(rafId), 200);
+    return () => cancelAnimationFrame(rafId);
+  }, [askPwdPrompts.length, selectedPanelId, activeTabId, layoutSignature]);
+  useEffect(() => {
+    const onFresh = (e: any) => {
+      const d = e?.detail || {};
+      if (!d.sessionId || typeof d.password !== 'string') return;
+      setSavePwdPrompt({ termId: d.termId, sessionId: d.sessionId, password: d.password });
+    };
+    const onAsk = (e: any) => {
+      const d = e?.detail || {};
+      if (typeof d.resolve !== 'function') return;
+      setAskPwdPrompts(prev => {
+        // 같은 termId 가 이미 있으면 교체 (중복 방지)
+        const filtered = prev.filter(x => x.termId !== d.termId);
+        return [...filtered, { termId: d.termId, sessionId: d.sessionId, hostHint: d.hostHint, userHint: d.userHint, needUsername: !!d.needUsername, resolve: d.resolve, input: '', userInput: d.userHint || '' }];
+      });
+    };
+    window.addEventListener('ssh-fresh-password-success', onFresh as any);
+    window.addEventListener('ssh-password-prompt', onAsk as any);
+    return () => {
+      window.removeEventListener('ssh-fresh-password-success', onFresh as any);
+      window.removeEventListener('ssh-password-prompt', onAsk as any);
+    };
+  }, []);
+  const closeAskPwd = (termId: string, password: string | null) => {
+    setAskPwdPrompts(prev => {
+      const target = prev.find(x => x.termId === termId);
+      if (target) {
+        // needUsername 모드면 객체로 결과 전달
+        const result = password === null ? null
+          : (target.needUsername ? { username: target.userInput, password } : password);
+        try { target.resolve(result); } catch {}
+        setTimeout(() => focusTerm(termId), 0);
+      }
+      return prev.filter(x => x.termId !== termId);
+    });
+  };
+  const updateAskPwdInput = (termId: string, value: string) => {
+    setAskPwdPrompts(prev => prev.map(x => x.termId === termId ? { ...x, input: value } : x));
+  };
+  const updateAskPwdUserInput = (termId: string, value: string) => {
+    setAskPwdPrompts(prev => prev.map(x => x.termId === termId ? { ...x, userInput: value } : x));
+  };
   const [themeName, setThemeName] = useState(getCurrentThemeName);
   const [wordSepValue, setWordSepValue] = useState('');
   const [termSettings, setTermSettings] = useState<TerminalSettings>(getTerminalSettings);
@@ -444,6 +514,7 @@ function App() {
   const [topPanel, setTopPanel] = useState<'session' | 'filetree' | null>(null);
   const remoteTreePinnedLoadedRef = useRef(false);
   const remoteTreeHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const remoteTreeHoverShowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 세션 트리거 top 버튼 하단 y 좌표 (파일 트리 트리거의 top 위치 맞추기용)
   const [fileTreeTriggerTop, setFileTreeTriggerTop] = useState<number>(135);
   useEffect(() => {
@@ -1399,6 +1470,8 @@ function App() {
     cloneTermStyle(termId, newTermId);
     updateLayout(activeTab.id, layout => appendSessionsToPanel(layout, nodeId, [sess], true));
     registerTermSession(newTermId, info.sessionId || '', info.sessionName, info.host, info.quickSession);
+    // 복제 대상이 quick connect 세션이면 PTY 스폰 차단 표식
+    if (!info.sessionId && info.quickSession) markQuickConnectPending(newTermId);
     setTimeout(async () => {
       try {
         if (info.sessionId) {
@@ -1690,20 +1763,68 @@ function App() {
     const displayName = info.name;
     const sess: PanelSession = { termId, sessionId: '', sessionName: displayName };
 
-    // 선택된 패널의 빈 미니탭을 우선 사용, 없으면 첫 빈 패널, 없으면 첫 패널에 미니탭 추가
+    // 선택된 패널의 빈 미니탭을 우선 사용, 없으면 첫 빈 패널, 없으면 첫 패널에 미니탭 추가.
+    // 재사용 조건: sessionId 비어있고, PTY 미실행, SSH 미연결/미연결중, 빠른연결 대기 중도 아님.
+    // (로컬 셸 / 이미 SSH 접속된 빠른연결 세션 / 입력 대기 중 세션을 SSH 가 덮어쓰면 혼란스러움)
     const findEmptyActiveInPanel = (layout: LayoutNode, panelId: string): PanelSession | null => {
       if (layout.type === 'leaf') {
         if (layout.id !== panelId) return null;
         const s = layout.panel.sessions[layout.panel.activeIdx];
-        return (s && !s.sessionId) ? s : null;
+        if (!s || s.sessionId) return null;
+        if (isTermPty(s.termId)) return null;
+        if (isTermConnected(s.termId) || isTermConnecting(s.termId)) return null;
+        return s;
       }
       for (const c of layout.children) { const r = findEmptyActiveInPanel(c, panelId); if (r) return r; }
       return null;
     };
 
     const connect = (tid: string) => {
-      setTimeout(() => (window as any).api?.quickConnectSSH?.(tid, info), 100);
+      // 빠른연결은 sessionId='' 이지만 SSH 핸드셰이크 진행 중 — PTY 스폰 차단 표식
+      markQuickConnectPending(tid);
       registerTermSession(tid, '', displayName, info.host, info);
+      setTimeout(async () => {
+        const tryConnect = async (sessInfo: QuickConnectResult): Promise<void> => {
+          const r = await (window as any).api?.quickConnectSSH?.(tid, sessInfo);
+          if (r === 'need-credentials' || r === 'need-password') {
+            const needUsername = r === 'need-credentials';
+            // 자격증명 입력 모달 띄우기
+            window.dispatchEvent(new CustomEvent('ssh-password-prompt', {
+              detail: {
+                termId: tid,
+                sessionId: '',
+                hostHint: sessInfo.host,
+                userHint: sessInfo.username,
+                needUsername,
+                resolve: (result: any) => {
+                  if (result === null) {
+                    // 취소 — pending 해제 + 터미널에 취소 메시지 표시
+                    clearQuickConnectPending(tid);
+                    writeToTerm(tid, '\r\n\x1b[90m✕ 연결 취소됨.\x1b[0m\r\n');
+                    return;
+                  }
+                  let nextUsername = sessInfo.username;
+                  let nextPassword = '';
+                  if (typeof result === 'string') {
+                    nextPassword = result;
+                  } else if (result && typeof result === 'object') {
+                    nextUsername = result.username || sessInfo.username;
+                    nextPassword = result.password || '';
+                  }
+                  const next: QuickConnectResult = {
+                    ...sessInfo,
+                    username: nextUsername,
+                    name: nextUsername ? `${nextUsername}@${sessInfo.host}` : sessInfo.host,
+                    auth: { type: 'password', password: nextPassword },
+                  };
+                  tryConnect(next).catch(() => {});
+                },
+              },
+            }));
+          }
+        };
+        tryConnect(info).catch(() => {});
+      }, 100);
     };
 
     if (selectedPanelId) {
@@ -1934,8 +2055,14 @@ function App() {
         { label: 'PePe Terminal(SSH) 정보', action: async () => {
           let sessPath = '';
           try { sessPath = await (window as any).api.getSessionsPath(); } catch {}
+          // 버전은 Electron 에서 동적으로 가져옴 (package.json 기반 — 빌드시마다 자동 반영)
+          let version = '';
+          try { version = await (window as any).api?.getAppVersion?.() || ''; } catch {}
+          // 최신 릴리즈 노트도 동적으로 — docs/RELEASE_v{version}.md 가 있으면 사용
+          let releaseNotes = '';
+          try { releaseNotes = await (window as any).api?.getReleaseNotes?.() || ''; } catch {}
           setInfoModal({ title: 'ℹ PePe Terminal(SSH) 정보', text: (
-          'PePe Terminal(SSH) v2.0.7\n\n' +
+          `PePe Terminal(SSH) v${version || '?'}\n\n` +
           '만든이: Claude (feat. ghjeong[prompt])\n\n' +
           '── 터미널 기본 ──\n' +
           'SSH/SFTP 원격 접속 (비밀번호/키/Expect-Send 로그인)\n' +
@@ -2039,7 +2166,8 @@ function App() {
           'marked (Markdown), iconv-lite (인코딩)\n' +
           'Claude Code CLI (@anthropic-ai/claude-code)\n\n' +
           '── 세션 저장 경로 ──\n' +
-          (sessPath || '(알 수 없음)')
+          (sessPath || '(알 수 없음)') +
+          (releaseNotes ? `\n\n──────────────────────────────\n📋 v${version} 릴리즈 노트\n──────────────────────────────\n${releaseNotes}` : '')
         ) }); } },
       ],
     },
@@ -2504,11 +2632,19 @@ function App() {
             const sess = leaf?.panel?.sessions[leaf.panel.activeIdx];
             // SSH 연결된 세션 또는 로컬 PTY 활성 세션이면 파일트리 표시
             if (sess && ((sess.sessionId && isTermConnected(sess.termId)) || isTermPty(sess.termId))) {
+              const onClickTrigger = () => {
+                if (remoteTreePinned) return;
+                if (remoteTreeHideTimer.current) { clearTimeout(remoteTreeHideTimer.current); remoteTreeHideTimer.current = null; }
+                if (remoteTreeHoverShowTimer.current) { clearTimeout(remoteTreeHoverShowTimer.current); remoteTreeHoverShowTimer.current = null; }
+                setRemoteTreeVisible(v => !v);
+                setTopPanel('filetree');
+              };
               const onEnterTrigger = () => {
                 if (remoteTreePinned) return;
                 if (remoteTreeHideTimer.current) { clearTimeout(remoteTreeHideTimer.current); remoteTreeHideTimer.current = null; }
-                setRemoteTreeVisible(true);
-                setTopPanel('filetree');
+                if (remoteTreeHoverShowTimer.current) clearTimeout(remoteTreeHoverShowTimer.current);
+                // 2.5 초 hover 시 자동 열림 (Claude 트리거 패턴)
+                remoteTreeHoverShowTimer.current = setTimeout(() => { setRemoteTreeVisible(true); setTopPanel('filetree'); }, 2500);
               };
               const onEnterTree = () => {
                 if (remoteTreePinned) return;
@@ -2522,8 +2658,7 @@ function App() {
               };
               const onLeaveTrigger = () => {
                 if (remoteTreePinned) return;
-                if (remoteTreeHideTimer.current) clearTimeout(remoteTreeHideTimer.current);
-                remoteTreeHideTimer.current = setTimeout(() => setRemoteTreeVisible(false), 500);
+                if (remoteTreeHoverShowTimer.current) { clearTimeout(remoteTreeHoverShowTimer.current); remoteTreeHoverShowTimer.current = null; }
               };
               fileTreeNode = (
                 <>
@@ -2532,7 +2667,7 @@ function App() {
                       className="workspace-file-tree-trigger"
                       style={{ ['--file-tree-trigger-top' as any]: `${fileTreeTriggerTop}px` }}
                     >
-                      <div className="workspace-file-tree-trigger-top" onMouseEnter={onEnterTrigger} onMouseLeave={onLeaveTrigger}>
+                      <div className="workspace-file-tree-trigger-top" onClick={onClickTrigger} onMouseEnter={onEnterTrigger} onMouseLeave={onLeaveTrigger} style={{ cursor: 'pointer' }} title="클릭=토글 / 2.5초 오버=자동 열림">
                         <span className="workspace-file-tree-trigger-text">📁 파일 트리</span>
                       </div>
                       <div className="workspace-file-tree-trigger-bottom" />
@@ -2594,9 +2729,9 @@ function App() {
             }
           }
           return (
-            <div style={{ display: 'flex', flex: 1, minHeight: 0, position: 'relative' }}>
+            <div className="workspace-content-row" style={{ display: 'flex', flex: 1, minHeight: 0, position: 'relative' }}>
               {fileTreeNode}
-              <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+              <div className="workspace-content-col" style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
           <Layout root={activeTab.layout}
             selectedPanelId={selectedPanelId}
             onSplit={(nodeId, dir) => openSplitSessionPicker(dir, nodeId)}
@@ -3121,7 +3256,7 @@ function App() {
             )}
             <div
               className={`claude-chat-sidebar ${!claudeChatPinned ? 'auto-hide' : ''} ${!claudeChatPinned && !claudeChatVisible ? 'hidden' : ''}`}
-              style={{ width: `${claudeChatWidth}px` }}
+              style={{ width: `${claudeChatWidth}px`, right: claudeChatPinned ? '0px' : '20px' }}
               onMouseEnter={onEnterSidebar}
               onMouseLeave={onLeaveSidebar}
             >
@@ -3550,6 +3685,166 @@ function App() {
                 }}>
                 {bcastXferInProgress ? '전송 중...' : '전송'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* 비밀번호 입력 모달 — 현재 활성 세션(termId) 의 모달만 표시.
+          여러 세션 동시 진행 가능, 각 세션 탭으로 전환하면 해당 비밀번호 카드가 보임.
+          위치는 활성 세션 패널(.layout-leaf) 의 중앙. */}
+      {askPwdPrompts.length > 0 && (() => {
+        // 모든 탭에서 살아있는 termId 집합 — 닫힌 미니탭의 유령 모달 항목 정리용
+        const liveTermIds = new Set<string>();
+        const walkCollect = (n: any) => {
+          if (n.type === 'leaf') {
+            for (const s of n.panel.sessions) liveTermIds.add(s.termId);
+          } else {
+            for (const c of n.children) walkCollect(c);
+          }
+        };
+        for (const t of tabs) {
+          if (t.type === 'fileExplorer' || t.type === 'fileEditor') continue;
+          walkCollect(t.layout);
+        }
+        const validPrompts = askPwdPrompts.filter(p => liveTermIds.has(p.termId));
+        // 정리 — 다음 렌더 사이클에 state 도 동기화
+        if (validPrompts.length !== askPwdPrompts.length) {
+          setTimeout(() => {
+            setAskPwdPrompts(prev => prev.filter(p => liveTermIds.has(p.termId)));
+          }, 0);
+        }
+        if (validPrompts.length === 0) return null;
+        // 현재 활성 termId 찾기 — activeTab + selectedPanelId + activeIdx 우선,
+        // 매칭되는 모달이 없으면 현재 탭에서 askPwdPrompts 의 termId 를 가진 leaf 의 활성 세션을 찾음.
+        let activeTid: string | null = null;
+        const findLeaf = (n: any, id: string | null): any => {
+          if (n.type === 'leaf') return (!id || n.id === id) ? n : null;
+          for (const c of n.children) { const r = findLeaf(c, id); if (r) return r; }
+          return null;
+        };
+        const findLeafContainingTermId = (n: any, tid: string): any => {
+          if (n.type === 'leaf') {
+            return n.panel.sessions.some((s: any) => s.termId === tid) ? n : null;
+          }
+          for (const c of n.children) { const r = findLeafContainingTermId(c, tid); if (r) return r; }
+          return null;
+        };
+        try {
+          if (activeTab) {
+            const leaf = findLeaf(activeTab.layout, selectedPanelId || null);
+            if (leaf) activeTid = leaf.panel.sessions[leaf.panel.activeIdx]?.termId || null;
+            // selectedPanelId 가 다른 탭 패널이거나 모달 termId 와 안 맞으면, 현재 탭에서
+            // 모달 termId 를 가진 leaf 의 활성 세션을 활성으로 간주.
+            const matchedItem = activeTid && validPrompts.find(x => x.termId === activeTid);
+            if (!matchedItem) {
+              for (const it of validPrompts) {
+                const lf = findLeafContainingTermId(activeTab.layout, it.termId);
+                if (lf) {
+                  const activeOfLeaf = lf.panel.sessions[lf.panel.activeIdx]?.termId;
+                  if (activeOfLeaf === it.termId) { activeTid = it.termId; break; }
+                }
+              }
+            }
+          }
+        } catch {}
+        const item = activeTid ? validPrompts.find(x => x.termId === activeTid) : null;
+        if (!item) return null;
+        // React portal 로 활성 세션 패널(.layout-leaf) 내부에 모달 렌더 — CSS 가 패널 내 중앙 자동 정렬.
+        // 분할창 변경/세션 전환 후에도 항상 해당 패널의 정중앙에 위치 보장.
+        const targetEl = (() => {
+          try { return document.querySelector(`.layout-leaf[data-active-term="${activeTid}"]`) as HTMLElement | null; } catch { return null; }
+        })();
+        if (!targetEl) return null;
+        return createPortal(
+          <div className="ask-pwd-stack">
+            <div key={item.termId} className="ask-pwd-card">
+              <div className="ask-pwd-header">
+                <span className="ask-pwd-icon">🔐</span>
+                <span className="ask-pwd-title">{item.needUsername ? '자격증명 입력' : '비밀번호 입력'}</span>
+                <button className="ask-pwd-close" title="취소" onClick={() => closeAskPwd(item.termId, null)}>✕</button>
+              </div>
+              <div className="ask-pwd-desc">
+                {item.hostHint ? <><b>{item.hostHint}</b> 에 연결</> : '연결을 위해 자격증명이 필요합니다.'}
+              </div>
+              {item.needUsername && (
+                <input
+                  type="text"
+                  className="save-pwd-input ask-pwd-input"
+                  autoFocus
+                  value={item.userInput}
+                  onChange={e => updateAskPwdUserInput(item.termId, e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      // 다음 입력란(비밀번호)로 포커스 이동
+                      const next = (e.currentTarget.parentElement?.querySelector('input[type="password"]') as HTMLInputElement | null);
+                      next?.focus();
+                    } else if (e.key === 'Escape') { e.preventDefault(); closeAskPwd(item.termId, null); }
+                  }}
+                  placeholder="username"
+                  style={{ letterSpacing: 'normal' }}
+                />
+              )}
+              <input
+                type="password"
+                className="save-pwd-input ask-pwd-input"
+                autoFocus={!item.needUsername}
+                value={item.input}
+                onChange={e => updateAskPwdInput(item.termId, e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') { e.preventDefault(); closeAskPwd(item.termId, item.input); }
+                  else if (e.key === 'Escape') { e.preventDefault(); closeAskPwd(item.termId, null); }
+                }}
+                placeholder="••••••••"
+              />
+              <div className="ask-pwd-actions">
+                <button onClick={() => closeAskPwd(item.termId, null)}>취소</button>
+                <button className="primary" onClick={() => closeAskPwd(item.termId, item.input)}>연결</button>
+              </div>
+              {validPrompts.length > 1 && (
+                <div className="ask-pwd-hint">
+                  대기 중 {validPrompts.length - 1}개 — 다른 세션 탭에서 입력 가능
+                </div>
+              )}
+            </div>
+          </div>,
+          targetEl,
+        );
+      })()}
+      {/* 비밀번호 저장 권유 모달 */}
+      {savePwdPrompt && (
+        <div className="save-pwd-backdrop" onClick={() => { setSavePwdPrompt(null); setTimeout(() => focusTerm(savePwdPrompt.termId), 0); }}>
+          <div className="save-pwd-modal" onClick={e => e.stopPropagation()}>
+            <div className="save-pwd-icon">🔑</div>
+            <div className="save-pwd-title">비밀번호를 세션에 저장할까요?</div>
+            <div className="save-pwd-desc">다음 접속부터는 비밀번호 입력 없이 바로 연결됩니다.</div>
+            <div className="save-pwd-actions">
+              <button
+                onClick={() => {
+                  const tid = savePwdPrompt.termId;
+                  setSavePwdPrompt(null);
+                  setTimeout(() => focusTerm(tid), 0);
+                }}
+              >저장 안 함</button>
+              <button
+                className="primary"
+                onClick={async () => {
+                  const { sessionId, password, termId } = savePwdPrompt;
+                  setSavePwdPrompt(null);
+                  try {
+                    const data: any = await (window as any).api?.listSessions?.();
+                    const list: any[] = Array.isArray(data) ? data : (data?.sessions || []);
+                    const sess = list.find((s: any) => s.id === sessionId);
+                    if (sess) {
+                      const updated = { ...sess, auth: { ...(sess.auth || {}), type: 'password', password } };
+                      await (window as any).api?.saveSession?.(updated);
+                      try { window.dispatchEvent(new Event('sessions-reload')); } catch {}
+                      showToast('비밀번호가 세션에 저장되었습니다.');
+                    }
+                  } catch {}
+                  setTimeout(() => focusTerm(termId), 0);
+                }}
+              >저장</button>
             </div>
           </div>
         </div>

@@ -94,8 +94,8 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.send('ssh:input', { panelId, data, b64 }),
   disconnectSSH: (panelId: string) =>
     ipcRenderer.send('ssh:disconnect', { panelId }),
-  resizeSSH: (panelId: string, cols: number, rows: number) =>
-    ipcRenderer.send('ssh:resize', { panelId, cols, rows }),
+  resizeSSH: (panelId: string, cols: number, rows: number, force?: boolean) =>
+    ipcRenderer.send('ssh:resize', { panelId, cols, rows, force }),
   setSSHEncoding: (panelId: string, encoding: string) =>
     ipcRenderer.invoke('ssh:set-encoding', { panelId, encoding }),
   getSSHEncoding: (panelId: string) =>
@@ -104,6 +104,8 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('ssh:set-auto-track', { panelId, enabled }),
 
   // App
+  getAppVersion: () => ipcRenderer.invoke('app:get-version'),
+  getReleaseNotes: () => ipcRenderer.invoke('app:get-release-notes'),
   getStartupCwd: () => ipcRenderer.invoke('app:startup-cwd'),
   clearStartupCwd: () => ipcRenderer.invoke('app:clear-startup-cwd'),
   registerContextMenu: () => ipcRenderer.invoke('app:register-context-menu'),
