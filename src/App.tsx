@@ -2106,13 +2106,17 @@ function App() {
           'WebDAV 브리지 — 원격 SSH 를 로컬 UNC 로 실시간 마운트\n' +
           'Unix 경로 자동 UNC 번역 (/view/... → \\\\127.0.0.1@port\\...)\n' +
           'MCP ssh_exec — Claude 가 원격 SSH 명령 실행 (cleartool 등)\n' +
-          '모델 선택 (Opus / Sonnet / Haiku / Opus Plan)\n' +
-          '권한 모드 (편집 전 확인 / 자동 수락 / 계획 / 모두 허용)\n' +
+          '모델 목록 동적 갱신 — Anthropic /v1/models API 자동 조회 (1시간 캐시), 새 모델 출시 시 즉시 사용 가능\n' +
+          '권한 모드 3종 — 권한 요청 / 편집 자동 수락 / 계획 모드 (모드별 도구별 승인 자동 토글)\n' +
+          'effort 선택 (low / medium / high / max)\n' +
           'Plan 모드 + ExitPlanMode 승인 모달 (마크다운 + Mermaid 렌더)\n' +
           'PreToolUse hooks 기반 툴 단위 승인 (체크박스)\n' +
           '대화 세션 이어가기 (--resume) + stale 세션 자동 폴백\n' +
           '로컬 파일/폴더 첨부 (📄+ / 📁+ webkitdirectory 재귀)\n' +
-          '슬래시 명령 팔레트 (Context/Model/Permission/Slash, 필터 + ↑↓ 네비)\n' +
+          '슬래시 명령 팔레트 — Context/Model/Permission/Effort/Slash 섹션, 현재 개발된 기능에 맞게 동적 구성 (필터 + ↑↓ 네비)\n' +
+          '사용량 패널 — Anthropic OAuth API 연동 (5h/주간/월간 한도 + 잔량)\n' +
+          '거부한 계획 다시 보기 — 실수로 거부한 계획 내용 복기 가능\n' +
+          '도구 호출 타임라인 접기/펼치기 (그룹/항목 양쪽)\n' +
           '툴 타임라인 실시간 인디케이터 (⏳/✓/✕)\n' +
           '채팅창 독립 폰트 설정 + Ctrl+Wheel 크기 조절\n' +
           '대화 이력 관리 (Pinned/Recents, 이름 변경, 핀 고정, 삭제)\n' +
