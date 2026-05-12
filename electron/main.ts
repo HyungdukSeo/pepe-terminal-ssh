@@ -23,10 +23,13 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 (globalThis as any).__dirname = __dirname;
 
-// 멀티 인스턴스 캐시 충돌 방지
-const instanceId = `${process.pid}-${Date.now()}`;
-const sessionDataPath = path.join(app.getPath('userData'), `session-${instanceId}`);
-app.setPath('sessionData', sessionDataPath);
+// 멀티 인스턴스 캐시 충돌 방지 — 매 실행 unique sessionData 로 분리하던 코드.
+// 단점: Electron 의 safeStorage 가 sessionData 안에 키 파일(Local State 등) 두는 경우
+//        매 실행마다 키가 사라져서 자격증명 복호화 실패. 그래서 비활성화.
+// 대안 검토 필요: 단일 인스턴스 lock + window focus 회수 패턴 (전형적 Electron 멀티 인스턴스 처리).
+// const instanceId = `${process.pid}-${Date.now()}`;
+// const sessionDataPath = path.join(app.getPath('userData'), `session-${instanceId}`);
+// app.setPath('sessionData', sessionDataPath);
 
 let mainWindow: BrowserWindow | null = null;
 let sessionsData: SessionsData = { folders: [], sessions: [] };
@@ -228,13 +231,12 @@ app.on('before-quit', () => {
   try { getSSHBridge().disconnectAll(); } catch {}
 });
 
-// 앱 시작 5초 후 비동기로 session-* 정리 (시작 속도에 영향 없음)
+// 앱 시작 5초 후 비동기로 과거 session-* 폴더 정리 (현재 더 이상 안 만드는데 기존 orphan 잔존 가능)
 setTimeout(() => {
   try {
     const userDataDir = app.getPath('userData');
     for (const entry of fs.readdirSync(userDataDir)) {
       if (!entry.startsWith('session-')) continue;
-      if (entry === `session-${instanceId}`) continue;
       try { fs.rmSync(path.join(userDataDir, entry), { recursive: true }); } catch {}
     }
   } catch {}
