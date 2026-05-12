@@ -2011,38 +2011,80 @@ app.on('before-quit', () => {
 // 자격증명 영속화 — OS 안전 저장소(Windows DPAPI / macOS Keychain) 로 암호화 후 JSON 저장.
 // 파일: <userData>/vpn-credentials.json. Key = config 절대경로, Value = base64(encrypted).
 function vpnCredsFile(): string { return path.join(app.getPath('userData'), 'vpn-credentials.json'); }
+// 진단 로그 — renderer DevTools console 에 [main] 프리픽스로 표시됨
+function credsLog(msg: string) {
+  console.log('[vpn-creds]', msg);
+  try { mainWindow?.webContents.send('debug:log', `[vpn-creds] ${msg}`); } catch {}
+}
 function loadCredsMap(): Record<string, string> {
   try {
     const p = vpnCredsFile();
-    if (!fs.existsSync(p)) return {};
-    return JSON.parse(fs.readFileSync(p, 'utf-8')) || {};
-  } catch { return {}; }
+    if (!fs.existsSync(p)) { credsLog(`loadCredsMap: 파일 없음 (${p})`); return {}; }
+    const raw = fs.readFileSync(p, 'utf-8');
+    const parsed = JSON.parse(raw) || {};
+    credsLog(`loadCredsMap: ${p} (${Object.keys(parsed).length}개 항목, 파일 ${raw.length}바이트)`);
+    return parsed;
+  } catch (err: any) {
+    credsLog(`loadCredsMap 실패: ${err?.message || err}`);
+    return {};
+  }
 }
 function saveCredsMap(m: Record<string, string>) {
-  try { fs.writeFileSync(vpnCredsFile(), JSON.stringify(m, null, 2), { mode: 0o600 }); } catch {}
+  const p = vpnCredsFile();
+  try {
+    const text = JSON.stringify(m, null, 2);
+    fs.writeFileSync(p, text, { mode: 0o600 });
+    const exists = fs.existsSync(p);
+    const size = exists ? fs.statSync(p).size : -1;
+    credsLog(`saveCredsMap: ${p} (${text.length}바이트 쓰기 시도, 실제 ${size}바이트, exists=${exists})`);
+  } catch (err: any) {
+    credsLog(`saveCredsMap 실패: ${err?.message || err}`);
+  }
 }
 ipcMain.handle('vpn:save-creds', (_e, { configPath, username, password }: { configPath: string; username: string; password: string }) => {
-  if (!safeStorage.isEncryptionAvailable()) return { ok: false, error: 'OS 안전 저장소 사용 불가 (저장 안 됨)' };
+  const avail = safeStorage.isEncryptionAvailable();
+  credsLog(`save 요청: configPath="${configPath}", user="${username}", pw길이=${password?.length || 0}, isEncryptionAvailable=${avail}`);
+  if (!avail) return { ok: false, error: 'OS 안전 저장소 사용 불가 (저장 안 됨)' };
   try {
-    const enc = safeStorage.encryptString(JSON.stringify({ username, password })).toString('base64');
+    const plain = JSON.stringify({ username, password });
+    const encBuf = safeStorage.encryptString(plain);
+    const enc = encBuf.toString('base64');
+    credsLog(`encryptString OK (평문 ${plain.length}바이트 → 암호 ${encBuf.length}바이트, base64 ${enc.length}바이트)`);
     const m = loadCredsMap();
     m[configPath] = enc;
     saveCredsMap(m);
+    // 즉시 검증 — write 직후 다시 읽어서 항목 존재 확인
+    const verify = loadCredsMap();
+    const verifyOk = !!verify[configPath];
+    credsLog(`save 검증: 다시 읽었을 때 해당 키 존재=${verifyOk}`);
     return { ok: true };
-  } catch (err: any) { return { ok: false, error: String(err?.message || err) }; }
+  } catch (err: any) {
+    credsLog(`save 실패: ${err?.message || err}`);
+    return { ok: false, error: String(err?.message || err) };
+  }
 });
 ipcMain.handle('vpn:load-creds', (_e, { configPath }: { configPath: string }) => {
+  credsLog(`load 요청: configPath="${configPath}"`);
   try {
     const m = loadCredsMap();
     const enc = m[configPath];
-    if (!enc) return { ok: false };
+    if (!enc) {
+      credsLog(`load: 키 없음 (저장된 키: ${Object.keys(m).join(', ') || '없음'})`);
+      return { ok: false };
+    }
+    credsLog(`load: 암호화 데이터 발견 (base64 ${enc.length}바이트), decryptString 시도`);
     const buf = Buffer.from(enc, 'base64');
     const dec = safeStorage.decryptString(buf);
     const parsed = JSON.parse(dec);
+    credsLog(`load 성공: user="${parsed.username}", pw길이=${parsed.password?.length || 0}`);
     return { ok: true, username: parsed.username || '', password: parsed.password || '' };
-  } catch (err: any) { return { ok: false, error: String(err?.message || err) }; }
+  } catch (err: any) {
+    credsLog(`load 실패: ${err?.message || err}`);
+    return { ok: false, error: String(err?.message || err) };
+  }
 });
 ipcMain.handle('vpn:clear-creds', (_e, { configPath }: { configPath: string }) => {
+  credsLog(`clear 요청: configPath="${configPath}"`);
   try {
     const m = loadCredsMap();
     delete m[configPath];
@@ -2052,7 +2094,9 @@ ipcMain.handle('vpn:clear-creds', (_e, { configPath }: { configPath: string }) =
 });
 ipcMain.handle('vpn:has-creds', (_e, { configPath }: { configPath: string }) => {
   const m = loadCredsMap();
-  return { has: !!m[configPath] };
+  const has = !!m[configPath];
+  credsLog(`has 요청: configPath="${configPath}" → ${has}`);
+  return { has };
 });
 ipcMain.handle('vpn:available', () => vpn.isAvailable());
 ipcMain.handle('vpn:state', () => vpn.getState());
