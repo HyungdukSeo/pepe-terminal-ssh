@@ -379,7 +379,7 @@ export const VpnWorkspace: React.FC = () => {
             </div>
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 10, fontSize: 12, color: '#bbb', cursor: 'pointer' }}>
               <input type="checkbox" checked={rememberCreds} onChange={e => setRememberCreds(e.target.checked)} />
-              기억하기 (다음부터 자동 사용 — OS 안전 저장소 암호화)
+              기억하기 (vpn-credentials.json 에 평문 저장 — Win/Mac 호환)
             </label>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 14 }}>
               <button onClick={() => { setAuthPrompt(false); }}>취소</button>

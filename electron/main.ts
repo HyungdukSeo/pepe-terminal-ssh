@@ -1,5 +1,5 @@
 // electron/main.ts
-import { app, BrowserWindow, ipcMain, dialog, Menu, shell, clipboard, nativeImage, safeStorage } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, Menu, shell, clipboard, nativeImage } from 'electron';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -2008,25 +2008,27 @@ app.on('before-quit', () => {
   try { vpn.disconnect(); } catch {}
 });
 
-// 자격증명 영속화 — OS 안전 저장소(Windows DPAPI / macOS Keychain) 로 암호화 후 JSON 저장.
-// 파일: <userData>/vpn-credentials.json. Key = config 절대경로, Value = base64(encrypted).
+// 자격증명 영속화 — 평문 JSON (cross-platform 휴대성 우선). OS 저장소(DPAPI/Keychain) 미사용.
+// 파일: <userData>/vpn-credentials.json. 키 = .ovpn basename (절대경로 X — Win/Mac 간 경로 차이 회피).
+// 형식: { "foo.ovpn": { "username": "...", "password": "..." } }
+// 보안: 평문 저장. mode 0o600 으로 사용자 본인 접근만 허용.
 function vpnCredsFile(): string { return path.join(app.getPath('userData'), 'vpn-credentials.json'); }
-function loadCredsMap(): Record<string, string> {
+function loadCredsMap(): Record<string, { username: string; password: string }> {
   try {
     const p = vpnCredsFile();
     if (!fs.existsSync(p)) return {};
     return JSON.parse(fs.readFileSync(p, 'utf-8')) || {};
   } catch { return {}; }
 }
-function saveCredsMap(m: Record<string, string>) {
+function saveCredsMap(m: Record<string, { username: string; password: string }>) {
   try { fs.writeFileSync(vpnCredsFile(), JSON.stringify(m, null, 2), { mode: 0o600 }); } catch {}
 }
+// configPath 의 basename 만 키로 사용 — 절대경로 OS 차이 회피, 같은 .ovpn 이름이면 Win/Mac 호환
+function credsKey(configPath: string): string { return path.basename(configPath); }
 ipcMain.handle('vpn:save-creds', (_e, { configPath, username, password }: { configPath: string; username: string; password: string }) => {
-  if (!safeStorage.isEncryptionAvailable()) return { ok: false, error: 'OS 안전 저장소 사용 불가 (저장 안 됨)' };
   try {
-    const enc = safeStorage.encryptString(JSON.stringify({ username, password })).toString('base64');
     const m = loadCredsMap();
-    m[configPath] = enc;
+    m[credsKey(configPath)] = { username, password };
     saveCredsMap(m);
     return { ok: true };
   } catch (err: any) { return { ok: false, error: String(err?.message || err) }; }
@@ -2034,25 +2036,22 @@ ipcMain.handle('vpn:save-creds', (_e, { configPath, username, password }: { conf
 ipcMain.handle('vpn:load-creds', (_e, { configPath }: { configPath: string }) => {
   try {
     const m = loadCredsMap();
-    const enc = m[configPath];
-    if (!enc) return { ok: false };
-    const buf = Buffer.from(enc, 'base64');
-    const dec = safeStorage.decryptString(buf);
-    const parsed = JSON.parse(dec);
-    return { ok: true, username: parsed.username || '', password: parsed.password || '' };
+    const entry = m[credsKey(configPath)];
+    if (!entry) return { ok: false };
+    return { ok: true, username: entry.username || '', password: entry.password || '' };
   } catch (err: any) { return { ok: false, error: String(err?.message || err) }; }
 });
 ipcMain.handle('vpn:clear-creds', (_e, { configPath }: { configPath: string }) => {
   try {
     const m = loadCredsMap();
-    delete m[configPath];
+    delete m[credsKey(configPath)];
     saveCredsMap(m);
     return { ok: true };
   } catch (err: any) { return { ok: false, error: String(err?.message || err) }; }
 });
 ipcMain.handle('vpn:has-creds', (_e, { configPath }: { configPath: string }) => {
   const m = loadCredsMap();
-  return { has: !!m[configPath] };
+  return { has: !!m[credsKey(configPath)] };
 });
 ipcMain.handle('vpn:available', () => vpn.isAvailable());
 ipcMain.handle('vpn:state', () => vpn.getState());
