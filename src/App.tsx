@@ -1,5 +1,5 @@
 // src/App.tsx
-import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo, Fragment } from 'react';
 import { createPortal } from 'react-dom';
 import './App.css';
 import { TabBar } from './components/TabBar';
@@ -21,7 +21,7 @@ import { marked } from 'marked';
 import manualMd from '../docs/MANUAL.md?raw';
 import { getClaudeFontFamily, getClaudeFontSize, setClaudeFontFamily, setClaudeFontSize, applyClaudeFontVars } from './utils/claudeFont';
 import { getTerminalSettings, saveTerminalSettings, TerminalSettings } from './utils/terminalSettings';
-import { loadKeybindings, matchKeybinding, getKeybindings, DEFAULT_KEYBINDINGS, KEYBINDING_LABELS, keyEventToCombo, setKeybindingListening } from './utils/keybindings';
+import { loadKeybindings, matchKeybinding, getKeybindings, getKeybinding, DEFAULT_KEYBINDINGS, KEYBINDING_LABELS, keyEventToCombo, setKeybindingListening, formatKeyComboForOS, formatKeyTextForOS, IS_MAC } from './utils/keybindings';
 import { getThemeList } from './utils/terminalThemes';
 import { SessionList } from './components/SessionList';
 import { SessionEditor } from './components/SessionEditor';
@@ -340,6 +340,9 @@ function App() {
   const [showManual, setShowManual] = useState(false);
   // 도움말/정보 등 단순 텍스트 모달 (alert 대체 — 스크롤 가능 + 닫을 때 터미널 포커스 복원)
   const [infoModal, setInfoModal] = useState<{ title: string; text: string } | null>(null);
+  // 단축키 목록 모달 — 검색 + 컬럼 정렬을 위해 infoModal 과 분리
+  const [showKeybindingList, setShowKeybindingList] = useState(false);
+  const [keybindingListQuery, setKeybindingListQuery] = useState('');
   // 활성 터미널로 포커스 복원 (모달 닫기 / 빠른연결 닫기 / 외부 영역 클릭 후 등)
   // activeTab/selectedPanelId 는 ref 로 읽음 (선언 순서 의존 회피)
   const restoreTermFocusRef = useRef<() => void>(() => {});
@@ -347,7 +350,11 @@ function App() {
     restoreTermFocusRef.current();
   }, []);
   const manualHtml = useMemo(() => {
-    try { return marked.parse(manualMd) as string; } catch { return '<pre>매뉴얼 로드 실패</pre>'; }
+    try {
+      const html = marked.parse(manualMd) as string;
+      // macOS 사용자에게는 본문 내 Ctrl+/Alt+ 등 콤보 표기를 ⌘/⌥ 등으로 치환
+      return IS_MAC ? formatKeyTextForOS(html) : html;
+    } catch { return '<pre>매뉴얼 로드 실패</pre>'; }
   }, []);
   const [remotePickerSessions, setRemotePickerSessions] = useState<any[]>([]); // 전체 세션 리스트
   const [remotePickerFolders, setRemotePickerFolders] = useState<any[]>([]); // 폴더 맵
@@ -519,19 +526,24 @@ function App() {
   // 세션 트리거 top 버튼 하단 y 좌표 (파일 트리 트리거의 top 위치 맞추기용)
   const [fileTreeTriggerTop, setFileTreeTriggerTop] = useState<number>(135);
   useEffect(() => {
+    // 무한 루프 방지: setState 가 DOM 을 바꾸면 MutationObserver 가 다시 측정을 호출 → 매번 같은 값으로
+    // setState 가 호출돼도 React 가 같은 값이면 리렌더를 건너뛰도록 functional update 로 equality 체크.
+    // 또한 attributes:true 는 자식 트리의 사소한 속성 변경에도 끝없이 fire 되므로 제거.
     const measure = () => {
       const el = document.querySelector('.session-sidebar-trigger-top') as HTMLElement | null;
-      if (el) {
-        const r = el.getBoundingClientRect();
-        setFileTreeTriggerTop(r.bottom);
-      }
+      if (!el) return;
+      const next = el.getBoundingClientRect().bottom;
+      setFileTreeTriggerTop(prev => (Math.abs(prev - next) < 0.5 ? prev : next));
     };
     measure();
     const t1 = setTimeout(measure, 100);
     const t2 = setTimeout(measure, 500);
     window.addEventListener('resize', measure);
-    const mo = new MutationObserver(measure);
-    mo.observe(document.body, { childList: true, subtree: true, attributes: true });
+    const mo = new MutationObserver(() => {
+      // observer 콜백은 마이크로태스크에서 다시 측정. throttle 로 한 프레임에 한 번만.
+      requestAnimationFrame(measure);
+    });
+    mo.observe(document.body, { childList: true, subtree: true });
     return () => {
       clearTimeout(t1); clearTimeout(t2);
       window.removeEventListener('resize', measure);
@@ -785,7 +797,10 @@ function App() {
     });
     // 외부 검색창에서 📌 클릭 → 인라인 모드로 복귀
     const offD = api.onSearchDock?.(() => { setShowSearch(true); });
-    return () => { offQ?.(); offN?.(); offP?.(); offC?.(); offD?.(); };
+    // 터미널 우클릭 → '찾기...' 메뉴에서 발행하는 커스텀 이벤트로 검색바 열기
+    const onOpenSearch = () => setShowSearch(true);
+    window.addEventListener('open-search', onOpenSearch);
+    return () => { offQ?.(); offN?.(); offP?.(); offC?.(); offD?.(); window.removeEventListener('open-search', onOpenSearch); };
   }, []); // listener 한 번만 — tabs/activeTab 은 ref 로 항상 최신 참조
 
   // 워크스페이스 전환 시 전체화면이면 새 워크스페이스의 선택된/첫번째 연결 패널로 fs-visible 전환
@@ -1877,48 +1892,95 @@ function App() {
     {
       label: '파일',
       items: [
-        { label: '새 워크스페이스', action: () => addTab() },
-        { label: '워크스페이스 닫기', action: () => activeTab && closeTab(activeTab.id), disabled: tabs.length <= 1 },
+        { label: '➕ 새 워크스페이스', action: () => addTab() },
+        { label: '✖ 워크스페이스 닫기', action: () => activeTab && closeTab(activeTab.id), disabled: tabs.length <= 1 },
         { separator: true, label: '' },
-        { label: '세션 내보내기...', action: () => (window as any).api.exportSessions() },
-        { label: '세션 가져오기...', action: async () => { const r = await (window as any).api.importSessions(); if (r) { window.dispatchEvent(new Event('sessions-reload')); showToast(r.addedCount != null ? `${r.addedCount}개 세션 가져옴 (총 ${r.totalParsed}개 중)` : '세션을 가져왔습니다.'); } } },
+        { label: '📤 세션 내보내기...', action: () => (window as any).api.exportSessions() },
+        { label: '📥 세션 가져오기...', action: async () => { const r = await (window as any).api.importSessions(); if (r) { window.dispatchEvent(new Event('sessions-reload')); showToast(r.addedCount != null ? `${r.addedCount}개 세션 가져옴 (총 ${r.totalParsed}개 중)` : '세션을 가져왔습니다.'); } } },
         { separator: true, label: '' },
-        { label: '종료', action: () => window.close() },
+        { label: '🚪 종료', action: () => window.close() },
       ],
     },
     {
       label: '편집',
       items: [
-        { label: '복사', shortcut: 'Ctrl+Shift+C', action: () => document.execCommand('copy') },
-        { label: '붙여넣기', shortcut: 'Ctrl+Shift+V', action: () => { navigator.clipboard.readText().then(text => { const tid = getActiveTermId(); if (!tid) return; pasteToTerm(tid, text); }); } },
+        { label: '📋 복사', shortcut: getKeybinding('copy') || 'Ctrl+Shift+C', action: () => document.execCommand('copy') },
+        { label: '📎 붙여넣기', shortcut: getKeybinding('paste') || 'Ctrl+Shift+V', action: () => { navigator.clipboard.readText().then(text => { const tid = getActiveTermId(); if (!tid) return; pasteToTerm(tid, text); }); } },
+        { label: '🔘 전체 선택', shortcut: getKeybinding('selectAll'), action: () => { const tid = getActiveTermId(); if (tid) selectAllInTerm(tid); } },
         { separator: true, label: '' },
-        { label: '찾기', shortcut: 'Ctrl+Shift+F', action: () => setShowSearch(true) },
+        { label: '🔍 찾기', shortcut: getKeybinding('find') || 'Ctrl+Shift+F', action: () => setShowSearch(true) },
       ],
     },
     {
       label: '보기',
       items: [
         {
-          label: '테마',
+          label: '🎨 테마',
           submenu: getThemeList().map(t => ({
             label: t,
             action: () => handleThemeChange(t),
           })),
         },
         { separator: true, label: '' },
-        { label: '글꼴 크기 +', shortcut: 'Ctrl+휠 위', action: () => applyFontToAll(undefined, (Number(localStorage.getItem('terminalFontSize')) || 14) + 1) },
-        { label: '글꼴 크기 -', shortcut: 'Ctrl+휠 아래', action: () => applyFontToAll(undefined, Math.max(8, (Number(localStorage.getItem('terminalFontSize')) || 14) - 1)) },
+        { label: (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <svg width="20" height="14" viewBox="0 0 20 14" fill="currentColor">
+                <text x="0" y="11" fontFamily="Arial,sans-serif" fontWeight="700" fontSize="6">A</text>
+                <text x="5" y="11" fontFamily="Arial,sans-serif" fontWeight="700" fontSize="9">A</text>
+                <text x="11" y="11" fontFamily="Arial,sans-serif" fontWeight="700" fontSize="12">A</text>
+              </svg>
+              글꼴 크기 +
+            </span>
+          ), shortcut: 'Ctrl+휠 위', action: () => applyFontToAll(undefined, (Number(localStorage.getItem('terminalFontSize')) || 14) + 1) },
+        { label: (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <svg width="20" height="14" viewBox="0 0 20 14" fill="currentColor">
+                <text x="0" y="11" fontFamily="Arial,sans-serif" fontWeight="700" fontSize="12">A</text>
+                <text x="9" y="11" fontFamily="Arial,sans-serif" fontWeight="700" fontSize="9">A</text>
+                <text x="15" y="11" fontFamily="Arial,sans-serif" fontWeight="700" fontSize="6">A</text>
+              </svg>
+              글꼴 크기 -
+            </span>
+          ), shortcut: 'Ctrl+휠 아래', action: () => applyFontToAll(undefined, Math.max(8, (Number(localStorage.getItem('terminalFontSize')) || 14) - 1)) },
       ],
     },
     {
       label: '창',
       items: [
-        { label: '세로 분할', action: () => { if (activeTab && selectedPanelId) openSplitSessionPicker('row', selectedPanelId); }, disabled: !selectedPanelId },
-        { label: '가로 분할', action: () => { if (activeTab && selectedPanelId) openSplitSessionPicker('column', selectedPanelId); }, disabled: !selectedPanelId },
+        { label: (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <rect x="1" y="1" width="12" height="12" rx="1.5" /><line x1="7" y1="1" x2="7" y2="13" />
+              </svg>
+              가로 분할 (좌/우)
+            </span>
+          ), shortcut: getKeybinding('splitSessionV'), action: () => { if (activeTab && selectedPanelId) openSplitSessionPicker('row', selectedPanelId); }, disabled: !selectedPanelId },
+        { label: (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <rect x="1" y="1" width="12" height="12" rx="1.5" /><line x1="1" y1="7" x2="13" y2="7" />
+              </svg>
+              세로 분할 (상/하)
+            </span>
+          ), shortcut: getKeybinding('splitSessionH'), action: () => { if (activeTab && selectedPanelId) openSplitSessionPicker('column', selectedPanelId); }, disabled: !selectedPanelId },
         { separator: true, label: '' },
-        { label: '화면 지우기', shortcut: 'Ctrl+Shift+L', action: () => { const tid = getActiveTermId(); if (tid) clearScreenInTerm(tid); } },
-        { label: '스크롤 버퍼 지우기', shortcut: 'Ctrl+Shift+B', action: () => { const tid = getActiveTermId(); if (tid) clearScrollbackInTerm(tid); } },
-        { label: '모두 지우기', shortcut: 'Ctrl+Shift+A', action: () => { const tid = getActiveTermId(); if (tid) clearAllInTerm(tid); } },
+        { label: (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                {/* 손잡이 */}
+                <line x1="11" y1="2" x2="6.5" y2="6.5" />
+                {/* 빗자루 몸통 (두꺼운 사다리꼴) */}
+                <path d="M3 8 L8 8 L10 13 L1 13 Z" fill="currentColor" stroke="currentColor" />
+                {/* 빗자루 결 */}
+                <line x1="3.5" y1="9" x2="2.5" y2="12.5" stroke="#000" strokeWidth="0.6" />
+                <line x1="5" y1="9" x2="5" y2="12.5" stroke="#000" strokeWidth="0.6" />
+                <line x1="6.5" y1="9" x2="7.5" y2="12.5" stroke="#000" strokeWidth="0.6" />
+              </svg>
+              화면 지우기
+            </span>
+          ), shortcut: getKeybinding('clearScreen') || 'Ctrl+Shift+L', action: () => { const tid = getActiveTermId(); if (tid) clearScreenInTerm(tid); } },
+        { label: '🗑 스크롤 버퍼 지우기', shortcut: getKeybinding('clearScrollback') || 'Ctrl+Shift+B', action: () => { const tid = getActiveTermId(); if (tid) clearScrollbackInTerm(tid); } },
+        { label: '🧼 모두 지우기', shortcut: getKeybinding('clearAll') || 'Ctrl+Shift+A', action: () => { const tid = getActiveTermId(); if (tid) clearAllInTerm(tid); } },
       ],
     },
     {
@@ -1969,7 +2031,7 @@ function App() {
           }
         }},
         { separator: true, label: '' },
-        { label: '옵션...', action: async () => {
+        { label: '⚙ 옵션...', action: async () => {
           setWordSepValue(getWordSeparator());
           setTermSettings(getTerminalSettings());
           setOptFontFamily(localStorage.getItem('terminalFontFamily') || '');
@@ -2004,56 +2066,9 @@ function App() {
       items: [
         { label: '📖 매뉴얼...', action: () => setShowManual(true) },
         { separator: true, label: '' },
-        { label: '단축키 목록', action: () => {
-          const kb = getKeybindings();
-          const lines = Object.keys(KEYBINDING_LABELS).map(id => `${kb[id] || '(없음)'} — ${KEYBINDING_LABELS[id]}`);
-          setInfoModal({ title: '⌨ 단축키 목록', text: (
-            '── 사용자 지정 단축키 ──\n' +
-            lines.join('\n') +
-            '\n\n── 고정 단축키 ──\n' +
-            'Alt+1~9 — 미니탭 전환\n' +
-            'Alt+Enter — 현재 터미널 전체화면 토글\n' +
-            'Ctrl+L — 스크롤 맨 아래로\n' +
-            'Ctrl+마우스 휠 — 글꼴 크기 조절\n' +
-            'F2 — 이름 변경\n' +
-            '가운데 클릭 — 탭 닫기\n' +
-            'Ctrl+↑/↓ — 세션/폴더 순서 이동\n\n' +
-            '── 미니탭 ──\n' +
-            '∨ 버튼 — 쉘 선택 (PowerShell, CMD, Git Bash 등)\n' +
-            '우클릭 — 이름 변경 / 세션 복제 / 닫기\n' +
-            '휠 스크롤 — 좌우 스크롤 (‹ › 버튼)\n\n' +
-            '── 터미널 ──\n' +
-            '우클릭 — 복사 / 붙여넣기 / 글꼴 / 인코딩 / 화면 지우기 등\n' +
-            '더블클릭 (세션) — 연결\n\n' +
-            '── 파일 트리 / 원격 편집 ──\n' +
-            '파일 더블클릭 — 에디터 탭에서 열기\n' +
-            'Ctrl+클릭 / Shift+클릭 — 다중 선택 (일괄 다운로드)\n' +
-            '우클릭 — Claude 에 첨부 / 경로 복사 / 삭제\n' +
-            '🔄 — 현재 경로 새로고침\n' +
-            '📌 — 파일트리 고정/자동숨김 토글\n' +
-            '좌측 경계 드래그 — 너비 조절\n' +
-            'Ctrl+S (에디터) — 저장\n\n' +
-            '── Claude 채팅 ──\n' +
-            '오른쪽 가장자리 🤖 Claude 영역 hover — 사이드바 펼침 (unpin 모드)\n' +
-            '📌 — 사이드바 고정/자동숨김 토글\n' +
-            '좌측 경계 드래그 — 너비 조절 (더블클릭 = 기본값)\n' +
-            '/ 버튼 — 슬래시 명령 팔레트 (↑↓ 탐색, Enter 실행, Esc 닫기)\n' +
-            '📄+ / 📁+ — 로컬 파일 / 폴더 첨부\n' +
-            'Ctrl+Wheel — 채팅 폰트 크기 조절\n' +
-            'Enter (입력창) — 전송, Shift+Enter — 줄바꿈\n' +
-            '🗑 — 대화 + 컨텍스트 초기화\n\n' +
-            '── 일괄 전송 ──\n' +
-            'Enter — 텍스트 전송\n' +
-            'Ctrl+C / Ctrl+D — ^C / ^D 신호 전송\n' +
-            '↑/↓ — 히스토리 탐색 / 세션 드롭다운\n' +
-            'Esc — 히스토리 드롭다운만 닫음 (바는 유지)\n\n' +
-            '── 빠른 연결 바 ──\n' +
-            'Enter — 연결\n' +
-            'Esc — 무시 (닫기는 ✕ 버튼으로만)'
-          ) });
-        }},
+        { label: '⌨ 단축키 목록', action: () => { setKeybindingListQuery(''); setShowKeybindingList(true); } },
         { separator: true, label: '' },
-        { label: 'PePe Terminal(SSH) 정보', action: async () => {
+        { label: 'ℹ PePe Terminal(SSH) 정보', action: async () => {
           let sessPath = '';
           try { sessPath = await (window as any).api.getSessionsPath(); } catch {}
           // 버전은 Electron 에서 동적으로 가져옴 (package.json 기반 — 빌드시마다 자동 반영)
@@ -3107,7 +3122,7 @@ function App() {
                         <input
                           className={`keybinding-combo ${isListening ? 'listening' : ''}`}
                           readOnly
-                          value={isListening ? '키를 누르세요...' : draftCombo}
+                          value={isListening ? '키를 누르세요...' : formatKeyComboForOS(draftCombo)}
                         />
                         <button className="keybinding-btn" onClick={() => setListeningAction(isListening ? null : actionId)}>
                           {isListening ? '취소' : '변경'}
@@ -3372,12 +3387,166 @@ function App() {
               className="folder-picker"
               onClick={e => e.stopPropagation()}
             >
-              <div className="folder-picker-title">세션 선택 ({splitSessionPicker.dir === 'row' ? '세로 분할' : '가로 분할'})</div>
+              <div className="folder-picker-title">세션 선택 ({splitSessionPicker.dir === 'row' ? '가로 분할 (좌/우)' : '세로 분할 (상/하)'})</div>
               <div className="folder-picker-list">
                 {renderTree(undefined, 0)}
               </div>
               <div className="folder-picker-actions">
                 <button onClick={() => setSplitSessionPicker(null)}>취소</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {showKeybindingList && (() => {
+        const closeAndFocus = () => {
+          setShowKeybindingList(false);
+          restoreTerminalFocus();
+        };
+        const kb = getKeybindings();
+        type Row = { key: string; label: string };
+        const fmt = (k: string) => {
+          // 콤보 표기에는 formatKeyComboForOS 적용, "Ctrl+마우스 휠" 처럼 단어가 섞이면
+          // formatKeyTextForOS 가 콤보 부분만 변환하도록 fallback
+          if (/^[\w+\-↑↓←→/]+$/.test(k)) return formatKeyComboForOS(k);
+          return formatKeyTextForOS(k);
+        };
+        const groups: { name: string; rows: Row[] }[] = [
+          {
+            name: '사용자 지정 단축키',
+            rows: Object.keys(KEYBINDING_LABELS).map(id => ({ key: kb[id] ? fmt(kb[id]) : '(없음)', label: KEYBINDING_LABELS[id] })),
+          },
+          {
+            name: '고정 단축키',
+            rows: [
+              { key: fmt('Alt+1~9'), label: '미니탭 전환' },
+              { key: fmt('Alt+Enter'), label: '현재 터미널 전체화면 토글' },
+              { key: fmt('Ctrl+L'), label: '스크롤 맨 아래로' },
+              { key: fmt('Ctrl') + '+마우스 휠', label: '글꼴 크기 조절' },
+              { key: 'F2', label: '이름 변경' },
+              { key: '가운데 클릭', label: '탭 닫기' },
+              { key: fmt('Ctrl') + '+↑/↓', label: '세션/폴더 순서 이동' },
+            ],
+          },
+          {
+            name: '미니탭',
+            rows: [
+              { key: '∨ 버튼', label: '쉘 선택 (PowerShell, CMD, Git Bash 등)' },
+              { key: '우클릭', label: '이름 변경 / 세션 복제 / 닫기' },
+              { key: '휠 스크롤', label: '좌우 스크롤 (‹ › 버튼)' },
+            ],
+          },
+          {
+            name: '터미널',
+            rows: [
+              { key: '우클릭', label: '복사 / 붙여넣기 / 찾기 / 글꼴 / 인코딩 / 화면 지우기 등' },
+              { key: '더블클릭 (세션)', label: '연결' },
+            ],
+          },
+          {
+            name: '파일 트리 / 원격 편집',
+            rows: [
+              { key: '파일 더블클릭', label: '에디터 탭에서 열기' },
+              { key: fmt('Ctrl') + '+클릭 / ' + fmt('Shift') + '+클릭', label: '다중 선택 (일괄 다운로드)' },
+              { key: '우클릭', label: 'Claude 에 첨부 / 경로 복사 / 삭제' },
+              { key: '🔄', label: '현재 경로 새로고침' },
+              { key: '📌', label: '파일트리 고정/자동숨김 토글' },
+              { key: '좌측 경계 드래그', label: '너비 조절' },
+              { key: fmt('Ctrl+S') + ' (에디터)', label: '저장' },
+            ],
+          },
+          {
+            name: 'Claude 채팅',
+            rows: [
+              { key: '🤖 영역 hover', label: '사이드바 펼침 (unpin 모드)' },
+              { key: '📌', label: '사이드바 고정/자동숨김 토글' },
+              { key: '좌측 경계 드래그', label: '너비 조절 (더블클릭 = 기본값)' },
+              { key: '/ 버튼', label: '슬래시 명령 팔레트 (↑↓ 탐색, Enter 실행, Esc 닫기)' },
+              { key: '📄+ / 📁+', label: '로컬 파일 / 폴더 첨부' },
+              { key: fmt('Ctrl') + '+Wheel', label: '채팅 폰트 크기 조절' },
+              { key: 'Enter (입력창)', label: '전송, ' + fmt('Shift+Enter') + ' = 줄바꿈' },
+              { key: '🗑', label: '대화 + 컨텍스트 초기화' },
+            ],
+          },
+          {
+            name: '일괄 전송',
+            rows: [
+              { key: 'Enter', label: '텍스트 전송' },
+              { key: fmt('Ctrl+C') + ' / ' + fmt('Ctrl+D'), label: '^C / ^D 신호 전송' },
+              { key: '↑/↓', label: '히스토리 탐색 / 세션 드롭다운' },
+              { key: 'Esc', label: '히스토리 드롭다운만 닫음 (바는 유지)' },
+            ],
+          },
+          {
+            name: '빠른 연결 바',
+            rows: [
+              { key: 'Enter', label: '연결' },
+              { key: 'Esc', label: '무시 (닫기는 ✕ 버튼으로만)' },
+            ],
+          },
+        ];
+        const q = keybindingListQuery.trim().toLowerCase();
+        const isMatch = (r: Row) => !!q && (r.key.toLowerCase().includes(q) || r.label.toLowerCase().includes(q));
+        const renderHL = (text: string) => {
+          if (!q) return text;
+          const lo = text.toLowerCase();
+          const out: any[] = [];
+          let i = 0;
+          let key = 0;
+          while (i < text.length) {
+            const idx = lo.indexOf(q, i);
+            if (idx < 0) { out.push(text.slice(i)); break; }
+            if (idx > i) out.push(text.slice(i, idx));
+            out.push(<mark key={key++} style={{ background: '#ffd666', color: '#000', padding: 0, borderRadius: 2 }}>{text.slice(idx, idx + q.length)}</mark>);
+            i = idx + q.length;
+          }
+          return <>{out}</>;
+        };
+        return (
+          <div className="session-editor-backdrop" onClick={closeAndFocus}>
+            <div className="session-editor" onClick={e => e.stopPropagation()}
+              style={{ minWidth: 480, width: 640, maxWidth: '90vw', maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}
+              onKeyDown={e => { if (e.key === 'Escape') closeAndFocus(); }}
+              tabIndex={-1}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 4px 8px', borderBottom: '1px solid #333' }}>
+                <h3 style={{ margin: 0 }}>⌨ 단축키 목록</h3>
+                <button onClick={closeAndFocus} title="닫기 (Esc)">✕</button>
+              </div>
+              <div style={{ padding: '8px 12px 4px' }}>
+                <input
+                  type="text"
+                  autoFocus
+                  placeholder="🔍 단축키 또는 기능 검색..."
+                  value={keybindingListQuery}
+                  onChange={e => setKeybindingListQuery(e.target.value)}
+                  style={{ width: '100%', padding: '6px 10px', background: '#1e1e1e', color: '#ddd', border: '1px solid #444', borderRadius: 4, fontSize: 13, outline: 'none', boxSizing: 'border-box' }}
+                />
+              </div>
+              <div style={{ overflow: 'auto', padding: '4px 12px 12px', fontSize: 12, color: '#ddd' }}>
+                {q && groups.every(g => g.rows.every(r => !isMatch(r))) && (
+                  <div style={{ padding: '8px 0', textAlign: 'center', color: '#888' }}>일치하는 단축키가 없습니다.</div>
+                )}
+                {groups.map(g => (
+                  <div key={g.name} style={{ marginBottom: 12 }}>
+                    <div style={{ color: '#7fb3ff', fontWeight: 600, padding: '4px 0 4px', borderBottom: '1px solid #2a2a2a', marginBottom: 4 }}>── {g.name} ──</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '200px 8px 1fr', rowGap: 2, columnGap: 6, alignItems: 'baseline' }}>
+                      {g.rows.map((r, i) => {
+                        const matched = isMatch(r);
+                        const border = matched ? '1px solid #fff' : '1px solid transparent';
+                        const cellStyle = (extra: any) => ({ padding: '1px 4px', borderTop: border, borderBottom: border, ...extra });
+                        return (
+                          <Fragment key={i}>
+                            <div style={cellStyle({ fontFamily: 'Consolas, monospace', color: '#e6c07b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', borderLeft: border, borderRight: '1px solid transparent', borderTopLeftRadius: matched ? 3 : 0, borderBottomLeftRadius: matched ? 3 : 0 })} title={r.key}>{renderHL(r.key)}</div>
+                            <div style={cellStyle({ color: '#666', textAlign: 'center' })}>—</div>
+                            <div style={cellStyle({ color: '#ddd', borderRight: border, borderLeft: '1px solid transparent', borderTopRightRadius: matched ? 3 : 0, borderBottomRightRadius: matched ? 3 : 0 })}>{renderHL(r.label)}</div>
+                          </Fragment>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           </div>
@@ -3419,6 +3588,31 @@ function App() {
               <button onClick={() => setShowManual(false)} title="닫기">✕</button>
             </div>
             <div className="manual-content" style={{ flex: 1, overflow: 'auto', padding: '12px 16px' }}
+              onClick={e => {
+                // 목차 앵커 링크 클릭 시 외부 브라우저로 가지 않고 컨테이너 내부 스크롤로 이동
+                const a = (e.target as HTMLElement).closest('a') as HTMLAnchorElement | null;
+                if (!a) return;
+                const href = a.getAttribute('href') || '';
+                if (!href.startsWith('#')) return;
+                e.preventDefault();
+                const id = decodeURIComponent(href.slice(1));
+                const container = e.currentTarget as HTMLDivElement;
+                // marked 가 생성한 id 와 정확히 일치 우선, 안 되면 텍스트로 fallback
+                let target = container.querySelector(`#${CSS.escape(id)}`) as HTMLElement | null;
+                if (!target) {
+                  // h1~h6 의 텍스트가 id 와 일치하는 경우(슬러그 다를 때) fallback
+                  const headers = Array.from(container.querySelectorAll('h1,h2,h3,h4,h5,h6')) as HTMLElement[];
+                  target = headers.find(h => (h.textContent || '').trim().toLowerCase().replace(/\s+/g, '-').replace(/[^\w\-가-힣]/g, '') === id.toLowerCase()) || null;
+                }
+                if (target) {
+                  // 단순 scrollIntoView({block:'center'}) 는 일부 환경에서 정확히 가운데로 가지 않으므로
+                  // 컨테이너 기준 offset 직접 계산 → 헤더가 뷰포트 정중앙에 오도록 스크롤
+                  const cRect = container.getBoundingClientRect();
+                  const tRect = target.getBoundingClientRect();
+                  const offset = (tRect.top - cRect.top) + container.scrollTop - (container.clientHeight / 2) + (tRect.height / 2);
+                  container.scrollTo({ top: offset, behavior: 'smooth' });
+                }
+              }}
               dangerouslySetInnerHTML={{ __html: manualHtml }}
             />
           </div>

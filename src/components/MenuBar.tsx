@@ -1,8 +1,9 @@
 // src/components/MenuBar.tsx
 import React, { useState, useEffect, useCallback } from 'react';
+import { formatKeyComboForOS } from '../utils/keybindings';
 
 type MenuItemDef = {
-  label: string;
+  label: React.ReactNode;
   shortcut?: string;
   action?: () => void;
   separator?: boolean;
@@ -97,7 +98,7 @@ export const MenuBar: React.FC<Props> = ({ menus }) => {
                         }}
                       >
                         <span className="menu-item-label">{item.label}</span>
-                        {item.shortcut && <span className="menu-item-shortcut">{item.shortcut}</span>}
+                        {item.shortcut && <span className="menu-item-shortcut">{formatKeyComboForOS(item.shortcut)}</span>}
                         {hasSubmenu && <span className="menu-item-arrow">&#9654;</span>}
                         {hasSubmenu && subOpen === subKey && (
                           <div className="menu-submenu" style={{ top: subPos.top, left: subPos.left }} onMouseLeave={() => setSubOpen(null)}>

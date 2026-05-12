@@ -1,3 +1,40 @@
+// 플랫폼 감지 — 키 라벨 변환 및 단축키 일치 판정에 사용
+// (functional matching 은 keyEventToCombo 에서 e.metaKey 도 Ctrl 로 취급하므로 이미 호환됨)
+export const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(navigator.platform);
+
+// 콤보 문자열(예: "Ctrl+Shift+F")을 현재 OS 의 표기로 변환
+// macOS: Ctrl→⌘, Alt→⌥, Shift→⇧, Enter→↵, Tab→⇥, Backspace→⌫, Delete→⌦
+// Windows/Linux: 그대로
+export function formatKeyComboForOS(combo: string): string {
+  if (!IS_MAC || !combo) return combo;
+  const macMap: Record<string, string> = {
+    'Ctrl': '⌘',
+    'Cmd': '⌘',
+    'Alt': '⌥',
+    'Option': '⌥',
+    'Shift': '⇧',
+    'Enter': '↵',
+    'Return': '↵',
+    'Tab': '⇥',
+    'Backspace': '⌫',
+    'Delete': '⌦',
+    'Escape': '⎋',
+    'Up': '↑',
+    'Down': '↓',
+    'Left': '←',
+    'Right': '→',
+  };
+  return combo.split('+').map(p => macMap[p] ?? p).join('');
+}
+
+// 일반 텍스트(예: 매뉴얼 본문) 내 단축키 표기를 OS 에 맞게 변환
+// "Ctrl+Shift+F" 같이 단어 경계로 둘러싸인 콤보만 치환
+export function formatKeyTextForOS(text: string): string {
+  if (!IS_MAC || !text) return text;
+  // Ctrl/Alt/Shift 등이 + 로 이어진 콤보 단위를 잡는다 (개별 단어가 아닌 콤보 전체)
+  return text.replace(/\b(?:Ctrl|Cmd|Alt|Option|Shift)(?:\+(?:Ctrl|Cmd|Alt|Option|Shift|Enter|Return|Tab|Escape|Backspace|Delete|Space|Up|Down|Left|Right|F\d{1,2}|[A-Za-z0-9~`!@#$%^&*()\-_=\[\]\\;',./<>?:"{}|]))+/g, (m) => formatKeyComboForOS(m));
+}
+
 // Default keybindings map
 export const DEFAULT_KEYBINDINGS: Record<string, string> = {
   'fullscreen': 'Alt+Enter',
@@ -20,12 +57,14 @@ export const DEFAULT_KEYBINDINGS: Record<string, string> = {
 // Action labels for UI
 export const KEYBINDING_LABELS: Record<string, string> = {
   'fullscreen': '전체화면 토글',
-  'splitSessionH': '연결된 세션 가로 분할',
-  'splitSessionV': '연결된 세션 세로 분할',
+  // 'H' 액션 ID = column 방향(상/하 분할) = 한국 GUI 관례상 "세로 분할" (분할 결과가 세로로 나뉨)
+  // 'V' 액션 ID = row 방향(좌/우 분할) = "가로 분할" (분할 결과가 가로로 나뉨)
+  'splitSessionH': '연결된 세션 세로 분할 (상/하)',
+  'splitSessionV': '연결된 세션 가로 분할 (좌/우)',
   'nextTab': '다음 미니탭',
   'prevTab': '이전 미니탭',
-  'cloneSplitH': '세션 복제 가로 분할',
-  'cloneSplitV': '세션 복제 세로 분할',
+  'cloneSplitH': '세션 복제 세로 분할 (상/하)',
+  'cloneSplitV': '세션 복제 가로 분할 (좌/우)',
   'find': '찾기',
   'clearScrollback': '스크롤백 지우기',
   'clearScreen': '화면 지우기',

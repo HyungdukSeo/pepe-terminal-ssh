@@ -82,12 +82,25 @@ const NodeView: React.FC<NodeProps> = ({ node, ...h }) => {
   return <ContainerNodeView node={node} {...h} />;
 };
 
+// 워크스페이스(탭) 전환 시 분할 사이즈가 초기화되지 않도록 컨테이너 노드 ID 기준으로
+// 모듈 레벨에서 사이즈를 보존한다. (로컬 useState만 사용하면 탭 전환 시 unmount → 초기값 복귀)
+const containerSizesStore = new Map<string, number[]>();
+
 function ContainerNodeView({ node, ...h }: CProps) {
   const isRow = node.type === 'row';
-  const [sizes, setSizes] = useState<number[]>(() => node.children.map(() => 1));
+  const [sizes, setSizes] = useState<number[]>(() => {
+    const saved = containerSizesStore.get(node.id);
+    if (saved && saved.length === node.children.length) return [...saved];
+    return node.children.map(() => 1);
+  });
   const prevCountRef = useRef(node.children.length);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const dragging = useRef<{ index: number; start: number; sizes: number[] } | null>(null);
+
+  const persistSizes = (s: number[]) => {
+    containerSizesStore.set(node.id, [...s]);
+    setSizes(s);
+  };
 
   useEffect(() => {
     const prev = prevCountRef.current, cur = node.children.length;
@@ -97,7 +110,7 @@ function ContainerNodeView({ node, ...h }: CProps) {
       const ps = sizes.reduce((a, b) => a + b, 0) || 1;
       const s = ns.reduce((a, b) => a + b, 0) || 1;
       for (let i = 0; i < ns.length; i++) ns[i] = (ns[i] / s) * ps;
-      setSizes(ns); prevCountRef.current = cur;
+      persistSizes(ns); prevCountRef.current = cur;
     }
   }, [node.children.length]);
 
@@ -118,7 +131,7 @@ function ContainerNodeView({ node, ...h }: CProps) {
     let nL = (ps[index] / pSum) * total + delta, nR = (ps[index + 1] / pSum) * total - delta;
     const min = 40, comb = (ps[index] / pSum + ps[index + 1] / pSum) * total;
     if (nL < min) { nL = min; nR = comb - min; } if (nR < min) { nR = min; nL = comb - min; }
-    const ns = [...ps]; ns[index] = (nL / total) * pSum; ns[index + 1] = (nR / total) * pSum; setSizes(ns);
+    const ns = [...ps]; ns[index] = (nL / total) * pSum; ns[index + 1] = (nR / total) * pSum; persistSizes(ns);
   };
   const onMouseUp = () => {
     dragging.current = null;
