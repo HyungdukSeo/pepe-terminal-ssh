@@ -38,12 +38,13 @@ export function formatKeyTextForOS(text: string): string {
 // Default keybindings map
 export const DEFAULT_KEYBINDINGS: Record<string, string> = {
   'fullscreen': 'Alt+Enter',
-  'splitSessionH': 'Alt+Shift+H',
+  // 'V' 액션 ID = row 방향(좌/우 분할). 옵션 화면에서 가로 → 세로 순서로 노출되도록 V 를 먼저 둠.
   'splitSessionV': 'Alt+Shift+V',
+  'splitSessionH': 'Alt+Shift+H',
   'nextTab': 'Ctrl+Tab',
   'prevTab': 'Ctrl+Shift+Tab',
-  'cloneSplitH': 'Ctrl+Alt+H',
   'cloneSplitV': 'Ctrl+Alt+V',
+  'cloneSplitH': 'Ctrl+Alt+H',
   'find': 'Ctrl+Shift+F',
   'clearScrollback': 'Ctrl+Shift+B',
   'clearScreen': 'Ctrl+Shift+L',
@@ -57,14 +58,15 @@ export const DEFAULT_KEYBINDINGS: Record<string, string> = {
 // Action labels for UI
 export const KEYBINDING_LABELS: Record<string, string> = {
   'fullscreen': '전체화면 토글',
-  // 'H' 액션 ID = column 방향(상/하 분할) = 한국 GUI 관례상 "세로 분할" (분할 결과가 세로로 나뉨)
-  // 'V' 액션 ID = row 방향(좌/우 분할) = "가로 분할" (분할 결과가 가로로 나뉨)
-  'splitSessionH': '연결된 세션 세로 분할 (상/하)',
-  'splitSessionV': '연결된 세션 가로 분할 (좌/우)',
+  // 'V' 액션 ID = row 방향(좌/우 분할) = "가로 분할". 빈 패널 분할(local shell) 이므로 "빈세션"
+  // 'H' 액션 ID = column 방향(상/하 분할) = "세로 분할"
+  'splitSessionV': '빈세션 가로 분할 (좌/우)',
+  'splitSessionH': '빈세션 세로 분할 (상/하)',
   'nextTab': '다음 미니탭',
   'prevTab': '이전 미니탭',
-  'cloneSplitH': '세션 복제 세로 분할 (상/하)',
-  'cloneSplitV': '세션 복제 가로 분할 (좌/우)',
+  // 현재 활성 세션을 복제한 분할 — 그냥 "세션 ..." 으로 표기
+  'cloneSplitV': '세션 가로 분할 (좌/우)',
+  'cloneSplitH': '세션 세로 분할 (상/하)',
   'find': '찾기',
   'clearScrollback': '스크롤백 지우기',
   'clearScreen': '화면 지우기',
