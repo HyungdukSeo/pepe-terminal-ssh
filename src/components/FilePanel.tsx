@@ -5,7 +5,6 @@ import { FixedSizeList as VList, ListChildComponentProps } from 'react-window';
 import { createPortal } from 'react-dom';
 import { ContextMenu } from './ContextMenu';
 import { ChmodDialog } from './ChmodDialog';
-import { RenameDialog } from './RenameDialog';
 
 // 파일 패널 간 공유 클립보드 (양쪽 패널에서 복사/붙여넣기 공유)
 type FileClipboard = {
@@ -28,6 +27,8 @@ export type FileInfo = {
   mtime: number;
   // 가상 shell 항목 (내 PC, 네트워크, .lnk 단축 등) — 클릭 시 이 경로로 navigate
   shellPath?: string;
+  // shell-pidl 가상 폴더 안의 실제 파일시스템 경로 — 삭제/이름변경/복사 등 fs 연산에 사용
+  realPath?: string;
   // 원격 SFTP 전용
   mode?: string;       // drwxr-xr-x
   owner?: string;
@@ -149,6 +150,15 @@ function getFileIcon(name: string, isDir: boolean, shellPath?: string): string {
   if (lower === '바탕 화면' || lower === 'desktop') return '🖼';
   if (lower === '휴지통' || lower.includes('recycle')) return '🗑';
   if (lower.includes('onedrive')) return '☁';
+  // 내장 저장공간 / SD 카드 — MTP device 내부의 storage
+  if (lower === '내장 저장공간' || lower === 'internal storage' || lower === '내부 저장공간') return '💾';
+  if (lower === 'sd 카드' || lower === 'sd card' || lower.includes('sdcard') || lower.includes('external sd')) return '💾';
+  // MTP / 휴대 디바이스 — device 루트만 (chain 자식은 일반 폴더로)
+  const isShellChain = !!shellPath && shellPath.includes('||');
+  if (!isShellChain) {
+    if (shellPath && /usb#|mtp|samsung_android|portable|wpdbusenum/i.test(shellPath)) return '📱';
+    if (/^(galaxy|iphone|ipad|pixel|note\s*\d+|s\d{1,2}\+|s\d{1,2}\s)/i.test(lower)) return '📱';
+  }
   // shellPath 가 드라이브 letter 면 drive 아이콘
   if (shellPath && /^[A-Z]:[\\/]?$/.test(shellPath)) return '💾';
   // shellPath 가 UNC 면 네트워크 공유
@@ -205,15 +215,15 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
     window.addEventListener('mouseup', onUp);
   };
   // 로컬 드라이브 목록 — 볼륨 라벨 + 드라이브 letter 포함 ({path, label}[])
-  const [drives, setDrives] = useState<{ path: string; label: string }[]>([]);
+  const [drives, setDrives] = useState<{ path: string; label: string; depth?: number }[]>([]);
   // 로컬 파일 아이콘 캐시 (path → dataUrl) — Electron 의 app.getFileIcon 으로 lazy 로딩
   const [iconCache, setIconCache] = useState<Map<string, string>>(new Map());
   const iconRequestedRef = useRef<Set<string>>(new Set());
   // 확장자 → 아이콘 캐시 (원격 SFTP 파일용 — 로컬에 파일 없어도 확장자만으로 Windows 아이콘 추출)
   const [extIconCache, setExtIconCache] = useState<Map<string, string>>(new Map());
   const extRequestedRef = useRef<Set<string>>(new Set());
+  // 드라이브 / 특수 폴더 목록 — source 모드와 무관하게 항상 로드해서 source 드롭다운에 항상 노출
   useEffect(() => {
-    if (source.mode !== 'local') return;
     (async () => {
       try {
         const list: any = await api.feGetDrives?.();
@@ -223,7 +233,7 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
         }
       } catch {}
     })();
-  }, [source.mode]);
+  }, []);
   const [renameValue, setRenameValue] = useState('');
   const [lastClickIdx, setLastClickIdx] = useState(-1);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -285,18 +295,16 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
     return () => { cancelled = true; };
   }, [renamingFile]);
 
-  // 원격 SFTP 모드: 파일 확장자 기반 Windows shell 아이콘 lazy 로딩
+  // 확장자 기반 Windows shell 아이콘 lazy 로딩
+  // - 원격 SFTP: 모든 파일에 대해 사용 (path-specific 아이콘 없음)
+  // - 로컬: path-specific 로딩 전 깜빡임 방지용 fallback (dir 아이콘 + ext 아이콘)
   // ★ 500ms debounce — PowerShell spawn 과 modal 타이밍 충돌 방지
   useEffect(() => {
-    if (source.mode !== 'remote') return;
+    if (source.mode !== 'remote' && source.mode !== 'local') return;
     if (!files || files.length === 0) return;
-    if (renamingFile) {
-      console.log(`[ps-dbg] remote ext-icon load SKIPPED (renamingFile=${renamingFile})`);
-      return;
-    }
-    console.log(`[ps-dbg] remote ext-icon load scheduled in 500ms`);
+    if (renamingFile) return;
+    // ext-icon 은 path-specific 보다 우선 로드 (fallback 용도) — 짧은 debounce
     const t = setTimeout(() => {
-      console.log(`[ps-dbg] remote ext-icon load DEBOUNCE FIRED`);
       const fileExts = new Set<string>();
       let needsDirIcon = false;
       for (const f of files) {
@@ -339,8 +347,8 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
           } catch {}
         }
       })();
-    }, 500);
-    return () => { console.log('[ps-dbg] remote ext-icon CLEANUP (timer cancelled)'); clearTimeout(t); };
+    }, 100);
+    return () => clearTimeout(t);
   }, [files, source.mode, renamingFile]);
 
   // 로컬 모드에서 파일 목록 변경 시 shell icon 을 BATCH 로 요청.
@@ -349,13 +357,8 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
   useEffect(() => {
     if (source.mode !== 'local') return;
     if (!files || files.length === 0) return;
-    if (renamingFile) {
-      console.log(`[ps-dbg] local icon load SKIPPED (renamingFile=${renamingFile})`);
-      return;
-    }
-    console.log(`[ps-dbg] local icon load scheduled in 500ms (files=${files.length} renamingFile=${renamingFile})`);
+    if (renamingFile) return;
     const t = setTimeout(() => {
-      console.log(`[ps-dbg] local icon load DEBOUNCE FIRED (renamingFile=${renamingFile})`);
       const fetchIcons = async () => {
         const paths: string[] = [];
         for (const f of files) {
@@ -367,12 +370,9 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
           iconRequestedRef.current.add(fullPath);
           paths.push(fullPath);
         }
-        if (paths.length === 0) { console.log('[ps-dbg] local icon load: no new paths, skip'); return; }
-        console.log(`[ps-dbg] local icon load CALLING feGetFileIconsBatch (${paths.length} paths) hasFocus=${document.hasFocus()}`);
-        const t0 = Date.now();
+        if (paths.length === 0) return;
         try {
           const r: any = await api.feGetFileIconsBatch?.(paths);
-          console.log(`[ps-dbg] local icon load RESOLVED ${Date.now() - t0}ms hasFocus=${document.hasFocus()}`);
           if (r?.icons) {
             setIconCache(prev => {
               const next = new Map(prev);
@@ -382,12 +382,22 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
               return next;
             });
           }
-        } catch (err) { console.log('[ps-dbg] local icon load ERR', err); }
+        } catch {}
       };
       fetchIcons();
     }, 500);
-    return () => { console.log('[ps-dbg] local icon load CLEANUP (timer cancelled)'); clearTimeout(t); };
+    return () => clearTimeout(t);
   }, [files, source.mode, currentPath, renamingFile]);
+
+  // 파일명 인코딩 — SSH/SFTP 원격 파일명 디코딩에 사용. localStorage 영속화.
+  // (loadDir 보다 먼저 선언되어야 함 — useCallback 이 dep 로 사용)
+  const [encoding, setEncoding] = useState<string>(() => {
+    try { return localStorage.getItem(`feEncoding:${panelId}`) || 'utf-8'; } catch { return 'utf-8'; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(`feEncoding:${panelId}`, encoding); } catch {}
+  }, [encoding, panelId]);
+  const [encodingMenu, setEncodingMenu] = useState<{ x: number; y: number } | null>(null);
 
   const loadDir = useCallback(async (dir: string) => {
     if (!dir) return;
@@ -395,26 +405,114 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
     setError('');
     try {
       if (typeof api.feListDir !== 'function') { setError(t('apiUnavailable')); setFiles([]); setLoading(false); return; }
-      const result = await api.feListDir(source.mode, dir, source.termId);
+      const result = await api.feListDir(source.mode, dir, source.termId, encoding);
       if (result?.error) { setError(result.error); setFiles([]); }
       else { setFiles(result?.files || []); }
     } catch (e: any) { setError(String(e)); setFiles([]); }
     setLoading(false);
-  }, [source.mode, source.termId]);
+  }, [source.mode, source.termId, encoding]);
 
   useEffect(() => { loadDir(currentPath); }, [currentPath, loadDir, refreshKey]);
   useEffect(() => { setEditPath(currentPath); }, [currentPath]);
 
   const sep = source.mode === 'local' && navigator.platform.startsWith('Win') ? '\\' : '/';
 
+  // 경로 history (이전/다음 폴더) — source 별로 독립
+  const historyRef = useRef<string[]>([currentPath]);
+  const historyIdxRef = useRef<number>(0);
+  const skipHistoryRef = useRef<boolean>(false);
+  const [, forceHistoryTick] = useState(0);
+  // source 변경 시 history 리셋
+  useEffect(() => {
+    historyRef.current = [currentPath];
+    historyIdxRef.current = 0;
+    forceHistoryTick(t => t + 1);
+    // source.mode / termId / sessionId 가 바뀐 경우만 (currentPath 는 navigate 별 추적)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source.mode, source.termId, source.sessionId]);
+  // currentPath 가 외부에서 바뀐 경우 (handleClick / enterDir 등) history 에 push
+  useEffect(() => {
+    if (skipHistoryRef.current) { skipHistoryRef.current = false; return; }
+    const hist = historyRef.current;
+    const idx = historyIdxRef.current;
+    if (hist[idx] === currentPath) return; // 같은 경로면 skip
+    // 현재 idx 이후 항목 잘라내고 새 경로 push
+    hist.splice(idx + 1);
+    hist.push(currentPath);
+    // 너무 길어지면 최대 50 까지 유지
+    if (hist.length > 50) hist.splice(0, hist.length - 50);
+    historyIdxRef.current = hist.length - 1;
+    forceHistoryTick(t => t + 1);
+  }, [currentPath]);
+
   const navigate = (dir: string) => {
     onPathChange(dir);
   };
 
+  const canGoBack = historyIdxRef.current > 0;
+  const canGoForward = historyIdxRef.current < historyRef.current.length - 1;
+  const goBack = () => {
+    if (!canGoBack) return;
+    historyIdxRef.current--;
+    skipHistoryRef.current = true;
+    onPathChange(historyRef.current[historyIdxRef.current]);
+    forceHistoryTick(t => t + 1);
+  };
+  const goForward = () => {
+    if (!canGoForward) return;
+    historyIdxRef.current++;
+    skipHistoryRef.current = true;
+    onPathChange(historyRef.current[historyIdxRef.current]);
+    forceHistoryTick(t => t + 1);
+  };
+  const jumpToHistory = (idx: number) => {
+    if (idx < 0 || idx >= historyRef.current.length) return;
+    historyIdxRef.current = idx;
+    skipHistoryRef.current = true;
+    onPathChange(historyRef.current[idx]);
+    forceHistoryTick(t => t + 1);
+  };
+  const [historyMenu, setHistoryMenu] = useState<{ x: number; y: number; direction: 'back' | 'forward' } | null>(null);
+
   const goUp = () => {
     let parent: string;
-    if (source.mode === 'local' && navigator.platform.startsWith('Win')) {
-      parent = currentPath.replace(/\\[^\\]*\\?$/, '') || currentPath.slice(0, 3);
+    // shell-pidl: 체인 경로는 '||' 기준으로 한 단계 위로
+    if (currentPath.startsWith('shell-pidl:')) {
+      const idx = currentPath.lastIndexOf('||');
+      if (idx >= 0) {
+        // 체인 단계 하나 제거
+        parent = currentPath.slice(0, idx);
+      } else {
+        // 디바이스 루트 → 내 PC 로
+        parent = 'shell:MyComputerFolder';
+      }
+    } else if (currentPath === 'shell:MyComputerFolder') {
+      // 내 PC 위 → 바탕 화면
+      parent = 'shell:Desktop';
+    } else if (currentPath.startsWith('shell:')) {
+      // 다른 특수 폴더는 바탕 화면 으로
+      parent = 'shell:Desktop';
+    } else if (source.mode === 'local' && navigator.platform.startsWith('Win')) {
+      // 드라이브 루트 (C:\ 등) 에서 더 위로 → 내 PC
+      const isDriveRoot = /^[A-Za-z]:[\\/]?$/.test(currentPath);
+      // UNC 공유 루트 (\\server\share 또는 \\server\share\) 도 내 PC 로
+      const isUncShareRoot = /^\\\\[^\\]+\\[^\\]+[\\/]?$/.test(currentPath);
+      // UNC 서버 (\\server\ 또는 \\server) 도 내 PC 로
+      const isUncServer = /^\\\\[^\\]+[\\/]?$/.test(currentPath);
+      // 바탕 화면 산하 특수 폴더 (홈, 다운로드, 문서, 사진, 음악, 동영상) 에서는 바탕 화면 으로
+      const norm = (p: string) => p.replace(/[\\/]+$/, '').toLowerCase();
+      const isDesktopChild = drives.some(d =>
+        (d.depth ?? 0) === 1 &&
+        d.path && !d.path.startsWith('shell:') && !d.path.startsWith('shell-pidl:') &&
+        norm(d.path) === norm(currentPath)
+      );
+      if (isDesktopChild) {
+        parent = 'shell:Desktop';
+      } else if (isDriveRoot || isUncShareRoot || isUncServer) {
+        parent = 'shell:MyComputerFolder';
+      } else {
+        parent = currentPath.replace(/\\[^\\]*\\?$/, '') || currentPath.slice(0, 3);
+      }
     } else {
       parent = currentPath.replace(/\/[^/]*\/?$/, '') || '/';
     }
@@ -436,20 +534,28 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
     enterDir(file.name);
   };
 
+  // 선택 키 — 동명 객체 (shell library aggregator 등) 구분 위해 realPath/shellPath 우선
+  const fileKey = (f: FileInfo): string => f.realPath || f.shellPath || f.name;
+
   const handleClick = (file: FileInfo, idx: number, e: React.MouseEvent) => {
+    // 행 클릭 시 file list 에 포커스 부여 — Delete/F2 등 키보드 단축키 동작 보장
+    if (listRef.current && document.activeElement !== listRef.current) {
+      try { listRef.current.focus({ preventScroll: true }); } catch {}
+    }
+    const key = fileKey(file);
     if (e.ctrlKey || e.metaKey) {
       const next = new Set(selectedFiles);
-      next.has(file.name) ? next.delete(file.name) : next.add(file.name);
+      next.has(key) ? next.delete(key) : next.add(key);
       onSelectionChange(next);
     } else if (e.shiftKey && lastClickIdx >= 0) {
       const sorted = getSortedFiles();
       const start = Math.min(lastClickIdx, idx);
       const end = Math.max(lastClickIdx, idx);
       const next = new Set(selectedFiles);
-      for (let i = start; i <= end; i++) { if (sorted[i]) next.add(sorted[i].name); }
+      for (let i = start; i <= end; i++) { if (sorted[i]) next.add(fileKey(sorted[i])); }
       onSelectionChange(next);
     } else {
-      onSelectionChange(new Set([file.name]));
+      onSelectionChange(new Set([key]));
     }
     setLastClickIdx(idx);
   };
@@ -481,15 +587,21 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   // 삭제 확인 — 네이티브 confirm() 은 OS 포커스를 잃게 만들기 때문에 React 모달로 처리
   const [deleteConfirm, setDeleteConfirm] = useState<{ targets: string[] } | null>(null);
-  const handleDelete = (name: string) => {
-    const targets = selectedFiles.size > 1 && selectedFiles.has(name) ? [...selectedFiles] : [name];
+  // targets 는 fileKey 들의 배열
+  const handleDelete = (key: string) => {
+    const targets = selectedFiles.size > 1 && selectedFiles.has(key) ? [...selectedFiles] : [key];
     setDeleteConfirm({ targets });
   };
   const doDelete = async (targets: string[]) => {
     setDeleteConfirm(null);
     try {
-      for (const f of targets) {
-        const filePath = currentPath.endsWith(sep) ? currentPath + f : currentPath + sep + f;
+      const keyMap = new Map(files.map(f => [fileKey(f), f]));
+      for (const k of targets) {
+        const info = keyMap.get(k);
+        const name = info?.name || k;
+        const filePath = info?.realPath
+          ? info.realPath
+          : (currentPath.endsWith(sep) ? currentPath + name : currentPath + sep + name);
         await api.feDelete?.(source.mode, filePath, source.termId);
       }
       onSelectionChange(new Set());
@@ -497,13 +609,15 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
     } catch {}
   };
 
-  const handleCopyToClipboard = (name: string) => {
-    const targets = selectedFiles.size > 0 && selectedFiles.has(name) ? [...selectedFiles] : [name];
+  const handleCopyToClipboard = (key: string) => {
+    const targetKeys = selectedFiles.size > 0 && selectedFiles.has(key) ? [...selectedFiles] : [key];
+    const keyMap = new Map(files.map(f => [fileKey(f), f]));
+    const targetNames = targetKeys.map(k => keyMap.get(k)?.name).filter(Boolean) as string[];
     setFileClipboard({
       mode: source.mode,
       termId: source.termId,
       basePath: currentPath,
-      files: targets,
+      files: targetNames,
       operation: 'copy',
     });
   };
@@ -534,14 +648,22 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
     loadDir(currentPath);
   };
 
-  const handleCopyPath = (name: string) => {
-    const targets = selectedFiles.size > 0 && selectedFiles.has(name) ? [...selectedFiles] : [name];
-    const paths = targets.map(n => currentPath.endsWith(sep) ? currentPath + n : currentPath + sep + n);
+  const handleCopyPath = (key: string) => {
+    const targetKeys = selectedFiles.size > 0 && selectedFiles.has(key) ? [...selectedFiles] : [key];
+    const keyMap = new Map(files.map(f => [fileKey(f), f]));
+    const paths = targetKeys.map(k => {
+      const info = keyMap.get(k);
+      if (info?.realPath) return info.realPath;
+      const name = info?.name || k;
+      return currentPath.endsWith(sep) ? currentPath + name : currentPath + sep + name;
+    });
     try { navigator.clipboard.writeText(paths.join('\n')); } catch {}
   };
 
-  const handleChmod = (name: string) => {
-    const targets = selectedFiles.size > 0 && selectedFiles.has(name) ? [...selectedFiles] : [name];
+  const handleChmod = (key: string) => {
+    const targetKeys = selectedFiles.size > 0 && selectedFiles.has(key) ? [...selectedFiles] : [key];
+    const keyMap = new Map(files.map(f => [fileKey(f), f]));
+    const targets = targetKeys.map(k => keyMap.get(k)?.name).filter(Boolean) as string[];
     const fileMap = new Map(files.map(f => [f.name, f]));
     const paths = targets.map(n => currentPath.endsWith(sep) ? currentPath + n : currentPath + sep + n);
     const hasDir = targets.some(n => fileMap.get(n)?.isDir);
@@ -635,8 +757,17 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
     if (!newName || newName === oldName) { setRenamingFile(null); return; }
     renameInFlight.current = true;
     try {
-      const oldPath = currentPath.endsWith(sep) ? currentPath + oldName : currentPath + sep + oldName;
-      const newPath = currentPath.endsWith(sep) ? currentPath + newName : currentPath + sep + newName;
+      // shell-pidl 가상 폴더 안의 실제 파일은 realPath 사용
+      const fileInfo = files.find(f => f.name === oldName);
+      const oldPath = fileInfo?.realPath
+        ? fileInfo.realPath
+        : (currentPath.endsWith(sep) ? currentPath + oldName : currentPath + sep + oldName);
+      // newPath: oldPath 의 디렉토리 + newName
+      const baseSep = oldPath.includes('\\') ? '\\' : '/';
+      const lastSepIdx = oldPath.lastIndexOf(baseSep);
+      const newPath = lastSepIdx >= 0
+        ? oldPath.slice(0, lastSepIdx + 1) + newName
+        : newName;
       const r = await api.feRename?.(source.mode, oldPath, newPath, source.termId);
       setRenamingFile(null);
       if (r && r.success === false) {
@@ -662,9 +793,30 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
         {source.mode === 'remote' && onDisconnect && (
           <button className="fe-disconnect-btn" onClick={onDisconnect} title={t('disconnect')}>✕</button>
         )}
-        <select className="fe-source-select" value={`${source.mode}:${source.termId || source.sessionId || ''}`}
+        <select className="fe-source-select"
+          value={(() => {
+            // 로컬 모드이고 현재 경로가 드라이브 중 하나와 일치하면 그 드라이브 선택 상태로 표시
+            if (source.mode === 'local') {
+              const match = drives.find(d => d.path === currentPath || d.path.replace(/[\\/]$/, '') === currentPath.replace(/[\\/]$/, ''));
+              if (match) return `local-drive:${match.path}`;
+            }
+            return `${source.mode}:${source.termId || source.sessionId || ''}`;
+          })()}
           onChange={e => {
-            const [m, t] = [e.target.value.split(':')[0], e.target.value.split(':').slice(1).join(':')];
+            const v = e.target.value;
+            // 로컬 드라이브/특수 폴더 선택 — 'local-drive:<path>' 형식
+            if (v.startsWith('local-drive:')) {
+              const drivePath = v.slice('local-drive:'.length);
+              const localSrc = sources.find(s => s.mode === 'local');
+              if (localSrc && source.mode !== 'local') {
+                onSourceChange(localSrc);
+                setTimeout(() => navigate(drivePath), 0);
+              } else {
+                navigate(drivePath);
+              }
+              return;
+            }
+            const [m, t] = [v.split(':')[0], v.split(':').slice(1).join(':')];
             const s = sources.find(s => s.mode === m && ((s.termId || s.sessionId || '') === t));
             if (s) onSourceChange(s);
           }}
@@ -679,6 +831,16 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
             return (
               <>
                 {localSources.map(renderOpt)}
+                {/* 로컬 드라이브/특수 폴더 — depth 기반 트리 들여쓰기 */}
+                {drives.map(d => {
+                  const depth = (d.depth ?? 0) + 1; // 로컬 아래로 한 단계 더 들여씀
+                  const indent = '    '.repeat(depth);
+                  return (
+                    <option key={`local-drive:${d.path}`} value={`local-drive:${d.path}`}>
+                      {indent + d.label}
+                    </option>
+                  );
+                })}
                 {connected.length > 0 && (
                   <optgroup label={t('groupConnected')}>
                     {connected.map(renderOpt)}
@@ -695,6 +857,20 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
         </select>
       </div>
       <div className="fe-path-bar">
+        {/* 이전 폴더 (history back) + 드롭다운 */}
+        <div className="fe-nav-group">
+          <button className="fe-path-btn fe-nav-btn" onClick={goBack} disabled={!canGoBack} title="이전 폴더">←</button>
+          <button className="fe-path-btn fe-nav-dropdown" disabled={!canGoBack} title="이전 폴더 기록"
+            onClick={e => { const r = (e.currentTarget as HTMLElement).getBoundingClientRect(); setHistoryMenu({ x: r.left, y: r.bottom, direction: 'back' }); }}
+          >▾</button>
+        </div>
+        {/* 다음 폴더 (history forward) + 드롭다운 */}
+        <div className="fe-nav-group">
+          <button className="fe-path-btn fe-nav-btn" onClick={goForward} disabled={!canGoForward} title="다음 폴더">→</button>
+          <button className="fe-path-btn fe-nav-dropdown" disabled={!canGoForward} title="다음 폴더 기록"
+            onClick={e => { const r = (e.currentTarget as HTMLElement).getBoundingClientRect(); setHistoryMenu({ x: r.left, y: r.bottom, direction: 'forward' }); }}
+          >▾</button>
+        </div>
         <button className="fe-path-btn" onClick={goUp} title={t('parentFolder')}>⬆</button>
         <button className="fe-path-btn" onClick={() => loadDir(currentPath)} title={t('refresh')}>🔄</button>
         {source.mode === 'local' && drives.length > 0 && (
@@ -715,8 +891,50 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
             autoFocus
           />
         ) : (
-          <div className="fe-path-display" onClick={() => setEditingPath(true)}>{currentPath}</div>
+          <div className="fe-path-display" onClick={() => setEditingPath(true)} title={currentPath}>
+            {(() => {
+              // shell: / shell-pidl: 경로는 친화적으로 표시 — 디바이스/특수 폴더 라벨 + 체인 이름들
+              const specialLabel = (p: string): string | null => {
+                if (p === 'shell:MyComputerFolder') return '내 PC';
+                if (p === 'shell:Desktop') return '바탕 화면';
+                if (p === 'shell:NetworkPlacesFolder') return '네트워크';
+                if (p === 'shell:Downloads') return '다운로드';
+                if (p === 'shell:Personal' || p === 'shell:My Documents') return '문서';
+                if (p === 'shell:My Pictures') return '사진';
+                if (p === 'shell:My Music') return '음악';
+                if (p === 'shell:My Video') return '동영상';
+                if (p === 'shell:RecycleBinFolder') return '휴지통';
+                // 알려진 shell CLSID 직접 매칭 (Desktop 가상 항목이 raw CLSID 경로로 들어오는 경우)
+                if (p === '::{20D04FE0-3AEA-1069-A2D8-08002B30309D}') return '내 PC';
+                if (p === '::{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}') return '네트워크';
+                if (p === '::{645FF040-5081-101B-9F08-00AA002F954E}') return '휴지통';
+                return null;
+              };
+              if (currentPath.startsWith('shell-pidl:')) {
+                const body = currentPath.slice('shell-pidl:'.length);
+                const segs = body.split('||');
+                const rootPath = segs[0];
+                const chain = segs.slice(1);
+                const fullRoot = `shell-pidl:${rootPath}`;
+                const matchedDrive = drives.find(d => d.path === fullRoot);
+                let rootLabel = matchedDrive
+                  ? matchedDrive.label.replace(/^[^A-Za-z0-9가-힣]+\s*/, '')
+                  : (specialLabel(rootPath) || (rootPath.startsWith('shell:') ? rootPath.slice(6) : rootPath));
+                return [rootLabel, ...chain].join(' › ');
+              }
+              if (currentPath.startsWith('shell:')) {
+                return specialLabel(currentPath) || currentPath.slice(6);
+              }
+              return currentPath;
+            })()}
+          </div>
         )}
+        {/* 우측 — 인코딩 / 상위 폴더 / 새로고침 */}
+        <button className="fe-path-btn fe-path-btn-right" title={`파일명 인코딩: ${encoding}`}
+          onClick={e => { const r = (e.currentTarget as HTMLElement).getBoundingClientRect(); setEncodingMenu({ x: r.left, y: r.bottom }); }}
+        >🌐</button>
+        <button className="fe-path-btn fe-path-btn-right" onClick={goUp} title="상위 폴더">↑</button>
+        <button className="fe-path-btn fe-path-btn-right" onClick={() => loadDir(currentPath)} title="새로고침">⟳</button>
       </div>
       <div className="fe-file-header">
         <span className="fe-col-name" style={{ width: colWidths.name }} onClick={() => toggleSort('name')}>{t('colName')}{sortIcon('name')}</span>
@@ -746,6 +964,8 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
           // 네이티브 텍스트 선택 방지 — 드래그가 리스트 밖(경로바/헤더 등)을 지날 때
           // 브라우저가 텍스트 셀렉션을 시작하지 않도록 차단
           e.preventDefault();
+          // 드래그 선택 시작 시 리스트에 포커스 — Delete 등 단축키 동작 보장
+          try { listRef.current.focus({ preventScroll: true }); } catch {}
           const prevUserSelect = document.body.style.userSelect;
           document.body.style.userSelect = 'none';
           try { window.getSelection()?.removeAllRanges(); } catch {}
@@ -791,8 +1011,8 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
               const rTop = el.offsetTop;
               const rBot = rTop + el.offsetHeight;
               if (rBot >= minContent && rTop <= maxContent) {
-                const name = el.getAttribute('data-name');
-                if (name) sel.add(name);
+                const key = el.getAttribute('data-key');
+                if (key) sel.add(key);
               }
             });
             onSelectionChange(sel);
@@ -857,6 +1077,13 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
           // input/textarea/contenteditable 안에서 발생한 키도 무시
           const t = e.target as HTMLElement;
           if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+          // Ctrl+A / Cmd+A — 전체 선택
+          if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
+            e.preventDefault();
+            const sorted = getSortedFiles();
+            onSelectionChange(new Set(sorted.filter(f => f.name !== '..').map(f => fileKey(f))));
+            return;
+          }
           if (e.key === 'Delete' && selectedFiles.size > 0) {
             e.preventDefault();
             handleDelete([...selectedFiles][0]);
@@ -864,7 +1091,7 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
           if (e.key === 'F2' && selectedFiles.size > 0) {
             e.preventDefault();
             const sorted = getSortedFiles();
-            const first = sorted.find(f => selectedFiles.has(f.name));
+            const first = sorted.find(f => selectedFiles.has(fileKey(f)));
             if (first) { setRenamingFile(first.name); setRenameValue(first.name); }
           }
           // prefix 키 점프 — 단일 키 누르면 해당 문자로 시작하는 첫 파일 선택, 같은 키 반복 시 순환
@@ -872,7 +1099,7 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
             const sorted = getSortedFiles();
             const ch = e.key.toLowerCase();
             // 현재 선택된 파일 다음부터 찾기 (같은 키 반복 시 순환)
-            const curIdx = sorted.findIndex(f => selectedFiles.has(f.name));
+            const curIdx = sorted.findIndex(f => selectedFiles.has(fileKey(f)));
             let target = -1;
             for (let i = 1; i <= sorted.length; i++) {
               const idx = (curIdx + i) % sorted.length;
@@ -880,8 +1107,12 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
             }
             if (target >= 0) {
               e.preventDefault();
-              onSelectionChange(new Set([sorted[target].name]));
-              try { vlistRef.current?.scrollToItem(target, 'smart'); } catch {}
+              onSelectionChange(new Set([fileKey(sorted[target])]));
+              // 스크롤 위치 조정
+              setTimeout(() => {
+                const el = document.querySelector(`.fe-file-row[data-key="${CSS.escape(fileKey(sorted[target]))}"]`) as HTMLElement | null;
+                el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+              }, 0);
             }
           }
         }}
@@ -902,15 +1133,17 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
         {loading && <div className="fe-loading">{t('loading')}</div>}
         {error && <div className="fe-error">{error}</div>}
         {!loading && !error && sortedFiles.map((file, idx) => (
-          <div key={file.name} data-name={file.name}
-            className={`fe-file-row ${selectedFiles.has(file.name) ? 'selected' : ''}`}
+          <div key={fileKey(file)} data-name={file.name} data-key={fileKey(file)}
+            className={`fe-file-row ${selectedFiles.has(fileKey(file)) ? 'selected' : ''}`}
             onClick={e => handleClick(file, idx, e)}
             onDoubleClick={() => handleDoubleClick(file)}
             onContextMenu={e => { e.stopPropagation(); handleContextMenu(e, file); }}
             draggable={renamingFile !== file.name}
             onDragStart={e => {
               if (renamingFile === file.name) { e.preventDefault(); return; }
-              const filesToDrag = selectedFiles.has(file.name) ? [...selectedFiles] : [file.name];
+              // 드래그 — name 기반 (소비측 백워드 호환)
+              const selectedNames = sortedFiles.filter(f => selectedFiles.has(fileKey(f))).map(f => f.name);
+              const filesToDrag = selectedNames.includes(file.name) ? selectedNames : [file.name];
               e.dataTransfer.setData('text/fe-files', JSON.stringify({
                 panelId, files: filesToDrag, srcMode: source.mode, srcTermId: source.termId, srcPath: currentPath,
               }));
@@ -925,6 +1158,16 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
                     : (currentPath.endsWith(sep) ? currentPath + file.name : currentPath + sep + file.name);
                   const url = iconCache.get(fullPath);
                   if (url) return <img src={url} className="fe-file-icon-img" alt="" draggable={false} />;
+                  // Fallback: 디폴트 폴더/확장자 아이콘 (path-specific 로딩 전 깜빡임 방지)
+                  if (file.isDir) {
+                    const dirUrl = extIconCache.get('dir:');
+                    if (dirUrl) return <img src={dirUrl} className="fe-file-icon-img" alt="" draggable={false} />;
+                  } else {
+                    const idx = file.name.lastIndexOf('.');
+                    const ext = idx > 0 ? file.name.slice(idx + 1).toLowerCase() : '';
+                    const extUrl = ext ? extIconCache.get('file:' + ext) : '';
+                    if (extUrl) return <img src={extUrl} className="fe-file-icon-img" alt="" draggable={false} />;
+                  }
                 } else if (source.mode === 'remote') {
                   // 확장자 기반 아이콘 (원격 SFTP)
                   if (file.isDir) {
@@ -939,7 +1182,26 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
                 }
                 return getFileIcon(file.name, file.isDir, file.shellPath);
               })()}</span>
-              <span className="fe-file-name">{file.name}</span>
+              {renamingFile === file.name ? (
+                <input
+                  key={`rename-${file.name}`}
+                  className="fe-rename-input"
+                  ref={renameInputRefCallback}
+                  defaultValue={renameValue}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') { e.preventDefault(); const v = (e.currentTarget.value || '').trim(); doRename(file.name, v); }
+                    else if (e.key === 'Escape') { e.preventDefault(); setRenamingFile(null); }
+                  }}
+                  onBlur={e => {
+                    const v = (e.currentTarget.value || '').trim();
+                    doRename(file.name, v);
+                  }}
+                  onClick={e => e.stopPropagation()}
+                  onMouseDown={e => e.stopPropagation()}
+                />
+              ) : (
+                <span className="fe-file-name">{file.name}</span>
+              )}
             </span>
             <div className="fe-col-resize" />
             <span className="fe-col-size" style={{ width: colWidths.size }}>{file.isDir ? '' : formatSize(file.size)}</span>
@@ -960,8 +1222,10 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
           draggable={selectedFiles.size > 0}
           onDragStart={e => {
             if (selectedFiles.size === 0) return;
+            // 선택된 keys 를 name 으로 변환 (수신측 호환)
+            const selectedNames = files.filter(f => selectedFiles.has(fileKey(f))).map(f => f.name);
             e.dataTransfer.setData('text/fe-files', JSON.stringify({
-              panelId, files: [...selectedFiles], srcMode: source.mode, srcTermId: source.termId, srcPath: currentPath,
+              panelId, files: selectedNames, srcMode: source.mode, srcTermId: source.termId, srcPath: currentPath,
             }));
             e.dataTransfer.effectAllowed = 'copy';
           }}
@@ -971,18 +1235,49 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
         {t('statusSummary', { total: files.length, selected: selectedFiles.size })}
       </div>
 
+      {encodingMenu && (() => {
+        const encodings = [
+          { code: 'utf-8', label: 'UTF-8 (Unicode)' },
+          { code: 'cp949', label: 'CP949 (한국어 Windows)' },
+          { code: 'euc-kr', label: 'EUC-KR (한국어 Unix)' },
+          { code: 'shift_jis', label: 'Shift-JIS (일본어)' },
+          { code: 'euc-jp', label: 'EUC-JP (일본어 Unix)' },
+          { code: 'gbk', label: 'GBK (중국어 간체)' },
+          { code: 'big5', label: 'Big5 (중국어 번체)' },
+          { code: 'latin1', label: 'Latin-1 (서유럽)' },
+        ];
+        const items: any[] = encodings.map(e => ({
+          label: (encoding === e.code ? '✓ ' : '   ') + e.label,
+          onClick: () => setEncoding(e.code),
+        }));
+        return <ContextMenu x={encodingMenu.x} y={encodingMenu.y} items={items} onClose={() => setEncodingMenu(null)} />;
+      })()}
+      {historyMenu && (() => {
+        const curIdx = historyIdxRef.current;
+        const hist = historyRef.current;
+        // back: curIdx-1 ... 0 (역순), forward: curIdx+1 ... end
+        const indices = historyMenu.direction === 'back'
+          ? Array.from({ length: curIdx }, (_, i) => curIdx - 1 - i)
+          : Array.from({ length: hist.length - curIdx - 1 }, (_, i) => curIdx + 1 + i);
+        const items: any[] = indices.map(i => ({
+          label: hist[i] || '/',
+          onClick: () => jumpToHistory(i),
+        }));
+        if (items.length === 0) return null;
+        return <ContextMenu x={historyMenu.x} y={historyMenu.y} items={items} onClose={() => setHistoryMenu(null)} />;
+      })()}
       {contextMenu && (
         <ContextMenu x={contextMenu.x} y={contextMenu.y} onClose={() => setContextMenu(null)} items={[
           ...(contextMenu.file ? [
-            { label: '복사', onClick: () => handleCopyToClipboard(contextMenu.file!.name) },
+            { label: '복사', onClick: () => handleCopyToClipboard(fileKey(contextMenu.file!)) },
             { label: '붙여넣기', onClick: handlePaste, disabled: !getFileClipboard() },
-            { label: '경로 복사', onClick: () => handleCopyPath(contextMenu.file!.name) },
+            { label: '경로 복사', onClick: () => handleCopyPath(fileKey(contextMenu.file!)) },
             { separator: true } as const,
             { label: t('rename'), onClick: () => { setRenamingFile(contextMenu.file!.name); setRenameValue(contextMenu.file!.name); } },
-            { label: t('deleteFile'), onClick: () => handleDelete(contextMenu.file!.name) },
+            { label: t('deleteFile'), onClick: () => handleDelete(fileKey(contextMenu.file!)) },
             ...(source.mode === 'remote' ? [
               { separator: true } as const,
-              { label: '권한 변경...', onClick: () => handleChmod(contextMenu.file!.name) },
+              { label: '권한 변경...', onClick: () => handleChmod(fileKey(contextMenu.file!)) },
             ] : []),
             { separator: true } as const,
           ] : [
@@ -1007,17 +1302,7 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
           onApplied={() => loadDir(currentPath)}
         />
       )}
-      {renamingFile && (() => {
-        const target = files.find(f => f.name === renamingFile);
-        return (
-          <RenameDialog
-            initialName={renamingFile}
-            isDir={!!target?.isDir}
-            onConfirm={(newName) => doRename(renamingFile, newName)}
-            onCancel={() => setRenamingFile(null)}
-          />
-        );
-      })()}
+      {/* rename 은 인라인 input 으로 처리 — 행 안에서 직접 편집 */}
       {errorMessage && createPortal(
         <div className="rn-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setErrorMessage(null); }}>
           <div className="rn-dialog" onMouseDown={e => e.stopPropagation()}>

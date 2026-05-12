@@ -18,8 +18,10 @@ export const FileExplorer: React.FC<Props> = ({ sessions }) => {
   const [sources, setSources] = useState<PanelSource[]>([{ mode: 'local', label: localLabel }]);
   const [leftSource, setLeftSource] = useState<PanelSource>({ mode: 'local', label: localLabel });
   const [rightSource, setRightSource] = useState<PanelSource>({ mode: 'local', label: localLabel });
-  const [leftPath, setLeftPath] = useState('C:\\');
-  const [rightPath, setRightPath] = useState('C:\\');
+  // 초기 경로는 빈 문자열 — feGetHome 으로 home 받아오면 즉시 설정.
+  // (C:\\ 초기값이면 C:\\ → home 으로 한번 점프하는 깜빡임 발생)
+  const [leftPath, setLeftPath] = useState('');
+  const [rightPath, setRightPath] = useState('');
   const [leftSelected, setLeftSelected] = useState<Set<string>>(new Set());
   const [rightSelected, setRightSelected] = useState<Set<string>>(new Set());
   const [transferring, setTransferring] = useState(false);

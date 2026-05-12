@@ -1,6 +1,7 @@
 // src/components/TransferLog.tsx
 // 파일 전송 트리 진행률 표시 컴포넌트
 import React, { useState, useEffect, useRef } from 'react';
+import { ContextMenu, MenuItem } from './ContextMenu';
 
 const api = (window as any).api || {};
 
@@ -77,6 +78,7 @@ export const TransferLog: React.FC<{ onClear?: () => void }> = () => {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [tab, setTab] = useState<'transfer' | 'log'>('transfer');
   const [, forceTick] = useState(0);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; groupId?: string } | null>(null);
 
   // 그룹 상태 동기화
   useEffect(() => { groupsRef.current = groups; }, [groups]);
@@ -280,6 +282,61 @@ export const TransferLog: React.FC<{ onClear?: () => void }> = () => {
     });
   };
 
+  // 한 항목 제거 — 진행 중이면 cancel 호출, 그 다음 UI 에서 삭제
+  const removeOne = async (id: string) => {
+    const g = groupsRef.current[id];
+    if (g && (g.status === 'active' || g.status === 'preparing')) {
+      try { await api.feCancelTransfer?.(id); } catch {}
+    }
+    setGroups(prev => { const next = { ...prev }; delete next[id]; return next; });
+  };
+
+  // 전체 제거 — 모든 진행 중 작업 cancel + 리스트 비움
+  const removeAll = async () => {
+    const ids = Object.keys(groupsRef.current);
+    for (const id of ids) {
+      const g = groupsRef.current[id];
+      if (g && (g.status === 'active' || g.status === 'preparing')) {
+        try { await api.feCancelTransfer?.(id); } catch {}
+      }
+    }
+    setGroups({});
+  };
+
+  // 파일 탐색기에서 열기 — 로컬 측 경로 사용
+  const showInExplorer = (g: TransferGroup) => {
+    const path = g.srcMode === 'local' ? g.srcPath : (g.dstMode === 'local' ? g.dstPath : '');
+    if (path) api.shellShowItem?.(path);
+  };
+
+  // 로컬 폴더 열기 — 파일의 부모 디렉토리
+  const openLocalFolder = (g: TransferGroup) => {
+    const path = g.srcMode === 'local' ? g.srcPath : (g.dstMode === 'local' ? g.dstPath : '');
+    if (!path) return;
+    // Windows / POSIX 모두 처리
+    const lastSep = Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/'));
+    const dir = lastSep >= 0 ? path.slice(0, lastSep) : path;
+    if (dir) api.shellOpenPath?.(dir);
+  };
+
+  // 컨텍스트 메뉴 항목 빌더
+  const buildCtxItems = (groupId?: string): MenuItem[] => {
+    const g = groupId ? groupsRef.current[groupId] : undefined;
+    const hasLocalPath = !!(g && (g.srcMode === 'local' || g.dstMode === 'local'));
+    const isActive = !!(g && (g.status === 'active' || g.status === 'preparing'));
+    const hasDone = Object.values(groupsRef.current).some(x => x.status === 'done' || x.status === 'error' || x.status === 'skipped' || x.status === 'cancelled');
+    const items: MenuItem[] = [];
+    if (g) {
+      items.push({ label: '파일 탐색기에서 열기', onClick: () => showInExplorer(g), disabled: !hasLocalPath });
+      items.push({ label: '로컬 폴더 열기', onClick: () => openLocalFolder(g), disabled: !hasLocalPath });
+      items.push({ separator: true });
+      items.push({ label: isActive ? '전송 취소' : '제거', onClick: () => removeOne(g.id) });
+    }
+    items.push({ label: '모두 제거', onClick: removeAll, disabled: Object.keys(groupsRef.current).length === 0 });
+    items.push({ label: '완료된 작업 제거', onClick: clearDone, disabled: !hasDone });
+    return items;
+  };
+
   const groupList = Object.values(groups).sort((a, b) => a.startTime - b.startTime);
 
   // 행 렌더링 — 그룹과 자식 파일들 평탄화
@@ -341,7 +398,15 @@ export const TransferLog: React.FC<{ onClear?: () => void }> = () => {
             <div className="tl-col tl-col-eta">남은 시간</div>
             <div className="tl-col tl-col-elapsed">경과 시간</div>
           </div>
-          <div className="tl-body">
+          <div className="tl-body"
+            onContextMenu={e => {
+              // 행 안에서 발생했으면 행 핸들러가 처리 — 빈 영역만 group=undefined 메뉴
+              const target = e.target as HTMLElement;
+              if (target.closest('.tl-row-group') || target.closest('.tl-row-file')) return;
+              e.preventDefault();
+              setCtxMenu({ x: e.clientX, y: e.clientY, groupId: undefined });
+            }}
+          >
             {rows.length === 0 && <div className="tl-empty">전송 대기 중..</div>}
             {rows.map((row, idx) => {
               if (row.kind === 'group') {
@@ -351,7 +416,8 @@ export const TransferLog: React.FC<{ onClear?: () => void }> = () => {
                 const elapsed = (g.endTime || now) - g.startTime;
                 const eta = g.status === 'done' ? 0 : (g.speed && g.totalSize > g.transferredSize ? (g.totalSize - g.transferredSize) / g.speed * 1000 : NaN);
                 return (
-                  <div key={g.id} className={`tl-row tl-row-group ${g.status}`}>
+                  <div key={g.id} className={`tl-row tl-row-group ${g.status}`}
+                    onContextMenu={e => { e.preventDefault(); setCtxMenu({ x: e.clientX, y: e.clientY, groupId: g.id }); }}>
                     <div className="tl-col tl-col-name">
                       {g.isDir ? (
                         <span className="tl-toggle" onClick={() => toggleExpand(g.id)}>{g.expanded ? '▼' : '▶'}</span>
@@ -383,7 +449,8 @@ export const TransferLog: React.FC<{ onClear?: () => void }> = () => {
                 const baseName = f.rel.split('/').pop() || f.rel;
                 const depth = (f.rel.match(/\//g) || []).length;
                 return (
-                  <div key={`${g.id}/${f.rel}/${idx}`} className={`tl-row tl-row-file ${f.status}`}>
+                  <div key={`${g.id}/${f.rel}/${idx}`} className={`tl-row tl-row-file ${f.status}`}
+                    onContextMenu={e => { e.preventDefault(); setCtxMenu({ x: e.clientX, y: e.clientY, groupId: g.id }); }}>
                     <div className="tl-col tl-col-name" style={{ paddingLeft: 16 + depth * 12 }}>
                       <span className="tl-toggle-spacer" />
                       <span className="tl-row-icon">📄</span>
@@ -418,6 +485,14 @@ export const TransferLog: React.FC<{ onClear?: () => void }> = () => {
             </div>
           ))}
         </div>
+      )}
+      {ctxMenu && (
+        <ContextMenu
+          x={ctxMenu.x}
+          y={ctxMenu.y}
+          items={buildCtxItems(ctxMenu.groupId)}
+          onClose={() => setCtxMenu(null)}
+        />
       )}
     </div>
   );

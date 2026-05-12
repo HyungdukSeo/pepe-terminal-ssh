@@ -67,6 +67,17 @@ class SSHBridge extends EventEmitter {
     }
   }
 
+  // 전송 취소 — UI 에서 "제거" 동작 시 호출. 폴더 전송 시 다음 child 부터 중단됨.
+  public cancelTransfer(transferId: string) {
+    this.cancelledTransfers.add(transferId);
+    // 충돌 다이얼로그 대기 중이면 cancel 응답으로 깨움
+    for (const [reqId, resolver] of this.conflictResolvers.entries()) {
+      this.conflictResolvers.delete(reqId);
+      resolver({ cancel: true });
+    }
+    this.emit('message', { type: 'sftp-complete', panelId: 'transfer', data: JSON.stringify({ filename: '', direction: 'cancelled', transferId, rel: '', rootName: '' }) });
+  }
+
   private requestConflictDecision(meta: any): Promise<any> {
     const requestId = `cf-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
     return new Promise((resolve) => {
@@ -566,29 +577,67 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
 
   // 백그라운드 cwd 폴링 — separate exec 채널로 readlink /proc/PID/cwd 를 주기적으로 실행.
   // 셸에 일체 명령 보내지 않음. cwd 변경되면 fake OSC 7 emit.
+  // ★ 채널 동시 개수 제한 + 연속 에러 시 백오프 — 서버의 MaxSessions 한계 회피
   private _startCwdPolling(panelId: string): void {
     this._stopCwdPolling(panelId); // 중복 방지
-    const interval = 400;
+    const baseInterval = 400;
+    const maxInterval = 30_000; // 최대 30초까지 백오프
+    let currentInterval = baseInterval;
+    let consecutiveErrors = 0;
+    let inFlight = false; // 이전 exec 미완료면 다음 tick 스킵
     const pid = this.shellPids.get(panelId);
     if (!pid) return;
+    const scheduleNext = () => {
+      if (!this.cwdPollers.has(panelId)) return; // 정지됨
+      const t = setTimeout(tick, currentInterval);
+      this.cwdPollers.set(panelId, t);
+    };
     const tick = () => {
       const rec = this.clients.get(panelId);
       if (!rec?.conn) { this._stopCwdPolling(panelId); return; }
       const curPid = this.shellPids.get(panelId);
-      if (!curPid) return;
-      // 사용자 로그인 셸(csh) 의 rc 파일이 stdout 에 출력을 추가할 수 있어 — 고유 마커로 readlink 결과만 추출
+      if (!curPid) { scheduleNext(); return; }
+      if (inFlight) { scheduleNext(); return; } // 이전 호출 응답 대기 중 — 채널 누적 방지
+      inFlight = true;
       const cmd = `/bin/sh -c 'printf "<<PEPE>>"; readlink /proc/${curPid}/cwd 2>/dev/null; printf "<<END>>"'`;
       rec.conn.exec(cmd, (err: any, stream: any) => {
         if (err) {
-          console.log(`[autotrack-${panelId.slice(-6)}] poll exec err:`, err);
+          consecutiveErrors++;
+          // 처음 1회만 로그 — 폭주 방지
+          if (consecutiveErrors === 1) {
+            console.log(`[autotrack-${panelId.slice(-6)}] poll exec err:`, err?.message || err);
+          }
+          // 백오프: 연속 에러 횟수에 따라 interval 증가
+          if (consecutiveErrors >= 3) {
+            currentInterval = Math.min(maxInterval, currentInterval * 2);
+            if (consecutiveErrors === 3 || consecutiveErrors % 10 === 0) {
+              console.log(`[autotrack-${panelId.slice(-6)}] backoff: interval=${currentInterval}ms (errors=${consecutiveErrors})`);
+            }
+          }
+          // 너무 많이 실패하면 폴링 중단 (서버가 채널 자체 안 받음)
+          if (consecutiveErrors >= 50) {
+            console.log(`[autotrack-${panelId.slice(-6)}] too many errors, stop polling`);
+            this._stopCwdPolling(panelId);
+            return;
+          }
+          inFlight = false;
+          scheduleNext();
           return;
         }
+        // 성공 — 백오프 리셋
+        if (consecutiveErrors > 0) {
+          console.log(`[autotrack-${panelId.slice(-6)}] recovered (errors=${consecutiveErrors})`);
+          consecutiveErrors = 0;
+          currentInterval = baseInterval;
+        }
         let out = '';
-        stream.on('data', (d: Buffer) => { out += d.toString('utf8'); });
-        stream.on('close', () => {
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          inFlight = false;
           const m = out.match(/<<PEPE>>([\s\S]*?)<<END>>/);
           const inner = (m ? m[1] : out).trim();
-          // path 추출 — / 로 시작 (root `/` 단독도 허용)
           let path = '';
           if (inner === '/') {
             path = '/';
@@ -596,28 +645,35 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
             const pathMatch = inner.match(/\/[A-Za-z0-9_\-./~]+/);
             if (pathMatch) path = pathMatch[0];
           }
-          if (!path) {
-            console.log(`[autotrack-${panelId.slice(-6)}] poll: no path in "${inner.slice(0, 100)}"`);
-            return;
+          if (path) {
+            const last = this.lastCwd.get(panelId);
+            if (path !== last) {
+              console.log(`[autotrack-${panelId.slice(-6)}] cwd changed: ${last} → ${path}`);
+              this.lastCwd.set(panelId, path);
+              const oscSeq = `\x1b]7;file://localhost${path}\x1b\\`;
+              this.emit('message', { type: 'data', panelId, data: oscSeq });
+            }
           }
-          const last = this.lastCwd.get(panelId);
-          if (path !== last) {
-            console.log(`[autotrack-${panelId.slice(-6)}] cwd changed: ${last} → ${path}`);
-            this.lastCwd.set(panelId, path);
-            const oscSeq = `\x1b]7;file://localhost${path}\x1b\\`;
-            this.emit('message', { type: 'data', panelId, data: oscSeq });
-          }
-        });
+          scheduleNext();
+        };
+        stream.on('data', (d: Buffer) => { out += d.toString('utf8'); });
+        stream.on('close', finish);
+        stream.on('error', (e: any) => { console.log(`[autotrack-${panelId.slice(-6)}] stream err:`, e?.message || e); finish(); });
+        stream.stderr?.on?.('data', () => {}); // drain stderr
       });
     };
-    tick(); // 즉시 한 번
-    const t = setInterval(tick, interval);
-    this.cwdPollers.set(panelId, t);
+    // 초기 tick 등록 — cwdPollers 에 임시 placeholder 넣고 즉시 실행
+    this.cwdPollers.set(panelId, setTimeout(tick, 0));
   }
 
   private _stopCwdPolling(panelId: string): void {
     const t = this.cwdPollers.get(panelId);
-    if (t) { clearInterval(t); this.cwdPollers.delete(panelId); }
+    if (t) {
+      // setTimeout 과 setInterval 모두 clearTimeout/clearInterval 호환
+      clearTimeout(t as any);
+      clearInterval(t as any);
+      this.cwdPollers.delete(panelId);
+    }
   }
 
   // 런타임 PWD 자동추적 토글 — 백그라운드 폴링 시작/중지. 셸 stdin 에 명령 절대 안 보냄.

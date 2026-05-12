@@ -2982,9 +2982,42 @@ body.popout-options .session-editor h3:first-child {
   flex-shrink: 0;
 }
 
-.fe-path-btn:hover {
+.fe-path-btn:hover:not(:disabled) {
   background: #333;
   color: #fff;
+}
+.fe-path-btn:disabled {
+  background: #181818;
+  color: #555;
+  border-color: #2a2a2a;
+  cursor: default;
+}
+.fe-path-btn-right {
+  margin-left: 2px;
+}
+
+/* 이전/다음 폴더 — 메인 버튼 + 드롭다운 화살표 */
+.fe-nav-group {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.fe-nav-group .fe-nav-btn {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  padding: 2px 7px;
+  font-size: 13px;
+  border-right: none;
+}
+.fe-nav-group .fe-nav-dropdown {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  padding: 2px 3px;
+  font-size: 9px;
+  color: #888;
+}
+.fe-nav-group .fe-nav-dropdown:disabled {
+  color: #444;
 }
 
 .fe-drive-select {

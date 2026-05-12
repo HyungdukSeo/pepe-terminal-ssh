@@ -27,7 +27,7 @@ contextBridge.exposeInMainWorld('api', {
   importSessions: () => ipcRenderer.invoke('sessions:import'),
 
   // File Explorer
-  feListDir: (mode: string, dirPath: string, termId?: string) => ipcRenderer.invoke('fe:list-dir', { mode, termId, dirPath }),
+  feListDir: (mode: string, dirPath: string, termId?: string, encoding?: string) => ipcRenderer.invoke('fe:list-dir', { mode, termId, dirPath, encoding }),
   feGetDrives: () => ipcRenderer.invoke('fe:get-drives'),
   feGetFileIcon: (filePath: string, size?: 'small' | 'normal' | 'large') => ipcRenderer.invoke('fe:get-file-icon', { filePath, size }),
   feGetFileIconsBatch: (filePaths: string[]) => ipcRenderer.invoke('fe:get-file-icons-batch', { filePaths }),
@@ -85,6 +85,9 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('sftp:conflict', handler);
   },
   feResolveConflict: (requestId: string, decision: any) => ipcRenderer.invoke('fe:resolve-conflict', { requestId, decision }),
+  feCancelTransfer: (transferId: string) => ipcRenderer.invoke('fe:cancel-transfer', { transferId }),
+  shellShowItem: (fullPath: string) => ipcRenderer.invoke('shell:show-item', { fullPath }),
+  shellOpenPath: (dirPath: string) => ipcRenderer.invoke('shell:open-path', { dirPath }),
   feChmod: (opts: { mode: string; termId?: string; paths: string[]; octal: number; recursive?: boolean }) => ipcRenderer.invoke('fe:chmod', opts),
 
   // Window

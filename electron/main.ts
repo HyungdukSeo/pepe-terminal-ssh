@@ -1283,6 +1283,12 @@ function getShellDesktopVirtualItems(): any[] {
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $shell = New-Object -ComObject Shell.Application
 $desk = $shell.Namespace(0)
+# 알려진 shell CLSID → 친화 shell:* 매핑 (My Computer / Network / Recycle Bin 등)
+$clsidMap = @{
+  '::{20D04FE0-3AEA-1069-A2D8-08002B30309D}' = 'shell:MyComputerFolder'
+  '::{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}' = 'shell:NetworkPlacesFolder'
+  '::{645FF040-5081-101B-9F08-00AA002F954E}' = 'shell:RecycleBinFolder'
+}
 if ($desk) {
   $items = @()
   foreach ($it in $desk.Items()) {
@@ -1290,8 +1296,16 @@ if ($desk) {
     $path = $it.Path
     $isFolder = $it.IsFolder
     if (-not $name) { continue }
-    # 가상 항목 (PIDL 경로) 은 path 가 ::{GUID...} 형태 — shell namespace 로 표현
-    $shellPath = if ($path -and $path.StartsWith('::')) { 'shell-pidl:' + $path } else { $path }
+    # 가상 항목 — 알려진 CLSID 면 친화 shell:* 로, 알려지지 않은 CLSID 는 Desktop 체인 (ParseName)
+    # 일반 파일 경로면 그대로
+    $shellPath = if ($path -and $clsidMap.ContainsKey($path)) {
+      $clsidMap[$path]
+    } elseif ($path -and $path.StartsWith('::')) {
+      # 체인 포맷: shell-pidl:shell:Desktop||<name> — 친화 표시 ('바탕 화면 › 갤러리') + ParseName 트래버설
+      'shell-pidl:shell:Desktop||' + $name
+    } else {
+      $path
+    }
     $items += [PSCustomObject]@{ Name = $name; Path = $shellPath; IsDir = [bool]$isFolder }
   }
   $items | ConvertTo-Json -Compress
@@ -1330,19 +1344,115 @@ if ($desk) {
   }
 }
 
-ipcMain.handle('fe:list-dir', async (_e, { mode, termId, dirPath }: { mode: string; termId?: string; dirPath: string }) => {
+ipcMain.handle('fe:list-dir', async (_e, { mode, termId, dirPath, encoding }: { mode: string; termId?: string; dirPath: string; encoding?: string }) => {
   try {
     const bridge = getSSHBridge();
     if (mode === 'local') {
       // 특수 shell path 처리
+      // shell:Desktop — 가상 데스크톱 (내 PC, 네트워크, 라이브러리, 갤러리 등 + 물리 데스크톱 파일)
+      if (dirPath === 'shell:Desktop') {
+        const virtuals = getShellDesktopVirtualItems();
+        // 물리 데스크톱 폴더의 파일도 같이 enumerate
+        try {
+          const desktopDir = path.join(os.homedir(), 'Desktop');
+          const onedriveDesktop = path.join(os.homedir(), 'OneDrive', '바탕 화면');
+          const onedriveDesktopEn = path.join(os.homedir(), 'OneDrive', 'Desktop');
+          const candidates = [onedriveDesktop, onedriveDesktopEn, desktopDir];
+          for (const d of candidates) {
+            if (fs.existsSync(d)) {
+              const entries = await fs.promises.readdir(d, { withFileTypes: true });
+              const now = Math.floor(Date.now() / 1000);
+              const seenNames = new Set(virtuals.map((x: any) => x.name));
+              for (const e of entries) {
+                if (seenNames.has(e.name)) continue;
+                const fp = path.join(d, e.name);
+                let size = 0, mtime = now;
+                try { const st = await fs.promises.stat(fp); size = st.size; mtime = Math.floor(st.mtimeMs / 1000); } catch {}
+                virtuals.push({ name: e.name, isDir: e.isDirectory(), size, mtime, shellPath: fp, realPath: fp });
+              }
+              break; // 첫 번째 매칭하는 desktop 폴더만
+            }
+          }
+        } catch {}
+        return { files: virtuals };
+      }
       if (dirPath === 'shell:MyComputerFolder') {
-        // "내 PC" — 드라이브 letter 들을 가상 디렉토리처럼 반환
-        const drives: any[] = [];
-        for (let i = 65; i <= 90; i++) {
-          const d = String.fromCharCode(i) + ':\\';
-          try { await fs.promises.access(d); drives.push({ name: String.fromCharCode(i) + ':', isDir: true, size: 0, mtime: Math.floor(Date.now()/1000), shellPath: d }); } catch {}
+        // "내 PC" — Shell.Application NameSpace(0x11) 로 enumerate: 드라이브 + MTP 디바이스 + 네트워크 단축
+        try {
+          const { execFileSync } = require('child_process');
+          const psScript = `chcp 65001 > $null
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$shell = New-Object -ComObject Shell.Application
+$wsh = New-Object -ComObject WScript.Shell
+
+function Resolve-NetHoodPath {
+  param([string]$p)
+  if (-not $p) { return $p }
+  if ($p.StartsWith('\\\\')) { return $p }
+  if (-not (Test-Path $p)) { return $p }
+  $tlnk = Join-Path $p 'target.lnk'
+  if (Test-Path $tlnk) {
+    try {
+      $lk = $wsh.CreateShortcut($tlnk)
+      if ($lk.TargetPath -and $lk.TargetPath.StartsWith('\\\\')) { return $lk.TargetPath }
+    } catch {}
+  }
+  try {
+    $lnks = Get-ChildItem -Path $p -Filter '*.lnk' -File -ErrorAction SilentlyContinue
+    foreach ($f in $lnks) {
+      try {
+        $lk = $wsh.CreateShortcut($f.FullName)
+        if ($lk.TargetPath -and $lk.TargetPath.StartsWith('\\\\')) { return $lk.TargetPath }
+      } catch {}
+    }
+  } catch {}
+  return $p
+}
+
+$items = @()
+try {
+  $pc = $shell.Namespace(0x11)
+  if ($pc) {
+    foreach ($it in $pc.Items()) {
+      $p = $it.Path
+      $n = $it.Name
+      if (-not $p -or -not $n) { continue }
+      $isDir = [bool]$it.IsFolder
+      $resolved = Resolve-NetHoodPath $p
+      # shell namespace (::{guid}) → shell-pidl: prefix (디바이스 등)
+      $finalPath = if ($resolved -and $resolved.StartsWith('::')) { 'shell-pidl:' + $resolved } else { $resolved }
+      # Order: 드라이브 1, 디바이스 2, 네트워크 3, 기타 4
+      $order = if ($resolved -match '^[A-Z]:') { 1 } elseif ($resolved.StartsWith('::')) { 2 } elseif ($resolved.StartsWith('\\\\')) { 3 } else { 4 }
+      $items += [PSCustomObject]@{ Name = $n; IsDir = $isDir; Path = $finalPath; Order = $order }
+    }
+  }
+} catch {}
+$items | Sort-Object Order, Name | ConvertTo-Json -Compress`;
+          const tmpPs = path.join(os.tmpdir(), `pepe-mypc-${Date.now()}.ps1`);
+          fs.writeFileSync(tmpPs, '﻿' + psScript, { encoding: 'utf8' });
+          const out: string = execFileSync('powershell', [
+            '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', tmpPs,
+          ], { windowsHide: true, timeout: 15000 }).toString('utf-8').trim();
+          try { fs.unlinkSync(tmpPs); } catch {}
+          const data = JSON.parse(out || '[]');
+          const arr: any[] = Array.isArray(data) ? data : [data];
+          const now = Math.floor(Date.now() / 1000);
+          return { files: arr.map((x: any) => ({
+            name: String(x.Name || ''),
+            isDir: !!x.IsDir,
+            size: 0,
+            mtime: now,
+            shellPath: String(x.Path || ''),
+          })).filter((x: any) => x.name) };
+        } catch (err: any) {
+          // PowerShell 실패시 fallback — A-Z 드라이브 letter 만
+          const drives: any[] = [];
+          for (let i = 65; i <= 90; i++) {
+            const d = String.fromCharCode(i) + ':\\';
+            try { await fs.promises.access(d); drives.push({ name: String.fromCharCode(i) + ':', isDir: true, size: 0, mtime: Math.floor(Date.now()/1000), shellPath: d }); } catch {}
+          }
+          return { files: drives, error: 'My Computer 열거 fallback (A-Z 드라이브만)' };
         }
-        return { files: drives };
       }
       if (dirPath === 'shell:NetworkPlacesFolder') {
         // "네트워크" — NetHood 항목들 UNC 로
@@ -1365,37 +1475,110 @@ ipcMain.handle('fe:list-dir', async (_e, { mode, termId, dirPath }: { mode: stri
         }
       }
       // shell-pidl:: PIDL — Shell.Application 으로 enum
+      // path 형식: 'shell-pidl:<root>' (단일) 또는 'shell-pidl:<root>||<name1>||<name2>' (체인)
+      // MTP 디바이스 등은 직접 NameSpace 가 안 돼서, root 에서 ParseName 으로 한 단계씩 descend
       if (dirPath.startsWith('shell-pidl:')) {
         const pidlPath = dirPath.slice('shell-pidl:'.length);
+        const segs = pidlPath.split('||');
+        const rootPath = segs[0];
+        const chain = segs.slice(1); // 이름 체인 (각 ParseName 단계)
+        // 다음 단계 child 들의 path prefix
+        const childPrefix = `shell-pidl:${pidlPath}||`;
         try {
           const { execFileSync } = require('child_process');
+          // PowerShell 에 root + 체인 이름 목록 전달
+          const psChain = chain.map(c => `'${c.replace(/'/g, "''")}'`).join(',');
+          // shell:Desktop 은 파일시스템 데스크톱 만 반환하므로, 가상 항목 enumerate 하려면 CSIDL 0 사용
+          const rootArg = rootPath === 'shell:Desktop'
+            ? '0'
+            : `'${rootPath.replace(/'/g, "''")}'`;
           const psScript = `chcp 65001 > $null
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $shell = New-Object -ComObject Shell.Application
-$ns = $shell.NameSpace('${pidlPath.replace(/'/g, "''")}')
-if ($ns) {
+$ns = $shell.NameSpace(${rootArg})
+if (-not $ns) {
+  Write-Error "NameSpace 실패"
+  '[]'
+  exit
+}
+$folder = $ns
+$chainNames = @(${psChain})
+$ok = $true
+foreach ($name in $chainNames) {
+  if (-not $folder) { $ok = $false; break }
+  # 1차: ParseName (실제 파일 경로 기반 항목에 안정적)
+  $child = $folder.ParseName($name)
+  # 2차: Items() 순회로 이름 매칭 (가상 항목 fallback)
+  if (-not $child) {
+    foreach ($c in $folder.Items()) {
+      if ($c.Name -eq $name) { $child = $c; break }
+    }
+  }
+  if (-not $child) { $ok = $false; break }
+  $sub = $child.GetFolder
+  if (-not $sub) {
+    # GetFolder 가 null 인 경우 — Path 로 다시 NameSpace 시도
+    if ($child.Path) {
+      $sub = $shell.NameSpace($child.Path)
+    }
+  }
+  if (-not $sub) { $ok = $false; break }
+  $folder = $sub
+}
+if ($ok -and $folder) {
   $items = @()
-  foreach ($it in $ns.Items()) {
+  $epoch = (Get-Date '1970-01-01').ToUniversalTime()
+  foreach ($it in $folder.Items()) {
     $name = $it.Name
-    $path = $it.Path
     $isFolder = $it.IsFolder
     if (-not $name) { continue }
-    $sp = if ($path -and $path.StartsWith('::')) { 'shell-pidl:' + $path } else { $path }
-    $items += [PSCustomObject]@{ Name = $name; Path = $sp; IsDir = [bool]$isFolder }
+    $size = 0
+    $mtime = 0
+    $realPath = ''
+    $itPath = $it.Path
+    # 실제 파일시스템 경로면 Get-Item 으로 정확한 size/mtime + realPath 조회
+    if ($itPath -and -not $itPath.StartsWith('::') -and (Test-Path -LiteralPath $itPath -ErrorAction SilentlyContinue)) {
+      $realPath = $itPath
+      try {
+        $fi = Get-Item -LiteralPath $itPath -ErrorAction Stop
+        if (-not $isFolder) { $size = [int64]$fi.Length }
+        if ($fi.LastWriteTime) {
+          $mtime = [int][Math]::Floor(($fi.LastWriteTime.ToUniversalTime() - $epoch).TotalSeconds)
+        }
+      } catch {}
+    } else {
+      try {
+        $d = $it.ModifyDate
+        if ($d -is [DateTime]) { $mtime = [int][Math]::Floor(($d.ToUniversalTime() - $epoch).TotalSeconds) }
+      } catch {}
+      try { if (-not $isFolder) { $size = [int64]$it.Size } } catch {}
+    }
+    $items += [PSCustomObject]@{ Name = $name; IsDir = [bool]$isFolder; Size = $size; MTime = $mtime; RealPath = $realPath }
   }
-  $items | ConvertTo-Json -Compress
+  if ($items.Count -gt 0) { $items | ConvertTo-Json -Compress } else { '[]' }
+} else {
+  '[]'
 }`;
           const tmpPs = path.join(os.tmpdir(), `pepe-shell-${Date.now()}.ps1`);
           try {
             fs.writeFileSync(tmpPs, '﻿' + psScript, { encoding: 'utf8' });
             const out: string = execFileSync('powershell', [
               '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', tmpPs,
-            ], { windowsHide: true, timeout: 10000 }).toString('utf-8');
+            ], { windowsHide: true, timeout: 15000 }).toString('utf-8');
             try { fs.unlinkSync(tmpPs); } catch {}
             const data = JSON.parse(out.trim() || '[]');
             const arr: any[] = Array.isArray(data) ? data : [data];
             const now = Math.floor(Date.now() / 1000);
-            return { files: arr.map((x: any) => ({ name: String(x.Name || ''), isDir: !!x.IsDir, size: 0, mtime: now, shellPath: String(x.Path || '') })).filter((x: any) => x.name) };
+            // 각 child 의 shellPath = 현재 path + '||' + 이름 (ParseName 체인 다음 단계)
+            // realPath: 실제 파일시스템 경로 (있으면 fs 연산용)
+            return { files: arr.map((x: any) => ({
+              name: String(x.Name || ''),
+              isDir: !!x.IsDir,
+              size: Number(x.Size) || 0,
+              mtime: Number(x.MTime) || now,
+              shellPath: String(x.RealPath || (childPrefix + String(x.Name || ''))),
+              realPath: String(x.RealPath || ''),
+            })).filter((x: any) => x.name) };
           } catch (e) {
             try { fs.unlinkSync(tmpPs); } catch {}
             return { files: [], error: 'shell namespace 열거 실패' };
@@ -1419,20 +1602,31 @@ if ($ns) {
         } catch {}
         return { files: [], error: 'shortcut 해석 실패' };
       }
-      // 일반 로컬 디렉토리: 실제 바탕 화면 경로면 가상 항목들을 prepend
-      const desktopPath = path.join(os.homedir(), 'Desktop');
-      const desktopPath2 = path.join(os.homedir(), 'OneDrive', 'Desktop');
-      const desktopPath3 = path.join(os.homedir(), 'OneDrive', '바탕 화면');
-      const normalized = path.normalize(dirPath).toLowerCase();
-      const isDesktop = [desktopPath, desktopPath2, desktopPath3].some(d => path.normalize(d).toLowerCase() === normalized);
+      // 일반 로컬 디렉토리 — 물리 파일만 (가상 항목은 shell:Desktop 경로에서만)
       const physical = await bridge.handleLocalListDir(dirPath);
-      if (isDesktop) {
-        return { files: [...getShellDesktopVirtualItems(), ...physical] };
-      }
       return { files: physical };
     } else {
       if (!termId) return { error: t('error.noConnectionId') };
-      return { files: await bridge.handleSFTPListDir(termId, dirPath) };
+      const files = await bridge.handleSFTPListDir(termId, dirPath);
+      // 인코딩 변환 — UTF-8 외에 cp949/euc-kr 등 선택 시 filename 을 재디코딩
+      // ssh2 가 utf-8 로 디코딩한 string 을 latin1 바이트로 보존했다 다시 iconv 로 재해석
+      if (encoding && encoding !== 'utf-8' && encoding !== 'utf8') {
+        try {
+          const iconv = require('iconv-lite');
+          if (iconv.encodingExists(encoding)) {
+            for (const f of files) {
+              if (typeof f.name === 'string' && f.name) {
+                try {
+                  const bytes = Buffer.from(f.name, 'binary');
+                  const decoded = iconv.decode(bytes, encoding);
+                  if (decoded && !decoded.includes('�')) f.name = decoded;
+                } catch {}
+              }
+            }
+          }
+        } catch {}
+      }
+      return { files };
     }
   } catch (err: any) { return { error: `${dirPath}: ${String(err)}` }; }
 });
@@ -1865,56 +2059,27 @@ try {
 } catch {}
 
 $items = @()
-# 바탕 화면 (실제 폴더) — 안에서 가상 shell 항목 (내 PC, 네트워크, 홈) 도 함께 표시됨
-try {
-  $desktop = [Environment]::GetFolderPath('Desktop')
-  if ($desktop -and (Test-Path $desktop)) {
-    $items += [PSCustomObject]@{
-      Path = $desktop
-      Label = '🖼 바탕 화면'
-      Order = 0
-    }
-  }
-} catch {}
-# 사용자 프로필 (홈)
-try {
-  $userProfile = [Environment]::GetFolderPath('UserProfile')
-  if ($userProfile) {
-    $items += [PSCustomObject]@{
-      Path = $userProfile
-      Label = "🏠 홈 ($([System.IO.Path]::GetFileName($userProfile)))"
-      Order = 0
-    }
-  }
-} catch {}
-# 자주 쓰는 폴더 — 다운로드, 문서, 사진, 동영상, 음악
-$specialFolders = @(
-  @{ Name = 'Downloads'; Label = '⬇ 다운로드'; Order = 0 },
-  @{ Name = 'MyDocuments'; Label = '📄 문서'; Order = 0 },
-  @{ Name = 'MyPictures'; Label = '🖼 사진'; Order = 0 },
-  @{ Name = 'MyVideos'; Label = '🎬 동영상'; Order = 0 },
-  @{ Name = 'MyMusic'; Label = '🎵 음악'; Order = 0 }
-)
-foreach ($sf in $specialFolders) {
-  try {
-    # Downloads 는 .NET enum 에 없을 수 있어 KNOWNFOLDERID 사용
-    $p = $null
-    if ($sf.Name -eq 'Downloads') {
-      $shellFolder = $shell.Namespace('shell:Downloads')
-      if ($shellFolder) { $p = $shellFolder.Self.Path }
-    } else {
-      $p = [Environment]::GetFolderPath($sf.Name)
-    }
-    if ($p -and (Test-Path $p)) {
-      $items += [PSCustomObject]@{
-        Path = $p
-        Label = $sf.Label
-        Order = $sf.Order
-      }
-    }
-  } catch {}
+# 트리 구조:
+# 바탕 화면 (depth 0, 가상 데스크톱 = shell:Desktop)
+#   내 PC (depth 1)
+#     드라이브 / MTP / 네트워크 (depth 2)
+#   다운로드, 문서, 사진, 동영상, 음악, 홈 (depth 1, 내 PC 아래에 위치)
+# 바탕 화면 (depth 0) — 가상 데스크톱으로 navigate (안에 내 PC / 갤러리 / 라이브러리 등)
+$items += [PSCustomObject]@{
+  Path = 'shell:Desktop'
+  Label = '🖼 바탕 화면'
+  Depth = 0
+  Order = 0
 }
-# 내 PC (CSIDL_DRIVES = 0x11) — 드라이브 + 모바일 디바이스 + 네트워크 공유 단축아이콘 모두 포함
+# 내 PC (depth 1, 첫 번째)
+$items += [PSCustomObject]@{
+  Path = 'shell:MyComputerFolder'
+  Label = '💻 내 PC'
+  Depth = 1
+  Order = 100
+}
+# 내 PC 자식 (depth 2) — 드라이브 / MTP / 네트워크
+$childIdx = 0
 try {
   $pc = $shell.Namespace(0x11)
   if ($pc) {
@@ -1922,9 +2087,7 @@ try {
       $p = $it.Path
       $n = $it.Name
       if (-not $p -or -not $n) { continue }
-      # NetHood 단축아이콘이면 실제 UNC 로 변환
       $resolved = Resolve-NetHoodPath $p
-      # 아이콘 결정
       $icon = '📁'
       if ($resolved -match '^([A-Z]:)') {
         $dev = $Matches[1].ToUpper()
@@ -1937,16 +2100,60 @@ try {
       } else {
         $icon = '📁'
       }
-      $order = if ($resolved -match '^[A-Z]:') { 1 } elseif ($resolved.StartsWith('\\')) { 3 } else { 2 }
+      $groupOrder = if ($resolved -match '^[A-Z]:') { 0 } elseif ($resolved.StartsWith('::')) { 1 } elseif ($resolved.StartsWith('\\')) { 2 } else { 3 }
+      $finalPath = if ($resolved -and $resolved.StartsWith('::')) { 'shell-pidl:' + $resolved } else { $resolved }
       $items += [PSCustomObject]@{
-        Path = $resolved
+        Path = $finalPath
         Label = "$icon $n"
-        Order = $order
+        Depth = 2
+        Order = 100 + 0.01 + $groupOrder * 0.001 + ($childIdx * 0.0001)
       }
+      $childIdx++
     }
   }
 } catch {}
-$items | Sort-Object Order, Label | ConvertTo-Json -Compress`;
+# 다운로드, 문서, 사진, 동영상, 음악 (depth 1, 내 PC 아래)
+$specialFolders = @(
+  @{ Name = 'Downloads'; Label = '⬇ 다운로드' },
+  @{ Name = 'MyDocuments'; Label = '📄 문서' },
+  @{ Name = 'MyPictures'; Label = '🖼 사진' },
+  @{ Name = 'MyVideos'; Label = '🎬 동영상' },
+  @{ Name = 'MyMusic'; Label = '🎵 음악' }
+)
+$sfOrder = 200
+foreach ($sf in $specialFolders) {
+  try {
+    $p = $null
+    if ($sf.Name -eq 'Downloads') {
+      $shellFolder = $shell.Namespace('shell:Downloads')
+      if ($shellFolder) { $p = $shellFolder.Self.Path }
+    } else {
+      $p = [Environment]::GetFolderPath($sf.Name)
+    }
+    if ($p -and (Test-Path $p)) {
+      $items += [PSCustomObject]@{
+        Path = $p
+        Label = $sf.Label
+        Depth = 1
+        Order = $sfOrder
+      }
+      $sfOrder++
+    }
+  } catch {}
+}
+# 홈 (depth 1, 마지막)
+try {
+  $userProfile = [Environment]::GetFolderPath('UserProfile')
+  if ($userProfile) {
+    $items += [PSCustomObject]@{
+      Path = $userProfile
+      Label = "🏠 홈 ($([System.IO.Path]::GetFileName($userProfile)))"
+      Depth = 1
+      Order = $sfOrder
+    }
+  }
+} catch {}
+$items | Sort-Object Order | ConvertTo-Json -Compress`;
       // 스크립트를 UTF-8 (BOM 포함) 임시 파일로 — PowerShell 이 한글 안전하게 파싱하도록
       const tmpPs = path.join(os.tmpdir(), `pepe-drives-${Date.now()}.ps1`);
       try {
@@ -1957,7 +2164,11 @@ $items | Sort-Object Order, Label | ConvertTo-Json -Compress`;
         try { fs.unlinkSync(tmpPs); } catch {}
         const data = JSON.parse(out.trim() || '[]');
         const arr: any[] = Array.isArray(data) ? data : [data];
-        return arr.map(x => ({ path: String(x.Path || ''), label: String(x.Label || x.Path || '') })).filter(x => x.path);
+        return arr.map(x => ({
+          path: String(x.Path || ''),
+          label: String(x.Label || x.Path || ''),
+          depth: Number(x.Depth) || 0,
+        })).filter(x => x.path);
       } catch (innerErr) {
         try { fs.unlinkSync(tmpPs); } catch {}
         throw innerErr;
@@ -1992,6 +2203,24 @@ ipcMain.handle('fe:resolve-conflict', (_e, { requestId, decision }: any) => {
   const bridge = getSSHBridge();
   bridge.resolveConflict(requestId, decision);
   return { success: true };
+});
+
+ipcMain.handle('fe:cancel-transfer', (_e, { transferId }: any) => {
+  const bridge = getSSHBridge();
+  bridge.cancelTransfer(transferId);
+  return { success: true };
+});
+
+// 파일 탐색기에서 파일/폴더 위치 보기 (Windows Explorer 에 선택 상태로 열기)
+ipcMain.handle('shell:show-item', (_e, { fullPath }: { fullPath: string }) => {
+  try { shell.showItemInFolder(fullPath); return { success: true }; }
+  catch (err: any) { return { success: false, error: String(err) }; }
+});
+
+// 폴더 직접 열기
+ipcMain.handle('shell:open-path', async (_e, { dirPath }: { dirPath: string }) => {
+  try { const err = await shell.openPath(dirPath); return { success: !err, error: err || undefined }; }
+  catch (err: any) { return { success: false, error: String(err) }; }
 });
 
 ipcMain.handle('fe:chmod', async (_e, { mode, termId, paths, octal, recursive }: any) => {
