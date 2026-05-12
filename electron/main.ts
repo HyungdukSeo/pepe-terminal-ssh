@@ -2196,11 +2196,39 @@ app.on('before-quit', () => {
 // ── Claude Code CLI 연동 ──
 const claudeProcesses: Map<string, any> = new Map();
 
+// GUI .app 실행 환경의 minimal PATH 보강 — npm global bin / Homebrew / nvm 경로 추가.
+// claude:send 와 claude:check 양쪽에서 사용. nvm 은 versions/node/* glob 으로 모든 버전 bin 포함.
+function buildAugmentedPath(): string {
+  const isWin = process.platform === 'win32';
+  const extraPaths: string[] = [];
+  if (isWin) {
+    if (process.env.APPDATA) extraPaths.push(path.join(process.env.APPDATA, 'npm'));
+    if (process.env.USERPROFILE) extraPaths.push(path.join(process.env.USERPROFILE, 'AppData', 'Roaming', 'npm'));
+    if (process.env.ProgramFiles) extraPaths.push(path.join(process.env.ProgramFiles, 'nodejs'));
+  } else {
+    const home = os.homedir();
+    extraPaths.push('/usr/local/bin', '/opt/homebrew/bin', path.join(home, '.npm-global', 'bin'), path.join(home, '.volta', 'bin'));
+    // nvm — ~/.nvm/versions/node/<ver>/bin 탐색
+    try {
+      const nvmRoot = path.join(home, '.nvm', 'versions', 'node');
+      if (fs.existsSync(nvmRoot)) {
+        for (const v of fs.readdirSync(nvmRoot)) {
+          extraPaths.push(path.join(nvmRoot, v, 'bin'));
+        }
+      }
+    } catch {}
+  }
+  const sep = isWin ? ';' : ':';
+  return [process.env.PATH || '', ...extraPaths].filter(Boolean).join(sep);
+}
+
 ipcMain.handle('claude:check', async () => {
   try {
     const { spawn } = require('child_process');
+    const augmentedPath = buildAugmentedPath();
+    const env = { ...process.env, PATH: augmentedPath, Path: augmentedPath };
     return await new Promise<{ installed: boolean; version?: string }>(resolve => {
-      const proc = spawn('claude', ['--version'], { shell: true });
+      const proc = spawn('claude', ['--version'], { shell: true, env });
       let output = '';
       proc.stdout?.on('data', (d: Buffer) => { output += d.toString(); });
       proc.on('error', () => resolve({ installed: false }));
@@ -2345,17 +2373,8 @@ ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowB
     const tmpFile = path.join(os.tmpdir(), `claude-prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`);
     fs.writeFileSync(tmpFile, prompt, 'utf-8');
 
-    // npm global bin 을 PATH 에 보강 (Electron 실행 환경에서 누락될 수 있음)
-    const extraPaths: string[] = [];
-    if (isWin) {
-      if (process.env.APPDATA) extraPaths.push(path.join(process.env.APPDATA, 'npm'));
-      if (process.env.USERPROFILE) extraPaths.push(path.join(process.env.USERPROFILE, 'AppData', 'Roaming', 'npm'));
-      if (process.env.ProgramFiles) extraPaths.push(path.join(process.env.ProgramFiles, 'nodejs'));
-    } else {
-      extraPaths.push('/usr/local/bin', '/opt/homebrew/bin', path.join(os.homedir(), '.npm-global', 'bin'), path.join(os.homedir(), '.nvm', 'versions'));
-    }
-    const sep = isWin ? ';' : ':';
-    const augmentedPath = [process.env.PATH || '', ...extraPaths].filter(Boolean).join(sep);
+    // npm global bin 을 PATH 에 보강 (Electron 실행 환경에서 누락될 수 있음). claude:check 와 동일 helper.
+    const augmentedPath = buildAugmentedPath();
     const spawnEnv = {
       ...process.env,
       PATH: augmentedPath,
