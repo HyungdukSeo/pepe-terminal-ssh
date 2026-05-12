@@ -1,5 +1,6 @@
 // src/components/FileExplorer.tsx
 import React, { useState, useEffect } from 'react';
+import { FixedSizeList as VList, ListChildComponentProps } from 'react-window';
 import { FilePanel, PanelSource } from './FilePanel';
 import type { PanelSession } from '../utils/layoutUtils';
 
@@ -427,19 +428,30 @@ export const FileExplorer: React.FC<Props> = ({ sessions }) => {
         </div>
       </div>
       <div className="fe-transfers-resize" onMouseDown={onResizeStart} />
-      <div className="fe-transfers" style={{ height: transfersHeight }}>
+      <div className="fe-transfers" style={{ height: transfersHeight, display: 'flex', flexDirection: 'column' }}>
         <div className="fe-transfers-header">전송 목록</div>
-        {transfers.length === 0 && <div className="fe-transfers-empty">전송 대기 중...</div>}
-        {transfers.map(t => (
-          <div key={t.id} className={`fe-transfer-row ${t.done ? 'done' : ''}`}>
-            <span className="fe-transfer-icon">{t.done ? '✅' : '⏳'}</span>
-            <span className="fe-transfer-text">{t.filename}</span>
-            <div className="fe-progress-track">
-              <div className="fe-progress-fill" style={{ width: `${t.pct}%` }} />
-            </div>
-            <span className="fe-progress-pct">{t.pct}%</span>
+        {transfers.length === 0 ? (
+          <div className="fe-transfers-empty">전송 대기 중...</div>
+        ) : (
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <VList height={Math.max(0, transfersHeight - 28)} width="100%" itemCount={transfers.length} itemSize={24} overscanCount={10}>
+              {({ index, style }: ListChildComponentProps) => {
+                const t = transfers[index];
+                if (!t) return null;
+                return (
+                  <div key={t.id} className={`fe-transfer-row ${t.done ? 'done' : ''}`} style={style}>
+                    <span className="fe-transfer-icon">{t.done ? '✅' : '⏳'}</span>
+                    <span className="fe-transfer-text">{t.filename}</span>
+                    <div className="fe-progress-track">
+                      <div className="fe-progress-fill" style={{ width: `${t.pct}%` }} />
+                    </div>
+                    <span className="fe-progress-pct">{t.pct}%</span>
+                  </div>
+                );
+              }}
+            </VList>
           </div>
-        ))}
+        )}
       </div>
       {showSftpConnect && (
         <div className="session-editor-backdrop" onClick={() => setShowSftpConnect(null)}>

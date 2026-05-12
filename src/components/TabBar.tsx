@@ -9,6 +9,10 @@ type Props = {
   activeTabId: string | null;
   onChange: (id: string) => void;
   onAddTab: (shellName?: string, shellPath?: string) => void;
+  onAddBrowserTab?: (url?: string) => void;
+  onAddCompareTab?: () => void;
+  onAddLogAnalyzerTab?: () => void;
+  onAddVpnTab?: () => void;
   onCloseTab: (id: string) => void;
   onRenameTab?: (id: string, name: string) => void;
   onReorderTabs?: (fromId: string, toId: string) => void;
@@ -19,9 +23,10 @@ type Props = {
   availableShells?: ShellInfo[];
 };
 
-export const TabBar: React.FC<Props> = ({ tabs, activeTabId, onChange, onAddTab, onCloseTab, onRenameTab, onReorderTabs, hasSession, themeName, themeList, onThemeChange, availableShells }) => {
+export const TabBar: React.FC<Props> = ({ tabs, activeTabId, onChange, onAddTab, onAddBrowserTab, onAddCompareTab, onAddLogAnalyzerTab, onAddVpnTab, onCloseTab, onRenameTab, onReorderTabs, hasSession, themeName, themeList, onThemeChange, availableShells }) => {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
   const [shellMenu, setShellMenu] = useState<{ x: number; y: number } | null>(null);
+  const [addMenu, setAddMenu] = useState<{ x: number; y: number } | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -112,7 +117,10 @@ export const TabBar: React.FC<Props> = ({ tabs, activeTabId, onChange, onAddTab,
         </div>
       ))}
       </div>
-      <button className="tab-add-btn" onClick={() => onAddTab()} title="새 워크스페이스">+</button>
+      <button className="tab-add-btn" onClick={e => {
+        const r = e.currentTarget.getBoundingClientRect();
+        setAddMenu({ x: r.left, y: r.bottom });
+      }} title="새 워크스페이스 (터미널/브라우저)">+</button>
       {overflowing && (
         <div className="tab-scroll-group">
           <button className="tab-scroll-btn" onClick={() => scrollBy(-150)} title="이전">‹</button>
@@ -143,6 +151,22 @@ export const TabBar: React.FC<Props> = ({ tabs, activeTabId, onChange, onAddTab,
             label: `${sh.icon || ''} ${sh.name}`.trim(),
             onClick: () => onAddTab(sh.name, sh.path),
           }))}
+        />
+      )}
+      {addMenu && (
+        <ContextMenu
+          x={addMenu.x} y={addMenu.y}
+          onClose={() => setAddMenu(null)}
+          items={[
+            { label: '💻 터미널 워크스페이스', onClick: () => onAddTab() },
+            ...(availableShells && availableShells.length > 1
+              ? availableShells.map(sh => ({ label: `   ${sh.icon || ''} ${sh.name}`.trim(), onClick: () => onAddTab(sh.name, sh.path) }))
+              : []),
+            { label: '🌐 브라우저 워크스페이스', onClick: () => onAddBrowserTab?.() },
+            { label: '🔍 파일 비교 워크스페이스', onClick: () => onAddCompareTab?.() },
+            { label: '📊 로그 분석 워크스페이스', onClick: () => onAddLogAnalyzerTab?.() },
+            { label: '🔒 VPN 워크스페이스', onClick: () => onAddVpnTab?.() },
+          ]}
         />
       )}
     </div>

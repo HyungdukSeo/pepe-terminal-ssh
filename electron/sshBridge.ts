@@ -732,20 +732,29 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
 
   async handleLocalListDir(dirPath: string): Promise<any[]> {
     const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
-    const result = [];
-    for (const entry of entries) {
-      try {
-        const fullPath = path.join(dirPath, entry.name);
-        const stat = await fs.promises.stat(fullPath);
-        result.push({
-          name: entry.name,
-          isDir: entry.isDirectory(),
-          size: stat.size,
-          mtime: Math.floor(stat.mtimeMs / 1000),
-        });
-      } catch { /* skip inaccessible */ }
-    }
-    return result;
+    // 동시 stat 제한 — 무제한 Promise.all 은 네트워크 드라이브에서 핸들 폭주 위험
+    const CONCURRENCY = 32;
+    const result: any[] = new Array(entries.length);
+    let cursor = 0;
+    const workers = Array.from({ length: Math.min(CONCURRENCY, entries.length) }, async () => {
+      while (true) {
+        const idx = cursor++;
+        if (idx >= entries.length) return;
+        const entry = entries[idx];
+        try {
+          const fullPath = path.join(dirPath, entry.name);
+          const stat = await fs.promises.stat(fullPath);
+          result[idx] = {
+            name: entry.name,
+            isDir: entry.isDirectory(),
+            size: stat.size,
+            mtime: Math.floor(stat.mtimeMs / 1000),
+          };
+        } catch { result[idx] = null; }
+      }
+    });
+    await Promise.all(workers);
+    return result.filter(x => x !== null);
   }
 
   async handleLocalDelete(filePath: string): Promise<void> {

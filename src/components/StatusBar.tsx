@@ -8,6 +8,7 @@ type Props = {
   activeTab: Tab | null;
   selectedPanelId: string | null;
   tabs: Tab[];
+  onClickVpn?: () => void;
 };
 
 function getActiveSession(layout: LayoutNode, panelId: string | null): PanelSession | null {
@@ -25,13 +26,23 @@ function getActiveSession(layout: LayoutNode, panelId: string | null): PanelSess
   return null;
 }
 
-export const StatusBar: React.FC<Props> = ({ activeTab, selectedPanelId, tabs }) => {
+export const StatusBar: React.FC<Props> = ({ activeTab, selectedPanelId, tabs, onClickVpn }) => {
   const [time, setTime] = useState(new Date());
   const [copyInfo, setCopyInfo] = useState<string | null>(null);
+  const [vpnState, setVpnState] = useState<{ status: string; assignedIp?: string; configName?: string }>({ status: 'disconnected' });
 
   useEffect(() => {
     const timer = setInterval(() => setTime(new Date()), 1000);
     return () => clearInterval(timer);
+  }, []);
+
+  // VPN 상태 구독
+  useEffect(() => {
+    const api = (window as any).api;
+    if (!api) return;
+    (async () => { try { setVpnState(await api.vpnState?.() || { status: 'disconnected' }); } catch {} })();
+    const off = api.onVpnState?.((s: any) => setVpnState(s || { status: 'disconnected' }));
+    return () => off?.();
   }, []);
 
   useEffect(() => {
@@ -81,6 +92,23 @@ export const StatusBar: React.FC<Props> = ({ activeTab, selectedPanelId, tabs })
       <div className="status-bar-right">
         {copyInfo && <span className="status-copy-info">{copyInfo}</span>}
         {copyInfo && <span className="status-separator">|</span>}
+        <span
+          className="status-info"
+          onClick={onClickVpn}
+          style={{ cursor: onClickVpn ? 'pointer' : 'default', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+          title={vpnState.status === 'connected'
+            ? `VPN 연결됨${vpnState.assignedIp ? ` (${vpnState.assignedIp})` : ''} — 클릭해서 VPN 화면 열기`
+            : `VPN ${vpnState.status} — 클릭해서 VPN 화면 열기`}>
+          <span style={{
+            display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+            background: vpnState.status === 'connected' ? '#7fcf6e'
+              : vpnState.status === 'error' ? '#e36b6b'
+              : (vpnState.status === 'disconnected' ? '#555' : '#d8b556'),
+            boxShadow: vpnState.status === 'connected' ? '0 0 6px #7fcf6e' : 'none',
+          }} />
+          <span style={{ fontSize: 11 }}>VPN{vpnState.status === 'connected' && vpnState.assignedIp ? ` · ${vpnState.assignedIp}` : ''}</span>
+        </span>
+        <span className="status-separator">|</span>
         <span className="status-info">{dateStr}</span>
         <span className="status-separator">|</span>
         <span className="status-info">{timeStr}</span>

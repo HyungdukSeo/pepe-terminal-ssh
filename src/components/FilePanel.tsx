@@ -1,6 +1,9 @@
 // src/components/FilePanel.tsx
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { FixedSizeList as VList, ListChildComponentProps } from 'react-window';
 import { ContextMenu } from './ContextMenu';
+
+const ROW_HEIGHT = 22; // App.css 의 .fe-file-row height 와 동기
 
 export type FileInfo = {
   name: string;
@@ -61,7 +64,25 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
   const [renameValue, setRenameValue] = useState('');
   const [lastClickIdx, setLastClickIdx] = useState(-1);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const vlistRef = useRef<VList | null>(null);
+  const vlistOuterRef = useRef<HTMLDivElement | null>(null);
+  const [listHeight, setListHeight] = useState(400);
   const dragJustEnded = useRef(false);
+  const listRoRef = useRef<ResizeObserver | null>(null);
+
+  // callback ref — 부모 layout 이 지연 마운트되거나 conditional 렌더로 listRef.current 가
+  // 초기엔 null 인 케이스 안전망. element attach 시점마다 observer 재등록.
+  const setListRef = useCallback((el: HTMLDivElement | null) => {
+    listRef.current = el;
+    if (listRoRef.current) { listRoRef.current.disconnect(); listRoRef.current = null; }
+    if (!el) return;
+    const update = () => setListHeight(el.clientHeight || 400);
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    listRoRef.current = ro;
+    update();
+  }, []);
+  useEffect(() => () => { listRoRef.current?.disconnect(); }, []);
 
   const loadDir = useCallback(async (dir: string) => {
     if (!dir) return;
@@ -238,8 +259,14 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
         <span className="fe-col-size" onClick={() => toggleSort('size')}>크기{sortIcon('size')}</span>
         <span className="fe-col-date" onClick={() => toggleSort('mtime')}>날짜{sortIcon('mtime')}</span>
       </div>
-      <div className="fe-file-list" tabIndex={0} ref={listRef}
-        onClick={e => { if (e.target === e.currentTarget && !dragJustEnded.current) onSelectionChange(new Set()); }}
+      <div className="fe-file-list" tabIndex={0} ref={setListRef}
+        onClick={e => {
+          const tgt = e.target as HTMLElement;
+          // 가상화 후엔 빈 영역 클릭 시 target 이 react-window 내부 div 일 수 있음 → 클래스로 판정
+          if (!tgt.closest('.fe-file-row') && !tgt.closest('.fe-rename-input') && !dragJustEnded.current) {
+            onSelectionChange(new Set());
+          }
+        }}
         onMouseDown={e => {
           if (e.button !== 0) return;
           const target = e.target as HTMLElement;
@@ -264,26 +291,26 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
 
           const onMove = (ev: MouseEvent) => {
             currentY = ev.clientY;
-            const rect = listRef.current!.getBoundingClientRect();
-            const top = Math.min(startY, currentY) - rect.top + listRef.current!.scrollTop;
+            const outer = vlistOuterRef.current;
+            const scrollTop = outer?.scrollTop || 0;
+            const rect = (outer || listRef.current!).getBoundingClientRect();
+            const top = Math.min(startY, currentY) - rect.top + scrollTop;
             const height = Math.abs(currentY - startY);
             overlay.style.top = top + 'px';
             overlay.style.height = height + 'px';
 
-            // 선택 업데이트 (throttle: 프레임당 1번)
+            // 선택 업데이트 (throttle: 프레임당 1번) — 가상화 환경에선 DOM 쿼리 대신 좌표→인덱스 계산
             if (!(overlay as any).__raf) {
               (overlay as any).__raf = requestAnimationFrame(() => {
-                const rows = listRef.current!.querySelectorAll('.fe-file-row');
+                const sorted = getSortedFiles();
                 const sel = new Set(baseSel);
                 const minY = Math.min(startY, currentY);
                 const maxY = Math.max(startY, currentY);
-                rows.forEach(row => {
-                  const r = row.getBoundingClientRect();
-                  if (r.bottom >= minY && r.top <= maxY) {
-                    const name = row.getAttribute('data-name');
-                    if (name) sel.add(name);
-                  }
-                });
+                const startIdx = Math.max(0, Math.floor((minY - rect.top + scrollTop) / ROW_HEIGHT));
+                const endIdx = Math.min(sorted.length - 1, Math.floor((maxY - rect.top + scrollTop) / ROW_HEIGHT));
+                for (let i = startIdx; i <= endIdx; i++) {
+                  if (sorted[i]) sel.add(sorted[i].name);
+                }
                 onSelectionChange(sel);
                 (overlay as any).__raf = null;
               });
@@ -324,11 +351,7 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
             if (target >= 0) {
               e.preventDefault();
               onSelectionChange(new Set([sorted[target].name]));
-              // 스크롤 위치 조정
-              setTimeout(() => {
-                const el = document.querySelector(`.fe-file-row[data-name="${CSS.escape(sorted[target].name)}"]`) as HTMLElement | null;
-                el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-              }, 0);
+              try { vlistRef.current?.scrollToItem(target, 'smart'); } catch {}
             }
           }
         }}
@@ -348,48 +371,54 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
       >
         {loading && <div className="fe-loading">로딩 중...</div>}
         {error && <div className="fe-error">{error}</div>}
-        {!loading && !error && sortedFiles.map((file, idx) => (
-          <div key={file.name} data-name={file.name}
-            className={`fe-file-row ${selectedFiles.has(file.name) ? 'selected' : ''}`}
-            onClick={e => handleClick(file, idx, e)}
-            onDoubleClick={() => handleDoubleClick(file)}
-            onContextMenu={e => { e.stopPropagation(); handleContextMenu(e, file); }}
-            draggable
-            onDragStart={e => {
-              const filesToDrag = selectedFiles.has(file.name) ? [...selectedFiles] : [file.name];
-              e.dataTransfer.setData('text/fe-files', JSON.stringify({
-                panelId, files: filesToDrag, srcMode: source.mode, srcTermId: source.termId, srcPath: currentPath,
-              }));
-              e.dataTransfer.effectAllowed = 'copy';
-            }}
+        {!loading && !error && (
+          <VList
+            ref={vlistRef}
+            outerRef={vlistOuterRef}
+            height={listHeight}
+            width="100%"
+            itemCount={sortedFiles.length}
+            itemSize={ROW_HEIGHT}
+            overscanCount={8}
           >
-            <span className="fe-col-name">
-              <span className="fe-file-icon">{file.isDir ? '📁' : '📄'}</span>
-              {renamingFile === file.name ? (
-                <input className="fe-rename-input" value={renameValue}
-                  onChange={e => setRenameValue(e.target.value)}
-                  onBlur={() => handleRenameSubmit(file.name)}
-                  onKeyDown={e => { if (e.key === 'Enter') handleRenameSubmit(file.name); if (e.key === 'Escape') setRenamingFile(null); }}
-                  autoFocus onClick={e => e.stopPropagation()}
-                />
-              ) : (
-                <span className="fe-file-name">{file.name}</span>
-              )}
-            </span>
-            <span className="fe-col-size">{file.isDir ? '' : formatSize(file.size)}</span>
-            <span className="fe-col-date">{formatDate(file.mtime)}</span>
-          </div>
-        ))}
-        <div className="fe-file-padding"
-          draggable={selectedFiles.size > 0}
-          onDragStart={e => {
-            if (selectedFiles.size === 0) return;
-            e.dataTransfer.setData('text/fe-files', JSON.stringify({
-              panelId, files: [...selectedFiles], srcMode: source.mode, srcTermId: source.termId, srcPath: currentPath,
-            }));
-            e.dataTransfer.effectAllowed = 'copy';
-          }}
-        />
+            {({ index, style }: ListChildComponentProps) => {
+              const file = sortedFiles[index];
+              if (!file) return null;
+              return (
+                <div key={file.name} data-name={file.name} style={style}
+                  className={`fe-file-row ${selectedFiles.has(file.name) ? 'selected' : ''}`}
+                  onClick={e => handleClick(file, index, e)}
+                  onDoubleClick={() => handleDoubleClick(file)}
+                  onContextMenu={e => { e.stopPropagation(); handleContextMenu(e, file); }}
+                  draggable
+                  onDragStart={e => {
+                    const filesToDrag = selectedFiles.has(file.name) ? [...selectedFiles] : [file.name];
+                    e.dataTransfer.setData('text/fe-files', JSON.stringify({
+                      panelId, files: filesToDrag, srcMode: source.mode, srcTermId: source.termId, srcPath: currentPath,
+                    }));
+                    e.dataTransfer.effectAllowed = 'copy';
+                  }}
+                >
+                  <span className="fe-col-name">
+                    <span className="fe-file-icon">{file.isDir ? '📁' : '📄'}</span>
+                    {renamingFile === file.name ? (
+                      <input className="fe-rename-input" value={renameValue}
+                        onChange={e => setRenameValue(e.target.value)}
+                        onBlur={() => handleRenameSubmit(file.name)}
+                        onKeyDown={e => { if (e.key === 'Enter') handleRenameSubmit(file.name); if (e.key === 'Escape') setRenamingFile(null); }}
+                        autoFocus onClick={e => e.stopPropagation()}
+                      />
+                    ) : (
+                      <span className="fe-file-name">{file.name}</span>
+                    )}
+                  </span>
+                  <span className="fe-col-size">{file.isDir ? '' : formatSize(file.size)}</span>
+                  <span className="fe-col-date">{formatDate(file.mtime)}</span>
+                </div>
+              );
+            }}
+          </VList>
+        )}
       </div>
       <div className="fe-status-bar">
         {files.length}개 항목 | {selectedFiles.size}개 선택

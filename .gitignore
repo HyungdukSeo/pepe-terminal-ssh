@@ -44,3 +44,6 @@ python/
 resources/x11-server/*
 !resources/x11-server/README.txt
 resources/x11-server.zip
+
+# Claude Code 로컬 설정 (사용자별 환경)
+.claude/

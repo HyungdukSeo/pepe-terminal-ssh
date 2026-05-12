@@ -1,6 +1,7 @@
 // src/App.tsx
 import { useState, useCallback, useEffect, useRef, useMemo, Fragment } from 'react';
 import { createPortal } from 'react-dom';
+import { FixedSizeList as VList, ListChildComponentProps } from 'react-window';
 import './App.css';
 import { TabBar } from './components/TabBar';
 import { MenuBar } from './components/MenuBar';
@@ -13,9 +14,13 @@ import { SqlToolWorkspace } from './components/SqlToolWorkspace';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ClaudeChat } from './components/ClaudeChat';
 import { RemoteFileTree } from './components/RemoteFileTree';
+import { BrowserPane } from './components/BrowserPane';
+import { CompareWorkspace } from './components/CompareWorkspace';
+import { LogAnalyzer } from './components/LogAnalyzer';
+import { VpnWorkspace } from './components/VpnWorkspace';
 import { QuickConnectBar, QuickConnectResult } from './components/QuickConnectDialog';
 import { StatusBar } from './components/StatusBar';
-import { resetTermConnectState, clearScrollbackInTerm, clearScreenInTerm, clearAllInTerm, applyThemeToAll, applyThemeToTerm, applyFontToTerm, applyFontToAll, getCurrentThemeName, registerTermSession, getTermSessionInfo, getWordSeparator, setWordSeparator, refitAllTerms, applyScrollbackToAll, applyScrollbackToTerm, cloneTermStyle, isTermConnected, isTermConnecting, isTermPty, subscribeConnectedChange, focusTerm, pasteToTerm, getSelectionFromTerm, selectAllInTerm, promptPasswordAndConnect, startInitialConnectWatchdog, getCurrentPwdForTerm, refitTerm, searchInTerm, searchNextInTerm, searchPrevInTerm, clearSearchInTerm, highlightAllMatches, clearHighlights, searchFromTop, getAllTermIds, applyCursorStyleToTerm, markQuickConnectPending, clearQuickConnectPending, writeToTerm } from './components/TerminalPanel';
+import { resetTermConnectState, clearScrollbackInTerm, clearScreenInTerm, clearAllInTerm, applyThemeToAll, applyThemeToTerm, applyFontToTerm, applyFontToAll, getCurrentThemeName, registerTermSession, getTermSessionInfo, getWordSeparator, setWordSeparator, refitAllTerms, applyScrollbackToAll, applyScrollbackToTerm, cloneTermStyle, isTermConnected, isTermConnecting, isTermPty, subscribeConnectedChange, focusTerm, pasteToTerm, getSelectionFromTerm, selectAllInTerm, promptPasswordAndConnect, startInitialConnectWatchdog, getCurrentPwdForTerm, refitTerm, searchInTerm, searchNextInTerm, searchPrevInTerm, clearSearchInTerm, highlightAllMatches, clearHighlights, searchFromTop, getAllTermIds, applyCursorStyleToTerm, markQuickConnectPending, clearQuickConnectPending, writeToTerm, isRecording, stopRecording, recordingState } from './components/TerminalPanel';
 import { marked } from 'marked';
 // @ts-ignore — vite ?raw 로 docs/MANUAL.md 를 번들 문자열로 임베드
 import manualMd from '../docs/MANUAL.md?raw';
@@ -48,8 +53,8 @@ import {
 export type { LayoutNode, ContainerNode, LeafNode, Panel, PanelSession } from './utils/layoutUtils';
 
 export type TabId = string;
-export type TabType = 'terminal' | 'fileExplorer' | 'fileEditor' | 'sqlTool';
-export type Tab = { id: TabId; title: string; layout: LayoutNode; type?: TabType; editor?: { termId: string; remotePath: string; fileName: string }; sqlTool?: { sessionId: string; sessionName: string } };
+export type TabType = 'terminal' | 'fileExplorer' | 'fileEditor' | 'sqlTool' | 'browser' | 'compare' | 'logAnalyzer' | 'vpn';
+export type Tab = { id: TabId; title: string; layout: LayoutNode; type?: TabType; editor?: { termId: string; remotePath: string; fileName: string }; sqlTool?: { sessionId: string; sessionName: string }; browser?: { url: string }; compare?: {}; logAnalyzer?: {}; vpn?: {} };
 
 // 일괄전송 히스토리 (앱 실행 중 유지, 최대 50개)
 const broadcastHistory: string[] = [];
@@ -102,6 +107,9 @@ function App() {
     if (!selectedPanelId) return;
     const curTab = tabs.find(t => t.id === activeTabId);
     if (!curTab) return;
+    // 비-터미널 탭(파일비교/브라우저/로그분석/SQL/파일전송/파일에디터)은 phantom 더미 세션이 있어도
+    // 사용자가 그 탭의 입력창에 입력 중일 수 있으므로 자동 포커스 스틸 금지 — 입력 차단 버그 회피
+    if (curTab.type && curTab.type !== 'terminal') return;
     const findLeaf = (node: any, id: string): any => {
       if (node.type === 'leaf') return node.id === id ? node : null;
       for (const c of node.children) { const r = findLeaf(c, id); if (r) return r; }
@@ -1166,6 +1174,19 @@ function App() {
     return () => window.removeEventListener('keydown', handler, true);
   }, [getActiveTermId, showOptions]);
 
+  // 앱 종료 시 녹화 중 세션이 있으면 사용자에게 확인 — beforeunload 로 Electron close 인터셉트
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (recordingState.size === 0) return;
+      const msg = `${recordingState.size}개 세션이 녹화 중입니다. 종료하시겠습니까?`;
+      e.preventDefault();
+      e.returnValue = msg;
+      return msg;
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, []);
+
   // SFTP 진행률/완료 이벤트
   useEffect(() => {
     const onProgress = (window as any).api?.onSFTPProgress?.((p: any) => {
@@ -1190,6 +1211,53 @@ function App() {
     setActiveTabId(id);
     // 새 워크스페이스의 루트 패널 자동 선택
     if (layout.type === 'leaf') setSelectedPanelId(layout.id);
+  };
+
+  // 파일 비교 워크스페이스 추가 — CompareWorkspace 컴포넌트가 내부 상태로 양쪽 소스/경로 선택 처리
+  const addCompareTab = () => {
+    const id = `compare-${Date.now()}`;
+    const layout = createInitialLayout(id);
+    setTabs(prev => [...prev, { id, title: '🔍 파일 비교', layout, type: 'compare', compare: {} }]);
+    setActiveTabId(id);
+  };
+
+  // 로그 분석 워크스페이스 추가
+  const addLogAnalyzerTab = () => {
+    const id = `log-${Date.now()}`;
+    const layout = createInitialLayout(id);
+    setTabs(prev => [...prev, { id, title: '📊 로그 분석', layout, type: 'logAnalyzer', logAnalyzer: {} }]);
+    setActiveTabId(id);
+  };
+
+  // VPN 워크스페이스 추가
+  const addVpnTab = () => {
+    const existing = tabs.find(t => t.type === 'vpn');
+    if (existing) { setActiveTabId(existing.id); return; }
+    const id = `vpn-${Date.now()}`;
+    const layout = createInitialLayout(id);
+    setTabs(prev => [...prev, { id, title: '🔒 VPN', layout, type: 'vpn', vpn: {} }]);
+    setActiveTabId(id);
+  };
+
+  // 브라우저 워크스페이스 추가 — URL 입력 모달 (Electron 에선 window.prompt 비활성)
+  const [newBrowserUrlPrompt, setNewBrowserUrlPrompt] = useState<{ value: string } | null>(null);
+  const createBrowserTabWithUrl = (url: string) => {
+    let u = url.trim();
+    if (!u) return;
+    if (!/^[a-z]+:\/\//i.test(u)) u = 'https://' + u;
+    const id = `browser-${Date.now()}`;
+    const layout = createInitialLayout(id);
+    let host = u;
+    try { host = new URL(u).hostname; } catch {}
+    setTabs(prev => [...prev, { id, title: `🌐 ${host}`, layout, type: 'browser', browser: { url: u } }]);
+    setActiveTabId(id);
+  };
+  const addBrowserTab = (initialUrl?: string) => {
+    if (initialUrl && initialUrl.trim()) {
+      createBrowserTabWithUrl(initialUrl);
+    } else {
+      setNewBrowserUrlPrompt({ value: 'https://www.google.com' });
+    }
   };
 
   // 원격 파일을 에디터 탭에서 열기
@@ -1578,6 +1646,12 @@ function App() {
 
   const handleCloseSession = (nodeId: string, termId: string) => {
     if (!activeTab) return;
+    // 녹화 중인 세션을 닫으면 자동 stop + 사용자 확인 (파일 데이터 유실 방지)
+    if (isRecording(termId)) {
+      const ok = window.confirm('이 세션은 녹화 중입니다. 닫으면 녹화가 종료됩니다. 계속하시겠습니까?');
+      if (!ok) return;
+      stopRecording(termId).catch(() => {});
+    }
     updateLayout(activeTab.id, layout => {
       let updated = removeSessionFromPanel(layout, nodeId, termId);
       updated = cleanEmptyLeaf(updated, nodeId);
@@ -2399,7 +2473,7 @@ function App() {
       <div className="app-main">
         <div className="tab-bar-row">
           <MenuBar menus={menuDefs} />
-          <TabBar tabs={tabs} activeTabId={activeTabId} onChange={setActiveTabId} onAddTab={addTab} onCloseTab={closeTab} onRenameTab={renameTab}
+          <TabBar tabs={tabs} activeTabId={activeTabId} onChange={setActiveTabId} onAddTab={addTab} onAddBrowserTab={addBrowserTab} onAddCompareTab={addCompareTab} onAddLogAnalyzerTab={addLogAnalyzerTab} onAddVpnTab={addVpnTab} onCloseTab={closeTab} onRenameTab={renameTab}
           onReorderTabs={(fromId, toId) => {
             setTabs(prev => {
               const from = prev.findIndex(t => t.id === fromId);
@@ -2637,7 +2711,53 @@ function App() {
           </div>
         ))}
 
-        {activeTab && activeTab.type !== 'fileExplorer' && activeTab.type !== 'fileEditor' && activeTab.type !== 'sqlTool' && (() => {
+        {/* 파일 비교 탭들 - 마운트 유지 (스캔 결과 보존) */}
+        {tabs.filter(t => t.type === 'compare').map(t => {
+          const liveSess = tabs.filter(x => x.type !== 'fileExplorer' && x.type !== 'browser' && x.type !== 'compare' && x.type !== 'logAnalyzer').flatMap(x => collectAllSessions(x.layout));
+          return (
+            <div key={t.id} style={{ display: activeTab?.id === t.id ? 'flex' : 'none', flex: 1, minHeight: 0 }}>
+              <ErrorBoundary label="파일 비교">
+                <CompareWorkspace sessions={liveSess} />
+              </ErrorBoundary>
+            </div>
+          );
+        })}
+
+        {/* VPN 탭 - 마운트 유지 (연결 상태 보존) */}
+        {tabs.filter(t => t.type === 'vpn').map(t => (
+          <div key={t.id} style={{ display: activeTab?.id === t.id ? 'flex' : 'none', flex: 1, minHeight: 0 }}>
+            <ErrorBoundary label="VPN">
+              <VpnWorkspace />
+            </ErrorBoundary>
+          </div>
+        ))}
+
+        {/* 로그 분석 탭들 - 마운트 유지 (파싱 결과 보존) */}
+        {tabs.filter(t => t.type === 'logAnalyzer').map(t => {
+          const liveSess = tabs.filter(x => x.type !== 'fileExplorer' && x.type !== 'browser' && x.type !== 'compare' && x.type !== 'logAnalyzer').flatMap(x => collectAllSessions(x.layout));
+          return (
+            <div key={t.id} style={{ display: activeTab?.id === t.id ? 'flex' : 'none', flex: 1, minHeight: 0 }}>
+              <ErrorBoundary label="로그 분석">
+                <LogAnalyzer sessions={liveSess} />
+              </ErrorBoundary>
+            </div>
+          );
+        })}
+
+        {/* 브라우저 탭들 - 마운트 유지 (워크스페이스 전환해도 페이지 상태 보존) */}
+        {tabs.filter(t => t.type === 'browser' && t.browser).map(t => (
+          <div key={t.id} style={{ display: activeTab?.id === t.id ? 'flex' : 'none', flex: 1, minHeight: 0 }}>
+            <BrowserPane
+              initialUrl={t.browser!.url}
+              onTitleChange={(title) => {
+                if (!title) return;
+                setTabs(prev => prev.map(x => x.id === t.id ? { ...x, title: `🌐 ${title.slice(0, 30)}` } : x));
+              }}
+            />
+          </div>
+        ))}
+
+        {activeTab && activeTab.type !== 'fileExplorer' && activeTab.type !== 'fileEditor' && activeTab.type !== 'sqlTool' && activeTab.type !== 'browser' && activeTab.type !== 'compare' && activeTab.type !== 'logAnalyzer' && activeTab.type !== 'vpn' && (() => {
           // 워크스페이스 레벨 파일 트리 — 선택된 패널의 활성 세션이 SSH 연결이면 표시
           let fileTreeNode: React.ReactNode = null;
           if (selectedPanelId) {
@@ -2790,6 +2910,32 @@ function App() {
         })()}
       </div>
 
+      {newBrowserUrlPrompt && (
+        <div className="session-editor-backdrop" onClick={() => setNewBrowserUrlPrompt(null)}>
+          <div className="session-editor" onClick={e => e.stopPropagation()} style={{ width: 480 }}>
+            <h3>🌐 새 브라우저 워크스페이스</h3>
+            <label style={{ fontSize: 12, color: '#bbb', marginTop: 8 }}>URL 또는 검색어</label>
+            <input
+              autoFocus
+              type="text"
+              value={newBrowserUrlPrompt.value}
+              onChange={e => setNewBrowserUrlPrompt({ value: e.target.value })}
+              onKeyDown={e => {
+                e.stopPropagation();
+                if (e.key === 'Enter') { createBrowserTabWithUrl(newBrowserUrlPrompt.value); setNewBrowserUrlPrompt(null); }
+                if (e.key === 'Escape') setNewBrowserUrlPrompt(null);
+              }}
+              placeholder="https://www.google.com"
+              style={{ fontSize: 13, padding: '6px 8px' }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+              <button onClick={() => setNewBrowserUrlPrompt(null)}>취소</button>
+              <button className="primary" onClick={() => { createBrowserTabWithUrl(newBrowserUrlPrompt.value); setNewBrowserUrlPrompt(null); }}>열기</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showBroadcast && (
         <div className="broadcast-bar">
           <button className="broadcast-close" onClick={() => setShowBroadcast(false)} title="닫기">✕</button>
@@ -2882,7 +3028,7 @@ function App() {
         </div>
       )}
 
-      <StatusBar activeTab={activeTab} selectedPanelId={selectedPanelId} tabs={tabs} />
+      <StatusBar activeTab={activeTab} selectedPanelId={selectedPanelId} tabs={tabs} onClickVpn={addVpnTab} />
 
       {editSessionCtx && (
         <SessionEditor
@@ -3708,38 +3854,46 @@ function App() {
               }} title="새로고침" disabled={!remotePickerConnId}>⟳</button>
             </div>
 
-            <div style={{ flex: 1, minHeight: 200, maxHeight: 320, overflowY: 'auto', border: '1px solid #333', borderRadius: 4, marginTop: 8, background: '#161616' }}>
+            <div style={{ flex: 1, minHeight: 200, height: 320, border: '1px solid #333', borderRadius: 4, marginTop: 8, background: '#161616' }}>
               {!remotePickerConnId ? (
                 <div style={{ color: '#666', fontSize: 12, padding: 16, textAlign: 'center' }}>세션을 선택하세요</div>
               ) : remotePickerLoading || remotePickerConnecting ? (
                 <div style={{ color: '#888', fontSize: 12, padding: 16, textAlign: 'center' }}>로딩 중...</div>
               ) : remotePickerFiles.length === 0 ? (
                 <div style={{ color: '#666', fontSize: 12, padding: 16, textAlign: 'center' }}>(비어있음 또는 경로 에러)</div>
-              ) : (
-                remotePickerFiles
+              ) : (() => {
+                const sorted = remotePickerFiles
                   .filter(f => f.name !== '.' && f.name !== '..')
-                  .sort((a, b) => (a.isDir !== b.isDir) ? (a.isDir ? -1 : 1) : a.name.localeCompare(b.name))
-                  .map(f => (
-                    <div key={f.name} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 6px', cursor: 'pointer', background: remotePickerSelected.has(f.name) ? '#2b4e74' : 'transparent' }}
-                      onClick={() => {
-                        setRemotePickerSelected(prev => {
-                          const next = new Set(prev);
-                          if (next.has(f.name)) next.delete(f.name); else next.add(f.name);
-                          return next;
-                        });
-                      }}
-                      onDoubleClick={() => {
-                        if (!f.isDir) return;
-                        const sep = remotePickerPath.endsWith('/') ? '' : '/';
-                        setRemotePickerPath(remotePickerPath + sep + f.name);
-                        setRemotePickerSelected(new Set());
-                      }}
-                    >
-                      <input type="checkbox" readOnly checked={remotePickerSelected.has(f.name)} />
-                      <span style={{ fontSize: 12 }}>{f.isDir ? '📁' : '📄'} {f.name}</span>
-                    </div>
-                  ))
-              )}
+                  .sort((a, b) => (a.isDir !== b.isDir) ? (a.isDir ? -1 : 1) : a.name.localeCompare(b.name));
+                return (
+                  <VList height={320} width="100%" itemCount={sorted.length} itemSize={22} overscanCount={10}>
+                    {({ index, style }: ListChildComponentProps) => {
+                      const f = sorted[index];
+                      if (!f) return null;
+                      return (
+                        <div key={f.name} style={{ ...style, display: 'flex', alignItems: 'center', gap: 6, padding: '0 6px', cursor: 'pointer', background: remotePickerSelected.has(f.name) ? '#2b4e74' : 'transparent', boxSizing: 'border-box' }}
+                          onClick={() => {
+                            setRemotePickerSelected(prev => {
+                              const next = new Set(prev);
+                              if (next.has(f.name)) next.delete(f.name); else next.add(f.name);
+                              return next;
+                            });
+                          }}
+                          onDoubleClick={() => {
+                            if (!f.isDir) return;
+                            const sep = remotePickerPath.endsWith('/') ? '' : '/';
+                            setRemotePickerPath(remotePickerPath + sep + f.name);
+                            setRemotePickerSelected(new Set());
+                          }}
+                        >
+                          <input type="checkbox" readOnly checked={remotePickerSelected.has(f.name)} />
+                          <span style={{ fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{f.isDir ? '📁' : '📄'} {f.name}</span>
+                        </div>
+                      );
+                    }}
+                  </VList>
+                );
+              })()}
             </div>
             <div style={{ fontSize: 11, color: '#777', marginTop: 4 }}>
               🟢 연결된 세션 / ⚪ 미연결 (선택 시 자동 연결). 클릭: 선택 / 더블클릭: 폴더 진입. {remotePickerSelected.size}개 선택됨

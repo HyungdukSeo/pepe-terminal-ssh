@@ -1849,6 +1849,22 @@ body.popout-options .session-editor h3:first-child {
   color: #fff;
   border-color: #3a8bc5;
 }
+
+/* 녹화 버튼 — 평소엔 회색, 녹화 중엔 빨간색 + 펄스 글로우 */
+.panel-btn.panel-btn-rec {
+  color: #8a8f95;
+}
+.panel-btn.panel-btn-rec:hover {
+  color: #b0b6bc;
+}
+.panel-btn.panel-btn-rec.rec-on {
+  color: #e53935;
+  animation: rec-pulse 1.4s ease-in-out infinite;
+}
+@keyframes rec-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(229, 57, 53, 0.55); }
+  50% { box-shadow: 0 0 6px 2px rgba(229, 57, 53, 0.75); }
+}
 /* 패널 컨트롤 토글 — 그라디언트 + 글로우 애니메이션 */
 .panel-controls-toggle {
   width: 24px;
@@ -2873,8 +2889,7 @@ body.popout-options .session-editor h3:first-child {
 
 .fe-file-list {
   flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: hidden;
   min-height: 0;
   outline: none;
   position: relative;
@@ -2890,7 +2905,10 @@ body.popout-options .session-editor h3:first-child {
 
 .fe-file-row {
   display: flex;
-  padding: 2px 8px;
+  align-items: center;
+  padding: 0 8px;
+  height: 22px;
+  box-sizing: border-box;
   font-size: 12px;
   color: #ccc;
   cursor: pointer;
@@ -3032,7 +3050,9 @@ body.popout-options .session-editor h3:first-child {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 3px 8px;
+  padding: 0 8px;
+  height: 24px;
+  box-sizing: border-box;
   font-size: 11px;
 }
 
@@ -3666,7 +3686,7 @@ body.popout-options .session-editor h3:first-child {
   color: #fff;
 }
 .remote-file-list {
-  overflow-y: auto;
+  overflow: hidden;
   flex: 1;
   min-height: 0;
 }
@@ -3738,7 +3758,9 @@ body.popout-options .session-editor h3:first-child {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 3px 8px;
+  padding: 0 8px;
+  height: 22px;
+  box-sizing: border-box;
   color: #ccc;
   cursor: pointer;
   white-space: nowrap;

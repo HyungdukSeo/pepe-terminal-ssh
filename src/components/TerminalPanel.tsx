@@ -244,13 +244,50 @@ if (typeof window !== 'undefined') {
   setTimeout(ensurePasteResultListener, 0);
 }
 
+// 워크스페이스 전환 등으로 .xterm DOM 이 stash 로 이동되면 .xterm-viewport 의 scrollTop 이
+// 0 으로 리셋됨 (hidden 1×1 컨테이너라 scrollHeight 가 collapse). 복귀 시 원래 위치로 돌리기 위해
+// stash 직전에 xterm 내부 논리 스크롤 라인을 저장.
+const termSavedScroll: Map<string, { viewportY: number; atBottom: boolean }> = new Map();
+
 export function stashXtermDom(termId: string) {
   const entry = termStore.get(termId);
   if (!entry) return;
-  const el = (entry.term as any).element as HTMLElement | undefined;
+  const term: any = entry.term;
+  try {
+    const buf = term.buffer?.active;
+    if (buf) {
+      const viewportY = buf.viewportY ?? 0;
+      const baseY = buf.baseY ?? 0;
+      termSavedScroll.set(termId, { viewportY, atBottom: viewportY >= baseY });
+    }
+  } catch {}
+  const el = term.element as HTMLElement | undefined;
   if (el && el.parentNode && el.parentNode !== getXtermStash()) {
     getXtermStash().appendChild(el);
   }
+}
+
+// stash 에서 꺼낸 후 refit 이 안정화된 시점에 호출 — 저장된 논리 라인 위치로 복원.
+// viewportY 는 라인 단위라 fit 으로 cols/rows 가 바뀌어도 유효함.
+function restoreSavedScroll(termId: string) {
+  const saved = termSavedScroll.get(termId);
+  if (!saved) return;
+  const entry = termStore.get(termId);
+  if (!entry) return;
+  const term: any = entry.term;
+  try {
+    if (saved.atBottom) {
+      term.scrollToBottom?.();
+    } else {
+      const baseY = term.buffer?.active?.baseY ?? 0;
+      const target = Math.min(saved.viewportY, baseY);
+      if (typeof term.scrollToLine === 'function') term.scrollToLine(target);
+      else {
+        const curY = term.buffer?.active?.viewportY ?? 0;
+        term.scrollLines?.(target - curY);
+      }
+    }
+  } catch {}
 }
 // 외부에서 termId 의 fit + resize 강제 — 워크스페이스 전환 후 풀스크린 터미널 크기 보정 등
 export function refitTerm(termId: string) {
@@ -376,6 +413,40 @@ function showFontSizeOSD(parent: HTMLElement, size: number) {
   }, 800);
 }
 
+// ── 터미널 녹화 (REC) ──
+// recording 상태 추적 + write tap. term.write 를 monkey-patch 해서 모든 출력을 main 으로 흘려보냄.
+// UI 가 구독할 수 있도록 listener 패턴.
+export const recordingState: Map<string, { path: string; startedAt: number }> = new Map();
+const recordingListeners: Set<(termId: string) => void> = new Set();
+export function subscribeRecording(fn: (termId: string) => void): () => void {
+  recordingListeners.add(fn);
+  return () => { recordingListeners.delete(fn); };
+}
+function notifyRecording(termId: string) { recordingListeners.forEach(fn => { try { fn(termId); } catch {} }); }
+export function isRecording(termId: string): boolean { return recordingState.has(termId); }
+export async function startRecording(termId: string, sessionName: string): Promise<{ ok: boolean; path?: string; reason?: string }> {
+  if (recordingState.has(termId)) return { ok: false, reason: 'already-recording' };
+  const r = await (window as any).api?.recStart?.(termId, sessionName);
+  if (r?.ok) {
+    recordingState.set(termId, { path: r.path, startedAt: Date.now() });
+    notifyRecording(termId);
+  }
+  return r || { ok: false, reason: 'no-api' };
+}
+export async function stopRecording(termId: string): Promise<{ ok: boolean; path?: string }> {
+  if (!recordingState.has(termId)) return { ok: false };
+  const r = await (window as any).api?.recStop?.(termId);
+  recordingState.delete(termId);
+  notifyRecording(termId);
+  return r || { ok: true };
+}
+function recAppend(termId: string, data: string, kind?: 'out' | 'in' | 'mark') {
+  if (!recordingState.has(termId)) return;
+  try { (window as any).api?.recAppend?.(termId, data, kind); } catch {}
+}
+export function recordMark(termId: string, text: string) { recAppend(termId, text, 'mark'); }
+export function recordInput(termId: string, data: string) { recAppend(termId, data, 'in'); }
+
 function getOrCreateTerm(termId: string): { term: Terminal; fit: FitAddon; search: SearchAddon } {
   let entry = termStore.get(termId);
   if (!entry) {
@@ -395,6 +466,20 @@ function getOrCreateTerm(termId: string): { term: Terminal; fit: FitAddon; searc
       wordSeparator: currentWordSeparator,
       scrollback: initScrollback,
     });
+    // REC tap — term.write 를 monkey-patch 해서 모든 출력 데이터를 녹화 stream 으로 흘림.
+    // PTY/SSH bridge 가 보낸 raw 데이터 + 앱 자체가 합성한 메시지(연결됨/끊김 등) 모두 캡처.
+    try {
+      const origWrite = term.write.bind(term);
+      (term as any).write = function (data: string | Uint8Array, cb?: () => void) {
+        if (recordingState.has(termId)) {
+          try {
+            const s = typeof data === 'string' ? data : new TextDecoder('utf-8').decode(data);
+            recAppend(termId, s, 'out');
+          } catch {}
+        }
+        return origWrite(data as any, cb);
+      };
+    } catch {}
     if (!termFontSizes.has(termId)) termFontSizes.set(termId, defaultFontSize);
     const fit = new FitAddon();
     // FitAddon.fit() 안전 패치 — 컨테이너가 layout 갱신 중 일시적으로 0-size 가 될 때
@@ -1432,6 +1517,10 @@ function ensureSSHSetup(termId: string) {
     if (reconnectState.has(termId)) {
       console.warn('[ssh] connected event during active reconnect countdown', { termId, sshConnecting: sshConnecting.has(termId) });
     }
+    // 녹화 중이고 이전에도 연결됐던 termId 면 reconnect 마커 — 로그 가독성 향상
+    if (recordingState.has(termId) && termSessionMap.has(termId)) {
+      recordMark(termId, `reconnected at ${new Date().toLocaleString()}`);
+    }
     globalConnected.add(termId);
     cancelReconnect(termId);
     clearInitialConnectWatchdog(termId);
@@ -1458,6 +1547,9 @@ function ensureSSHSetup(termId: string) {
     globalConnected.delete(termId);
     sshConnecting.delete(termId);
     notifyConnectedChange();
+    if (recordingState.has(termId)) {
+      recordMark(termId, `disconnected at ${new Date().toLocaleString()}`);
+    }
     try { term.write('\r\n\x1b[90m연결이 종료되었습니다.\x1b[0m\r\n'); } catch {}
     // 세션이 등록되어 있으면 재연결 카운트다운 시작
     if (termSessionMap.has(termId)) {
@@ -2183,6 +2275,12 @@ export const TerminalPanel: React.FC<Props> = ({
     return () => { connectedListeners.delete(listener); };
   }, []);
 
+  // 녹화 상태 변경 구독 — REC 버튼 색상 갱신
+  useEffect(() => {
+    const unsub = subscribeRecording(() => forceUpdate(n => n + 1));
+    return unsub;
+  }, []);
+
   // 파일 트리 표시 토글 이벤트 구독 (Ctrl+Shift+E 로 외부에서 호출됨)
   useEffect(() => {
     const fn = () => forceUpdate(n => n + 1);
@@ -2226,10 +2324,13 @@ export const TerminalPanel: React.FC<Props> = ({
       containerRef.current.innerHTML = '';
       containerRef.current.appendChild(stashedEl);
       // stash 복귀 시엔 항상 refit + viewport 재계산 — 활동 없는 터미널의 scrollbar 가 0 으로 멈추는 문제 fix
+      // refit 후 stash 직전 저장한 스크롤 위치로 복원 (hidden stash 가 scrollTop=0 으로 만들어 버리는 문제)
       requestAnimationFrame(() => {
         refitTerm(activeTermId);
-        setTimeout(() => refitTerm(activeTermId), 50);
-        setTimeout(() => refitTerm(activeTermId), 200);
+        restoreSavedScroll(activeTermId);
+        setTimeout(() => { refitTerm(activeTermId); restoreSavedScroll(activeTermId); }, 50);
+        setTimeout(() => { refitTerm(activeTermId); restoreSavedScroll(activeTermId); }, 200);
+        setTimeout(() => { restoreSavedScroll(activeTermId); termSavedScroll.delete(activeTermId); }, 350);
       });
     } else {
       containerRef.current.innerHTML = '';
@@ -2403,6 +2504,7 @@ export const TerminalPanel: React.FC<Props> = ({
       if (data === '\x1b[r') return;
       // PTY(로컬 셸): IME 가로채기 없이 그대로 전달
       if (ptyConnected.has(activeTermId)) {
+        recordInput(activeTermId, data);
         window.api?.ptyInput?.(activeTermId, data);
         return;
       }
@@ -2417,6 +2519,7 @@ export const TerminalPanel: React.FC<Props> = ({
       {
         try {
           const normalized = data.replace(/\x7f/g, '\x08');
+          recordInput(activeTermId, normalized);
           const bytes = new TextEncoder().encode(normalized);
           const b64 = typeof Buffer !== 'undefined'
             ? Buffer.from(bytes).toString('base64')
@@ -2805,6 +2908,39 @@ export const TerminalPanel: React.FC<Props> = ({
               }}
               title={`투명도 ${curPct}%`}
             />
+          );
+        })()}
+        {(() => {
+          const recOn = !!activeTermId && isRecording(activeTermId);
+          return (
+            <button
+              className={`panel-btn panel-btn-rec ${recOn ? 'rec-on' : ''}`}
+              onClick={async () => {
+                if (!activeTermId) return;
+                if (isRecording(activeTermId)) {
+                  const r = await stopRecording(activeTermId);
+                  if (r.ok && r.path) {
+                    try { getOrCreateTerm(activeTermId).term.write(`\r\n\x1b[90m● 녹화 종료 — ${r.path}\x1b[0m\r\n`); } catch {}
+                  }
+                } else {
+                  const sessName = activeSession?.sessionName || 'terminal';
+                  const r = await startRecording(activeTermId, sessName);
+                  if (r.ok && r.path) {
+                    try { getOrCreateTerm(activeTermId).term.write(`\r\n\x1b[91m● 녹화 시작 — ${r.path}\x1b[0m\r\n`); } catch {}
+                  } else if (r.reason && r.reason !== 'cancelled') {
+                    try { getOrCreateTerm(activeTermId).term.write(`\r\n\x1b[91m✕ 녹화 시작 실패: ${r.reason}\x1b[0m\r\n`); } catch {}
+                  }
+                }
+              }}
+              title={recOn ? '녹화 중지' : '녹화 시작 (파일에 저장)'}
+              disabled={!activeTermId}
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round">
+                <rect x="1" y="4" width="8" height="6" rx="1" />
+                <path d="M9 6.2 L12.5 4.5 L12.5 9.5 L9 7.8 Z" />
+                <circle cx="4.5" cy="7" r="1.4" fill={recOn ? 'currentColor' : 'none'} />
+              </svg>
+            </button>
           );
         })()}
         <button className="panel-btn" onClick={() => onSplit(nodeId, 'row')} title="가로 분할 (좌/우, 빈 패널)">

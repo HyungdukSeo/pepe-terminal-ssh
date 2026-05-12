@@ -1,5 +1,5 @@
 // electron/main.ts
-import { app, BrowserWindow, ipcMain, dialog, Menu, shell, clipboard, nativeImage } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, Menu, shell, clipboard, nativeImage, safeStorage } from 'electron';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -12,6 +12,7 @@ import { createWebDAVBridge } from './webdavBridge';
 import { installX11DisplayHook } from './x11Display';
 import { startBundledX11, stopBundledX11, stopAllBundledX11, listRunningX11 } from './x11Bundled';
 import { stopEmbeddedX11 } from './x11Server';
+import { getVpnService } from './vpnService';
 // MCP 서버 스크립트를 번들에 임베드 (vite ?raw) — 런타임에 임시 파일로 추출 후 spawn
 // @ts-ignore
 import mcpSshServerScript from './mcpSshServer.cjs?raw';
@@ -98,6 +99,7 @@ function createWindow() {
     show: false, // 준비 완료 후 표시
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
+      webviewTag: true, // 브라우저 워크스페이스 (<webview>) 활성화
     },
   });
 
@@ -153,6 +155,15 @@ function createWindow() {
 }
 
 // ── App lifecycle ──
+
+// 자기서명 인증서 / 사설 CA 서버 접속 허용 — 내부 인프라 (172.x, 10.x, 192.168.x) 가 흔히 self-signed.
+// 브라우저 워크스페이스의 <webview> 와 fetch 모두에 영향. 외부 공용 사이트는 일반적으로 정상 cert 라 영향 없음.
+// 보안 트레이드오프: 이 앱은 신뢰된 내부 도구 환경 가정. 공용 사이트의 MITM 까지 허용되므로 주의.
+app.on('certificate-error', (event, _webContents, url, error, _certificate, callback) => {
+  console.warn('[certificate-error] allowing', { url, error });
+  event.preventDefault();
+  callback(true);
+});
 
 app.whenReady().then(() => {
   sessionsData = loadSessionsData();
@@ -1252,6 +1263,80 @@ ipcMain.handle('fe:list-dir', async (_e, { mode, termId, dirPath }: { mode: stri
   } catch (err: any) { return { error: `${dirPath}: ${String(err)}` }; }
 });
 
+// ── 파일 비교 (CompareWorkspace) ──
+// 재귀 walk — 한 번의 IPC 로 폴더 전체 트리를 평탄화해서 반환. 대용량 폴더에서 N번 round-trip 회피.
+// 결과는 [{ relPath, isDir, size, mtime }] flat 배열. 상한 옵션으로 walk 폭주 방지.
+const COMPARE_WALK_MAX_ENTRIES = 50000;
+ipcMain.handle('compare:walk', async (_e, { mode, termId, basePath, maxEntries }: { mode: string; termId?: string; basePath: string; maxEntries?: number }) => {
+  const cap = Math.min(maxEntries || COMPARE_WALK_MAX_ENTRIES, COMPARE_WALK_MAX_ENTRIES);
+  const out: { relPath: string; isDir: boolean; size: number; mtime: number }[] = [];
+  let truncated = false;
+  try {
+    const bridge = getSSHBridge();
+    const sep = mode === 'local' && process.platform === 'win32' ? '\\' : '/';
+    const join = (a: string, b: string) => a.endsWith(sep) ? a + b : a + sep + b;
+    const walk = async (cur: string, rel: string): Promise<void> => {
+      if (out.length >= cap) { truncated = true; return; }
+      let entries: any[];
+      try {
+        if (mode === 'local') entries = await bridge.handleLocalListDir(cur);
+        else entries = await bridge.handleSFTPListDir(termId!, cur);
+      } catch { return; }
+      // 정렬 — 폴더 먼저, 이름순
+      entries.sort((a, b) => (a.isDir !== b.isDir) ? (a.isDir ? -1 : 1) : a.name.localeCompare(b.name));
+      for (const e of entries) {
+        if (e.name === '.' || e.name === '..') continue;
+        if (out.length >= cap) { truncated = true; return; }
+        const childRel = rel ? rel + '/' + e.name : e.name;
+        out.push({ relPath: childRel, isDir: e.isDir, size: e.size ?? 0, mtime: e.mtime ?? 0 });
+        if (e.isDir) await walk(join(cur, e.name), childRel);
+      }
+    };
+    await walk(basePath, '');
+    return { entries: out, truncated };
+  } catch (err: any) {
+    return { entries: out, truncated, error: String(err) };
+  }
+});
+
+// 파일 쓰기 — Compare 에디터에서 수정 후 저장. 로컬은 fs, 원격은 SFTP.
+ipcMain.handle('compare:write', async (_e, { mode, termId, filePath, content }: { mode: string; termId?: string; filePath: string; content: string }) => {
+  try {
+    if (mode === 'local') {
+      await fs.promises.writeFile(filePath, content, 'utf-8');
+      return { ok: true };
+    } else {
+      if (!termId) return { ok: false, error: '연결 ID가 없습니다' };
+      const bridge = getSSHBridge();
+      await bridge.handleSFTPWriteFile(termId, filePath, content);
+      return { ok: true };
+    }
+  } catch (err: any) {
+    return { ok: false, error: String(err?.message || err) };
+  }
+});
+
+// 파일 읽기 — 텍스트 diff 용. 로컬은 fs, 원격은 SFTP. 텍스트로 디코드 (utf-8 기본).
+ipcMain.handle('compare:read', async (_e, { mode, termId, filePath, maxBytes }: { mode: string; termId?: string; filePath: string; maxBytes?: number }) => {
+  const cap = maxBytes || 5 * 1024 * 1024; // 기본 5MB
+  try {
+    if (mode === 'local') {
+      const stat = await fs.promises.stat(filePath);
+      if (stat.size > cap) return { error: `파일이 너무 큽니다 (${(stat.size / 1024 / 1024).toFixed(1)}MB > ${(cap / 1024 / 1024).toFixed(0)}MB)`, size: stat.size };
+      const buf = await fs.promises.readFile(filePath);
+      return { content: buf.toString('utf-8'), size: stat.size };
+    } else {
+      if (!termId) return { error: '연결 ID가 없습니다' };
+      const bridge = getSSHBridge();
+      const buf = await bridge.handleSFTPReadFile(termId, filePath);
+      if (buf.length > cap) return { error: `파일이 너무 큽니다 (${(buf.length / 1024 / 1024).toFixed(1)}MB)`, size: buf.length };
+      return { content: buf.toString('utf-8'), size: buf.length };
+    }
+  } catch (err: any) {
+    return { error: String(err?.message || err) };
+  }
+});
+
 ipcMain.handle('fe:get-drives', async () => {
   // Windows 드라이브 목록
   if (process.platform === 'win32') {
@@ -1884,6 +1969,164 @@ ipcMain.on('pty:resize', (_e, { panelId, cols, rows }: { panelId: string; cols: 
 ipcMain.on('pty:kill', (_e, { panelId }: { panelId: string }) => {
   const proc = ptyProcesses.get(panelId);
   if (proc) { proc.kill(); ptyProcesses.delete(panelId); }
+});
+
+// ── OpenVPN ──
+const vpn = getVpnService();
+const safeSend = (channel: string, payload: any) => {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    const wc = mainWindow.webContents;
+    if (!wc || wc.isDestroyed?.()) return;
+    wc.send(channel, payload);
+  } catch {}
+};
+vpn.on('state', (st: any) => safeSend('vpn:state', st));
+vpn.on('log', (line: string) => safeSend('vpn:log', line));
+// 앱 종료 시 VPN 정리 — management SIGTERM 보내서 elevated openvpn.exe 가 스스로 깔끔히 종료하도록
+app.on('before-quit', () => {
+  try { vpn.disconnect(); } catch {}
+});
+
+// 자격증명 영속화 — OS 안전 저장소(Windows DPAPI / macOS Keychain) 로 암호화 후 JSON 저장.
+// 파일: <userData>/vpn-credentials.json. Key = config 절대경로, Value = base64(encrypted).
+function vpnCredsFile(): string { return path.join(app.getPath('userData'), 'vpn-credentials.json'); }
+function loadCredsMap(): Record<string, string> {
+  try {
+    const p = vpnCredsFile();
+    if (!fs.existsSync(p)) return {};
+    return JSON.parse(fs.readFileSync(p, 'utf-8')) || {};
+  } catch { return {}; }
+}
+function saveCredsMap(m: Record<string, string>) {
+  try { fs.writeFileSync(vpnCredsFile(), JSON.stringify(m, null, 2), { mode: 0o600 }); } catch {}
+}
+ipcMain.handle('vpn:save-creds', (_e, { configPath, username, password }: { configPath: string; username: string; password: string }) => {
+  if (!safeStorage.isEncryptionAvailable()) return { ok: false, error: 'OS 안전 저장소 사용 불가 (저장 안 됨)' };
+  try {
+    const enc = safeStorage.encryptString(JSON.stringify({ username, password })).toString('base64');
+    const m = loadCredsMap();
+    m[configPath] = enc;
+    saveCredsMap(m);
+    return { ok: true };
+  } catch (err: any) { return { ok: false, error: String(err?.message || err) }; }
+});
+ipcMain.handle('vpn:load-creds', (_e, { configPath }: { configPath: string }) => {
+  try {
+    const m = loadCredsMap();
+    const enc = m[configPath];
+    if (!enc) return { ok: false };
+    const buf = Buffer.from(enc, 'base64');
+    const dec = safeStorage.decryptString(buf);
+    const parsed = JSON.parse(dec);
+    return { ok: true, username: parsed.username || '', password: parsed.password || '' };
+  } catch (err: any) { return { ok: false, error: String(err?.message || err) }; }
+});
+ipcMain.handle('vpn:clear-creds', (_e, { configPath }: { configPath: string }) => {
+  try {
+    const m = loadCredsMap();
+    delete m[configPath];
+    saveCredsMap(m);
+    return { ok: true };
+  } catch (err: any) { return { ok: false, error: String(err?.message || err) }; }
+});
+ipcMain.handle('vpn:has-creds', (_e, { configPath }: { configPath: string }) => {
+  const m = loadCredsMap();
+  return { has: !!m[configPath] };
+});
+ipcMain.handle('vpn:available', () => vpn.isAvailable());
+ipcMain.handle('vpn:state', () => vpn.getState());
+ipcMain.handle('vpn:logs', () => vpn.getLogs());
+ipcMain.handle('vpn:list-configs', () => vpn.listConfigs());
+ipcMain.handle('vpn:import-config', async (_e, { srcPath }: { srcPath?: string }) => {
+  if (!srcPath) {
+    const r = await dialog.showOpenDialog(mainWindow!, {
+      title: 'OpenVPN 설정 파일 (.ovpn) 가져오기',
+      filters: [{ name: 'OpenVPN config', extensions: ['ovpn'] }, { name: 'All Files', extensions: ['*'] }],
+      properties: ['openFile'],
+    });
+    if (r.canceled || !r.filePaths[0]) return { ok: false, canceled: true };
+    srcPath = r.filePaths[0];
+  }
+  return vpn.importConfig(srcPath);
+});
+ipcMain.handle('vpn:remove-config', (_e, { filePath }: { filePath: string }) => ({ ok: vpn.removeConfig(filePath) }));
+ipcMain.handle('vpn:connect', (_e, { configPath, username, password }: { configPath: string; username?: string; password?: string }) =>
+  vpn.connect(configPath, { username, password }));
+ipcMain.handle('vpn:disconnect', () => vpn.disconnect());
+
+// ── 터미널 녹화 (REC) ──
+// 렌더러는 term.write() 직전에 tap 을 걸어 raw 바이트와 사용자 입력을 IPC 로 흘려보내고,
+// main 은 단순히 WriteStream 으로 append. flush 는 OS 가 알아서 하지만 추가 보호로 매 라인
+// 결정마다 fsyncSync 는 하지 않는다 (성능 이슈). 앱 종료/세션 닫기 시 stop 호출 보장 필요.
+const recordingStreams: Map<string, { stream: fs.WriteStream; path: string; startedAt: number }> = new Map();
+function recPickFilePath(suggested: string): string | null {
+  if (!mainWindow) return null;
+  const res = dialog.showSaveDialogSync(mainWindow, {
+    title: '터미널 녹화 파일 저장',
+    defaultPath: suggested,
+    filters: [{ name: 'Recording Log (ANSI)', extensions: ['log'] }, { name: 'All Files', extensions: ['*'] }],
+  });
+  return res || null;
+}
+ipcMain.handle('rec:start', async (_e, { panelId, sessionName }: { panelId: string; sessionName?: string }) => {
+  if (recordingStreams.has(panelId)) return { ok: false, reason: 'already-recording' };
+  const ts = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const stamp = `${ts.getFullYear()}${pad(ts.getMonth() + 1)}${pad(ts.getDate())}-${pad(ts.getHours())}${pad(ts.getMinutes())}${pad(ts.getSeconds())}`;
+  const safeName = (sessionName || 'terminal').replace(/[\\/:*?"<>|]/g, '_');
+  const suggested = path.join(app.getPath('documents') || os.homedir(), `pepe-${safeName}-${stamp}.log`);
+  const target = recPickFilePath(suggested);
+  if (!target) return { ok: false, reason: 'cancelled' };
+  try {
+    const stream = fs.createWriteStream(target, { flags: 'a' });
+    stream.on('error', (err) => {
+      try { mainWindow?.webContents.send('rec:error', { panelId, message: String(err?.message || err) }); } catch {}
+    });
+    const header = `\r\n--- recording started at ${ts.toLocaleString()} (${path.basename(target)}) ---\r\n`;
+    stream.write(header);
+    recordingStreams.set(panelId, { stream, path: target, startedAt: Date.now() });
+    return { ok: true, path: target };
+  } catch (err: any) {
+    return { ok: false, reason: 'open-failed', message: String(err?.message || err) };
+  }
+});
+ipcMain.on('rec:append', (_e, { panelId, data, kind }: { panelId: string; data: string; kind?: 'out' | 'in' | 'mark' }) => {
+  const rec = recordingStreams.get(panelId);
+  if (!rec) return;
+  try {
+    if (kind === 'in') rec.stream.write(`\x1b[7m<<<${data}>>>\x1b[27m`);
+    else if (kind === 'mark') rec.stream.write(`\r\n--- ${data} ---\r\n`);
+    else rec.stream.write(data);
+  } catch {}
+});
+ipcMain.handle('rec:stop', async (_e, { panelId }: { panelId: string }) => {
+  const rec = recordingStreams.get(panelId);
+  if (!rec) return { ok: false, reason: 'not-recording' };
+  recordingStreams.delete(panelId);
+  try {
+    const footer = `\r\n--- recording stopped at ${new Date().toLocaleString()} ---\r\n`;
+    await new Promise<void>(resolve => rec.stream.write(footer, () => resolve()));
+    await new Promise<void>(resolve => rec.stream.end(() => resolve()));
+    return { ok: true, path: rec.path };
+  } catch (err: any) {
+    return { ok: false, message: String(err?.message || err) };
+  }
+});
+ipcMain.handle('rec:status', (_e, { panelId }: { panelId?: string }) => {
+  if (panelId) {
+    const r = recordingStreams.get(panelId);
+    return r ? { recording: true, path: r.path, startedAt: r.startedAt } : { recording: false };
+  }
+  return { panels: Array.from(recordingStreams.keys()) };
+});
+ipcMain.handle('rec:list-active', () => Array.from(recordingStreams.keys()));
+// 앱 종료 시 모든 stream flush — 사용자가 모달에서 "종료" 선택했을 때 데이터 유실 방지
+app.on('before-quit', () => {
+  for (const [, rec] of recordingStreams) {
+    try { rec.stream.write(`\r\n--- recording interrupted (app quit) ---\r\n`); rec.stream.end(); } catch {}
+  }
+  recordingStreams.clear();
 });
 
 // ── Claude Code CLI 연동 ──

@@ -53,6 +53,11 @@ export const DEFAULT_KEYBINDINGS: Record<string, string> = {
   'copy': 'Ctrl+Shift+C',
   'paste': 'Ctrl+Shift+V',
   'selectAll': 'Ctrl+A',
+  // 파일 비교 — hunk 이동/적용
+  'diffPrevHunk': 'Alt+Up',
+  'diffNextHunk': 'Alt+Down',
+  'diffApplyLeft': 'Alt+Left',   // 타겟의 현재 hunk → 소스
+  'diffApplyRight': 'Alt+Right', // 소스의 현재 hunk → 타겟
 };
 
 // Action labels for UI
@@ -75,6 +80,10 @@ export const KEYBINDING_LABELS: Record<string, string> = {
   'copy': '복사 (선택 → 클립보드)',
   'paste': '붙여넣기 (클립보드 → 터미널)',
   'selectAll': '전체 선택',
+  'diffPrevHunk': '파일 비교: 이전 변경',
+  'diffNextHunk': '파일 비교: 다음 변경',
+  'diffApplyLeft': '파일 비교: 타겟 → 소스 적용',
+  'diffApplyRight': '파일 비교: 소스 → 타겟 적용',
 };
 
 // Current keybindings (merged with defaults)

@@ -225,6 +225,50 @@ contextBridge.exposeInMainWorld('api', {
   onSearchPrev: (cb: (p?: any) => void) => { const h = (_: any, p: any) => cb(p); ipcRenderer.on('search:prev', h); return () => ipcRenderer.removeListener('search:prev', h); },
   onSearchClosed: (cb: () => void) => { const h = () => cb(); ipcRenderer.on('search:closed', h); return () => ipcRenderer.removeListener('search:closed', h); },
   onSearchDock: (cb: () => void) => { const h = () => cb(); ipcRenderer.on('search:dock', h); return () => ipcRenderer.removeListener('search:dock', h); },
+  // OpenVPN
+  vpnAvailable: () => ipcRenderer.invoke('vpn:available'),
+  vpnState: () => ipcRenderer.invoke('vpn:state'),
+  vpnLogs: () => ipcRenderer.invoke('vpn:logs'),
+  vpnListConfigs: () => ipcRenderer.invoke('vpn:list-configs'),
+  vpnImportConfig: (srcPath?: string) => ipcRenderer.invoke('vpn:import-config', { srcPath }),
+  vpnRemoveConfig: (filePath: string) => ipcRenderer.invoke('vpn:remove-config', { filePath }),
+  vpnConnect: (configPath: string, username?: string, password?: string) =>
+    ipcRenderer.invoke('vpn:connect', { configPath, username, password }),
+  vpnDisconnect: () => ipcRenderer.invoke('vpn:disconnect'),
+  vpnSaveCreds: (configPath: string, username: string, password: string) => ipcRenderer.invoke('vpn:save-creds', { configPath, username, password }),
+  vpnLoadCreds: (configPath: string) => ipcRenderer.invoke('vpn:load-creds', { configPath }),
+  vpnClearCreds: (configPath: string) => ipcRenderer.invoke('vpn:clear-creds', { configPath }),
+  vpnHasCreds: (configPath: string) => ipcRenderer.invoke('vpn:has-creds', { configPath }),
+  onVpnState: (cb: (state: any) => void) => {
+    const h = (_: any, st: any) => cb(st);
+    ipcRenderer.on('vpn:state', h);
+    return () => ipcRenderer.removeListener('vpn:state', h);
+  },
+  onVpnLog: (cb: (line: string) => void) => {
+    const h = (_: any, line: string) => cb(line);
+    ipcRenderer.on('vpn:log', h);
+    return () => ipcRenderer.removeListener('vpn:log', h);
+  },
+
+  // 파일 비교 (CompareWorkspace)
+  compareWalk: (mode: string, basePath: string, termId?: string, maxEntries?: number) =>
+    ipcRenderer.invoke('compare:walk', { mode, termId, basePath, maxEntries }),
+  compareRead: (mode: string, filePath: string, termId?: string, maxBytes?: number) =>
+    ipcRenderer.invoke('compare:read', { mode, termId, filePath, maxBytes }),
+  compareWrite: (mode: string, filePath: string, content: string, termId?: string) =>
+    ipcRenderer.invoke('compare:write', { mode, termId, filePath, content }),
+
+  // Terminal recording (REC)
+  recStart: (panelId: string, sessionName?: string) => ipcRenderer.invoke('rec:start', { panelId, sessionName }),
+  recStop: (panelId: string) => ipcRenderer.invoke('rec:stop', { panelId }),
+  recAppend: (panelId: string, data: string, kind?: 'out' | 'in' | 'mark') => ipcRenderer.send('rec:append', { panelId, data, kind }),
+  recStatus: (panelId?: string) => ipcRenderer.invoke('rec:status', { panelId }),
+  recListActive: () => ipcRenderer.invoke('rec:list-active'),
+  onRecError: (cb: (p: any) => void) => {
+    const handler = (_: any, p: any) => cb(p);
+    ipcRenderer.on('rec:error', handler);
+    return () => ipcRenderer.removeListener('rec:error', handler);
+  },
   onClaudeStream: (cb: (p: any) => void) => {
     const handler = (_: any, p: any) => cb(p);
     ipcRenderer.on('claude:stream', handler);

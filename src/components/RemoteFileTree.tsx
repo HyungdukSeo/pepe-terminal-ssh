@@ -1,6 +1,9 @@
 // src/components/RemoteFileTree.tsx
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { FixedSizeList as VList, ListChildComponentProps } from 'react-window';
 import { subscribePwdChange, isTermPty, subscribeConnectedChange } from './TerminalPanel';
+
+const ROW_HEIGHT = 22; // App.css 의 .remote-file-item height 와 동기
 
 // 확장자 → 카테고리. CSS 에서 data-cat 으로 색상 매칭.
 const EXT_CAT: Record<string, string> = {
@@ -312,7 +315,38 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
     return result;
   }, [root, collapsed]);
 
-  const renderNode = (node: TreeNode, depth: number): React.ReactNode => {
+  // 펼쳐진 노드를 평탄화 (가상화 렌더용)
+  const flatNodes = useMemo<{ node: TreeNode; depth: number }[]>(() => {
+    const out: { node: TreeNode; depth: number }[] = [];
+    const walk = (n: TreeNode, d: number) => {
+      out.push({ node: n, depth: d });
+      if (n.isDir && !collapsed.has(n.path) && n.children) {
+        for (const c of n.children) walk(c, d + 1);
+      }
+    };
+    if (root?.children) for (const c of root.children) walk(c, 0);
+    return out;
+  }, [root, collapsed]);
+
+  const treeListRef = useRef<HTMLDivElement | null>(null);
+  const vlistRef = useRef<VList | null>(null);
+  const treeRoRef = useRef<ResizeObserver | null>(null);
+  const [listHeight, setListHeight] = useState(400);
+  // callback ref — 컴포넌트가 초기엔 loading 분기로 다른 DOM 을 렌더하므로 useEffect([]) 로는
+  // listRef.current 가 null 인 채로 한 번만 실행되고 끝남. element attach 시점에 observer 등록.
+  const setTreeListRef = useCallback((el: HTMLDivElement | null) => {
+    treeListRef.current = el;
+    if (treeRoRef.current) { treeRoRef.current.disconnect(); treeRoRef.current = null; }
+    if (!el) return;
+    const update = () => setListHeight(el.clientHeight || 400);
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    treeRoRef.current = ro;
+    update();
+  }, []);
+  useEffect(() => () => { treeRoRef.current?.disconnect(); }, []);
+
+  const renderNode = (node: TreeNode, depth: number, style?: React.CSSProperties): React.ReactNode => {
     const isCollapsed = collapsed.has(node.path);
     const cat = node.isDir ? 'dir' : fileCategory(node.name);
     const isSelected = !node.isDir && selectedPaths.has(node.path);
@@ -322,7 +356,7 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
           className={`remote-file-item ${node.isDir ? 'folder' : 'file'} ${isSelected ? 'selected' : ''}`}
           data-cat={cat}
           data-path={node.path}
-          style={{ paddingLeft: 8 + depth * 14 }}
+          style={{ ...(style || {}), paddingLeft: 8 + depth * 14 }}
           onClick={(e) => {
             if (node.isDir) {
               // 폴더는 기존처럼 단일 클릭으로 확장/축소
@@ -376,7 +410,6 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
           <span className="remote-file-icon">{node.isDir ? '📁' : CAT_ICON[cat] || '📄'}</span>
           <span className="remote-file-name">{node.name}</span>
         </div>
-        {node.isDir && !isCollapsed && node.children && node.children.map(c => renderNode(c, depth + 1))}
       </React.Fragment>
     );
   };
@@ -443,33 +476,37 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
       <div
         className="remote-file-list"
         tabIndex={0}
+        ref={setTreeListRef}
         onKeyDown={e => {
           if (e.key.length !== 1 || e.ctrlKey || e.altKey || e.metaKey) return;
-          // 현재 펼쳐진 가시적 노드 flatten
-          const flat: TreeNode[] = [];
-          const walk = (n: TreeNode, depth: number) => {
-            if (depth > 0) flat.push(n);
-            if (n.isDir && !collapsed.has(n.path) && n.children) for (const c of n.children) walk(c, depth + 1);
-          };
-          if (root) walk(root, 0);
           const ch = e.key.toLowerCase();
-          const curIdx = flat.findIndex(n => selectedPaths.has(n.path));
-          for (let i = 1; i <= flat.length; i++) {
-            const idx = (curIdx + i) % flat.length;
-            if (flat[idx].name.toLowerCase().startsWith(ch)) {
+          const curIdx = flatNodes.findIndex(({ node: n }) => selectedPaths.has(n.path));
+          for (let i = 1; i <= flatNodes.length; i++) {
+            const idx = (curIdx + i) % flatNodes.length;
+            if (flatNodes[idx].node.name.toLowerCase().startsWith(ch)) {
               e.preventDefault();
-              setSelectedPaths(new Set([flat[idx].path]));
-              anchorPathRef.current = flat[idx].path;
-              setTimeout(() => {
-                const el = document.querySelector(`.remote-file-item[data-path="${CSS.escape(flat[idx].path)}"]`) as HTMLElement | null;
-                el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-              }, 0);
+              setSelectedPaths(new Set([flatNodes[idx].node.path]));
+              anchorPathRef.current = flatNodes[idx].node.path;
+              try { vlistRef.current?.scrollToItem(idx, 'smart'); } catch {}
               break;
             }
           }
         }}
       >
-        {root.children && root.children.map(c => renderNode(c, 0))}
+        <VList
+          ref={vlistRef}
+          height={listHeight}
+          width="100%"
+          itemCount={flatNodes.length}
+          itemSize={ROW_HEIGHT}
+          overscanCount={10}
+        >
+          {({ index, style }: ListChildComponentProps) => {
+            const entry = flatNodes[index];
+            if (!entry) return null;
+            return renderNode(entry.node, entry.depth, style) as React.ReactElement;
+          }}
+        </VList>
       </div>
       {ctxMenu && (() => {
         // 다중 선택 상태 감지 — 현재 우클릭 대상이 선택 집합에 포함돼 있고, 크기 > 1 일 때
