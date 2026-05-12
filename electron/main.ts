@@ -216,12 +216,16 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
+  // 단일 윈도우 앱 — macOS 에서도 마지막 창 닫히면 완전 종료 (activate 핸들러 없어 dock 클릭으로 복귀 불가).
+  app.quit();
 });
 
-// 앱 종료 직전 — 띄워놓은 모든 VcXsrv/embedded X 서버 정리
+// 앱 종료 직전 — 띄워놓은 모든 VcXsrv/embedded X 서버 + 활성 SSH 세션 정리.
+// PTY/Claude 자식 프로세스 정리는 파일 하단에서 추가 등록 (Map 선언 후).
+// WebDAV 는 별도 종료 API 가 없지만 SSH 끊으면 의존 스트림이 모두 close.
 app.on('before-quit', () => {
   try { stopAllBundledX11(); } catch {}
+  try { getSSHBridge().disconnectAll(); } catch {}
 });
 
 // 앱 시작 5초 후 비동기로 session-* 정리 (시작 속도에 영향 없음)
@@ -1767,6 +1771,22 @@ ipcMain.handle('ssh:get-encoding', (_e, panelId: string) => {
 
 // ── Local Shell (node-pty) ──
 const ptyProcesses = new Map<string, pty.IPty>();
+
+// 앱 종료 직전 — PTY/Claude 자식 프로세스 일괄 정리. (SSH/X11 정리는 위쪽 핸들러)
+app.on('before-quit', () => {
+  for (const proc of ptyProcesses.values()) { try { proc.kill(); } catch {} }
+  ptyProcesses.clear();
+  for (const proc of claudeProcesses.values()) {
+    try {
+      if (process.platform === 'win32') {
+        require('child_process').spawn('taskkill', ['/pid', String(proc.pid), '/T', '/F']);
+      } else {
+        proc.kill('SIGTERM');
+      }
+    } catch {}
+  }
+  claudeProcesses.clear();
+});
 
 let shellsCache: { name: string; path: string; icon?: string }[] | null = null;
 ipcMain.handle('pty:list-shells', async () => {

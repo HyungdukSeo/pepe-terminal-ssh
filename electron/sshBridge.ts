@@ -629,6 +629,12 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
     this.lastCwd.delete(panelId);
   }
 
+  // 앱 종료 시 — 모든 SSH 연결을 일괄 종료. 비차단(fire-and-forget).
+  disconnectAll() {
+    for (const panelId of [...this.clients.keys()]) this.handleDisconnect(panelId);
+    for (const panelId of [...this.pendingConnects.keys()]) this.handleDisconnect(panelId);
+  }
+
   // ── SFTP ──
 
   public getSftp(panelId: string): Promise<any> {
