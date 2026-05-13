@@ -193,10 +193,13 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
       if (row.status !== 'right-only') tasks.push(api.compareRead?.(leftSrc.mode, joinL, leftSrc.termId)); else tasks.push(Promise.resolve({ content: '' }));
       if (row.status !== 'left-only') tasks.push(api.compareRead?.(rightSrc.mode, joinR, rightSrc.termId)); else tasks.push(Promise.resolve({ content: '' }));
       const [l, r] = await Promise.all(tasks);
+      // EOL 정규화 — Mac 전용 (로컬 LF vs SFTP CRLF mismatch 회피).
+      const isMac = (typeof navigator !== 'undefined') && /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || '');
+      const normEol = (s: string) => isMac ? s.replace(/\r\n?/g, '\n') : s;
       if (l?.error) setContentErr(t('sourceReadFail', { error: l.error }));
-      else { setLeftContent(l?.content ?? ''); setLeftOriginal(l?.content ?? ''); }
+      else { const c = normEol(l?.content ?? ''); setLeftContent(c); setLeftOriginal(c); }
       if (r?.error) setContentErr((prev) => prev ? prev + ' / ' + t('targetReadFail', { error: r.error }) : t('targetReadFail', { error: r.error }));
-      else { setRightContent(r?.content ?? ''); setRightOriginal(r?.content ?? ''); }
+      else { const c = normEol(r?.content ?? ''); setRightContent(c); setRightOriginal(c); }
     } catch (err: any) {
       setContentErr(String(err?.message || err));
     } finally {
