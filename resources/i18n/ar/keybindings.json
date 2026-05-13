@@ -1,0 +1,104 @@
+{
+  "title": "⌨ قائمة اختصارات لوحة المفاتيح",
+  "close": "إغلاق (Esc)",
+  "searchPlaceholder": "🔍 ابحث عن الاختصارات أو الإجراءات...",
+  "noMatch": "لا توجد اختصارات مطابقة.",
+  "none": "(لا شيء)",
+  "groups": {
+    "custom": "اختصارات قابلة للتخصيص",
+    "fixed": "اختصارات ثابتة",
+    "minitab": "Minitab",
+    "terminal": "الطرفية",
+    "fileTree": "شجرة الملفات / التحرير عن بُعد",
+    "claude": "محادثة Claude",
+    "broadcast": "البث",
+    "quickConnect": "شريط الاتصال السريع"
+  },
+  "labels": {
+    "fullscreen": "تبديل ملء الشاشة",
+    "splitSessionV": "تقسيم أفقي لجلسة فارغة (يسار/يمين)",
+    "splitSessionH": "تقسيم رأسي لجلسة فارغة (أعلى/أسفل)",
+    "nextTab": "Minitab التالي",
+    "prevTab": "Minitab السابق",
+    "cloneSplitV": "تقسيم أفقي للجلسة (يسار/يمين)",
+    "cloneSplitH": "تقسيم رأسي للجلسة (أعلى/أسفل)",
+    "find": "بحث",
+    "clearScrollback": "مسح سجل التمرير",
+    "clearScreen": "مسح الشاشة",
+    "clearAll": "مسح الكل",
+    "toggleFileTree": "تبديل شجرة الملفات",
+    "copy": "نسخ (التحديد → الحافظة)",
+    "paste": "لصق (الحافظة → الطرفية)",
+    "selectAll": "تحديد الكل",
+    "diffPrevHunk": "مقارنة الملفات: المقطع السابق",
+    "diffNextHunk": "مقارنة الملفات: المقطع التالي",
+    "diffApplyLeft": "مقارنة الملفات: تطبيق الهدف → المصدر",
+    "diffApplyRight": "مقارنة الملفات: تطبيق المصدر → الهدف"
+  },
+  "fixed": {
+    "minitabSwitch": "تبديل Minitab",
+    "fullscreen": "تبديل ملء الشاشة للطرفية الحالية",
+    "scrollBottom": "التمرير إلى الأسفل",
+    "fontSize": "ضبط حجم الخط",
+    "wheelSuffix": "+عجلة الماوس",
+    "rename": "إعادة تسمية",
+    "middleClick": "النقر الأوسط",
+    "closeTab": "إغلاق علامة التبويب",
+    "moveOrder": "نقل ترتيب الجلسة/المجلد"
+  },
+  "minitab": {
+    "shellSelector": "اختيار الـ shell (PowerShell، CMD، Git Bash، إلخ.)",
+    "rightClick": "إعادة تسمية / تكرار الجلسة / إغلاق",
+    "wheel": "تمرير أفقي (أزرار ‹ ›)",
+    "shellBtn": "زر ∨",
+    "rightClickKey": "النقر بالزر الأيمن",
+    "wheelKey": "تمرير العجلة"
+  },
+  "terminal": {
+    "rightClick": "نسخ / لصق / بحث / خط / ترميز / مسح الشاشة، إلخ.",
+    "dblClickSession": "اتصال",
+    "rightClickKey": "النقر بالزر الأيمن",
+    "dblClickKey": "نقر مزدوج (جلسة)"
+  },
+  "fileTree": {
+    "dblClickFile": "فتح في علامة تبويب المحرر",
+    "multiSelect": "تحديد متعدد (تنزيل جماعي)",
+    "rightClick": "إرفاق بـ Claude / نسخ المسار / حذف",
+    "refresh": "تحديث المسار الحالي",
+    "pin": "تبديل التثبيت / الإخفاء التلقائي لشجرة الملفات",
+    "resize": "ضبط العرض",
+    "save": "حفظ",
+    "dblClickKey": "نقر مزدوج على الملف",
+    "rightClickKey": "النقر بالزر الأيمن",
+    "resizeKey": "سحب الحد الأيسر",
+    "saveKeySuffix": " (المحرر)"
+  },
+  "claude": {
+    "triggerHover": "توسيع الشريط الجانبي (وضع إلغاء التثبيت)",
+    "pin": "تبديل التثبيت / الإخفاء التلقائي للشريط الجانبي",
+    "resize": "ضبط العرض (نقر مزدوج = افتراضي)",
+    "slashPalette": "لوحة أوامر الشرطة المائلة (↑↓ للتنقل، Enter للتشغيل، Esc للإغلاق)",
+    "attach": "إرفاق ملف / مجلد محلي",
+    "fontSize": "ضبط حجم خط المحادثة",
+    "send": "إرسال، {{newline}} = سطر جديد",
+    "clear": "مسح المحادثة + السياق",
+    "triggerHoverKey": "تمرير فوق منطقة 🤖",
+    "resizeKey": "سحب الحد الأيسر",
+    "slashKey": "زر /",
+    "attachKey": "📄+ / 📁+",
+    "fontKey": "+العجلة",
+    "sendKey": "Enter (الإدخال)",
+    "clearKey": "🗑"
+  },
+  "broadcast": {
+    "send": "إرسال نص",
+    "signal": "إرسال إشارة ^C / ^D",
+    "history": "التنقل في السجل / قائمة الجلسات المنسدلة",
+    "escClose": "يغلق القائمة المنسدلة للسجل فقط (يبقى الشريط)"
+  },
+  "quickConnect": {
+    "connect": "اتصال",
+    "esc": "متجاهَل (الإغلاق عبر ✕ فقط)"
+  },
+  "duplicateWarn": "\"{{combo}}\" مُعيَّن بالفعل لـ \"{{dupLabel}}\"."
+}

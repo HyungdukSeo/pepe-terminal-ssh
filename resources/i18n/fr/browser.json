@@ -1,0 +1,12 @@
+{
+  "back": "Retour",
+  "forward": "Suivant",
+  "stop": "Arrêter",
+  "refresh": "Actualiser",
+  "urlPlaceholder": "URL ou recherche",
+  "go": "OK",
+  "zoomOut": "Zoom arrière (Ctrl+-)",
+  "zoomReset": "100% (Ctrl+0)",
+  "zoomIn": "Zoom avant (Ctrl+=)",
+  "devTools": "DevTools"
+}

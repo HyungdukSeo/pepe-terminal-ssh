@@ -1,0 +1,68 @@
+{
+  "file": {
+    "title": "File",
+    "newWorkspace": "➕ New workspace",
+    "closeWorkspace": "✖ Close workspace",
+    "exportSessions": "📤 Export sessions...",
+    "importSessions": "📥 Import sessions...",
+    "quit": "🚪 Quit",
+    "importedToast": "Imported {{added}} sessions (of {{total}} parsed)",
+    "importedToastSimple": "Sessions imported."
+  },
+  "edit": {
+    "title": "Edit",
+    "copy": "📋 Copy",
+    "paste": "📎 Paste",
+    "selectAll": "🔘 Select all",
+    "find": "🔍 Find"
+  },
+  "view": {
+    "title": "View",
+    "theme": "🎨 Theme",
+    "fontSizeUp": "Font size +",
+    "fontSizeDown": "Font size -",
+    "wheelUp": "Ctrl+Wheel up",
+    "wheelDown": "Ctrl+Wheel down"
+  },
+  "window": {
+    "title": "Window",
+    "splitH": "Split horizontally (left/right)",
+    "splitV": "Split vertically (top/bottom)",
+    "clearScreen": "Clear screen",
+    "clearScrollback": "🗑 Clear scrollback",
+    "clearAll": "🧼 Clear all"
+  },
+  "tools": {
+    "title": "Tools",
+    "fileTransfer": "📁 File transfer",
+    "toolbarShow": "🧰 Show toolbar",
+    "toolbarHide": "🧰 Hide toolbar",
+    "quickConnectShow": "⚡ Show quick-connect bar",
+    "quickConnectHide": "⚡ Hide quick-connect bar",
+    "claudeShow": "🤖 Show Claude chat",
+    "claudeHide": "🤖 Hide Claude chat",
+    "broadcastShow": "📢 Show broadcast bar",
+    "broadcastHide": "📢 Hide broadcast bar",
+    "xStart": "🖥️ Start X server (DISPLAY=:0)",
+    "xStop": "🛑 Stop X server",
+    "xStatus": "ℹ️ X server status",
+    "xStartTitle": "Start X server",
+    "xStartFail": "Failed to start X server",
+    "xStartOk": "✅ DISPLAY=:0  PID={{pid}}",
+    "xStartNoBundle": "⚠️ Bundled/external X server not used",
+    "xStopTitle": "Stop X server",
+    "xStopOk": "✅ Stopped.",
+    "xStopFail": "Failed to stop X server",
+    "xStatusTitle": "X server status",
+    "xStatusRunning": "🟢 Running",
+    "xStatusNone": "⚫ No X server running.",
+    "xStatusFail": "Failed to query X server status",
+    "options": "⚙ Options..."
+  },
+  "help": {
+    "title": "Help",
+    "manual": "📖 Manual...",
+    "keybindings": "⌨ Keybindings",
+    "about": "ℹ PePe Terminal(SSH) info"
+  }
+}

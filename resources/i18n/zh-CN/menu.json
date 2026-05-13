@@ -1,0 +1,68 @@
+{
+  "file": {
+    "title": "文件",
+    "newWorkspace": "➕ 新建工作区",
+    "closeWorkspace": "✖ 关闭工作区",
+    "exportSessions": "📤 导出会话...",
+    "importSessions": "📥 导入会话...",
+    "quit": "🚪 退出",
+    "importedToast": "已导入 {{added}} 个会话(共解析 {{total}} 个)",
+    "importedToastSimple": "会话已导入。"
+  },
+  "edit": {
+    "title": "编辑",
+    "copy": "📋 复制",
+    "paste": "📎 粘贴",
+    "selectAll": "🔘 全选",
+    "find": "🔍 查找"
+  },
+  "view": {
+    "title": "视图",
+    "theme": "🎨 主题",
+    "fontSizeUp": "字号 +",
+    "fontSizeDown": "字号 -",
+    "wheelUp": "Ctrl+滚轮向上",
+    "wheelDown": "Ctrl+滚轮向下"
+  },
+  "window": {
+    "title": "窗口",
+    "splitH": "水平拆分(左/右)",
+    "splitV": "垂直拆分(上/下)",
+    "clearScreen": "清屏",
+    "clearScrollback": "🗑 清除回滚缓冲",
+    "clearAll": "🧼 全部清除"
+  },
+  "tools": {
+    "title": "工具",
+    "fileTransfer": "📁 文件传输",
+    "toolbarShow": "🧰 显示工具栏",
+    "toolbarHide": "🧰 隐藏工具栏",
+    "quickConnectShow": "⚡ 显示快速连接栏",
+    "quickConnectHide": "⚡ 隐藏快速连接栏",
+    "claudeShow": "🤖 显示 Claude 聊天",
+    "claudeHide": "🤖 隐藏 Claude 聊天",
+    "broadcastShow": "📢 显示广播栏",
+    "broadcastHide": "📢 隐藏广播栏",
+    "xStart": "🖥️ 启动 X 服务器 (DISPLAY=:0)",
+    "xStop": "🛑 停止 X 服务器",
+    "xStatus": "ℹ️ X 服务器状态",
+    "xStartTitle": "启动 X 服务器",
+    "xStartFail": "启动 X 服务器失败",
+    "xStartOk": "✅ DISPLAY=:0  PID={{pid}}",
+    "xStartNoBundle": "⚠️ 未使用内置/外部 X 服务器",
+    "xStopTitle": "停止 X 服务器",
+    "xStopOk": "✅ 已停止。",
+    "xStopFail": "停止 X 服务器失败",
+    "xStatusTitle": "X 服务器状态",
+    "xStatusRunning": "🟢 运行中",
+    "xStatusNone": "⚫ 未运行 X 服务器。",
+    "xStatusFail": "查询 X 服务器状态失败",
+    "options": "⚙ 选项..."
+  },
+  "help": {
+    "title": "帮助",
+    "manual": "📖 手册...",
+    "keybindings": "⌨ 快捷键",
+    "about": "ℹ PePe Terminal(SSH) 信息"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "addWorkspace": "Nouvel espace",
+  "addTooltip": "Nouvel espace (Terminal/Navigateur)",
+  "terminalWorkspace": "💻 Espace terminal",
+  "browserWorkspace": "🌐 Espace navigateur",
+  "compareWorkspace": "🔍 Espace de comparaison de fichiers",
+  "logAnalyzerWorkspace": "📊 Espace d'analyse des journaux",
+  "vpnWorkspace": "🔒 Espace VPN",
+  "translationEditor": "📝 Espace de langue",
+  "shellSelect": "Sélectionner le shell",
+  "scrollPrev": "Précédent",
+  "scrollNext": "Suivant",
+  "renameContext": "Renommer",
+  "closeContext": "Fermer",
+  "workspace": "Espace de travail",
+  "i18nWorkspace": "🌐 Espace de localisation",
+  "fileTransferTab": "📁 Transfert de fichiers",
+  "workspaceN": "Espace de travail {{n}}"
+}

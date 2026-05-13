@@ -1,5 +1,6 @@
 // src/components/RemoteFileTree.tsx
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { FixedSizeList as VList, ListChildComponentProps } from 'react-window';
 import { subscribePwdChange, isTermPty, subscribeConnectedChange } from './TerminalPanel';
 
@@ -81,6 +82,7 @@ type Props = {
 };
 
 export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId, initialPath: initialPathProp, onOpenFile, onAttachToClaude }) => {
+  const { t } = useTranslation('fileExplorer');
   // mode: 'local' (PTY 로컬 셸) or 'remote' (SSH/SFTP)
   // sessionId 가 있으면 SSH, 없거나 PTY 가 활성이면 local
   const [mode, setMode] = useState<'local' | 'remote'>(() => (sessionId ? 'remote' : (isTermPty(termId) ? 'local' : 'remote')));
@@ -414,11 +416,11 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
     );
   };
 
-  if (!root) return <div className="remote-file-loading">로딩 중...</div>;
+  if (!root) return <div className="remote-file-loading">{t('loading')}</div>;
 
   const openFilePrompt = () => {
     setPromptModal({
-      title: '파일 열기',
+      title: t('remoteFileOpen'),
       value: root?.path ? (root.path.endsWith('/') ? root.path : root.path + '/') : '/',
       onSubmit: (filePath) => {
         if (!filePath.trim()) return;
@@ -430,7 +432,7 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
 
   const openFolderPrompt = () => {
     setPromptModal({
-      title: '폴더 열기',
+      title: t('remoteFolderOpen'),
       value: root?.path || '/',
       onSubmit: (folderPath) => {
         if (!folderPath.trim()) return;
@@ -444,8 +446,8 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
       <div className="remote-file-header">
         <span>🔌 {sessionName}</span>
         <div className="remote-file-header-actions">
-          <button className="remote-file-action-btn" onClick={openFilePrompt} title="파일 열기...">📄</button>
-          <button className="remote-file-action-btn" onClick={openFolderPrompt} title="폴더 열기...">📁</button>
+          <button className="remote-file-action-btn" onClick={openFilePrompt} title={t('remoteFileOpen')}>📄</button>
+          <button className="remote-file-action-btn" onClick={openFolderPrompt} title={t('remoteFolderOpen')}>📁</button>
         </div>
       </div>
       <div className="remote-file-path-bar">
@@ -457,9 +459,9 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
             if (e.key === 'Enter') { e.preventDefault(); navigateTo(pathInput); }
           }}
           placeholder="/path/to/folder"
-          title="Enter로 이동"
+          title={t('remoteFilePromptHint')}
         />
-        <button className="remote-file-path-go" onClick={() => navigateTo(pathInput)} title="이동">↵</button>
+        <button className="remote-file-path-go" onClick={() => navigateTo(pathInput)} title={t('remoteFileGo')}>↵</button>
         <button className="remote-file-path-up" onClick={async () => {
           if (!root) return;
           try {
@@ -467,11 +469,11 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
             const r = await (window as any).api?.sftpUpload?.(termId, root.path, 'multi-file');
             if (r?.success) navigateTo(root.path);
           } catch {}
-        }} title="현재 경로에 파일 업로드 (다중선택)">⬆</button>
+        }} title={t('uploadHere')}>⬆</button>
         <button className="remote-file-path-home" onClick={() => {
           if (!root) return;
           navigateTo(root.path);
-        }} title="새로고침 (현재 경로 다시 로드)">⟳</button>
+        }} title={t('refreshLoadAgain')}>⟳</button>
       </div>
       <div
         className="remote-file-list"
@@ -520,7 +522,7 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
         >
           {isMultiContext ? (
             <>
-              <div className="context-menu-label">{selectedPaths.size}개 파일 선택됨</div>
+              <div className="context-menu-label">{t('selectedFilesCount', { count: selectedPaths.size })}</div>
               <div className="remote-file-ctx-item" onClick={async () => {
                 const items = [...selectedPaths].map(p => ({ path: p, isDir: false }));
                 setCtxMenu(null);
@@ -528,11 +530,11 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
                   await (window as any).api?.sftpDownloadMulti?.(termId, items);
                 } catch {}
-              }}>💾 여러 파일 다운로드 ({selectedPaths.size}개)</div>
+              }}>{t('downloadMultiple', { count: selectedPaths.size })}</div>
               <div className="remote-file-ctx-item danger" onClick={async () => {
                 const paths = [...selectedPaths];
                 setCtxMenu(null);
-                if (!confirm(`${paths.length}개 파일을 삭제하시겠습니까?\n\n${paths.slice(0, 10).join('\n')}${paths.length > 10 ? `\n... (+${paths.length - 10}개)` : ''}`)) return;
+                if (!confirm(t('deleteMultiConfirm', { count: paths.length, names: paths.slice(0, 10).join('\n') + (paths.length > 10 ? `\n... (+${paths.length - 10})` : '') }))) return;
                 let ok = 0, fail = 0;
                 for (const p of paths) {
                   try {
@@ -541,14 +543,14 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
                     if (r?.success) ok++; else fail++;
                   } catch { fail++; }
                 }
-                if (fail > 0) alert(`삭제 결과: 성공 ${ok}, 실패 ${fail}`);
+                if (fail > 0) alert(t('deleteResult', { ok, fail }));
                 setSelectedPaths(new Set());
                 if (root) navigateTo(root.path);
-              }}>🗑 여러 파일 삭제 ({selectedPaths.size}개)</div>
+              }}>{t('deleteMultiple', { count: selectedPaths.size })}</div>
               <div className="remote-file-ctx-item" onClick={() => {
                 setSelectedPaths(new Set());
                 setCtxMenu(null);
-              }}>❎ 선택 해제</div>
+              }}>{t('deselect')}</div>
             </>
           ) : (
             <>
@@ -556,13 +558,13 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
             <div className="remote-file-ctx-item" onClick={() => {
               onOpenFile(termId, ctxMenu.node.path, ctxMenu.node.name);
               setCtxMenu(null);
-            }}>📖 파일 열기</div>
+            }}>{t('openFileMenu')}</div>
           )}
           {ctxMenu.node.isDir && (
             <div className="remote-file-ctx-item" onClick={() => {
               navigateTo(ctxMenu.node.path);
               setCtxMenu(null);
-            }}>📂 이 폴더로 이동</div>
+            }}>{t('openFolderMenu')}</div>
           )}
           <div className="remote-file-ctx-item" onClick={async () => {
             const node = ctxMenu.node;
@@ -571,7 +573,7 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               await (window as any).api?.sftpDownload?.(termId, node.path, node.isDir);
             } catch {}
-          }}>💾 다운로드{ctxMenu.node.isDir ? ' (폴더 재귀)' : ''}</div>
+          }}>{t('downloadMenu')}{ctxMenu.node.isDir ? t('downloadRecursive') : ''}</div>
           {ctxMenu.node.isDir && (
             <>
               <div className="remote-file-ctx-item" onClick={async () => {
@@ -582,7 +584,7 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
                   const r = await (window as any).api?.sftpUpload?.(termId, node.path, 'file');
                   if (r?.success) navigateTo(node.path);
                 } catch {}
-              }}>📥 파일 업로드</div>
+              }}>{t('uploadFileMenu')}</div>
               <div className="remote-file-ctx-item" onClick={async () => {
                 const node = ctxMenu.node;
                 setCtxMenu(null);
@@ -591,7 +593,7 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
                   const r = await (window as any).api?.sftpUpload?.(termId, node.path, 'multi-file');
                   if (r?.success) navigateTo(node.path);
                 } catch {}
-              }}>📥 파일 업로드 (다중선택)</div>
+              }}>{t('uploadFileMulti')}</div>
               <div className="remote-file-ctx-item" onClick={async () => {
                 const node = ctxMenu.node;
                 setCtxMenu(null);
@@ -600,39 +602,39 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
                   const r = await (window as any).api?.sftpUpload?.(termId, node.path, 'folder');
                   if (r?.success) navigateTo(node.path);
                 } catch {}
-              }}>📁 폴더 업로드 (재귀)</div>
+              }}>{t('uploadFolder')}</div>
             </>
           )}
           {onAttachToClaude && (
             <div className="remote-file-ctx-item claude" onClick={() => {
               onAttachToClaude(termId, ctxMenu.node.path, ctxMenu.node.name, ctxMenu.node.isDir);
               setCtxMenu(null);
-            }}>🤖 Claude에 첨부{ctxMenu.node.isDir ? ' (폴더 재귀)' : ''}</div>
+            }}>{t('attachClaudeMenu')}{ctxMenu.node.isDir ? t('downloadRecursive') : ''}</div>
           )}
           <div className="remote-file-ctx-item" onClick={async () => {
             try {
               await navigator.clipboard.writeText(ctxMenu.node.path);
             } catch {}
             setCtxMenu(null);
-          }}>📋 경로 복사</div>
+          }}>{t('copyPathMenu')}</div>
           <div className="remote-file-ctx-item danger" onClick={async () => {
             const node = ctxMenu.node;
             setCtxMenu(null);
-            const kind = node.isDir ? '폴더(재귀)' : '파일';
-            if (!confirm(`${kind}을(를) 삭제하시겠습니까?\n\n${node.path}`)) return;
+            const kind = node.isDir ? t('kindFolder') : t('kindFile');
+            if (!confirm(t('deleteConfirmRecursive', { kind, path: node.path }))) return;
             try {
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               const r = await (window as any).api?.feDelete?.(mode, node.path, termId);
               if (!r?.success) {
-                alert(`삭제 실패: ${r?.error || '알 수 없는 오류'}`);
+                alert(t('deleteFailUnknown', { err: r?.error || t('unknownError') }));
                 return;
               }
               // 삭제된 노드의 부모 경로를 다시 로드
               if (root) navigateTo(root.path);
             } catch (err: any) {
-              alert(`삭제 실패: ${err?.message || err}`);
+              alert(t('deleteFailUnknown', { err: err?.message || err }));
             }
-          }}>🗑 삭제{ctxMenu.node.isDir ? ' (폴더 재귀)' : ''}</div>
+          }}>{t('deleteMenu')}{ctxMenu.node.isDir ? t('downloadRecursive') : ''}</div>
             </>
           )}
         </div>
@@ -654,8 +656,8 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
               placeholder="/path/to/..."
             />
             <div className="path-prompt-actions">
-              <button onClick={() => setPromptModal(null)}>취소</button>
-              <button className="primary" onClick={() => { promptModal.onSubmit(promptModal.value); setPromptModal(null); }}>확인</button>
+              <button onClick={() => setPromptModal(null)}>{t('cancel')}</button>
+              <button className="primary" onClick={() => { promptModal.onSubmit(promptModal.value); setPromptModal(null); }}>{t('confirm')}</button>
             </div>
           </div>
         </div>

@@ -1,0 +1,67 @@
+{
+  "title": "옵션",
+  "dragToMove": "드래그하여 이동",
+  "tabs": {
+    "terminal": "터미널",
+    "session": "세션",
+    "keybindings": "단축키"
+  },
+  "clipboard": {
+    "heading": "클립보드",
+    "autoCopyOnSelect": "선택한 텍스트를 자동으로 클립보드에 복사",
+    "includeTrailingNewline": "선택 영역 복사 시 마지막 줄 바꿈 문자 포함",
+    "trimTrailingWhitespace": "복사 시 문자 뒤의 공백 제거하기"
+  },
+  "paste": {
+    "heading": "붙여넣기",
+    "multiLineNote": "여러 줄을 붙여넣는 경우:",
+    "dialog": "여러 줄 붙여넣기 대화 상자 열기",
+    "direct": "터미널에 바로 붙여넣기"
+  },
+  "font": {
+    "heading": "글꼴",
+    "defaultLabel": "기본 (Cascadia Mono)",
+    "size": "글꼴 크기",
+    "claudeHeading": "Claude 채팅창 글꼴",
+    "claudeHint": "터미널과 독립 설정. 채팅창에서 Ctrl+휠로도 크기 조절.",
+    "claudeDefaultLabel": "기본 (시스템 UI 폰트)",
+    "claudeSize": "Claude 채팅창 글꼴 크기"
+  },
+  "scrollback": {
+    "heading": "스크롤백 버퍼(줄 수)",
+    "hint": "터미널 세션이 보관할 과거 출력 라인 수 (기본: 10000)"
+  },
+  "defaultShell": {
+    "heading": "기본 로컬 쉘"
+  },
+  "wordSeparator": {
+    "heading": "단어 구분 기호",
+    "hint": "더블클릭 시 단어 선택을 끊는 문자"
+  },
+  "sessionsPath": {
+    "heading": "세션 저장 경로",
+    "unknown": "(알 수 없음)",
+    "open": "경로 열기",
+    "change": "경로 변경...",
+    "reset": "기본값으로 초기화",
+    "editFile": "파일 편집"
+  },
+  "contextMenu": {
+    "heading": "탐색기 우클릭 메뉴",
+    "hint": "Windows 탐색기에서 우클릭 시 \"Open PePe Terminal here\" 메뉴를 표시합니다.",
+    "register": "등록",
+    "unregister": "해제",
+    "registered": "● 등록됨",
+    "notRegistered": "○ 미등록"
+  },
+  "keybindings": {
+    "pressKey": "키를 누르세요...",
+    "cancel": "취소",
+    "change": "변경",
+    "reset": "초기화"
+  },
+  "actions": {
+    "cancel": "취소",
+    "save": "저장"
+  }
+}

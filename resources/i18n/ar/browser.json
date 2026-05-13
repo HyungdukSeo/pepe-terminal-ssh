@@ -1,0 +1,12 @@
+{
+  "back": "رجوع",
+  "forward": "تقدم",
+  "stop": "إيقاف",
+  "refresh": "تحديث",
+  "urlPlaceholder": "الرابط أو كلمة البحث",
+  "go": "انتقال",
+  "zoomOut": "تصغير (Ctrl+-)",
+  "zoomReset": "100% (Ctrl+0)",
+  "zoomIn": "تكبير (Ctrl+=)",
+  "devTools": "أدوات المطور"
+}

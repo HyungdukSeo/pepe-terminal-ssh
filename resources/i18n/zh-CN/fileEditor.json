@@ -1,0 +1,12 @@
+{
+  "binaryNotEditable": "二进制文件无法编辑。",
+  "cannotRead": "无法读取文件。",
+  "tooLarge": "文件过大（{{size}}MB > 5MB）。",
+  "loading": "正在加载文件...",
+  "saved": "已保存",
+  "saveError": "保存失败：{{error}}",
+  "unknownError": "未知错误",
+  "analyzeWithClaude": "使用 Claude 分析",
+  "saving": "保存中...",
+  "saveBtn": "保存 (Ctrl+S)"
+}

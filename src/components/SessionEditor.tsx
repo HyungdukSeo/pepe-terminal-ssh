@@ -1,5 +1,6 @@
 // src/components/SessionEditor.tsx
 import React, { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { getThemeList, getThemeByName } from '../utils/terminalThemes';
 import { getAvailableMonoFonts } from '../utils/monoFonts';
 import { isValidHost, normalizeHost } from '../utils/hostValidate';
@@ -59,6 +60,7 @@ type Props = {
 };
 
 export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, onCancel, onSaveAndConnect }) => {
+  const { t } = useTranslation('sessionEditor');
   const [id] = useState(session?.id ?? `sess-${Date.now()}`);
   const [name, setName] = useState(session?.name ?? 'New Session');
   const [host, setHost] = useState(session?.host ?? '');
@@ -158,8 +160,8 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
   };
 
   const buildSession = (): Session | null => {
-    if (!host || !username) { setSaveError('Host and username are required'); return null; }
-    if (!isValidHost(host)) { setSaveError('유효한 IPv4/IPv6 또는 호스트명을 입력하세요.'); return null; }
+    if (!host || !username) { setSaveError(t('errors.hostUserRequired')); return null; }
+    if (!isValidHost(host)) { setSaveError(t('errors.invalidHost')); return null; }
     setSaveError('');
     const auth = authType === 'password' ? { type: 'password', password } : { type: 'key', keyPath };
     const script = loginScript.filter(r => r.expect.trim() !== '' || r.send.trim() !== '');
@@ -203,22 +205,22 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
 
   // 카테고리 트리 정의
   const categories: { id: string; label: string; depth: number }[] = [
-    { id: 'connection', label: '연결', depth: 0 },
-    { id: 'auth', label: '사용자 인증', depth: 1 },
-    { id: 'jump', label: 'SSH 점프', depth: 1 },
-    { id: 'login-script', label: '로그인 스크립트', depth: 1 },
-    { id: 'terminal', label: '터미널', depth: 0 },
-    { id: 'appearance', label: '모양', depth: 1 },
-    { id: 'advanced', label: '고급', depth: 0 },
-    { id: 'filetree', label: '파일 트리', depth: 1 },
-    { id: 'x11', label: 'X11 forwarding', depth: 1 },
-    { id: 'dbms', label: 'DBMS (SQL Tool)', depth: 1 },
+    { id: 'connection', label: t('categories.connection'), depth: 0 },
+    { id: 'auth', label: t('categories.auth'), depth: 1 },
+    { id: 'jump', label: t('categories.jump'), depth: 1 },
+    { id: 'login-script', label: t('categories.loginScript'), depth: 1 },
+    { id: 'terminal', label: t('categories.terminal'), depth: 0 },
+    { id: 'appearance', label: t('categories.appearance'), depth: 1 },
+    { id: 'advanced', label: t('categories.advanced'), depth: 0 },
+    { id: 'filetree', label: t('categories.filetree'), depth: 1 },
+    { id: 'x11', label: t('categories.x11'), depth: 1 },
+    { id: 'dbms', label: t('categories.dbms'), depth: 1 },
   ];
 
   return (
     <div className="session-editor-backdrop">
       <div className="session-editor session-editor-tree" onClick={e => e.stopPropagation()}>
-        <h3 style={{ cursor: 'move', userSelect: 'none' }} onMouseDown={onHeaderMouseDown} title="드래그하여 이동">Session Editor</h3>
+        <h3 style={{ cursor: 'move', userSelect: 'none' }} onMouseDown={onHeaderMouseDown} title={t('dragMove')}>{t('header')}</h3>
         <div className="session-editor-body">
           {/* 좌측 카테고리 트리 */}
           <div className="session-editor-categories">
@@ -235,7 +237,7 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
           <div className="session-editor-pane">
             {category === 'connection' && (
               <div className="session-editor-grid">
-                <label>Icon</label>
+                <label>{t('fields.icon')}</label>
                 <div className="icon-picker-wrapper">
                   <button className="icon-picker-btn" onClick={() => setShowIconPicker(p => !p)} type="button">{icon || '—'}</button>
                   {icon && <button className="icon-clear-btn" onClick={() => setIcon('')} type="button">&times;</button>}
@@ -247,31 +249,31 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
                     </div>
                   )}
                 </div>
-                <label>Name</label>
+                <label>{t('fields.name')}</label>
                 <input value={name} onChange={e => setName(e.target.value)} />
-                <label>Folder</label>
+                <label>{t('fields.folder')}</label>
                 <select value={folderId} onChange={e => setFolderId(e.target.value)}>
-                  <option value="">(Root)</option>
+                  <option value="">{t('fields.rootFolder')}</option>
                   {folders.map(f => (<option key={f.id} value={f.id}>{getFolderPath(f)}</option>))}
                 </select>
-                <label>Host</label>
-                <input className={host && !isValidHost(host) ? 'invalid' : ''} value={host} onChange={e => setHost(e.target.value)} placeholder="IPv4 / IPv6 / 도메인" />
-                <label>Port</label>
+                <label>{t('fields.host')}</label>
+                <input className={host && !isValidHost(host) ? 'invalid' : ''} value={host} onChange={e => setHost(e.target.value)} placeholder={t('placeholders.hostExample')} />
+                <label>{t('fields.port')}</label>
                 <input type="number" value={port} onChange={e => setPort(Number(e.target.value) || 22)} />
               </div>
             )}
             {category === 'auth' && (
               <div className="session-editor-grid">
-                <label>Username</label>
+                <label>{t('fields.username')}</label>
                 <input value={username} onChange={e => setUsername(e.target.value)} placeholder="root" />
-                <label>Auth</label>
+                <label>{t('fields.auth')}</label>
                 <div className="session-editor-auth">
-                  <label><input type="radio" checked={authType === 'password'} onChange={() => setAuthType('password')} /> Password</label>
-                  <label><input type="radio" checked={authType === 'key'} onChange={() => setAuthType('key')} /> Key</label>
+                  <label><input type="radio" checked={authType === 'password'} onChange={() => setAuthType('password')} /> {t('fields.authPassword')}</label>
+                  <label><input type="radio" checked={authType === 'key'} onChange={() => setAuthType('key')} /> {t('fields.authKey')}</label>
                 </div>
                 {authType === 'password' ? (
                   <>
-                    <label>Password</label>
+                    <label>{t('fields.password')}</label>
                     <div className="password-field">
                       <input type={showPassword ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} />
                       <button type="button" className="password-toggle" onClick={() => setShowPassword(p => !p)}>{showPassword ? '🙈' : '👁'}</button>
@@ -279,7 +281,7 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
                   </>
                 ) : (
                   <>
-                    <label>Key Path</label>
+                    <label>{t('fields.keyPath')}</label>
                     <input value={keyPath} onChange={e => setKeyPath(e.target.value)} placeholder="~/.ssh/id_rsa" />
                   </>
                 )}
@@ -287,15 +289,15 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
             )}
             {category === 'jump' && (
               <div className="session-editor-grid">
-                <label>점프 타겟 호스트</label>
-                <input type="text" value={jumpTargetHost} onChange={e => setJumpTargetHost(e.target.value)} placeholder="예: I-MPM01 (비우면 직접 연결)" />
-                <label>점프 타겟 사용자</label>
-                <input type="text" value={jumpTargetUser} onChange={e => setJumpTargetUser(e.target.value)} placeholder="예: root" disabled={!jumpTargetHost.trim()} />
-                <label>점프 타겟 포트</label>
+                <label>{t('fields.jumpTargetHost')}</label>
+                <input type="text" value={jumpTargetHost} onChange={e => setJumpTargetHost(e.target.value)} placeholder={t('placeholders.jumpTargetHost')} />
+                <label>{t('fields.jumpTargetUser')}</label>
+                <input type="text" value={jumpTargetUser} onChange={e => setJumpTargetUser(e.target.value)} placeholder={t('placeholders.jumpTargetUser')} disabled={!jumpTargetHost.trim()} />
+                <label>{t('fields.jumpTargetPort')}</label>
                 <input type="number" value={jumpTargetPort} onChange={e => setJumpTargetPort(Number(e.target.value) || '')} placeholder="22" disabled={!jumpTargetHost.trim()} min={1} max={65535} />
-                <label>점프 타겟 비밀번호</label>
+                <label>{t('fields.jumpTargetPassword')}</label>
                 <div style={{ display: 'flex', gap: 4 }}>
-                  <input type={showJumpPassword ? 'text' : 'password'} value={jumpTargetPassword} onChange={e => setJumpTargetPassword(e.target.value)} placeholder="비우면 primary ~/.ssh/id_rsa 자동 사용" disabled={!jumpTargetHost.trim()} style={{ flex: 1 }} autoComplete="off" />
+                  <input type={showJumpPassword ? 'text' : 'password'} value={jumpTargetPassword} onChange={e => setJumpTargetPassword(e.target.value)} placeholder={t('placeholders.jumpTargetPassword')} disabled={!jumpTargetHost.trim()} style={{ flex: 1 }} autoComplete="off" />
                   <button type="button" onClick={() => setShowJumpPassword(v => !v)} disabled={!jumpTargetHost.trim()}>{showJumpPassword ? '🙈' : '👁'}</button>
                 </div>
               </div>
@@ -303,12 +305,12 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
             {category === 'login-script' && (
               <div className="login-script-section">
                 <div className="login-script-header">
-                  <span className="login-script-title">Login Script (Expect/Send)</span>
-                  <button className="login-script-add" onClick={addRule}>+ Add Rule</button>
+                  <span className="login-script-title">{t('fields.loginScript')}</span>
+                  <button className="login-script-add" onClick={addRule}>{t('fields.addRule')}</button>
                 </div>
                 {loginScript.length > 0 && (
                   <div className="login-script-list">
-                    <div className="login-script-labels"><span>Expect</span><span>Send</span><span></span></div>
+                    <div className="login-script-labels"><span>{t('fields.expect')}</span><span>{t('fields.send')}</span><span></span></div>
                     {loginScript.map((rule, idx) => (
                       <div key={idx} className="login-script-rule">
                         <input className="login-script-input" value={rule.expect} onChange={e => updateRule(idx, 'expect', e.target.value)} placeholder='e.g. password:' />
@@ -327,15 +329,15 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
             )}
             {category === 'terminal' && (
               <div className="session-editor-grid">
-                <label>Encoding</label>
+                <label>{t('fields.encoding')}</label>
                 <select value={encoding} onChange={e => setEncoding(e.target.value)}>
                   <option value="utf-8">utf-8</option>
                   <option value="cp949">cp949</option>
                   <option value="euc-kr">euc-kr</option>
                   <option value="latin1">latin1</option>
                 </select>
-                <label>Scrollback</label>
-                <input type="number" value={scrollback || ''} onChange={e => setScrollback(Number(e.target.value) || 0)} placeholder="(Global Default)" min={1000} max={1000000} step={1000} />
+                <label>{t('fields.scrollback')}</label>
+                <input type="number" value={scrollback || ''} onChange={e => setScrollback(Number(e.target.value) || 0)} placeholder={t('fields.globalDefault')} min={1000} max={1000000} step={1000} />
               </div>
             )}
             {category === 'appearance' && (() => {
@@ -374,7 +376,7 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
               return (
                 <>
                   <div style={{ marginBottom: 12 }}>
-                    <div style={{ color: '#aaa', fontSize: 12, marginBottom: 6 }}>미리 보기:</div>
+                    <div style={{ color: '#aaa', fontSize: 12, marginBottom: 6 }}>{t('preview')}</div>
                     <div style={{
                       background: bg, color: fg, padding: 12, borderRadius: 4, border: '1px solid #333',
                       fontFamily: previewFont, fontSize: previewSize, lineHeight: 1.4,
@@ -409,30 +411,30 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
                     </div>
                   </div>
                   <div className="session-editor-grid">
-                    <label>Theme</label>
+                    <label>{t('fields.theme')}</label>
                     <select value={theme} onChange={e => setTheme(e.target.value)}>
-                      <option value="">(Global Default)</option>
-                      {getThemeList().map(t => <option key={t} value={t}>{t}</option>)}
+                      <option value="">{t('fields.globalDefault')}</option>
+                      {getThemeList().map(th => <option key={th} value={th}>{th}</option>)}
                     </select>
-                    <label>Font</label>
+                    <label>{t('fields.fontFamily')}</label>
                     <select value={fontFamily} onChange={e => setFontFamily(e.target.value)}>
-                      <option value="">(Global Default)</option>
+                      <option value="">{t('fields.globalDefault')}</option>
                       {getAvailableMonoFonts().map(f => <option key={f} value={f} style={{ fontFamily: f }}>{f}</option>)}
                     </select>
-                    <label>Font Size</label>
-                    <input type="number" value={fontSize || ''} onChange={e => setFontSize(Number(e.target.value) || 0)} placeholder="(Global Default)" min={8} max={40} />
-                    <label>커서 모양</label>
+                    <label>{t('fields.fontSize')}</label>
+                    <input type="number" value={fontSize || ''} onChange={e => setFontSize(Number(e.target.value) || 0)} placeholder={t('fields.globalDefault')} min={8} max={40} />
+                    <label>{t('fields.cursorStyle')}</label>
                     <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                       {[
-                        { id: 'block', label: '▮ 블록' },
-                        { id: 'underline', label: '_ 밑줄' },
-                        { id: 'bar', label: '| 세로선' },
-                        { id: 'flame', label: '🔥 불꽃' },
-                        { id: 'star', label: '✦ 별' },
-                        { id: 'heart', label: '♥ 하트' },
-                        { id: 'circle', label: '● 동그라미' },
-                        { id: 'rainbow', label: '🌈 무지개' },
-                        { id: 'power', label: '💥 파워' },
+                        { id: 'block', label: t('cursor.block') },
+                        { id: 'underline', label: t('cursor.underline') },
+                        { id: 'bar', label: t('cursor.bar') },
+                        { id: 'flame', label: t('cursor.flame') },
+                        { id: 'star', label: t('cursor.star') },
+                        { id: 'heart', label: t('cursor.heart') },
+                        { id: 'circle', label: t('cursor.circle') },
+                        { id: 'rainbow', label: t('cursor.rainbow') },
+                        { id: 'power', label: t('cursor.power') },
                       ].map(opt => (
                         <button key={opt.id} type="button" onClick={() => setCursorStyle(opt.id as any)}
                           style={{ padding: '4px 10px', background: cursorStyle === opt.id ? '#2b6b9b' : '#333', color: '#eee', border: '1px solid #555', borderRadius: 3, cursor: 'pointer' }}>
@@ -441,7 +443,7 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
                       ))}
                       <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 8, cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap', flexShrink: 0 }}>
                         <input type="checkbox" checked={cursorBlink} onChange={e => setCursorBlink(e.target.checked)} />
-                        <span style={{ fontSize: 12, whiteSpace: 'nowrap' }}>커서 깜박임</span>
+                        <span style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{t('fields.cursorBlink')}</span>
                       </label>
                     </div>
                   </div>
@@ -449,49 +451,49 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
               );
             })()}
             {category === 'advanced' && (
-              <div style={{ color: '#888', padding: 12 }}>좌측 트리에서 파일 트리 / X11 forwarding 등 세부 항목을 선택하세요.</div>
+              <div style={{ color: '#888', padding: 12 }}>{t('advancedHint')}</div>
             )}
             {category === 'filetree' && (
               <div className="session-editor-grid">
-                <label>초기 경로</label>
-                <input type="text" value={initialPath} onChange={e => setInitialPath(e.target.value)} placeholder="예: /home/user/project (비우면 홈 디렉토리)" />
-                <label>자동 추적</label>
+                <label>{t('fields.initialPath')}</label>
+                <input type="text" value={initialPath} onChange={e => setInitialPath(e.target.value)} placeholder={t('placeholders.initialPath')} />
+                <label>{t('fields.autoTrack')}</label>
                 <label className="autotrack-checkbox-label" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', justifySelf: 'start' }}>
                   <input type="checkbox" checked={autoTrackPwd} onChange={e => setAutoTrackPwd(e.target.checked)} style={{ margin: 0 }} />
-                  <span className="autotrack-info-icon" title="터미널에서 디렉토리 이동 시 파일트리도 갱신됨">ⓘ</span>
+                  <span className="autotrack-info-icon" title={t('tooltips.autoTrackInfo')}>ⓘ</span>
                 </label>
               </div>
             )}
             {category === 'x11' && (
               <div className="session-editor-grid">
-                <label>X11 forwarding</label>
+                <label>{t('fields.x11Forward')}</label>
                 <div className="x11-forwarding-row">
                   <input type="checkbox" checked={x11Forward} onChange={e => setX11Forward(e.target.checked)} />
                   {x11Forward && (
                     <>
-                      <span className="x11-label">display:</span>
+                      <span className="x11-label">{t('fields.x11DisplayLabel')}</span>
                       <input type="number" min={0} max={99} value={x11Display} onChange={e => setX11Display(Math.max(0, parseInt(e.target.value) || 0))} className="x11-display-input" />
                       <span className="x11-hint">→ localhost:{6000 + x11Display}</span>
                     </>
                   )}
-                  <span className="autotrack-info-icon" title="원격 GUI 앱을 Windows 네이티브 창으로 표시">ⓘ</span>
+                  <span className="autotrack-info-icon" title={t('tooltips.x11Info')}>ⓘ</span>
                 </div>
               </div>
             )}
             {category === 'dbms' && (
               <div className="session-editor-grid">
-                <label>Altibase 사용</label>
+                <label>{t('fields.altibaseUse')}</label>
                 <label className="dbms-checkbox-label">
                   <input type="checkbox" checked={dbmsEnabled} onChange={e => setDbmsEnabled(e.target.checked)} />
-                  <span>SQL Tool 활성화</span>
+                  <span>{t('fields.sqlToolEnable')}</span>
                 </label>
-                <label>DB Port</label>
+                <label>{t('fields.dbPort')}</label>
                 <input type="number" value={dbmsPort} onChange={e => setDbmsPort(Number(e.target.value) || 20300)} placeholder="20300" disabled={!dbmsEnabled} min={1} max={65535} />
-                <label>DB Host</label>
+                <label>{t('fields.dbHost')}</label>
                 <input type="text" value={dbmsHost} onChange={e => setDbmsHost(e.target.value)} placeholder="127.0.0.1" disabled={!dbmsEnabled} />
-                <label>DB User</label>
+                <label>{t('fields.dbUser')}</label>
                 <input type="text" value={dbmsUser} onChange={e => setDbmsUser(e.target.value)} placeholder="ipageon" disabled={!dbmsEnabled} autoComplete="off" />
-                <label>DB Password</label>
+                <label>{t('fields.dbPassword')}</label>
                 <div style={{ display: 'flex', gap: 4 }}>
                   <input type={showDbmsPassword ? 'text' : 'password'} value={dbmsPassword} onChange={e => setDbmsPassword(e.target.value)} disabled={!dbmsEnabled} style={{ flex: 1 }} autoComplete="off" />
                   <button type="button" onClick={() => setShowDbmsPassword(v => !v)} disabled={!dbmsEnabled}>{showDbmsPassword ? '🙈' : '👁'}</button>
@@ -503,9 +505,9 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
 
         <div className="session-editor-actions">
           {saveError && <span className="session-editor-error">{saveError}</span>}
-          <button className="btn-cancel" onClick={onCancel}>닫기</button>
-          <button className="btn-save" onClick={save} title="설정만 저장하고 창 유지">적용</button>
-          <button className="btn-save" style={{ background: '#2b9b6b', borderColor: '#3ac88b' }} onClick={saveAndConnect} title="저장 후 창 닫고 연결">연결</button>
+          <button className="btn-cancel" onClick={onCancel}>{t('actions.close')}</button>
+          <button className="btn-save" onClick={save} title={t('tooltips.applyTitle')}>{t('actions.apply')}</button>
+          <button className="btn-save" style={{ background: '#2b9b6b', borderColor: '#3ac88b' }} onClick={saveAndConnect} title={t('tooltips.connectTitle')}>{t('actions.connect')}</button>
         </div>
       </div>
     </div>

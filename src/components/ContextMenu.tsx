@@ -1,9 +1,12 @@
 // src/components/ContextMenu.tsx
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
 export type MenuItem = {
   label: string;
-  onClick: () => void;
+  onClick?: () => void;
+  separator?: boolean;
+  header?: boolean;
+  submenu?: MenuItem[];
 };
 
 type Props = {
@@ -15,8 +18,9 @@ type Props = {
 
 export const ContextMenu: React.FC<Props> = ({ x, y, items, onClose }) => {
   const menuRef = useRef<HTMLDivElement | null>(null);
-  // 메뉴가 viewport 를 벗어나면 위치 보정
-  const [pos, setPos] = React.useState({ x, y });
+  const [pos, setPos] = useState({ x, y });
+  const [openSub, setOpenSub] = useState<{ idx: number; x: number; y: number } | null>(null);
+
   React.useEffect(() => {
     if (!menuRef.current) return;
     const r = menuRef.current.getBoundingClientRect();
@@ -26,13 +30,14 @@ export const ContextMenu: React.FC<Props> = ({ x, y, items, onClose }) => {
     if (ny + r.height > vh - 4) ny = Math.max(4, vh - r.height - 4);
     if (nx !== pos.x || ny !== pos.y) setPos({ x: nx, y: ny });
   }, [x, y, items.length]);
+
   useEffect(() => {
-    // document capture 페이즈에서 mousedown 을 가로채서 메뉴 밖 클릭이면 닫는다.
-    // xterm 등 내부 요소가 stopPropagation 해도 capture 단계는 먼저 실행돼서 영향 없음.
-    // 현재 이벤트 루프 턴에 등록하면 메뉴를 연 바로 그 클릭이 여기에 걸리므로 다음 틱에 등록.
     const onDown = (e: MouseEvent) => {
       if (!menuRef.current) return;
-      if (!menuRef.current.contains(e.target as Node)) onClose();
+      // 자기 자신 또는 다른 context-menu (submenu) 내부 클릭이면 닫지 않음
+      const target = e.target as HTMLElement;
+      if (target.closest?.('.context-menu')) return;
+      onClose();
     };
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     const timer = setTimeout(() => {
@@ -47,12 +52,47 @@ export const ContextMenu: React.FC<Props> = ({ x, y, items, onClose }) => {
   }, [onClose]);
 
   return (
-    <div ref={menuRef} className="context-menu" style={{ top: pos.y, left: pos.x }} onClick={e => e.stopPropagation()}>
-      {items.map((item, i) => (
-        <div key={i} className="context-menu-item" onClick={() => { item.onClick(); onClose(); }}>
-          {item.label}
-        </div>
-      ))}
-    </div>
+    <>
+      <div ref={menuRef} className="context-menu" style={{ top: pos.y, left: pos.x }} onClick={e => e.stopPropagation()}>
+        {items.map((item, i) => {
+          if (item.separator) return <div key={i} style={{ height: 1, background: '#3a3a3a', margin: '4px 0' }} />;
+          if (item.header) return <div key={i} style={{ padding: '4px 12px', fontSize: 10, color: '#888', textTransform: 'uppercase', letterSpacing: 0.5 }}>{item.label}</div>;
+          if (item.submenu && item.submenu.length > 0) {
+            return (
+              <div
+                key={i}
+                className="context-menu-item"
+                onMouseEnter={e => {
+                  const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                  setOpenSub({ idx: i, x: r.right - 2, y: r.top });
+                }}
+                style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+              >
+                <span style={{ flex: 1 }}>{item.label}</span>
+                <span style={{ color: '#888', fontSize: 10 }}>▶</span>
+              </div>
+            );
+          }
+          return (
+            <div
+              key={i}
+              className="context-menu-item"
+              onMouseEnter={() => setOpenSub(null)}
+              onClick={() => { item.onClick?.(); onClose(); }}
+            >
+              {item.label}
+            </div>
+          );
+        })}
+      </div>
+      {openSub && items[openSub.idx]?.submenu && (
+        <ContextMenu
+          x={openSub.x}
+          y={openSub.y}
+          items={items[openSub.idx].submenu!}
+          onClose={onClose}
+        />
+      )}
+    </>
   );
 };

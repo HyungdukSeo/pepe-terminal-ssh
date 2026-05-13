@@ -1,0 +1,12 @@
+{
+  "placeholder": "搜索...",
+  "history": "搜索历史",
+  "prev": "上一个 (Shift+Enter)",
+  "next": "下一个 (Enter)",
+  "caseSensitive": "区分大小写",
+  "regex": "正则表达式",
+  "modeCurrent": "当前标签页",
+  "modeAll": "所有标签页",
+  "popout": "分离到外部窗口（可移至其他显示器）",
+  "close": "关闭 (Esc)"
+}

@@ -1,10 +1,12 @@
 // src/SessionEditorPopout.tsx
 // popout 창 (별도 BrowserWindow) 에서 SessionEditor 만 단독 렌더링
 import React, { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { SessionEditor } from './components/SessionEditor';
 import type { Session, Folder } from './components/SessionEditor';
 
 const SessionEditorPopout: React.FC<{ sessionId: string }> = ({ sessionId }) => {
+  const { t } = useTranslation('sessionEditor');
   const [session, setSession] = useState<Session | null>(null);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -59,7 +61,7 @@ const SessionEditorPopout: React.FC<{ sessionId: string }> = ({ sessionId }) => 
       background: '#222', borderBottom: '1px solid #333',
       WebkitAppRegion: 'drag', cursor: 'move', userSelect: 'none', flexShrink: 0,
     } as any}>
-      <strong style={{ fontSize: 13, color: '#eee' }}>세션 편집</strong>
+      <strong style={{ fontSize: 13, color: '#eee' }}>{t('title')}</strong>
       <button onClick={handleCancel} style={{
         WebkitAppRegion: 'no-drag',
         background: 'transparent', border: 'none', color: '#aaa',
@@ -71,13 +73,13 @@ const SessionEditorPopout: React.FC<{ sessionId: string }> = ({ sessionId }) => 
   if (!loaded) {
     return <div style={{ height: '100vh', background: '#111', display: 'flex', flexDirection: 'column' }}>
       <Header />
-      <div style={{ padding: 20, color: '#aaa', flex: 1 }}>로딩 중...</div>
+      <div style={{ padding: 20, color: '#aaa', flex: 1 }}>{t('loading')}</div>
     </div>;
   }
   if (!session) {
     return <div style={{ height: '100vh', background: '#111', display: 'flex', flexDirection: 'column' }}>
       <Header />
-      <div style={{ padding: 20, color: '#aaa', flex: 1 }}>세션을 찾을 수 없음</div>
+      <div style={{ padding: 20, color: '#aaa', flex: 1 }}>{t('notFound')}</div>
     </div>;
   }
   return (

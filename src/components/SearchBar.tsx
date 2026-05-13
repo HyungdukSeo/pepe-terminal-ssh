@@ -1,5 +1,6 @@
 // src/components/SearchBar.tsx
 import React, { useState, useRef, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { Tab } from '../App';
 import { collectAllSessions } from '../utils/layoutUtils';
 import {
@@ -34,6 +35,7 @@ function addSearchHistory(q: string) {
 }
 
 export const SearchBar: React.FC<Props> = ({ tabs, activeTab, selectedPanelId, onClose }) => {
+  const { t } = useTranslation('search');
   const [query, setQuery] = useState('');
   const [mode, setMode] = useState<'current' | 'all'>('current');
   const [useRegex, setUseRegex] = useState(false);
@@ -208,13 +210,13 @@ export const SearchBar: React.FC<Props> = ({ tabs, activeTab, selectedPanelId, o
               value={query}
               onChange={e => { setQuery(e.target.value); setShowHistory(false); setHistoryIdx(-1); }}
               onKeyDown={handleKeyDown}
-              placeholder="검색..."
+              placeholder={t('placeholder')}
               autoComplete="off"
             />
             <button
               className="search-history-toggle"
               onClick={() => { setShowHistory(prev => !prev); inputRef.current?.focus(); }}
-              title="검색 이력"
+              title={t('history')}
               tabIndex={-1}
             >▾</button>
           </div>
@@ -231,30 +233,30 @@ export const SearchBar: React.FC<Props> = ({ tabs, activeTab, selectedPanelId, o
             </div>
           )}
         </div>
-        <button className="search-btn" onClick={handlePrev} title="Previous (Shift+Enter)">&#9650;</button>
-        <button className="search-btn" onClick={handleNext} title="Next (Enter)">&#9660;</button>
+        <button className="search-btn" onClick={handlePrev} title={t('prev')}>&#9650;</button>
+        <button className="search-btn" onClick={handleNext} title={t('next')}>&#9660;</button>
         <button
           className={`search-regex-btn ${caseSensitive ? 'active' : ''}`}
           onClick={() => setCaseSensitive(prev => !prev)}
-          title="Case Sensitive"
+          title={t('caseSensitive')}
         >Aa</button>
         <button
           className={`search-regex-btn ${useRegex ? 'active' : ''}`}
           onClick={() => setUseRegex(prev => !prev)}
-          title="Regular Expression"
+          title={t('regex')}
         >.*</button>
         <div className="search-mode-toggle">
           <button
             className={`search-mode-btn ${mode === 'current' ? 'active' : ''}`}
             onClick={() => setMode('current')}
           >
-            현재탭
+            {t('modeCurrent')}
           </button>
           <button
             className={`search-mode-btn ${mode === 'all' ? 'active' : ''}`}
             onClick={() => setMode('all')}
           >
-            전체
+            {t('modeAll')}
           </button>
         </div>
         {mode === 'all' && matches.length > 0 && (
@@ -262,13 +264,13 @@ export const SearchBar: React.FC<Props> = ({ tabs, activeTab, selectedPanelId, o
         )}
         <button
           className="search-btn"
-          title="외부 창으로 분리 (다른 모니터로 이동 가능)"
+          title={t('popout')}
           onClick={() => {
             try { (window as any).api?.searchOpenWindow?.(); } catch {}
             onClose();
           }}
         >🪟</button>
-        <button className="search-btn search-close-btn" onClick={handleClose} title="Close (Esc)">&times;</button>
+        <button className="search-btn search-close-btn" onClick={handleClose} title={t('close')}>&times;</button>
       </div>
       {mode === 'all' && matches.length > 0 && (
         <div className="search-match-list">

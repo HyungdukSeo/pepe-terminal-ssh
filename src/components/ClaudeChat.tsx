@@ -1,5 +1,6 @@
 // src/components/ClaudeChat.tsx
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { marked } from 'marked';
 import mermaid from 'mermaid';
 import { adjustClaudeFontSize } from '../utils/claudeFont';
@@ -169,6 +170,7 @@ type Props = {
 let sessionCounter = 0;
 
 export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContextConsumed, mountEntries = [], onClearMounted, onRemoveMountedEntry, connectedSessions = [], defaultSshSession, pinned = true, onTogglePin }) => {
+  const { t: tt } = useTranslation('claudeChat');
   // 사용자가 선택한 활성 SSH 세션 (드롭다운). 처음엔 defaultSshSession.
   const [selectedSshTermId, setSelectedSshTermId] = useState<string | null>(defaultSshSession?.termId || null);
   useEffect(() => {
@@ -253,11 +255,11 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     if (!force && usageApiCacheRef.current && Date.now() - usageApiCacheRef.current.ts < 60_000) {
       const d = usageApiCacheRef.current.data;
       const age = Math.round((Date.now() - usageApiCacheRef.current.ts) / 1000);
-      setUsageProbe(`⚡ 캐시된 응답 (${age}초 전)\n────────────────────────\n${JSON.stringify(d, null, 2)}`);
+      setUsageProbe(`${tt('cachedResponse', { age })}\n────────────────────────\n${JSON.stringify(d, null, 2)}`);
       return;
     }
     setUsageProbeLoading(true);
-    setUsageProbe('⏳ Anthropic API 호출 중...');
+    setUsageProbe(tt('apiCallLoading'));
     try {
       const r: any = await (window as any).api?.claudeFetchUsageApi?.();
       if (r?.success && r.data) {
@@ -269,13 +271,13 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           const dt = new Date(v.resets_at);
           if (isNaN(dt.getTime())) return null;
           const diffMs = dt.getTime() - Date.now();
-          if (diffMs <= 0) return '곧 초기화';
+          if (diffMs <= 0) return tt('resetSoon');
           const mins = Math.round(diffMs / 60000);
           const hours = Math.round(diffMs / 3_600_000);
           const days = Math.round(diffMs / 86_400_000);
-          if (days >= 1) return `${days}일 후 초기화`;
-          if (hours >= 1) return `${hours}시간 후 초기화`;
-          return `${mins}분 후 초기화`;
+          if (days >= 1) return tt('resetDays', { days });
+          if (hours >= 1) return tt('resetHours', { hours });
+          return tt('resetMins', { mins });
         };
         setSubLimits({
           fiveHourPct: fmtPct(d.five_hour) || undefined,
@@ -286,9 +288,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           sonnetOnlyReset: fmtReset(d.seven_day_sonnet) || undefined,
           weeklyDesignPct: fmtPct(d.seven_day_oauth_apps) ?? '0%',
         });
-        setUsageProbe(`✅ Anthropic OAuth API 응답\n────────────────────────\n${JSON.stringify(d, null, 2)}`);
+        setUsageProbe(`${tt('apiResponseHeader')}\n────────────────────────\n${JSON.stringify(d, null, 2)}`);
       } else {
-        setUsageProbe(`❌ ${r?.error || '실패'}\n${r?.body || ''}`);
+        setUsageProbe(`${tt('apiFailed', { error: r?.error || tt('failed') })}\n${r?.body || ''}`);
       }
     } catch (e: any) {
       setUsageProbe(`❌ ${e?.message || e}`);
@@ -686,7 +688,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             return [...prev, { role: 'assistant', content: texts, id: msgId, seq: nextSeq() }];
           });
         } else if (thinkings.length > 0 && toolUses.length === 0) {
-          setActivity('🤔 생각 중...');
+          setActivity(tt('thinking'));
         }
       } else if (msg.type === 'user' && msg.message?.content) {
         // tool_result 수신 → 타임라인 업데이트
@@ -857,10 +859,10 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             setTimeout(() => { btn.textContent = orig; }, 1200);
           };
           const ts = () => new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-          const copySvgBtn = mkBtn('📋 SVG', 'SVG 코드 클립보드 복사', async () => {
-            try { await navigator.clipboard.writeText(svg); flash(copySvgBtn, '✓ 복사됨'); } catch {}
+          const copySvgBtn = mkBtn('📋 SVG', tt('mermaid.copySvgTitle'), async () => {
+            try { await navigator.clipboard.writeText(svg); flash(copySvgBtn, tt('mermaid.copied')); } catch {}
           });
-          const copyPngBtn = mkBtn('📋 PNG', '이미지 클립보드 복사', async () => {
+          const copyPngBtn = mkBtn('📋 PNG', tt('mermaid.copyPngTitle'), async () => {
             try {
               const blob = await svgToPngBlob(2);
               // 1차: Electron native clipboard (가장 신뢰성 있음)
@@ -872,25 +874,25 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                   r.readAsDataURL(blob);
                 });
                 const ipcRes: any = await (window as any).api?.clipboardWriteImage?.(dataUrl);
-                if (ipcRes?.success) { flash(copyPngBtn, '✓ 복사됨'); return; }
+                if (ipcRes?.success) { flash(copyPngBtn, tt('mermaid.copied')); return; }
               } catch (e) { console.warn('[mermaid] ipc clipboard failed', e); }
               // 2차: Web Clipboard API
               try {
                 await (navigator.clipboard as any).write([new (window as any).ClipboardItem({ 'image/png': blob })]);
-                flash(copyPngBtn, '✓ 복사됨');
+                flash(copyPngBtn, tt('mermaid.copied'));
                 return;
               } catch (e) { console.warn('[mermaid] web clipboard failed', e); }
-              flash(copyPngBtn, '✕ 실패');
-            } catch (e) { flash(copyPngBtn, '✕ 실패'); console.error('[mermaid] copy png error', e); }
+              flash(copyPngBtn, tt('mermaid.failed'));
+            } catch (e) { flash(copyPngBtn, tt('mermaid.failed')); console.error('[mermaid] copy png error', e); }
           });
-          const saveSvgBtn = mkBtn('💾 SVG', 'SVG 파일 저장', () => {
+          const saveSvgBtn = mkBtn('💾 SVG', tt('mermaid.saveSvgTitle'), () => {
             downloadBlob(new Blob([svg], { type: 'image/svg+xml' }), `diagram-${ts()}.svg`);
           });
-          const savePngBtn = mkBtn('💾 PNG', 'PNG 파일 저장 (2x)', async () => {
+          const savePngBtn = mkBtn('💾 PNG', tt('mermaid.savePngTitle'), async () => {
             try {
               const blob = await svgToPngBlob(2);
               downloadBlob(blob, `diagram-${ts()}.png`);
-            } catch (e) { flash(savePngBtn, '✕ 실패'); console.error(e); }
+            } catch (e) { flash(savePngBtn, tt('mermaid.failed')); console.error(e); }
           });
           toolbar.appendChild(copySvgBtn);
           toolbar.appendChild(copyPngBtn);
@@ -915,10 +917,10 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               it.onclick = (ev) => { ev.stopPropagation(); menu.remove(); onClick(); };
               return it;
             };
-            menu.appendChild(mkItem('📋 이미지(PNG) 복사', () => copyPngBtn.click()));
-            menu.appendChild(mkItem('📋 SVG 코드 복사', () => copySvgBtn.click()));
-            menu.appendChild(mkItem('💾 PNG 으로 저장', () => savePngBtn.click()));
-            menu.appendChild(mkItem('💾 SVG 으로 저장', () => saveSvgBtn.click()));
+            menu.appendChild(mkItem(tt('mermaid.ctxCopyPng'), () => copyPngBtn.click()));
+            menu.appendChild(mkItem(tt('mermaid.ctxCopySvg'), () => copySvgBtn.click()));
+            menu.appendChild(mkItem(tt('mermaid.ctxSavePng'), () => savePngBtn.click()));
+            menu.appendChild(mkItem(tt('mermaid.ctxSaveSvg'), () => saveSvgBtn.click()));
             const closeMenu = () => { menu.remove(); document.removeEventListener('click', closeMenu); document.removeEventListener('contextmenu', closeMenu); };
             setTimeout(() => {
               document.addEventListener('click', closeMenu);
@@ -933,7 +935,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           codeEl.setAttribute('data-mermaid-rendered', 'error');
           const err1 = document.createElement('div');
           err1.className = 'claude-chat-mermaid-error';
-          err1.textContent = `[Mermaid 렌더 실패] ${String(err).slice(0, 200)}`;
+          err1.textContent = tt('mermaid.renderFailed', { msg: String(err).slice(0, 200) });
           if (pre && pre.parentElement) pre.parentElement.insertBefore(err1, pre);
           // mermaid 가 body 에 남긴 에러 SVG/임시 element 정리 (id 기반)
           try {
@@ -1206,7 +1208,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     setMessages(prev => [...prev, userMsg]);
     setInput('');
     setStreaming(true);
-    setActivity('🚀 시작');
+    setActivity(tt('started'));
     setToolTimeline([]);
     currentAsstIdRef.current = null;
 
@@ -1256,7 +1258,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         for (const c of pendingContext) map.set(c.remotePath, c);
         return Array.from(map.values());
       });
-      if (!input.trim()) setInput(`이 파일을 분석해주세요.`);
+      if (!input.trim()) setInput(tt('analyzeFilePrompt'));
       onContextConsumed();
     }
   }, [pendingContext, onContextConsumed]);
@@ -1326,7 +1328,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     // h.streaming 이 true 라도 실제 진행 중 프로세스 매핑(requestToHistoryRef) 에 없으면 stale → 입력 잠김 방지
     const reallyStreaming = !!(h.streaming && h.pendingRequestId && requestToHistoryRef.current.get(h.pendingRequestId) === h.id);
     setStreaming(reallyStreaming);
-    setActivity(reallyStreaming ? '🤔 생각 중...' : '');
+    setActivity(reallyStreaming ? tt('thinking') : '');
     setPendingPlan(null);
     activeRequestIdRef.current = reallyStreaming ? (h.pendingRequestId ?? null) : null;
     // stale streaming 이면 history 도 정리
@@ -1374,15 +1376,15 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   // streaming 이 false 가 되면 큐잉된 승인 메시지 자동 전송
   useEffect(() => {
     if (!streaming && pendingApprovalSendRef.current) {
-      const t = pendingApprovalSendRef.current;
+      const pendingTxt = pendingApprovalSendRef.current;
       pendingApprovalSendRef.current = null;
       // 다음 tick 에 send (현재 render cycle 영향 회피)
-      setTimeout(() => send(t, []), 0);
+      setTimeout(() => send(pendingTxt, []), 0);
     }
   }, [streaming, send]);
   const rejectPlan = () => {
     setPendingPlan(prev => { if (prev) setLastRejectedPlan(prev); return null; });
-    setMessages(prev => [...prev, { role: 'assistant', content: '❌ 계획이 거부되었습니다. 실수로 거부했다면 아래 "📋 거부한 계획 다시 보기" 버튼으로 재확인할 수 있습니다.', id: `reject-${Date.now()}` }]);
+    setMessages(prev => [...prev, { role: 'assistant', content: tt('planRejected'), id: `reject-${Date.now()}` }]);
   };
 
   // 툴 단위 승인/거부
@@ -1393,7 +1395,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   };
   const denyTool = () => {
     if (!pendingToolApproval) return;
-    (window as any).api?.claudeHookRespond?.(pendingToolApproval.approvalId, 'deny', '사용자가 거부함');
+    (window as any).api?.claudeHookRespond?.(pendingToolApproval.approvalId, 'deny', tt('userDenied'));
     setPendingToolApproval(null);
   };
 
@@ -1430,31 +1432,31 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     if (added.length > 0) setLocalFileAttachments(prev => [...prev, ...added]);
     if (skipped.length > 0) console.log(`[local-attach] 제외 ${skipped.length}개:`, skipped);
     if (added.length === 0 && skipped.length > 0) {
-      setMessages(prev => [...prev, { role: 'assistant', content: `❌ 첨부할 텍스트 파일이 없습니다 (${skipped.length}개 제외). 자세한 내용은 DevTools Console 확인.`, id: `err-${Date.now()}`, seq: nextSeq() }]);
+      setMessages(prev => [...prev, { role: 'assistant', content: tt('errorNoTextFiles', { count: skipped.length }), id: `err-${Date.now()}`, seq: nextSeq() }]);
     }
   };
 
   // 슬래시 명령 프리셋
   const commandPresets: { label: string; insert: string; desc: string }[] = [
-    { label: '/explain', insert: '이 코드를 설명해줘: ', desc: '코드 설명' },
-    { label: '/refactor', insert: '이 코드를 리팩토링해줘: ', desc: '리팩토링 제안' },
-    { label: '/fix', insert: '이 버그를 수정해줘: ', desc: '버그 수정' },
-    { label: '/test', insert: '이 함수에 대한 테스트 코드를 작성해줘: ', desc: '테스트 작성' },
-    { label: '/review', insert: '이 코드를 리뷰해줘 (버그/성능/스타일): ', desc: '코드 리뷰' },
-    { label: '/doc', insert: '이 함수/모듈에 대한 문서를 작성해줘: ', desc: '문서 작성' },
-    { label: '/trace', insert: '이 함수의 호출 흐름을 추적해줘: ', desc: '호출 흐름 추적' },
-    { label: '/analyze', insert: '이 모듈의 구조를 분석해줘: ', desc: '구조 분석' },
-    { label: '/optimize', insert: '이 코드의 성능을 최적화해줘: ', desc: '성능 최적화' },
-    { label: '/security', insert: '이 코드의 보안 취약점을 검토해줘: ', desc: '보안 검토' },
+    { label: '/explain', insert: tt('slashCmd.explainInsert'), desc: tt('slashCmd.explainDesc') },
+    { label: '/refactor', insert: tt('slashCmd.refactorInsert'), desc: tt('slashCmd.refactorDesc') },
+    { label: '/fix', insert: tt('slashCmd.fixInsert'), desc: tt('slashCmd.fixDesc') },
+    { label: '/test', insert: tt('slashCmd.testInsert'), desc: tt('slashCmd.testDesc') },
+    { label: '/review', insert: tt('slashCmd.reviewInsert'), desc: tt('slashCmd.reviewDesc') },
+    { label: '/doc', insert: tt('slashCmd.docInsert'), desc: tt('slashCmd.docDesc') },
+    { label: '/trace', insert: tt('slashCmd.traceInsert'), desc: tt('slashCmd.traceDesc') },
+    { label: '/analyze', insert: tt('slashCmd.analyzeInsert'), desc: tt('slashCmd.analyzeDesc') },
+    { label: '/optimize', insert: tt('slashCmd.optimizeInsert'), desc: tt('slashCmd.optimizeDesc') },
+    { label: '/security', insert: tt('slashCmd.securityInsert'), desc: tt('slashCmd.securityDesc') },
   ];
 
   // 명령 팔레트 전체 액션 (섹션별)
   type PaletteAction = { id: string; section: string; label: string; desc?: string; shortcut?: string; run: () => void };
   const paletteActions: PaletteAction[] = [
     // Context
-    { id: 'attach-file', section: 'Context', label: 'Attach file...', desc: '로컬 파일 첨부', run: () => fileUploadRef.current?.click() },
-    { id: 'attach-folder', section: 'Context', label: 'Attach folder...', desc: '로컬 폴더 첨부 (재귀)', run: () => folderUploadRef.current?.click() },
-    { id: 'clear', section: 'Context', label: 'Clear conversation', desc: '대화 및 컨텍스트 초기화', run: () => clear() },
+    { id: 'attach-file', section: 'Context', label: 'Attach file...', desc: tt('palette.attachFileDesc'), run: () => fileUploadRef.current?.click() },
+    { id: 'attach-folder', section: 'Context', label: 'Attach folder...', desc: tt('palette.attachFolderDesc'), run: () => folderUploadRef.current?.click() },
+    { id: 'clear', section: 'Context', label: 'Clear conversation', desc: tt('palette.clearDesc'), run: () => clear() },
     // Model — Anthropic /v1/models 결과로 동적 생성, 없으면 fallback
     ...(availableModels.length > 0
       ? (() => {
@@ -1484,14 +1486,14 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           { id: 'model-opus-legacy', section: 'Model', label: 'Model: Opus 4.6 레거시', run: () => setModel('claude-opus-4-6') },
         ]),
     // Effort
-    { id: 'effort-low', section: 'Effort', label: '작업량: 낮음', run: () => setEffort('low') },
-    { id: 'effort-medium', section: 'Effort', label: '작업량: 보통', run: () => setEffort('medium') },
-    { id: 'effort-high', section: 'Effort', label: '작업량: 높음', run: () => setEffort('high') },
-    { id: 'effort-max', section: 'Effort', label: '작업량: Max', run: () => setEffort('max') },
+    { id: 'effort-low', section: 'Effort', label: tt('palette.effortLow'), run: () => setEffort('low') },
+    { id: 'effort-medium', section: 'Effort', label: tt('palette.effortMedium'), run: () => setEffort('medium') },
+    { id: 'effort-high', section: 'Effort', label: tt('palette.effortHigh'), run: () => setEffort('high') },
+    { id: 'effort-max', section: 'Effort', label: tt('palette.effortMax'), run: () => setEffort('max') },
     // Permission (모드 3종으로 정리 — bypass 제거됨)
-    { id: 'perm-default', section: 'Permission', label: '🖐 권한 요청', run: () => setPermissionMode('default') },
-    { id: 'perm-accept', section: 'Permission', label: '✏️ 편집 수락', run: () => setPermissionMode('acceptEdits') },
-    { id: 'perm-plan', section: 'Permission', label: '📋 계획 모드', run: () => setPermissionMode('plan') },
+    { id: 'perm-default', section: 'Permission', label: tt('perm.default'), run: () => setPermissionMode('default') },
+    { id: 'perm-accept', section: 'Permission', label: tt('perm.acceptEdits'), run: () => setPermissionMode('acceptEdits') },
+    { id: 'perm-plan', section: 'Permission', label: tt('perm.plan'), run: () => setPermissionMode('plan') },
     // Slash Commands (프롬프트 삽입)
     ...commandPresets.map(p => ({
       id: `slash-${p.label}`,
@@ -1526,7 +1528,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   };
 
   if (installed === null) {
-    return <div className="claude-chat-container"><div className="claude-chat-loading">Claude CLI 확인 중...</div></div>;
+    return <div className="claude-chat-container"><div className="claude-chat-loading">{tt('loading')}</div></div>;
   }
   if (!installed) {
     return (
@@ -1536,9 +1538,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           {onClose && <button className="claude-chat-close" onClick={onClose}>×</button>}
         </div>
         <div className="claude-chat-notinstalled">
-          <p>Claude Code CLI가 설치되지 않았습니다.</p>
-          <p>설치: <code>npm install -g @anthropic-ai/claude-code</code></p>
-          <p>로그인: 터미널에서 <code>claude</code> 실행</p>
+          <p>{tt('notInstalled')}</p>
+          <p>{tt('installCmd')} <code>npm install -g @anthropic-ai/claude-code</code></p>
+          <p>{tt('loginHint', { cmd: 'claude' })}</p>
         </div>
       </div>
     );
@@ -1551,31 +1553,31 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       <div className="claude-chat-header">
         <span>🤖 Claude <span className="claude-chat-version">{version}</span></span>
         <div className="claude-chat-header-actions">
-          <button onClick={startNewConversation} title="새 대화">＋</button>
-          <button onClick={() => setShowHistoryPanel(v => !v)} title="대화 이력" className={showHistoryPanel ? 'active' : ''}>≡</button>
+          <button onClick={startNewConversation} title={tt('newConversation')}>＋</button>
+          <button onClick={() => setShowHistoryPanel(v => !v)} title={tt('historyToggle')} className={showHistoryPanel ? 'active' : ''}>≡</button>
           {onTogglePin && (
             <button
               className={`claude-chat-pin ${pinned ? 'pinned' : ''}`}
               onClick={onTogglePin}
-              title={pinned ? 'Unpin (자동 숨김)' : 'Pin (고정)'}
+              title={pinned ? tt('unpin') : tt('pin')}
             >📌</button>
           )}
-          <button onClick={clear} title="대화 지우기">🗑</button>
-          {onClose && <button className="claude-chat-close" onClick={onClose} title="닫기">×</button>}
+          <button onClick={clear} title={tt('clear')}>🗑</button>
+          {onClose && <button className="claude-chat-close" onClick={onClose} title={tt('close')}>×</button>}
         </div>
       </div>
       {pendingToolApproval && (
         <div className="claude-chat-plan-overlay">
           <div className="claude-chat-plan-modal">
-            <div className="claude-chat-plan-title">Claude가 <code>{pendingToolApproval.toolName}</code> 하도록 허용하시겠습니까?</div>
+            <div className="claude-chat-plan-title">{tt('approveToolPrompt', { toolName: pendingToolApproval.toolName })}</div>
             <div className="claude-chat-plan-body">
               <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
 {JSON.stringify(pendingToolApproval.toolInput, null, 2).slice(0, 2000)}
               </pre>
             </div>
             <div className="claude-chat-plan-actions">
-              <button className="claude-chat-plan-btn reject" onClick={denyTool}>❌ 거부</button>
-              <button className="claude-chat-plan-btn approve" onClick={approveTool} autoFocus>✅ 한 번만 허용</button>
+              <button className="claude-chat-plan-btn reject" onClick={denyTool}>{tt('deny')}</button>
+              <button className="claude-chat-plan-btn approve" onClick={approveTool} autoFocus>{tt('approveOnce')}</button>
             </div>
           </div>
         </div>
@@ -1586,13 +1588,13 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             onKeyDown={e => { if (e.key === 'Enter') approvePlan(); else if (e.key === 'Escape') rejectPlan(); }}
             tabIndex={0}
           >
-            <div className="claude-chat-plan-title">🗺 작업 계획 승인</div>
+            <div className="claude-chat-plan-title">{tt('planApprovalTitle')}</div>
             <div className="claude-chat-plan-body"
               dangerouslySetInnerHTML={{ __html: renderMd(pendingPlan) }}
             />
             <div className="claude-chat-plan-actions">
-              <button className="claude-chat-plan-btn reject" onClick={rejectPlan}>❌ 거부</button>
-              <button className="claude-chat-plan-btn approve" onClick={approvePlan} autoFocus>✅ 진행</button>
+              <button className="claude-chat-plan-btn reject" onClick={rejectPlan}>{tt('planDeny')}</button>
+              <button className="claude-chat-plan-btn approve" onClick={approvePlan} autoFocus>{tt('planProceed')}</button>
             </div>
           </div>
         </div>
@@ -1629,13 +1631,13 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               <>
                 <div className="claude-chat-usage-divider" />
                 <div className="claude-chat-usage-row" style={{ color: '#9cc' }}>
-                  <span className="claude-chat-usage-label">━ 컨텍스트 분해 (이 세션)</span>
+                  <span className="claude-chat-usage-label">{tt('usageContextBreakdown')}</span>
                   <span className="claude-chat-usage-val">{fmt(used)} / {fmt(maxCtx)} ({Math.round((used/maxCtx)*100)}%)</span>
                 </div>
-                <Bar color="#3a8bc8" label="신규 입력 (Messages)" n={messages} />
-                <Bar color="#7a8fa8" label="캐시 적중" n={cacheHit} />
-                <Bar color="#9b7ac8" label="캐시 생성" n={cacheCreate} />
-                <Bar color="#3a3a3a" label="여유 공간" n={free} />
+                <Bar color="#3a8bc8" label={tt('newInput')} n={messages} />
+                <Bar color="#7a8fa8" label={tt('cacheHit')} n={cacheHit} />
+                <Bar color="#9b7ac8" label={tt('cacheCreate')} n={cacheCreate} />
+                <Bar color="#3a3a3a" label={tt('free')} n={free} />
               </>
             );
           })()}
@@ -1648,25 +1650,25 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               </div>
               {subLimits.fiveHourPct && (
                 <div className="claude-chat-usage-row">
-                  <span className="claude-chat-usage-label">5시간 제한</span>
+                  <span className="claude-chat-usage-label">{tt('limit5h')}</span>
                   <span className="claude-chat-usage-val">{subLimits.fiveHourPct}{subLimits.fiveHourReset ? ` · ${subLimits.fiveHourReset}` : ''}</span>
                 </div>
               )}
               {subLimits.weeklyAllPct && (
                 <div className="claude-chat-usage-row">
-                  <span className="claude-chat-usage-label">주간 · 전체 모델</span>
+                  <span className="claude-chat-usage-label">{tt('weeklyAll')}</span>
                   <span className="claude-chat-usage-val">{subLimits.weeklyAllPct}{subLimits.weeklyAllReset ? ` · ${subLimits.weeklyAllReset}` : ''}</span>
                 </div>
               )}
               {subLimits.weeklyDesignPct && (
                 <div className="claude-chat-usage-row">
-                  <span className="claude-chat-usage-label">주간 · Claude Design</span>
+                  <span className="claude-chat-usage-label">{tt('weeklyClaudeDesign')}</span>
                   <span className="claude-chat-usage-val">{subLimits.weeklyDesignPct}</span>
                 </div>
               )}
               {subLimits.sonnetOnlyPct && (
                 <div className="claude-chat-usage-row">
-                  <span className="claude-chat-usage-label">Sonnet 만</span>
+                  <span className="claude-chat-usage-label">{tt('sonnetOnly')}</span>
                   <span className="claude-chat-usage-val">{subLimits.sonnetOnlyPct}{subLimits.sonnetOnlyReset ? ` · ${subLimits.sonnetOnlyReset}` : ''}</span>
                 </div>
               )}
@@ -1699,22 +1701,22 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                     }
                     setUsageProbe(out);
                   } else {
-                    setUsageProbe(`❌ ${r?.error || '실패'}`);
+                    setUsageProbe(tt('apiFailed', { error: r?.error || tt('failed') }));
                   }
                 } catch (e: any) {
                   setUsageProbe(`❌ ${e?.message || e}`);
                 }
                 setUsageProbeLoading(false);
               }}
-              title="~/.claude/projects 의 모든 세션 jsonl 을 스캔해 프로젝트별 누적 사용량 집계"
-            >{usageProbeLoading ? '⏳ 스캔 중...' : '📁 프로젝트 스캔'}</button>
+              title={tt('scanProjectsTitle')}
+            >{usageProbeLoading ? tt('scanLoading') : tt('scanProject')}</button>
             {false && (<button
               className="claude-chat-usage-probe-btn"
               style={{ marginLeft: 8, display: 'none' }}
               disabled={usageProbeLoading}
               onClick={async () => {
                 setUsageProbeLoading(true);
-                setUsageProbe('⏳ Claude TUI 로딩 중...');
+                setUsageProbe(tt('tuiLoading'));
                 try {
                   const r: any = await (window as any).api?.claudeProbeUsageTui?.();
                   if (r?.success && r.raw) {
@@ -1772,15 +1774,15 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                     const summary = wanted.length > 0 ? [...new Set(wanted)].join('\n') : '(/usage 출력 파싱 실패 — raw 참고)';
                     setUsageProbe(`📊 /usage TUI 결과\n─────────────────────\n${summary}\n\n──── RAW (디버그, 마지막 4000자) ────\n${raw.slice(-4000)}`);
                   } else {
-                    setUsageProbe(`❌ ${r?.error || '실패'}\n\n${(r?.raw || '').slice(0, 1000)}`);
+                    setUsageProbe(`${tt('apiFailed', { error: r?.error || tt('failed') })}\n\n${(r?.raw || '').slice(0, 1000)}`);
                   }
                 } catch (e: any) {
                   setUsageProbe(`❌ ${e?.message || e}`);
                 }
                 setUsageProbeLoading(false);
               }}
-              title="claude TUI 인터랙티브 spawn 후 /usage 명령 캡처"
-            >{usageProbeLoading ? '⏳' : '📊 구독 한도 (TUI)'}</button>)}
+              title={tt('tuiQuotaTitle')}
+            >{usageProbeLoading ? tt('tuiLoadingShort') : tt('tuiQuotaBtn')}</button>)}
           </div>
           {usageProbe && (
             <>
@@ -1788,7 +1790,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                 className="claude-chat-usage-probe-toggle"
                 onClick={() => setUsageProbeExpanded(v => !v)}
                 style={{ marginTop: 6, background: 'transparent', border: '1px solid #3a475a', color: '#aaa', padding: '2px 8px', borderRadius: 3, cursor: 'pointer', fontSize: 11 }}
-              >{usageProbeExpanded ? '⌄ 실행 결과 접기' : '› 실행 결과 펼치기'}</button>
+              >{usageProbeExpanded ? tt('collapseResult') : tt('expandResult')}</button>
               {usageProbeExpanded && (
                 <pre className="claude-chat-usage-probe-output">{usageProbe}</pre>
               )}
@@ -1797,25 +1799,25 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         </div>
       )}
       <div className="claude-chat-active-session">
-        🔗 SSH 컨텍스트:
+        {tt('sshContext')}
         <select
           className="claude-chat-session-select"
           value={selectedSshTermId || ''}
           onChange={e => setSelectedSshTermId(e.target.value || null)}
         >
-          <option value="">(선택 안 함)</option>
+          <option value="">{tt('sessionNone')}</option>
           {connectedSessions.map(s => (
             <option key={s.termId} value={s.termId}>{s.label}</option>
           ))}
         </select>
         {activeMount ? (
-          <span className="claude-chat-active-session-hint" title={`WebDAV 마운트: ${activeMount.mountRoot}`}>✓ 마운트됨 — Unix 경로 직접 사용 가능</span>
+          <span className="claude-chat-active-session-hint" title={`WebDAV mount: ${activeMount.mountRoot}`}>{tt('mounted')}</span>
         ) : selectedSshTermId ? (
-          <span className="claude-chat-active-session-hint" style={{ color: '#fa6' }}>⏳ 마운트 준비 중...</span>
+          <span className="claude-chat-active-session-hint" style={{ color: '#fa6' }}>{tt('mounting')}</span>
         ) : connectedSessions.length === 0 ? (
-          <span className="claude-chat-active-session-hint" style={{ color: '#a66' }}>연결된 SSH 세션 없음</span>
+          <span className="claude-chat-active-session-hint" style={{ color: '#a66' }}>{tt('noActiveSession')}</span>
         ) : (
-          <span className="claude-chat-active-session-hint">세션을 선택하면 Unix 경로 분석이 가능합니다</span>
+          <span className="claude-chat-active-session-hint">{tt('selectSessionHint')}</span>
         )}
       </div>
       {showHistoryPanel && (() => {
@@ -1827,37 +1829,37 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             className={`claude-chat-history-item ${activeHistoryId === h.id ? 'active' : ''}`}
             onClick={() => loadHistory(h)}
           >
-            <span className="claude-chat-history-title" title={h.title}>○ {h.title || '(제목 없음)'}</span>
+            <span className="claude-chat-history-title" title={h.title}>○ {h.title || tt('noTitle')}</span>
             <div className="claude-chat-history-actions">
-              <button title={h.pinned ? '핀 해제' : '핀 고정'} onClick={e => { e.stopPropagation(); togglePinHistory(h.id); }}>
+              <button title={h.pinned ? tt('unpinTitle') : tt('pinnedTitle')} onClick={e => { e.stopPropagation(); togglePinHistory(h.id); }}>
                 {h.pinned ? '📍' : '📌'}
               </button>
-              <button title="이름 변경" onClick={e => {
+              <button title={tt('renameTitle')} onClick={e => {
                 e.stopPropagation();
-                const v = prompt('새 제목', h.title);
+                const v = prompt(tt('renamePrompt'), h.title);
                 if (v && v.trim()) renameHistory(h.id, v.trim());
               }}>✎</button>
-              <button title="삭제" onClick={e => {
+              <button title={tt('deleteTitle')} onClick={e => {
                 e.stopPropagation();
-                if (confirm(`"${h.title}" 대화를 삭제할까요?`)) deleteHistory(h.id);
+                if (confirm(tt('confirmDeleteHistory', { title: h.title }))) deleteHistory(h.id);
               }}>×</button>
             </div>
           </div>
         );
         return (
           <div className="claude-chat-history-panel">
-            <div className="claude-chat-history-section-title">📌 Pinned</div>
-            {pinnedHist.length === 0 ? <div className="claude-chat-history-empty">고정된 대화 없음</div> : pinnedHist.map(renderItem)}
-            <div className="claude-chat-history-section-title">🕒 Recents</div>
-            {recentHist.length === 0 ? <div className="claude-chat-history-empty">최근 대화 없음</div> : recentHist.map(renderItem)}
+            <div className="claude-chat-history-section-title">{tt('pinnedSection')}</div>
+            {pinnedHist.length === 0 ? <div className="claude-chat-history-empty">{tt('noPinnedHistory')}</div> : pinnedHist.map(renderItem)}
+            <div className="claude-chat-history-section-title">{tt('recentsSection')}</div>
+            {recentHist.length === 0 ? <div className="claude-chat-history-empty">{tt('noRecentHistory')}</div> : recentHist.map(renderItem)}
           </div>
         );
       })()}
       <div className="claude-chat-messages" ref={scrollRef} style={showHistoryPanel ? { display: 'none' } : undefined}>
         {messages.length === 0 && (
           <div className="claude-chat-empty">
-            <p>Claude에게 질문하세요.</p>
-            <p>에디터의 "🤖 Claude" 버튼이나, 파일 트리에서 파일/폴더를 우클릭 → "Claude에 첨부"로 컨텍스트를 전달할 수 있습니다.</p>
+            <p>{tt('askPlaceholder')}</p>
+            <p>{tt('askEditorHint')}</p>
           </div>
         )}
         {(() => {
@@ -1915,17 +1917,17 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               const counts: Record<string, number> = {};
               for (const t of g.tools) {
                 const m = (t.label || '').match(/^([A-Za-z_][A-Za-z0-9_]*)/);
-                const name = m ? m[1] : '도구';
+                const name = m ? m[1] : tt('tool');
                 counts[name] = (counts[name] || 0) + 1;
               }
-              return Object.entries(counts).map(([k, v]) => `${k} ${v}개`).join(', ');
+              return Object.entries(counts).map(([k, v]) => `${k} ${tt('toolCount', { count: v })}`).join(', ');
             })();
             const anyRunning = g.tools.some(t => t.status === 'running');
             const anyError = g.tools.some(t => t.status === 'error');
             const headerIcon = anyRunning ? '⏳' : anyError ? '✕' : '✓';
             return (
               <div key={g.key} className={`claude-chat-tool-group ${expanded ? 'expanded' : 'collapsed'}`}>
-                <button className="claude-chat-tool-group-header" onClick={() => toggleToolGroup(groupKey)} title={expanded ? '접기' : '펼치기'}>
+                <button className="claude-chat-tool-group-header" onClick={() => toggleToolGroup(groupKey)} title={expanded ? tt('collapse') : tt('expand')}>
                   <span className="claude-chat-tool-group-caret">{expanded ? '⌄' : '›'}</span>
                   <span className="claude-chat-tool-group-icon">{headerIcon}</span>
                   <span className="claude-chat-tool-group-summary">{summary}</span>
@@ -1937,7 +1939,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                       const labelShort = t.label.length > 80 ? t.label.slice(0, 80) + '…' : t.label;
                       return (
                         <div key={`t-${t.id}`} className={`claude-chat-timeline-item ${t.status} ${isOpen ? 'open' : 'closed'}`}>
-                          <button className="claude-chat-timeline-row" onClick={() => toggleToolItem(t.id)} title={isOpen ? '접기' : '펼치기'}>
+                          <button className="claude-chat-timeline-row" onClick={() => toggleToolItem(t.id)} title={isOpen ? tt('collapse') : tt('expand')}>
                             <span className="claude-chat-timeline-caret">{isOpen ? '⌄' : '›'}</span>
                             <span className="claude-chat-timeline-status">
                               {t.status === 'running' ? '⏳' : t.status === 'done' ? '✓' : '✕'}
@@ -1960,8 +1962,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       {streaming && !showHistoryPanel && (
         <div className="claude-chat-streaming">
           <span className="claude-chat-streaming-dots">●●●</span>
-          <span className="claude-chat-streaming-activity">{activity || '🤔 생각 중...'}</span>
-          <button className="claude-chat-streaming-stop" onClick={stop} title="응답 중단">중단</button>
+          <span className="claude-chat-streaming-activity">{activity || tt('thinking')}</span>
+          <button className="claude-chat-streaming-stop" onClick={stop} title={tt('stop')}>{tt('stopShort')}</button>
         </div>
       )}
       <div className="claude-chat-input-area" style={showHistoryPanel ? { display: 'none' } : undefined}>
@@ -1970,27 +1972,27 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             <button
               className="claude-chat-rejected-plan-btn"
               onClick={() => { setPendingPlan(lastRejectedPlan); }}
-              title="실수로 거부했을 때 — 계획을 다시 띄워 재승인할 수 있음"
-            >📋 거부한 계획 다시 보기</button>
+              title={tt('showRejectedPlanTitle')}
+            >{tt('showRejectedPlan')}</button>
             <button
               className="claude-chat-rejected-plan-dismiss"
               onClick={() => setLastRejectedPlan(null)}
-              title="이 계획 제거"
+              title={tt('removeRejectedPlan')}
             >✕</button>
           </div>
         )}
         {mountEntries.length > 0 && (
           <div className="claude-chat-attachments staged">
             <div className="claude-chat-attachments-header">
-              <span>📂 WebDAV 마운트 {mountEntries.length}개 (실시간 SSH)</span>
-              {onClearMounted && <button className="claude-chat-attachments-clear" onClick={onClearMounted} title="첨부 해제">전체 제거</button>}
+              <span>{tt('attachWebdavTitle', { count: mountEntries.length })}</span>
+              {onClearMounted && <button className="claude-chat-attachments-clear" onClick={onClearMounted} title={tt('removeAttachment')}>{tt('removeAll')}</button>}
             </div>
             <div className="claude-chat-attachments-list">
               {mountEntries.map(m => (
                 <div key={`${m.termId}:${m.remotePath}`} className="claude-chat-attachment">
                   {m.isDir ? '📁' : '📄'}
                   <span className="claude-chat-attachment-path" title={`${m.remotePath}\n↓ UNC:\n${m.uncPath}`}>{m.remotePath}</span>
-                  {onRemoveMountedEntry && <button className="claude-chat-attachment-remove" onClick={() => onRemoveMountedEntry(m.remotePath, m.termId)} title="제거">×</button>}
+                  {onRemoveMountedEntry && <button className="claude-chat-attachment-remove" onClick={() => onRemoveMountedEntry(m.remotePath, m.termId)} title={tt('remove')}>×</button>}
                 </div>
               ))}
             </div>
@@ -1999,14 +2001,14 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         {attachments.length > 0 && (
           <div className="claude-chat-attachments">
             <div className="claude-chat-attachments-header">
-              <span>📎 첨부 {attachments.length}개 ({(totalAttachSize / 1024).toFixed(1)} KB)</span>
-              <button className="claude-chat-attachments-clear" onClick={clearAllAttachments} title="모두 제거">전체 제거</button>
+              <span>{tt('attachInline', { count: attachments.length, size: (totalAttachSize / 1024).toFixed(1) })}</span>
+              <button className="claude-chat-attachments-clear" onClick={clearAllAttachments} title={tt('removeAll')}>{tt('removeAll')}</button>
             </div>
             <div className="claude-chat-attachments-list">
               {attachments.map(a => (
                 <div key={a.remotePath} className="claude-chat-attachment">
                   📄 <span className="claude-chat-attachment-path" title={a.remotePath}>{a.remotePath}</span>
-                  <button className="claude-chat-attachment-remove" onClick={() => removeAttachment(a.remotePath)} title="제거">×</button>
+                  <button className="claude-chat-attachment-remove" onClick={() => removeAttachment(a.remotePath)} title={tt('remove')}>×</button>
                 </div>
               ))}
             </div>
@@ -2015,8 +2017,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         {localFileAttachments.length > 0 && (
           <div className="claude-chat-attachments">
             <div className="claude-chat-attachments-header">
-              <span>📁 로컬 {localFileAttachments.length}개 파일</span>
-              <button className="claude-chat-attachments-clear" onClick={() => setLocalFileAttachments([])}>전체 제거</button>
+              <span>{tt('attachLocalCount', { count: localFileAttachments.length })}</span>
+              <button className="claude-chat-attachments-clear" onClick={() => setLocalFileAttachments([])}>{tt('removeAll')}</button>
             </div>
             <div className="claude-chat-attachments-list">
               {localFileAttachments.map((f, i) => (
@@ -2032,7 +2034,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         <div className="claude-chat-toolbar">
           <button
             className="claude-chat-tool-btn"
-            title="로컬 파일 첨부"
+            title={tt('attachLocalFile')}
             onClick={() => fileUploadRef.current?.click()}
           >📄+</button>
           <input
@@ -2044,7 +2046,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           />
           <button
             className="claude-chat-tool-btn"
-            title="로컬 폴더 첨부 (텍스트 파일만, 재귀)"
+            title={tt('attachLocalFolder')}
             onClick={() => folderUploadRef.current?.click()}
           >📁+</button>
           <input
@@ -2060,7 +2062,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           <div className="claude-chat-cmd-wrap">
             <button
               className="claude-chat-tool-btn"
-              title="슬래시 명령 메뉴"
+              title={tt('slashMenu')}
               onClick={e => { e.stopPropagation(); setCommandMenuOpen(v => !v); }}
             >/</button>
             {commandMenuOpen && (
@@ -2084,7 +2086,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                 />
                 <div className="claude-chat-cmd-list">
                   {filteredPalette.length === 0 && (
-                    <div className="claude-chat-cmd-empty">일치하는 항목 없음</div>
+                    <div className="claude-chat-cmd-empty">{tt('noMatch')}</div>
                   )}
                   {(() => {
                     const rows: React.ReactNode[] = [];
@@ -2116,7 +2118,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             className="claude-chat-perm-select"
             value={model}
             onChange={e => setModel(e.target.value)}
-            title="모델 선택"
+            title={tt('modelSelect')}
           >
             {availableModels.length > 0 ? (() => {
               // API 응답을 정렬 — 최신 (created_at desc), Opus → Sonnet → Haiku 순
@@ -2154,30 +2156,30 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             className="claude-chat-perm-select"
             value={effort}
             onChange={e => setEffort(e.target.value)}
-            title="작업량 (Effort) — 모델이 출력에 쓰는 thinking 양"
+            title={tt('effortTitle')}
           >
             {(() => {
               // 모델별 지원 effort 레벨 — 첫 번째 모델의 capabilities.effort 참고
               const supported = availableModels[0]?.capabilities?.effort;
-              const labels: Record<string, string> = { low: '낮음', medium: '보통', high: '높음', max: 'Max' };
+              const labels: Record<string, string> = { low: tt('effort.low'), medium: tt('effort.medium'), high: tt('effort.high'), max: tt('effort.max') };
               const all = ['low', 'medium', 'high', 'max'];
               const enabled = supported ? all.filter(k => supported[k]?.supported) : all;
               return enabled.map(v => <option key={v} value={v}>{labels[v]}</option>);
             })()}
           </select>
-          <label className="claude-chat-tool-approval-label" title="각 Bash/Edit/Write 툴 호출마다 승인 요청">
+          <label className="claude-chat-tool-approval-label" title={tt('toolApprovalTitle')}>
             <input type="checkbox" checked={perToolApproval} onChange={e => setPerToolApproval(e.target.checked)} />
-            툴별 승인
+            {tt('toolApprovalLabel')}
           </label>
           <select
             className="claude-chat-perm-select"
             value={permissionMode}
             onChange={e => setPermissionMode(e.target.value as any)}
-            title="권한 모드 — 편집 전 확인(기본)은 계획을 먼저 보여주고, '실행' 또는 '진행' 등으로 답하면 실행합니다"
+            title={tt('permissionTitle')}
           >
-            <option value="default">🖐 권한 요청</option>
-            <option value="acceptEdits">✏️ 편집 수락</option>
-            <option value="plan">📋 계획 모드</option>
+            <option value="default">{tt('perm.default')}</option>
+            <option value="acceptEdits">{tt('perm.acceptEdits')}</option>
+            <option value="plan">{tt('perm.plan')}</option>
           </select>
         </div>
         <textarea
@@ -2190,7 +2192,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               handleSend();
             }
           }}
-          placeholder="질문을 입력하세요 (Shift+Enter 줄바꿈)"
+          placeholder={tt('inputPlaceholder')}
           rows={3}
           disabled={streaming}
         />
@@ -2202,7 +2204,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             onMouseLeave={() => setShowUsageTooltip(false)}
             onClick={() => { showUsage(); fetchUsageApi(); }}
           >
-            <span className="claude-chat-usage-trigger" title="클릭=상세 패널 / 마우스 오버=간단 요약">
+            <span className="claude-chat-usage-trigger" title={tt('usageTriggerTitle')}>
               {(() => {
                 const label = model === 'opus[1m]' ? 'Opus 4.7 1M' : model === 'opus' ? 'Opus 4.7' : model === 'sonnet[1m]' ? 'Sonnet 4.6 1M' : model === 'sonnet' ? 'Sonnet 4.6' : model === 'haiku' ? 'Haiku 4.5' : model === 'opusplan' ? 'Opus Plan' : model;
                 return `📊 ${label}`;
@@ -2222,9 +2224,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             })()}
           </div>
           {streaming ? (
-            <button className="claude-chat-btn stop" onClick={stop}>중단</button>
+            <button className="claude-chat-btn stop" onClick={stop}>{tt('stopShort')}</button>
           ) : (
-            <button className="claude-chat-btn send" onClick={handleSend} disabled={!input.trim()}>전송 (Enter)</button>
+            <button className="claude-chat-btn send" onClick={handleSend} disabled={!input.trim()}>{tt('send')}</button>
           )}
         </div>
       </div>
@@ -2292,11 +2294,11 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             onContextMenu={e => e.preventDefault()}
             onClick={e => e.stopPropagation()}
           >
-            <div className="claude-chat-msg-ctx-item" onClick={copyPlain}>메시지 복사</div>
-            <div className="claude-chat-msg-ctx-item" onClick={copyMarkdown}>마크다운으로 복사</div>
-            <div className="claude-chat-msg-ctx-item" onClick={attachAsContext}>메시지를 컨텍스트로 첨부</div>
+            <div className="claude-chat-msg-ctx-item" onClick={copyPlain}>{tt('msgCtx.copy')}</div>
+            <div className="claude-chat-msg-ctx-item" onClick={copyMarkdown}>{tt('msgCtx.copyMarkdown')}</div>
+            <div className="claude-chat-msg-ctx-item" onClick={attachAsContext}>{tt('msgCtx.attachAsContext')}</div>
             <div className="claude-chat-msg-ctx-sep" />
-            <div className="claude-chat-msg-ctx-item" onClick={forkHere}>여기서 포크하기</div>
+            <div className="claude-chat-msg-ctx-item" onClick={forkHere}>{tt('msgCtx.forkHere')}</div>
           </div>
         );
       })()}

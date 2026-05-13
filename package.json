@@ -17,6 +17,7 @@
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
     "@types/react-window": "^1.8.8",
+    "i18next": "^26.1.0",
     "iconv-lite": "^0.6.3",
     "marked": "^18.0.2",
     "mermaid": "^11.14.0",
@@ -24,6 +25,7 @@
     "node-pty": "^1.1.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "react-i18next": "^17.0.7",
     "react-window": "^1.8.11",
     "ssh2": "^1.11.0",
     "sudo-prompt": "^9.2.1",
@@ -81,6 +83,13 @@
         "filter": [
           "RELEASE_v*.md"
         ]
+      },
+      {
+        "from": "resources/i18n",
+        "to": "i18n",
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "asarUnpack": [
@@ -104,7 +113,9 @@
         {
           "from": "resources/openvpn-win",
           "to": "openvpn",
-          "filter": ["**/*"]
+          "filter": [
+            "**/*"
+          ]
         }
       ]
     },
@@ -131,7 +142,9 @@
         {
           "from": "resources/openvpn-mac",
           "to": "openvpn",
-          "filter": ["**/*"]
+          "filter": [
+            "**/*"
+          ]
         }
       ],
       "identity": null,

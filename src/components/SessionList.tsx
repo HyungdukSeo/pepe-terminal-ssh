@@ -1,5 +1,6 @@
 // src/components/SessionList.tsx
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { SessionEditor } from './SessionEditor';
 
 type LoginScriptRule = {
@@ -44,6 +45,7 @@ type Props = {
 };
 
 export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisconnect, onFileTransfer, onOpenSqlTool, targetPanelId, workspaceTabs = [], activeTabId }) => {
+  const { t } = useTranslation('sessionList');
   const [sessions, setSessions] = useState<Session[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [width, setWidth] = useState<number>(() => {
@@ -183,10 +185,14 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
   };
 
   const handleDelete = async () => {
+    // confirm() 후 Windows BrowserWindow 포커스 복원 (입력칸 커서 회복용)
+    const refocus = () => { try { (window as any).api?.refocusWindow?.(); } catch {} };
     // 다중 선택 삭제
     if (selectedIds.size > 0) {
       const ids = [...selectedIds];
-      if (!confirm(`${ids.length}개 항목을 삭제하시겠습니까?`)) return;
+      const ok = confirm(t('deleteItems', { count: ids.length }));
+      refocus();
+      if (!ok) return;
       for (const id of ids) {
         if (sessions.some(x => x.id === id)) await window.api?.deleteSession?.(id);
         if (folders.some(x => x.id === id)) await (window as any).api.deleteFolder(id);
@@ -200,14 +206,20 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
     if (!selectedId) return;
     if (selectedType === 'folder') {
       const f = folders.find(x => x.id === selectedId);
-      if (!f || !confirm(`폴더 [${f.name}]를 삭제하시겠습니까?`)) return;
+      if (!f) return;
+      const ok = confirm(t('deleteFolder', { name: f.name }));
+      refocus();
+      if (!ok) return;
       await (window as any).api.deleteFolder(selectedId);
       await reload();
       setSelectedId(null);
       return;
     }
     const s = sessions.find(x => x.id === selectedId);
-    if (!s || !confirm(`세션 [${s.name}]를 삭제하시겠습니까?`)) return;
+    if (!s) return;
+    const ok = confirm(t('deleteSession', { name: s.name }));
+    refocus();
+    if (!ok) return;
     await window.api?.deleteSession?.(selectedId);
     await reload();
     setSelectedId(null);
@@ -215,7 +227,7 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
 
   const handleAddFolder = async () => {
     const parentId = selectedType === 'folder' ? selectedId : undefined;
-    const folder = { id: `folder-${Date.now()}`, name: 'New Folder', parentId: parentId ?? undefined };
+    const folder = { id: `folder-${Date.now()}`, name: t('newFolderDefault'), parentId: parentId ?? undefined };
     await (window as any).api.saveFolder(folder);
     await reload();
   };
@@ -453,8 +465,8 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
       {/* 자동숨기기 모드: 세로 탭 트리거 */}
       {!pinned && (
         <div className="session-sidebar-trigger">
-          <div className="session-sidebar-trigger-top" onClick={handleClickTrigger} onMouseEnter={handleMouseEnterTrigger} onMouseLeave={handleMouseLeaveTrigger} style={{ cursor: 'pointer' }} title="클릭=토글 / 2.5초 오버=자동 열림">
-            <span className="session-sidebar-trigger-text">📡 세션 관리</span>
+          <div className="session-sidebar-trigger-top" onClick={handleClickTrigger} onMouseEnter={handleMouseEnterTrigger} onMouseLeave={handleMouseLeaveTrigger} style={{ cursor: 'pointer' }} title={t('triggerTitle')}>
+            <span className="session-sidebar-trigger-text">{t('triggerLabel')}</span>
           </div>
           <div className="session-sidebar-trigger-bottom" />
         </div>
@@ -467,21 +479,21 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
         onMouseEnter={handleMouseEnterSidebar}
       >
         <div className="session-toolbar">
-          <div className="session-toolbar-title">세션 관리</div>
+          <div className="session-toolbar-title">{t('toolbarTitle')}</div>
           <button
             className={`btn-pin ${pinned ? 'pinned' : ''}`}
             onClick={() => setPinned(p => !p)}
-            title={pinned ? 'Unpin (auto-hide)' : 'Pin sidebar'}
+            title={pinned ? t('unpinTooltip') : t('pinTooltip')}
           >
             📌
           </button>
         </div>
 
         <div className="session-bottom-actions">
-          <button className="btn-add" onClick={handleAddFolder} title="폴더 추가">📁+</button>
-          <button className="btn-add" onClick={handleAdd}>추가</button>
-          <button className="btn-edit" onClick={handleEdit} disabled={!selectedId}>편집</button>
-          <button className="btn-delete" onClick={handleDelete} disabled={!selectedId}>삭제</button>
+          <button className="btn-add" onClick={handleAddFolder} title={t('addFolder')}>📁+</button>
+          <button className="btn-add" onClick={handleAdd}>{t('add')}</button>
+          <button className="btn-edit" onClick={handleEdit} disabled={!selectedId}>{t('edit')}</button>
+          <button className="btn-delete" onClick={handleDelete} disabled={!selectedId}>{t('delete')}</button>
         </div>
 
         <div
@@ -553,7 +565,7 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
             // Ctrl+V: 세션 붙여넣기
             if ((e.ctrlKey || e.metaKey) && e.key === 'v' && copiedSession) {
               e.preventDefault();
-              const newSess = { ...copiedSession, id: `sess-${Date.now()}`, name: `${copiedSession.name} (복사)` };
+              const newSess = { ...copiedSession, id: `sess-${Date.now()}`, name: `${copiedSession.name} (${t('copySuffix')})` };
               (async () => { await (window as any).api.saveSession(newSess); await reload(); setSelectedId(newSess.id); setSelectedType('session'); })();
             }
           }}
@@ -596,18 +608,18 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
         return (
           <div className="folder-picker-backdrop" onClick={() => setFolderPicker(null)}>
             <div className="folder-picker" onClick={e => e.stopPropagation()}>
-              <div className="folder-picker-title">폴더로 이동</div>
+              <div className="folder-picker-title">{t('folderPickerTitle')}</div>
               <div className="folder-picker-list">
                 <div className="folder-picker-item" onClick={() => {
                   (async () => { await (window as any).api.moveToFolder(folderPicker.sessionId, null); await reload(); })();
                   setFolderPicker(null);
                 }}>
-                  📂 (루트)
+                  {t('folderRoot')}
                 </div>
                 {renderTree(undefined, 0)}
               </div>
               <div className="folder-picker-actions">
-                <button onClick={() => setFolderPicker(null)}>취소</button>
+                <button onClick={() => setFolderPicker(null)}>{t('cancel')}</button>
               </div>
             </div>
           </div>
@@ -634,19 +646,19 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
                 if (selectedSessions.length === 0) return null;
                 return (
                   <>
-                    <div className="context-menu-label">{selectedSessions.length}개 세션 선택됨</div>
+                    <div className="context-menu-label">{t('ctxSelectedCount', { count: selectedSessions.length })}</div>
                     <div className="context-menu-label" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px' }}>
-                      <span style={{ fontSize: 11, color: '#aaa' }}>대상:</span>
+                      <span style={{ fontSize: 11, color: '#aaa' }}>{t('ctxTarget')}</span>
                       <select
                         value={multiTargetWs}
                         onChange={e => setMultiTargetWs(e.target.value)}
                         onClick={e => e.stopPropagation()}
                         style={{ flex: 1, background: '#222', color: '#eee', border: '1px solid #444', borderRadius: 3, padding: '2px 4px', fontSize: 11 }}
                       >
-                        <option value="current">현재 워크스페이스</option>
-                        <option value="new">새 워크스페이스</option>
-                        {workspaceTabs.filter(t => t.id !== activeTabId).map(t => (
-                          <option key={t.id} value={t.id}>{t.title}</option>
+                        <option value="current">{t('ctxCurrentWs')}</option>
+                        <option value="new">{t('ctxNewWs')}</option>
+                        {workspaceTabs.filter(tab => tab.id !== activeTabId).map(tab => (
+                          <option key={tab.id} value={tab.id}>{tab.title}</option>
                         ))}
                       </select>
                     </div>
@@ -660,10 +672,10 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
                       };
                       return (
                         <>
-                          <div className="context-menu-item" onClick={() => doConnect('minitab')}>📑 미니탭으로 연결</div>
-                          <div className="context-menu-item" onClick={() => doConnect('split-v')}>▐ 세로 분할로 연결</div>
-                          <div className="context-menu-item" onClick={() => doConnect('split-h')}>▄ 가로 분할로 연결</div>
-                          <div className="context-menu-item" onClick={() => doConnect('split-tile')}>⊞ 타일 분할로 연결</div>
+                          <div className="context-menu-item" onClick={() => doConnect('minitab')}>{t('ctxConnectMini')}</div>
+                          <div className="context-menu-item" onClick={() => doConnect('split-v')}>{t('ctxConnectVSplit')}</div>
+                          <div className="context-menu-item" onClick={() => doConnect('split-h')}>{t('ctxConnectHSplit')}</div>
+                          <div className="context-menu-item" onClick={() => doConnect('split-tile')}>{t('ctxConnectTile')}</div>
                         </>
                       );
                     })()}
@@ -672,13 +684,13 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
                 );
               })()}
               <div className="context-menu-item" onClick={() => { setContextMenu(null); handleDelete(); }}>
-                🗑 선택 항목 삭제
+                {t('ctxDeleteSelected')}
               </div>
             </>
           ) : (
           <>
           <div className="context-menu-item" onClick={() => { startRename(contextMenu.id, contextMenu.type, contextMenu.name); setContextMenu(null); }}>
-            이름 변경
+            {t('ctxRename')}
           </div>
           <div className="context-menu-item" onClick={() => {
             setSelectedId(contextMenu.id);
@@ -686,7 +698,7 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
             setContextMenu(null);
             handleDelete();
           }}>
-            삭제
+            {t('delete')}
           </div>
           {contextMenu.type === 'session' && (
             <>
@@ -695,24 +707,24 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
                 if (s) setEditing(s);
                 setContextMenu(null);
               }}>
-                편집
+                {t('edit')}
               </div>
               <div className="context-menu-item" onClick={() => {
                 const s = sessions.find(x => x.id === contextMenu.id);
                 if (s) setCopiedSession(s);
                 setContextMenu(null);
               }}>
-                복사
+                {t('ctxCopy')}
               </div>
             </>
           )}
           {copiedSession && (
             <div className="context-menu-item" onClick={() => {
-              const newSess = { ...copiedSession, id: `sess-${Date.now()}`, name: `${copiedSession.name} (복사)` };
+              const newSess = { ...copiedSession, id: `sess-${Date.now()}`, name: `${copiedSession.name} (${t('copySuffix')})` };
               (async () => { await (window as any).api.saveSession(newSess); await reload(); setSelectedId(newSess.id); setSelectedType('session'); })();
               setContextMenu(null);
             }}>
-              붙여넣기
+              {t('ctxPaste')}
             </div>
           )}
           {contextMenu.type === 'session' && (
@@ -721,7 +733,7 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
               if (s) onFileTransfer?.(s.id, s.name);
               setContextMenu(null);
             }}>
-              📁 파일 전송
+              {t('ctxFileTransfer')}
             </div>
           )}
           {contextMenu.type === 'session' && (() => {
@@ -736,10 +748,10 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
             ) : null;
           })()}
           <div className="context-menu-separator" />
-          <div className="context-menu-item" onClick={() => { (async () => { await (window as any).api.reorderSession(contextMenu.id, contextMenu.type, 'up'); await reload(); })(); setContextMenu(null); }}>↑ 위로</div>
-          <div className="context-menu-item" onClick={() => { (async () => { await (window as any).api.reorderSession(contextMenu.id, contextMenu.type, 'down'); await reload(); })(); setContextMenu(null); }}>↓ 아래로</div>
-          <div className="context-menu-item" onClick={() => { (async () => { await (window as any).api.reorderSession(contextMenu.id, contextMenu.type, 'top'); await reload(); })(); setContextMenu(null); }}>⤒ 맨 위로</div>
-          <div className="context-menu-item" onClick={() => { (async () => { await (window as any).api.reorderSession(contextMenu.id, contextMenu.type, 'bottom'); await reload(); })(); setContextMenu(null); }}>⤓ 맨 아래로</div>
+          <div className="context-menu-item" onClick={() => { (async () => { await (window as any).api.reorderSession(contextMenu.id, contextMenu.type, 'up'); await reload(); })(); setContextMenu(null); }}>{t('ctxUp')}</div>
+          <div className="context-menu-item" onClick={() => { (async () => { await (window as any).api.reorderSession(contextMenu.id, contextMenu.type, 'down'); await reload(); })(); setContextMenu(null); }}>{t('ctxDown')}</div>
+          <div className="context-menu-item" onClick={() => { (async () => { await (window as any).api.reorderSession(contextMenu.id, contextMenu.type, 'top'); await reload(); })(); setContextMenu(null); }}>{t('ctxTop')}</div>
+          <div className="context-menu-item" onClick={() => { (async () => { await (window as any).api.reorderSession(contextMenu.id, contextMenu.type, 'bottom'); await reload(); })(); setContextMenu(null); }}>{t('ctxBottom')}</div>
           {contextMenu.type === 'session' && folders.length > 0 && (
             <>
               <div className="context-menu-separator" />
@@ -747,7 +759,7 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
                 setFolderPicker({ sessionId: contextMenu.id });
                 setContextMenu(null);
               }}>
-                📂 폴더로 이동...
+                {t('ctxMoveToFolder')}
               </div>
             </>
           )}

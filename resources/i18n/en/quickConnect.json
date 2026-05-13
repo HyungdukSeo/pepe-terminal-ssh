@@ -1,0 +1,14 @@
+{
+  "close": "Close",
+  "label": "Quick connect",
+  "protocolTitle": "Protocol",
+  "sftpFixed": "File transfer workspace uses SFTP only",
+  "hostPlaceholder": "host (IPv4/IPv6/domain)",
+  "hostInvalid": "Enter a valid IPv4/IPv6/hostname",
+  "encoding": "Encoding",
+  "username": "username",
+  "password": "password",
+  "showPassword": "Show",
+  "hidePassword": "Hide",
+  "connect": "Connect"
+}

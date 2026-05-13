@@ -1,0 +1,51 @@
+{
+  "title": "PePe Terminal(SSH) v{{version}}",
+  "credits": "만든이: Claude (feat. ghjeong[prompt])",
+  "unknown": "(알 수 없음)",
+  "sessionsPath": "── 세션 저장 경로 ──",
+  "releaseNotesHeader": "──────────────────────────────\n📋 v{{version}} 릴리즈 노트\n──────────────────────────────",
+  "terminalBasics": {
+    "heading": "── 터미널 기본 ──",
+    "body": "SSH/SFTP 원격 접속 (비밀번호/키/Expect-Send 로그인)\nProxyJump — primary 호스트 경유 점프 타겟 SSH+SFTP 직결\n로컬 쉘 (PowerShell, CMD, Git Bash, WSL)\n기본 쉘 설정 / 미니탭별 쉘 선택\n테마 / 글꼴 / 인코딩(utf-8/cp949/euc-kr) 변경\n자동 재연결 (30초), 초기 연결 watchdog (20초 × 3회 재시도)\n터미널 투명도 (0~100 슬라이더) / 데스크톱 투시 / Alt+Enter 전체화면"
+  },
+  "workspacePanel": {
+    "heading": "── 워크스페이스 / 패널 ──",
+    "body": "다중 워크스페이스 탭\n분할 패널 (가로/세로/타일 ⊞ N×ceil√N)\n플로팅 확대 (패널 전체화면 오버레이)\n패널별 미니탭, 탭 간 드래그앤드롭\n미니탭 휠 스크롤 / ‹ › 버튼\n탭별 선택 패널 기억 (재진입 시 자동 포커스)\n선택된 패널 클릭 포커스 → 파일트리/Claude 컨텍스트 자동 전환"
+  },
+  "sessionMgmt": {
+    "heading": "── 세션 관리 ──",
+    "body": "폴더 + 세션 혼합 정렬 (Ctrl+↑/↓ 이동, 다중 선택)\nShift+클릭 범위 선택 / Ctrl+클릭 다중 선택\n세션 가져오기/내보내기 (SecureCRT, Xshell)\n세션 재클릭으로 encoding 창 토글\nhost:port 호버 플로팅 툴팁\n폴더 펼침/접힘 상태 영속화 (앱 재시작 후 유지)\n세션 편집:\n  - 파일트리 초기 경로 지정\n  - ProxyJump 점프 호스트 설정\n  - 파일트리 자동추적 옵션 (cd 시 동기화)\n  - 로그인 스크립트 (Expect/Send)"
+  },
+  "remoteExplorer": {
+    "heading": "── 원격 파일 탐색/편집 (VS Code Remote 스타일) ──",
+    "body": "워크스페이스 공유 파일 트리 (선택된 패널 세션 기준)\n파일트리 핀/자동숨김 (📌 토글)\n파일트리 너비 드래그 리사이즈 (160~800px)\nSFTP 목록, mtime 정렬, 확장자별 색상/아이콘 (15+ 카테고리)\n다중 선택 (Ctrl/Shift+클릭) + 일괄 다운로드\n우클릭 메뉴: 파일 열기 / Claude 첨부 / 경로 복사 / 삭제\nMonaco 에디터 탭 (구문강조, Ctrl+S 저장)\n듀얼 패널 파일 탐색기 (SFTP/로컬 양방향) + ProxyJump 지원"
+  },
+  "claudeIntegration": {
+    "heading": "── Claude Code 통합 ──",
+    "body": "우측 Claude 채팅 사이드바 (핀/자동숨김, 드래그 리사이즈)\n세션/파일트리/Claude 모두 unpin 시 z-index 마우스호버 우선\nWebDAV 브리지 — 원격 SSH 를 로컬 UNC 로 실시간 마운트\nUnix 경로 자동 UNC 번역 (/view/... → \\\\127.0.0.1@port\\...)\nMCP ssh_exec — Claude 가 원격 SSH 명령 실행 (cleartool 등)\n모델 선택 (Opus / Sonnet / Haiku / Opus Plan)\n권한 모드 (편집 전 확인 / 자동 수락 / 계획 / 모두 허용)\nPlan 모드 + ExitPlanMode 승인 모달 (마크다운 + Mermaid 렌더)\nPreToolUse hooks 기반 툴 단위 승인 (체크박스)\n대화 세션 이어가기 (--resume) + stale 세션 자동 폴백\n로컬 파일/폴더 첨부 (📄+ / 📁+ webkitdirectory 재귀)\n슬래시 명령 팔레트 (Context/Model/Permission/Slash, 필터 + ↑↓ 네비)\n툴 타임라인 실시간 인디케이터 (⏳/✓/✕)\n채팅창 독립 폰트 설정 + Ctrl+Wheel 크기 조절\n대화 이력 관리 (Pinned/Recents, 이름 변경, 핀 고정, 삭제)\n대화 백그라운드 진행 — + 새 대화 시작해도 이전 대화 응답 계속 수신\n대화 포크 (메시지 우클릭 → 여기서 포크하기, 이전 컨텍스트 transcript 자동 inject)\n메시지 우클릭 메뉴 (텍스트/마크다운 복사, 컨텍스트 첨부, 포크)\nMermaid 다이어그램 자동 SVG 렌더 + 우클릭 PNG/SVG 저장·복사\nGFM 테이블 자동 렌더 (탭 정렬 텍스트도 표로 자동 변환)\nAskUserQuestion / ToolSearch 도구 차단 (비대화형 모드 안정성)\nrequestId 단위 프로세스 분리 — 다중 대화 동시 진행, 정확한 stop"
+  },
+  "vNewly": {
+    "heading": "── v2.0.6 신규 ──",
+    "body": "PWD 자동추적 백그라운드 폴링 — 셸 history 0건 (별도 SSH exec 채널로 /proc/PID/cwd 폴링)\n세션관리/파일트리/Claude 사이드바 트리거 둥근 모서리\n워크스페이스 탭 드래그로 순서 변경\n미니탭바 우측 컨트롤 토글 (⋯ 버튼) — 분할/플로팅/투명도 플로팅 팝업\n터미널 우클릭 메뉴에 테마 변경 추가 (per-term)\nMermaid 다이어그램 PNG/SVG 저장·복사 + 우클릭 메뉴\nPlan 승인 모달도 Mermaid 자동 렌더\nGFM 테이블 + 탭 정렬 텍스트 자동 변환\n일괄전송바·파일전송 세션 드롭다운: 🟢 연결됨 / ⚪ 연결안됨 그룹화\n타이틀바 단순 클릭으로 최대화 창 복원되던 문제 수정 (5px 드래그 임계값)\n터미널 vi 등 풀스크린 앱 사이즈 즉시 동기화 — refit 시 숨겨진 터미널 스킵\nAlt+Enter 최대화 + 미니탭 플로팅 토글 시 화면 사라지는 문제 수정\n도움말/정보 모달 스크롤 가능, 닫을 때 자동 터미널 포커스 복원\n윈도우 포커스 복귀 시 자동 터미널 포커스 (Alt+Tab 등)"
+  },
+  "inputBroadcast": {
+    "heading": "── 입력/브로드캐스트 ──",
+    "body": "텍스트 일괄 전송 (현재/보이는 탭/연결된 세션/전체 세션 lazy connect)\n빠른 연결 바 (host/user/password/enc 즉석 접속)\nCtrl+C / Ctrl+D 브로드캐스트\n브로드캐스트 히스토리 (↑↓ 네비)\nEsc 로 바가 닫히지 않음 — 닫기는 ✕ 버튼으로만"
+  },
+  "search": {
+    "heading": "── 찾기 / 검색 ──",
+    "body": "터미널 찾기 (Ctrl+Shift+F), 이력, 하이라이트\n이전 / 다음 네비게이션"
+  },
+  "settings": {
+    "heading": "── 설정 (옵션) ──",
+    "body": "기본 로컬 쉘 선택\n탐색기 우클릭 \"Open here\" 등록/해제\n세션 저장 경로 변경\n단축키 커스터마이즈\n터미널 설정 (word separator, scrollback 등)\n내부 매뉴얼 뷰어 (docs/MANUAL.md)"
+  },
+  "windowsIntegration": {
+    "heading": "── Windows 시스템 연동 ──",
+    "body": "윈도우 프레임 없음 / 투명 / 최대화-복원\n탐색기 \"Open here\" → 워크스페이스 해당 디렉토리 쉘"
+  },
+  "techStack": {
+    "heading": "── 기술 스택 ──",
+    "body": "Electron + React + TypeScript + Vite\nxterm.js (터미널), Monaco Editor (코드 편집)\nnode-pty (로컬 쉘), ssh2 (SSH/SFTP)\nwebdav-server (SFTP→WebDAV 프록시)\nmarked (Markdown), iconv-lite (인코딩)\nClaude Code CLI (@anthropic-ai/claude-code)"
+  }
+}

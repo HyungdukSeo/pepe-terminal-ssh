@@ -1,0 +1,67 @@
+{
+  "title": "Options",
+  "dragToMove": "Glisser pour déplacer",
+  "tabs": {
+    "terminal": "Terminal",
+    "session": "Sessions",
+    "keybindings": "Raccourcis"
+  },
+  "clipboard": {
+    "heading": "Presse-papiers",
+    "autoCopyOnSelect": "Copier automatiquement le texte sélectionné dans le presse-papiers",
+    "includeTrailingNewline": "Inclure le saut de ligne final lors de la copie de la sélection",
+    "trimTrailingWhitespace": "Supprimer les espaces de fin lors de la copie"
+  },
+  "paste": {
+    "heading": "Coller",
+    "multiLineNote": "Lors du collage de plusieurs lignes :",
+    "dialog": "Ouvrir la boîte de dialogue de collage multiligne",
+    "direct": "Coller directement dans le terminal"
+  },
+  "font": {
+    "heading": "Police",
+    "defaultLabel": "Par défaut (Cascadia Mono)",
+    "size": "Taille de police",
+    "claudeHeading": "Police du chat Claude",
+    "claudeHint": "Indépendante du terminal. Ctrl+Molette dans le chat ajuste aussi la taille.",
+    "claudeDefaultLabel": "Par défaut (police système)",
+    "claudeSize": "Taille de police du chat Claude"
+  },
+  "scrollback": {
+    "heading": "Tampon de défilement (lignes)",
+    "hint": "Nombre de lignes de sortie conservées par session de terminal (défaut : 10000)"
+  },
+  "defaultShell": {
+    "heading": "Shell local par défaut"
+  },
+  "wordSeparator": {
+    "heading": "Caractères séparateurs de mots",
+    "hint": "Caractères qui interrompent la sélection de mots au double-clic"
+  },
+  "sessionsPath": {
+    "heading": "Chemin de stockage des sessions",
+    "unknown": "(inconnu)",
+    "open": "Ouvrir le dossier",
+    "change": "Changer le chemin...",
+    "reset": "Réinitialiser",
+    "editFile": "Modifier le fichier"
+  },
+  "contextMenu": {
+    "heading": "Menu clic droit de l'Explorateur",
+    "hint": "Ajoute « Ouvrir PePe Terminal ici » au menu clic droit de l'Explorateur Windows.",
+    "register": "Enregistrer",
+    "unregister": "Désenregistrer",
+    "registered": "● Enregistré",
+    "notRegistered": "○ Non enregistré"
+  },
+  "keybindings": {
+    "pressKey": "Appuyez sur une touche...",
+    "cancel": "Annuler",
+    "change": "Modifier",
+    "reset": "Réinitialiser"
+  },
+  "actions": {
+    "cancel": "Annuler",
+    "save": "Enregistrer"
+  }
+}

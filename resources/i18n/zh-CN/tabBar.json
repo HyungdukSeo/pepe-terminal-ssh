@@ -1,0 +1,19 @@
+{
+  "addWorkspace": "新建工作区",
+  "addTooltip": "新建工作区（终端/浏览器）",
+  "terminalWorkspace": "💻 终端工作区",
+  "browserWorkspace": "🌐 浏览器工作区",
+  "compareWorkspace": "🔍 文件对比工作区",
+  "logAnalyzerWorkspace": "📊 日志分析工作区",
+  "vpnWorkspace": "🔒 VPN 工作区",
+  "translationEditor": "📝 语言工作区",
+  "workspace": "工作区",
+  "shellSelect": "选择 Shell",
+  "scrollPrev": "上一个",
+  "scrollNext": "下一个",
+  "renameContext": "重命名",
+  "closeContext": "关闭",
+  "i18nWorkspace": "🌐 本地化工作区",
+  "fileTransferTab": "📁 文件传输",
+  "workspaceN": "工作区 {{n}}"
+}

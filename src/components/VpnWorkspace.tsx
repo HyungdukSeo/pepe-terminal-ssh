@@ -2,6 +2,7 @@
 // OpenVPN 연결 관리 UI — 설정 파일 import, 연결/끊기, 상태 + 로그 표시.
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { FixedSizeList as VList, ListChildComponentProps } from 'react-window';
+import { useTranslation } from 'react-i18next';
 
 const api = (window as any).api || {};
 
@@ -26,15 +27,7 @@ const STATUS_COLOR: Record<VpnState['status'], string> = {
   reconnecting: '#e8965a',
   error: '#e36b6b',
 };
-const STATUS_LABEL: Record<VpnState['status'], string> = {
-  disconnected: '연결 안됨',
-  starting: '시작 중',
-  connecting: '연결 중',
-  auth: '인증 중',
-  connected: '연결됨',
-  reconnecting: '재연결 중',
-  error: '오류',
-};
+// STATUS_LABEL 는 useTranslation 으로 동적 — t('status.<key>') 형식으로 컴포넌트 안에서 사용
 
 function formatBytes(n?: number): string {
   if (n === undefined) return '-';
@@ -54,6 +47,8 @@ function formatDuration(since?: number): string {
 }
 
 export const VpnWorkspace: React.FC = () => {
+  const { t } = useTranslation('vpn');
+  const { t: tCommon } = useTranslation('common');
   const [avail, setAvail] = useState<{ ok: boolean; reason?: string; binaryPath?: string } | null>(null);
   const [state, setState] = useState<VpnState>({ status: 'disconnected' });
   const [configs, setConfigs] = useState<Config[]>([]);
@@ -148,12 +143,12 @@ export const VpnWorkspace: React.FC = () => {
       await refreshConfigs();
       setSelectedConfig(r.storedPath);
     } else if (r?.reason) {
-      alert('가져오기 실패: ' + r.reason);
+      alert(t('importFailed', { reason: r.reason }));
     }
   }, [refreshConfigs]);
 
   const removeConfig = useCallback(async (p: string) => {
-    if (!confirm(`삭제하시겠습니까?\n${p}`)) return;
+    if (!confirm(t('confirmDeleteConfig', { path: p }))) return;
     await api.vpnRemoveConfig?.(p);
     await api.vpnClearCreds?.(p); // 저장된 자격증명도 삭제
     const remaining: Config[] = await api.vpnListConfigs?.() || [];
@@ -180,14 +175,14 @@ export const VpnWorkspace: React.FC = () => {
     }
     const r = await api.vpnConnect?.(selectedConfig, useUser, usePass);
     if (!r?.ok && r?.reason) {
-      alert('연결 실패: ' + r.reason);
+      alert(t('connectFailed', { reason: r.reason }));
     }
     if (withAuth) setAuthPrompt(false);
   }, [selectedConfig, username, password, rememberCreds, hasSavedCreds]);
 
   const clearSavedCreds = useCallback(async () => {
     if (!selectedConfig) return;
-    if (!confirm('저장된 ID/비밀번호를 삭제하시겠습니까?')) return;
+    if (!confirm(t('confirmClearCreds'))) return;
     await api.vpnClearCreds?.(selectedConfig);
     setHasSavedCreds(false);
     setUsername(''); setPassword('');
@@ -238,7 +233,7 @@ export const VpnWorkspace: React.FC = () => {
             boxShadow: state.status === 'connected' ? '0 0 8px ' + STATUS_COLOR[state.status] : 'none',
           }} />
           <span style={{ fontSize: 16, fontWeight: 600, color: STATUS_COLOR[state.status] }}>
-            {STATUS_LABEL[state.status]}
+            {t(`status.${state.status}`)}
           </span>
           {state.configName && <span style={{ fontSize: 12, color: '#888' }}>· {state.configName}</span>}
           {state.assignedIp && <span style={{ fontSize: 12, color: '#7fcf6e' }}>· IP: {state.assignedIp}</span>}
@@ -246,9 +241,9 @@ export const VpnWorkspace: React.FC = () => {
         </div>
         {avail && !avail.ok && (
           <div style={{ padding: 8, background: '#3a1a1a', border: '1px solid #5a2a2a', borderRadius: 4, color: '#e36b6b', fontSize: 12 }}>
-            ⚠ OpenVPN 바이너리를 찾을 수 없습니다 — {avail.reason}
+            {t('binaryNotFound', { reason: avail.reason })}
             <div style={{ color: '#aaa', fontSize: 11, marginTop: 4 }}>
-              번들 누락 (개발 빌드라면 resources/openvpn-win/ 또는 resources/openvpn-mac/ 에 바이너리 + 의존 DLL/dylib 가 필요)
+              {t('binaryHint')}
             </div>
           </div>
         )}
@@ -259,8 +254,8 @@ export const VpnWorkspace: React.FC = () => {
         )}
         {isConnected && (
           <div style={{ display: 'flex', gap: 16, fontSize: 11, color: '#aaa', marginTop: 6 }}>
-            <span>⬇ 수신: {formatBytes(state.bytesIn)}</span>
-            <span>⬆ 송신: {formatBytes(state.bytesOut)}</span>
+            <span>{t('bytesIn', { val: formatBytes(state.bytesIn) })}</span>
+            <span>{t('bytesOut', { val: formatBytes(state.bytesOut) })}</span>
           </div>
         )}
       </div>
@@ -270,13 +265,13 @@ export const VpnWorkspace: React.FC = () => {
         {/* 좌측 — 설정 목록 */}
         <div style={{ width: 320, display: 'flex', flexDirection: 'column', borderRight: '1px solid #333', background: '#161616' }}>
           <div style={{ padding: '8px 10px', borderBottom: '1px solid #333', display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ fontSize: 12, color: '#bbb', flex: 1 }}>설정 ({configs.length})</span>
-            <button onClick={importConfig} style={{ fontSize: 11, padding: '3px 8px' }}>📥 .ovpn 가져오기</button>
+            <span style={{ fontSize: 12, color: '#bbb', flex: 1 }}>{t('configList', { n: configs.length })}</span>
+            <button onClick={importConfig} style={{ fontSize: 11, padding: '3px 8px' }}>{t('importConfig')}</button>
           </div>
           <div style={{ flex: 1, overflowY: 'auto' }}>
             {configs.length === 0 ? (
               <div style={{ padding: 16, fontSize: 12, color: '#666', textAlign: 'center' }}>
-                .ovpn 파일을 가져오세요
+                {t('noConfigs')}
               </div>
             ) : configs.map(c => {
               const isSel = c.path === selectedConfig;
@@ -291,7 +286,7 @@ export const VpnWorkspace: React.FC = () => {
                     borderLeft: '3px solid ' + (isSel ? '#7fbeea' : 'transparent'),
                   }}>
                   <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.path}>📄 {c.name}</span>
-                  <button onClick={e => { e.stopPropagation(); removeConfig(c.path); }} style={{ fontSize: 10, padding: '1px 6px', color: '#e36b6b' }}>삭제</button>
+                  <button onClick={e => { e.stopPropagation(); removeConfig(c.path); }} style={{ fontSize: 10, padding: '1px 6px', color: '#e36b6b' }}>{t('deleteBtn')}</button>
                 </div>
               );
             })}
@@ -306,18 +301,18 @@ export const VpnWorkspace: React.FC = () => {
                   disabled={!selectedConfig || !avail?.ok}
                   className="primary"
                   style={{ padding: '8px 12px', fontSize: 13 }}>
-                  🔒 연결{hasSavedCreds ? ' (저장된 ID/PW 사용)' : ''}
+                  {hasSavedCreds ? t('connectWithSaved') : t('connect')}
                 </button>
                 <button
                   onMouseDown={e => e.preventDefault()}
                   onClick={openAuthPrompt}
                   disabled={!selectedConfig || !avail?.ok}
                   style={{ padding: '6px 12px', fontSize: 11 }}>
-                  {hasSavedCreds ? 'ID/비밀번호 다시 입력' : '사용자/비밀번호 입력 후 연결'}
+                  {hasSavedCreds ? t('reauthAndConnect') : t('authAndConnect')}
                 </button>
                 {hasSavedCreds && (
                   <button onMouseDown={e => e.preventDefault()} onClick={clearSavedCreds} style={{ padding: '4px 12px', fontSize: 10, color: '#e36b6b' }}>
-                    저장된 자격증명 삭제
+                    {t('clearSavedCreds')}
                   </button>
                 )}
               </>
@@ -325,7 +320,7 @@ export const VpnWorkspace: React.FC = () => {
               // disconnected/error 가 아닌 모든 상태에서 항상 끊기 가능 — 상태 라벨만 변경
               <button onClick={disconnect}
                 style={{ padding: '8px 12px', fontSize: 13, background: isConnected ? '#5a2a2a' : '#5a3a1a', color: '#fff', fontWeight: 600 }}>
-                {isConnected ? '⏏ 연결 해제' : '✕ 연결 시도 취소'}
+                {isConnected ? t('disconnect') : t('cancelAttempt')}
               </button>
             )}
           </div>
@@ -334,12 +329,12 @@ export const VpnWorkspace: React.FC = () => {
         {/* 우측 — 로그 */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
           <div style={{ padding: '8px 10px', borderBottom: '1px solid #333', display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ fontSize: 12, color: '#bbb', flex: 1 }}>OpenVPN 로그 ({logs.length})</span>
+            <span style={{ fontSize: 12, color: '#bbb', flex: 1 }}>{t('logHeader', { n: logs.length })}</span>
             <label style={{ fontSize: 11, color: '#aaa', display: 'flex', alignItems: 'center', gap: 4 }}>
               <input type="checkbox" defaultChecked={true} onChange={e => { autoScrollRef.current = e.target.checked; }} />
-              자동 스크롤
+              {t('autoScroll')}
             </label>
-            <button onClick={() => setLogs([])} style={{ fontSize: 11, padding: '3px 8px' }}>지우기</button>
+            <button onClick={() => setLogs([])} style={{ fontSize: 11, padding: '3px 8px' }}>{t('clearLogs')}</button>
           </div>
           <div ref={setLogWrapRef} style={{ flex: 1, minHeight: 0, background: '#0c0c0c' }}>
             <VList ref={logListRef} height={logHeight} width="100%" itemCount={logs.length} itemSize={18} overscanCount={15}>
@@ -357,9 +352,9 @@ export const VpnWorkspace: React.FC = () => {
       {authPrompt && (
         <div className="session-editor-backdrop">
           <div className="session-editor" onClick={e => e.stopPropagation()} style={{ width: 360, display: 'flex', flexDirection: 'column' }}>
-            <h3>🔑 사용자 인증</h3>
+            <h3>{t('authTitle')}</h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 }}>
-              <label style={{ fontSize: 12, color: '#bbb' }}>사용자명</label>
+              <label style={{ fontSize: 12, color: '#bbb' }}>{t('username')}</label>
               {/* key 로 강제 재마운트 — 매 모달 open 마다 새 input → autoFocus + callback ref 가 확실히 발동 */}
               <input
                 key={`u-${authOpenCounter}`}
@@ -370,7 +365,7 @@ export const VpnWorkspace: React.FC = () => {
                 style={{ fontSize: 13, padding: '6px 8px', width: '100%', boxSizing: 'border-box' }} />
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 10 }}>
-              <label style={{ fontSize: 12, color: '#bbb' }}>비밀번호</label>
+              <label style={{ fontSize: 12, color: '#bbb' }}>{t('password')}</label>
               <input
                 key={`p-${authOpenCounter}`}
                 ref={authPassRef} type="password" value={password} onChange={e => setPassword(e.target.value)}
@@ -379,11 +374,11 @@ export const VpnWorkspace: React.FC = () => {
             </div>
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 10, fontSize: 12, color: '#bbb', cursor: 'pointer' }}>
               <input type="checkbox" checked={rememberCreds} onChange={e => setRememberCreds(e.target.checked)} />
-              기억하기 (다음부터 자동 사용 — OS 안전 저장소 암호화)
+              {t('rememberCreds')}
             </label>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 14 }}>
-              <button onClick={() => { setAuthPrompt(false); }}>취소</button>
-              <button className="primary" onClick={() => connect(true)}>연결</button>
+              <button onClick={() => { setAuthPrompt(false); }}>{tCommon('cancel')}</button>
+              <button className="primary" onClick={() => connect(true)}>{tCommon('ok')}</button>
             </div>
           </div>
         </div>

@@ -1,0 +1,68 @@
+{
+  "file": {
+    "title": "ملف",
+    "newWorkspace": "➕ مساحة عمل جديدة",
+    "closeWorkspace": "✖ إغلاق مساحة العمل",
+    "exportSessions": "📤 تصدير الجلسات...",
+    "importSessions": "📥 استيراد الجلسات...",
+    "quit": "🚪 خروج",
+    "importedToast": "تم استيراد {{added}} جلسة (من أصل {{total}} تم تحليلها)",
+    "importedToastSimple": "تم استيراد الجلسات."
+  },
+  "edit": {
+    "title": "تحرير",
+    "copy": "📋 نسخ",
+    "paste": "📎 لصق",
+    "selectAll": "🔘 تحديد الكل",
+    "find": "🔍 بحث"
+  },
+  "view": {
+    "title": "عرض",
+    "theme": "🎨 السمة",
+    "fontSizeUp": "حجم الخط +",
+    "fontSizeDown": "حجم الخط -",
+    "wheelUp": "Ctrl+عجلة للأعلى",
+    "wheelDown": "Ctrl+عجلة للأسفل"
+  },
+  "window": {
+    "title": "نافذة",
+    "splitH": "تقسيم أفقي (يسار/يمين)",
+    "splitV": "تقسيم عمودي (أعلى/أسفل)",
+    "clearScreen": "مسح الشاشة",
+    "clearScrollback": "🗑 مسح السجل",
+    "clearAll": "🧼 مسح الكل"
+  },
+  "tools": {
+    "title": "أدوات",
+    "fileTransfer": "📁 نقل الملفات",
+    "toolbarShow": "🧰 إظهار شريط الأدوات",
+    "toolbarHide": "🧰 إخفاء شريط الأدوات",
+    "quickConnectShow": "⚡ إظهار شريط الاتصال السريع",
+    "quickConnectHide": "⚡ إخفاء شريط الاتصال السريع",
+    "claudeShow": "🤖 إظهار محادثة Claude",
+    "claudeHide": "🤖 إخفاء محادثة Claude",
+    "broadcastShow": "📢 إظهار شريط البث",
+    "broadcastHide": "📢 إخفاء شريط البث",
+    "xStart": "🖥️ تشغيل خادم X (DISPLAY=:0)",
+    "xStop": "🛑 إيقاف خادم X",
+    "xStatus": "ℹ️ حالة خادم X",
+    "xStartTitle": "تشغيل خادم X",
+    "xStartFail": "فشل تشغيل خادم X",
+    "xStartOk": "✅ DISPLAY=:0  PID={{pid}}",
+    "xStartNoBundle": "⚠️ لم يتم استخدام خادم X المرفق/الخارجي",
+    "xStopTitle": "إيقاف خادم X",
+    "xStopOk": "✅ تم الإيقاف.",
+    "xStopFail": "فشل إيقاف خادم X",
+    "xStatusTitle": "حالة خادم X",
+    "xStatusRunning": "🟢 قيد التشغيل",
+    "xStatusNone": "⚫ لا يوجد خادم X يعمل.",
+    "xStatusFail": "فشل الاستعلام عن حالة خادم X",
+    "options": "⚙ الخيارات..."
+  },
+  "help": {
+    "title": "مساعدة",
+    "manual": "📖 الدليل...",
+    "keybindings": "⌨ اختصارات لوحة المفاتيح",
+    "about": "ℹ معلومات PePe Terminal(SSH)"
+  }
+}

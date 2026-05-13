@@ -1,0 +1,104 @@
+{
+  "title": "⌨ 단축키 목록",
+  "close": "닫기 (Esc)",
+  "searchPlaceholder": "🔍 단축키 또는 기능 검색...",
+  "noMatch": "일치하는 단축키가 없습니다.",
+  "none": "(없음)",
+  "duplicateWarn": "\"{{combo}}\"는 \"{{dupLabel}}\"에 이미 할당되어 있습니다.",
+  "groups": {
+    "custom": "사용자 지정 단축키",
+    "fixed": "고정 단축키",
+    "minitab": "미니탭",
+    "terminal": "터미널",
+    "fileTree": "파일 트리 / 원격 편집",
+    "claude": "Claude 채팅",
+    "broadcast": "일괄 전송",
+    "quickConnect": "빠른 연결 바"
+  },
+  "labels": {
+    "fullscreen": "전체화면 토글",
+    "splitSessionV": "빈세션 가로 분할 (좌/우)",
+    "splitSessionH": "빈세션 세로 분할 (상/하)",
+    "nextTab": "다음 미니탭",
+    "prevTab": "이전 미니탭",
+    "cloneSplitV": "세션 가로 분할 (좌/우)",
+    "cloneSplitH": "세션 세로 분할 (상/하)",
+    "find": "찾기",
+    "clearScrollback": "스크롤백 지우기",
+    "clearScreen": "화면 지우기",
+    "clearAll": "전체 지우기",
+    "toggleFileTree": "파일 트리 토글",
+    "copy": "복사 (선택 → 클립보드)",
+    "paste": "붙여넣기 (클립보드 → 터미널)",
+    "selectAll": "전체 선택",
+    "diffPrevHunk": "파일 비교: 이전 변경",
+    "diffNextHunk": "파일 비교: 다음 변경",
+    "diffApplyLeft": "파일 비교: 타겟 → 소스 적용",
+    "diffApplyRight": "파일 비교: 소스 → 타겟 적용"
+  },
+  "fixed": {
+    "minitabSwitch": "미니탭 전환",
+    "fullscreen": "현재 터미널 전체화면 토글",
+    "scrollBottom": "스크롤 맨 아래로",
+    "fontSize": "글꼴 크기 조절",
+    "wheelSuffix": "+마우스 휠",
+    "rename": "이름 변경",
+    "middleClick": "가운데 클릭",
+    "closeTab": "탭 닫기",
+    "moveOrder": "세션/폴더 순서 이동"
+  },
+  "minitab": {
+    "shellSelector": "쉘 선택 (PowerShell, CMD, Git Bash 등)",
+    "rightClick": "이름 변경 / 세션 복제 / 닫기",
+    "wheel": "좌우 스크롤 (‹ › 버튼)",
+    "shellBtn": "∨ 버튼",
+    "rightClickKey": "우클릭",
+    "wheelKey": "휠 스크롤"
+  },
+  "terminal": {
+    "rightClick": "복사 / 붙여넣기 / 찾기 / 글꼴 / 인코딩 / 화면 지우기 등",
+    "dblClickSession": "연결",
+    "rightClickKey": "우클릭",
+    "dblClickKey": "더블클릭 (세션)"
+  },
+  "fileTree": {
+    "dblClickFile": "에디터 탭에서 열기",
+    "multiSelect": "다중 선택 (일괄 다운로드)",
+    "rightClick": "Claude 에 첨부 / 경로 복사 / 삭제",
+    "refresh": "현재 경로 새로고침",
+    "pin": "파일트리 고정/자동숨김 토글",
+    "resize": "너비 조절",
+    "save": "저장",
+    "dblClickKey": "파일 더블클릭",
+    "rightClickKey": "우클릭",
+    "resizeKey": "좌측 경계 드래그",
+    "saveKeySuffix": " (에디터)"
+  },
+  "claude": {
+    "triggerHover": "사이드바 펼침 (unpin 모드)",
+    "pin": "사이드바 고정/자동숨김 토글",
+    "resize": "너비 조절 (더블클릭 = 기본값)",
+    "slashPalette": "슬래시 명령 팔레트 (↑↓ 탐색, Enter 실행, Esc 닫기)",
+    "attach": "로컬 파일 / 폴더 첨부",
+    "fontSize": "채팅 폰트 크기 조절",
+    "send": "전송, {{newline}} = 줄바꿈",
+    "clear": "대화 + 컨텍스트 초기화",
+    "triggerHoverKey": "🤖 영역 hover",
+    "resizeKey": "좌측 경계 드래그",
+    "slashKey": "/ 버튼",
+    "attachKey": "📄+ / 📁+",
+    "fontKey": "+Wheel",
+    "sendKey": "Enter (입력창)",
+    "clearKey": "🗑"
+  },
+  "broadcast": {
+    "send": "텍스트 전송",
+    "signal": "^C / ^D 신호 전송",
+    "history": "히스토리 탐색 / 세션 드롭다운",
+    "escClose": "히스토리 드롭다운만 닫음 (바는 유지)"
+  },
+  "quickConnect": {
+    "connect": "연결",
+    "esc": "무시 (닫기는 ✕ 버튼으로만)"
+  }
+}

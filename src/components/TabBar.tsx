@@ -1,5 +1,6 @@
 // src/components/TabBar.tsx
 import React, { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { Tab } from '../App';
 import { ContextMenu } from './ContextMenu';
 
@@ -13,6 +14,7 @@ type Props = {
   onAddCompareTab?: () => void;
   onAddLogAnalyzerTab?: () => void;
   onAddVpnTab?: () => void;
+  onAddI18nEditorTab?: () => void;
   onCloseTab: (id: string) => void;
   onRenameTab?: (id: string, name: string) => void;
   onReorderTabs?: (fromId: string, toId: string) => void;
@@ -23,7 +25,9 @@ type Props = {
   availableShells?: ShellInfo[];
 };
 
-export const TabBar: React.FC<Props> = ({ tabs, activeTabId, onChange, onAddTab, onAddBrowserTab, onAddCompareTab, onAddLogAnalyzerTab, onAddVpnTab, onCloseTab, onRenameTab, onReorderTabs, hasSession, themeName, themeList, onThemeChange, availableShells }) => {
+export const TabBar: React.FC<Props> = ({ tabs, activeTabId, onChange, onAddTab, onAddBrowserTab, onAddCompareTab, onAddLogAnalyzerTab, onAddVpnTab, onAddI18nEditorTab, onCloseTab, onRenameTab, onReorderTabs, hasSession, themeName, themeList, onThemeChange, availableShells }) => {
+  const { t } = useTranslation('tabBar');
+  const { t: tc } = useTranslation('common');
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
   const [shellMenu, setShellMenu] = useState<{ x: number; y: number } | null>(null);
   const [addMenu, setAddMenu] = useState<{ x: number; y: number } | null>(null);
@@ -106,7 +110,19 @@ export const TabBar: React.FC<Props> = ({ tabs, activeTabId, onChange, onAddTab,
               onClick={e => e.stopPropagation()}
             />
           ) : (
-            <span>{tab.title}</span>
+            <span>{(() => {
+              if (tab.customTitle) return tab.title;
+              switch (tab.type) {
+                case 'compare': return t('compareWorkspace');
+                case 'logAnalyzer': return t('logAnalyzerWorkspace');
+                case 'vpn': return t('vpnWorkspace');
+                case 'i18nEditor': return t('translationEditor');
+                case 'fileExplorer': return tab.title.startsWith('📁') ? t('fileTransferTab', { defaultValue: tab.title }) : tab.title;
+              }
+              const m = tab.title.match(/^Workspace (\d+)$/);
+              if (m) return t('workspaceN', { n: m[1] });
+              return tab.title;
+            })()}</span>
           )}
           <button
             className="tab-close"
@@ -120,11 +136,11 @@ export const TabBar: React.FC<Props> = ({ tabs, activeTabId, onChange, onAddTab,
       <button className="tab-add-btn" onClick={e => {
         const r = e.currentTarget.getBoundingClientRect();
         setAddMenu({ x: r.left, y: r.bottom });
-      }} title="새 워크스페이스 (터미널/브라우저)">+</button>
+      }} title={t('addTooltip')}>+</button>
       {overflowing && (
         <div className="tab-scroll-group">
-          <button className="tab-scroll-btn" onClick={() => scrollBy(-150)} title="이전">‹</button>
-          <button className="tab-scroll-btn" onClick={() => scrollBy(150)} title="다음">›</button>
+          <button className="tab-scroll-btn" onClick={() => scrollBy(-150)} title={t('scrollPrev')}>‹</button>
+          <button className="tab-scroll-btn" onClick={() => scrollBy(150)} title={t('scrollNext')}>›</button>
         </div>
       )}
       {themeList && onThemeChange && (
@@ -138,8 +154,8 @@ export const TabBar: React.FC<Props> = ({ tabs, activeTabId, onChange, onAddTab,
           x={contextMenu.x} y={contextMenu.y}
           onClose={() => setContextMenu(null)}
           items={[
-            { label: '이름 변경', onClick: () => startRename(contextMenu.tabId) },
-            { label: '닫기', onClick: () => onCloseTab(contextMenu.tabId) },
+            { label: tc('rename'), onClick: () => startRename(contextMenu.tabId) },
+            { label: tc('close'), onClick: () => onCloseTab(contextMenu.tabId) },
           ]}
         />
       )}
@@ -158,14 +174,24 @@ export const TabBar: React.FC<Props> = ({ tabs, activeTabId, onChange, onAddTab,
           x={addMenu.x} y={addMenu.y}
           onClose={() => setAddMenu(null)}
           items={[
-            { label: '💻 터미널 워크스페이스', onClick: () => onAddTab() },
-            ...(availableShells && availableShells.length > 1
-              ? availableShells.map(sh => ({ label: `   ${sh.icon || ''} ${sh.name}`.trim(), onClick: () => onAddTab(sh.name, sh.path) }))
-              : []),
-            { label: '🌐 브라우저 워크스페이스', onClick: () => onAddBrowserTab?.() },
-            { label: '🔍 파일 비교 워크스페이스', onClick: () => onAddCompareTab?.() },
-            { label: '📊 로그 분석 워크스페이스', onClick: () => onAddLogAnalyzerTab?.() },
-            { label: '🔒 VPN 워크스페이스', onClick: () => onAddVpnTab?.() },
+            {
+              label: `🐚  ${t('shellSelect')}`,
+              submenu: (availableShells && availableShells.length > 0
+                ? availableShells.map(sh => ({ label: `${sh.icon || '▪'}  ${sh.name}`, onClick: () => onAddTab(sh.name, sh.path) }))
+                : [{ label: t('terminalWorkspace'), onClick: () => onAddTab() }]
+              ),
+            },
+            {
+              label: `🗂  ${t('workspace')}`,
+              submenu: [
+                { label: t('terminalWorkspace'), onClick: () => onAddTab() },
+                { label: t('browserWorkspace'), onClick: () => onAddBrowserTab?.() },
+                { label: t('compareWorkspace'), onClick: () => onAddCompareTab?.() },
+                { label: t('logAnalyzerWorkspace'), onClick: () => onAddLogAnalyzerTab?.() },
+                { label: t('vpnWorkspace'), onClick: () => onAddVpnTab?.() },
+                { label: t('translationEditor'), onClick: () => onAddI18nEditorTab?.() },
+              ],
+            },
           ]}
         />
       )}

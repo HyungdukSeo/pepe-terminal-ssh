@@ -1,0 +1,47 @@
+{
+  "dialog": {
+    "sessionsPathTitle": "세션 저장 경로 선택",
+    "pickFilesMulti": "파일 선택 (다중)",
+    "pickFile": "파일 선택",
+    "pickFolder": "폴더 선택",
+    "saveCsv": "CSV로 저장",
+    "saveDownloadLocation": "다운로드 받을 위치 선택",
+    "saveRemoteFile": "원격 파일 저장",
+    "downloadMultiTitle": "{{count}}개 항목 다운로드 — 저장 폴더 선택",
+    "uploadFolder": "업로드할 폴더 선택",
+    "uploadFileMulti": "업로드할 파일 선택 (다중)",
+    "uploadFile": "업로드할 파일 선택",
+    "vpnImportTitle": "OpenVPN 설정 파일 (.ovpn) 가져오기",
+    "recordingSaveTitle": "터미널 녹화 파일 저장"
+  },
+  "popup": {
+    "optionsTitle": "옵션",
+    "sessionEditorTitle": "세션 편집",
+    "searchTitle": "검색",
+    "pasteModalTitle": "여러 줄 붙여넣기"
+  },
+  "search": {
+    "dragToMove": "드래그하여 이동",
+    "placeholder": "검색...",
+    "history": "검색 이력",
+    "caseSensitive": "대소문자",
+    "regex": "정규식",
+    "currentTab": "현재 탭",
+    "allTabs": "전체 탭",
+    "currentTabShort": "현재탭",
+    "allShort": "전체",
+    "dockToApp": "앱 안으로 되돌리기",
+    "closeEsc": "닫기 (Esc)"
+  },
+  "paste": {
+    "title": "여러 줄 붙여넣기",
+    "prompt": "다음 텍스트를 붙여넣을까요?",
+    "cancel": "취소 (Esc)",
+    "paste": "붙여넣기 (Ctrl+Enter)"
+  },
+  "error": {
+    "noConnectionId": "연결 ID가 없습니다",
+    "fileTooLargeCap": "파일이 너무 큽니다 ({{mb}}MB > {{cap}}MB)",
+    "fileTooLarge": "파일이 너무 큽니다 ({{mb}}MB)"
+  }
+}

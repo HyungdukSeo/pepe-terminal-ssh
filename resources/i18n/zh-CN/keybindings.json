@@ -1,0 +1,104 @@
+{
+  "title": "⌨ 快捷键列表",
+  "close": "关闭 (Esc)",
+  "searchPlaceholder": "🔍 搜索快捷键或操作...",
+  "noMatch": "无匹配的快捷键。",
+  "none": "(无)",
+  "groups": {
+    "custom": "可自定义快捷键",
+    "fixed": "固定快捷键",
+    "minitab": "迷你标签页",
+    "terminal": "终端",
+    "fileTree": "文件树 / 远程编辑",
+    "claude": "Claude 聊天",
+    "broadcast": "广播",
+    "quickConnect": "快速连接栏"
+  },
+  "labels": {
+    "fullscreen": "切换全屏",
+    "splitSessionV": "空会话水平拆分（左/右）",
+    "splitSessionH": "空会话垂直拆分（上/下）",
+    "nextTab": "下一个迷你标签页",
+    "prevTab": "上一个迷你标签页",
+    "cloneSplitV": "会话水平拆分（左/右）",
+    "cloneSplitH": "会话垂直拆分（上/下）",
+    "find": "查找",
+    "clearScrollback": "清除回滚缓冲",
+    "clearScreen": "清屏",
+    "clearAll": "全部清除",
+    "toggleFileTree": "切换文件树",
+    "copy": "复制（选区 → 剪贴板）",
+    "paste": "粘贴（剪贴板 → 终端）",
+    "selectAll": "全选",
+    "diffPrevHunk": "文件比较：上一处差异",
+    "diffNextHunk": "文件比较：下一处差异",
+    "diffApplyLeft": "文件比较：应用目标 → 源",
+    "diffApplyRight": "文件比较：应用源 → 目标"
+  },
+  "fixed": {
+    "minitabSwitch": "切换迷你标签页",
+    "fullscreen": "切换当前终端全屏",
+    "scrollBottom": "滚动到底部",
+    "fontSize": "调整字体大小",
+    "wheelSuffix": "+鼠标滚轮",
+    "rename": "重命名",
+    "middleClick": "中键点击",
+    "closeTab": "关闭标签页",
+    "moveOrder": "调整会话/文件夹顺序"
+  },
+  "minitab": {
+    "shellSelector": "选择 Shell（PowerShell、CMD、Git Bash 等）",
+    "rightClick": "重命名 / 复制会话 / 关闭",
+    "wheel": "横向滚动（‹ › 按钮）",
+    "shellBtn": "∨ 按钮",
+    "rightClickKey": "右键点击",
+    "wheelKey": "滚轮滚动"
+  },
+  "terminal": {
+    "rightClick": "复制 / 粘贴 / 查找 / 字体 / 编码 / 清屏 等",
+    "dblClickSession": "连接",
+    "rightClickKey": "右键点击",
+    "dblClickKey": "双击（会话）"
+  },
+  "fileTree": {
+    "dblClickFile": "在编辑器标签页中打开",
+    "multiSelect": "多选（批量下载）",
+    "rightClick": "附加到 Claude / 复制路径 / 删除",
+    "refresh": "刷新当前路径",
+    "pin": "切换固定 / 自动隐藏文件树",
+    "resize": "调整宽度",
+    "save": "保存",
+    "dblClickKey": "双击文件",
+    "rightClickKey": "右键点击",
+    "resizeKey": "拖动左边界",
+    "saveKeySuffix": "（编辑器）"
+  },
+  "claude": {
+    "triggerHover": "展开侧边栏（取消固定模式）",
+    "pin": "切换固定 / 自动隐藏侧边栏",
+    "resize": "调整宽度（双击 = 默认）",
+    "slashPalette": "斜杠命令面板（↑↓ 导航，Enter 执行，Esc 关闭）",
+    "attach": "附加本地文件 / 文件夹",
+    "fontSize": "调整聊天字体大小",
+    "send": "发送，{{newline}} = 换行",
+    "clear": "清除聊天 + 上下文",
+    "triggerHoverKey": "悬停 🤖 区域",
+    "resizeKey": "拖动左边界",
+    "slashKey": "/ 按钮",
+    "attachKey": "📄+ / 📁+",
+    "fontKey": "+滚轮",
+    "sendKey": "Enter（输入框）",
+    "clearKey": "🗑"
+  },
+  "broadcast": {
+    "send": "发送文本",
+    "signal": "发送 ^C / ^D 信号",
+    "history": "浏览历史 / 会话下拉菜单",
+    "escClose": "仅关闭历史下拉菜单（广播栏保留）"
+  },
+  "quickConnect": {
+    "connect": "连接",
+    "esc": "已忽略（仅可通过 ✕ 关闭）"
+  },
+  "duplicateWarn": "\"{{combo}}\" 已被分配给 \"{{dupLabel}}\"。"
+}

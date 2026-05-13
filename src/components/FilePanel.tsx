@@ -1,5 +1,6 @@
 // src/components/FilePanel.tsx
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { FixedSizeList as VList, ListChildComponentProps } from 'react-window';
 import { ContextMenu } from './ContextMenu';
 
@@ -52,6 +53,7 @@ function formatDate(ts: number): string {
 }
 
 export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, selectedFiles, onSelectionChange, currentPath, onPathChange, onFileDrop, onDisconnect, panelId, refreshKey }) => {
+  const { t } = useTranslation('fileExplorer');
   const [files, setFiles] = useState<FileInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -89,7 +91,7 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
     setLoading(true);
     setError('');
     try {
-      if (typeof api.feListDir !== 'function') { setError('API를 사용할 수 없습니다. 앱을 재시작해주세요.'); setFiles([]); setLoading(false); return; }
+      if (typeof api.feListDir !== 'function') { setError(t('apiUnavailable')); setFiles([]); setLoading(false); return; }
       const result = await api.feListDir(source.mode, dir, source.termId);
       if (result?.error) { setError(result.error); setFiles([]); }
       else { setFiles(result?.files || []); }
@@ -168,7 +170,7 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
 
   const handleDelete = async (name: string) => {
     const targets = selectedFiles.size > 1 && selectedFiles.has(name) ? [...selectedFiles] : [name];
-    if (!confirm(`${targets.length}개 항목을 삭제하시겠습니까?\n${targets.join(', ')}`)) return;
+    if (!confirm(t('deleteConfirm', { count: targets.length, names: targets.join(', ') }))) return;
     try {
       for (const f of targets) {
         const filePath = currentPath.endsWith(sep) ? currentPath + f : currentPath + sep + f;
@@ -180,7 +182,7 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
   };
 
   const handleMkdir = async () => {
-    const name = prompt('새 폴더 이름:');
+    const name = prompt(t('newFolderPrompt'));
     if (!name) return;
     try {
       const dirPath = currentPath.endsWith(sep) ? currentPath + name : currentPath + sep + name;
@@ -207,7 +209,7 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
     <div className="fe-panel">
       <div className="fe-panel-header">
         {source.mode === 'remote' && onDisconnect && (
-          <button className="fe-disconnect-btn" onClick={onDisconnect} title="연결 끊기">✕</button>
+          <button className="fe-disconnect-btn" onClick={onDisconnect} title={t('disconnect')}>✕</button>
         )}
         <select className="fe-source-select" value={`${source.mode}:${source.termId || source.sessionId || ''}`}
           onChange={e => {
@@ -227,12 +229,12 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
               <>
                 {localSources.map(renderOpt)}
                 {connected.length > 0 && (
-                  <optgroup label="🟢 연결됨">
+                  <optgroup label={t('groupConnected')}>
                     {connected.map(renderOpt)}
                   </optgroup>
                 )}
                 {lazy.length > 0 && (
-                  <optgroup label="⚪ 연결 안됨">
+                  <optgroup label={t('groupNotConnected')}>
                     {lazy.map(renderOpt)}
                   </optgroup>
                 )}
@@ -242,8 +244,8 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
         </select>
       </div>
       <div className="fe-path-bar">
-        <button className="fe-path-btn" onClick={goUp} title="상위 폴더">⬆</button>
-        <button className="fe-path-btn" onClick={() => loadDir(currentPath)} title="새로고침">🔄</button>
+        <button className="fe-path-btn" onClick={goUp} title={t('parentFolder')}>⬆</button>
+        <button className="fe-path-btn" onClick={() => loadDir(currentPath)} title={t('refresh')}>🔄</button>
         {editingPath ? (
           <input className="fe-path-input" value={editPath} onChange={e => setEditPath(e.target.value)}
             onBlur={() => { setEditingPath(false); navigate(editPath); }}
@@ -255,9 +257,9 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
         )}
       </div>
       <div className="fe-file-header">
-        <span className="fe-col-name" onClick={() => toggleSort('name')}>이름{sortIcon('name')}</span>
-        <span className="fe-col-size" onClick={() => toggleSort('size')}>크기{sortIcon('size')}</span>
-        <span className="fe-col-date" onClick={() => toggleSort('mtime')}>날짜{sortIcon('mtime')}</span>
+        <span className="fe-col-name" onClick={() => toggleSort('name')}>{t('colName')}{sortIcon('name')}</span>
+        <span className="fe-col-size" onClick={() => toggleSort('size')}>{t('colSize')}{sortIcon('size')}</span>
+        <span className="fe-col-date" onClick={() => toggleSort('mtime')}>{t('colDate')}{sortIcon('mtime')}</span>
       </div>
       <div className="fe-file-list" tabIndex={0} ref={setListRef}
         onClick={e => {
@@ -369,7 +371,7 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
           } catch {}
         }}
       >
-        {loading && <div className="fe-loading">로딩 중...</div>}
+        {loading && <div className="fe-loading">{t('loading')}</div>}
         {error && <div className="fe-error">{error}</div>}
         {!loading && !error && (
           <VList
@@ -421,17 +423,17 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
         )}
       </div>
       <div className="fe-status-bar">
-        {files.length}개 항목 | {selectedFiles.size}개 선택
+        {t('statusSummary', { total: files.length, selected: selectedFiles.size })}
       </div>
 
       {contextMenu && (
         <ContextMenu x={contextMenu.x} y={contextMenu.y} onClose={() => setContextMenu(null)} items={[
           ...(contextMenu.file ? [
-            { label: '이름 변경', onClick: () => { setRenamingFile(contextMenu.file!.name); setRenameValue(contextMenu.file!.name); } },
-            { label: '삭제', onClick: () => handleDelete(contextMenu.file!.name) },
+            { label: t('rename'), onClick: () => { setRenamingFile(contextMenu.file!.name); setRenameValue(contextMenu.file!.name); } },
+            { label: t('deleteFile'), onClick: () => handleDelete(contextMenu.file!.name) },
           ] : []),
-          { label: '새 폴더', onClick: handleMkdir },
-          { label: '새로고침', onClick: () => loadDir(currentPath) },
+          { label: t('newFolder'), onClick: handleMkdir },
+          { label: t('refresh'), onClick: () => loadDir(currentPath) },
         ]} />
       )}
     </div>

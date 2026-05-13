@@ -1,0 +1,18 @@
+{
+  "addWorkspace": "New workspace",
+  "addTooltip": "New workspace (Terminal/Browser)",
+  "terminalWorkspace": "💻 Terminal workspace",
+  "browserWorkspace": "🌐 Browser workspace",
+  "compareWorkspace": "🔍 File compare workspace",
+  "logAnalyzerWorkspace": "📊 Log analyzer workspace",
+  "vpnWorkspace": "🔒 VPN workspace",
+  "translationEditor": "🌐 Localization workspace",
+  "fileTransferTab": "📁 File transfer",
+  "workspaceN": "Workspace {{n}}",
+  "workspace": "Workspace",
+  "shellSelect": "Select shell",
+  "scrollPrev": "Previous",
+  "scrollNext": "Next",
+  "renameContext": "Rename",
+  "closeContext": "Close"
+}

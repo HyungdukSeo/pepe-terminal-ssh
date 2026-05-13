@@ -1,0 +1,51 @@
+{
+  "title": "PePe Terminal(SSH) v{{version}}",
+  "credits": "作者：Claude (feat. ghjeong[prompt])",
+  "unknown": "（未知）",
+  "sessionsPath": "── 会话存储路径 ──",
+  "releaseNotesHeader": "──────────────────────────────\n📋 v{{version}} 版本说明\n──────────────────────────────",
+  "terminalBasics": {
+    "heading": "── 终端基础 ──",
+    "body": "SSH/SFTP 远程访问（密码 / 密钥 / Expect-Send 登录）\nProxyJump — 通过主机直连 SSH+SFTP 跳板目标\n本地 Shell（PowerShell、CMD、Git Bash、WSL）\n默认 Shell 设置 / 各小标签 Shell 选择\n主题 / 字体 / 编码（utf-8/cp949/euc-kr）切换\n自动重连（30 秒）、初始连接看门狗（20 秒 × 3 次重试）\n终端透明度（0–100 滑块）/ 桌面穿透 / Alt+Enter 全屏"
+  },
+  "workspacePanel": {
+    "heading": "── 工作区 / 面板 ──",
+    "body": "多工作区标签\n分割面板（水平 / 垂直 / 平铺 ⊞ N×ceil√N）\n浮动放大（全屏面板叠加）\n各面板小标签，标签间拖放\n小标签滚轮滚动 / ‹ › 按钮\n每个标签记忆所选面板（再次进入时自动聚焦）\n点击聚焦所选面板 → 文件树 / Claude 上下文自动切换"
+  },
+  "sessionMgmt": {
+    "heading": "── 会话管理 ──",
+    "body": "文件夹 + 会话混合排序（Ctrl+↑/↓ 移动，多选）\nShift+点击范围选择 / Ctrl+点击多选\n会话导入 / 导出（SecureCRT、Xshell）\n再次点击会话切换编码弹窗\nhost:port 悬停浮动提示\n文件夹展开/折叠状态在应用重启后保持\n会话编辑器：\n  - 初始文件树路径\n  - ProxyJump 主机配置\n  - 文件树自动跟随选项（随 cd 同步）\n  - 登录脚本（Expect/Send）"
+  },
+  "remoteExplorer": {
+    "heading": "── 远程文件浏览器 / 编辑器（VS Code Remote 风格） ──",
+    "body": "工作区共享文件树（基于所选面板会话）\n文件树固定 / 自动隐藏（📌 切换）\n文件树宽度拖动调整（160–800px）\nSFTP 列表、按 mtime 排序、按扩展名着色/图标（15+ 分类）\n多选（Ctrl/Shift+点击）+ 批量下载\n右键菜单：打开 / 附加到 Claude / 复制路径 / 删除\nMonaco 编辑器标签（语法高亮、Ctrl+S 保存）\n双窗格文件浏览器（SFTP/本地双向）+ ProxyJump 支持"
+  },
+  "claudeIntegration": {
+    "heading": "── Claude Code 集成 ──",
+    "body": "右侧 Claude 聊天侧边栏（固定 / 自动隐藏，拖动调整大小）\n会话 / 文件树 / Claude 均未固定时，z-index 跟随鼠标悬停\nWebDAV 桥接 — 实时将远程 SSH 挂载为本地 UNC 路径\n自动 Unix→UNC 路径转换（/view/... → \\\\127.0.0.1@port\\...）\nMCP ssh_exec — Claude 执行远程 SSH 命令（cleartool 等）\n模型选择（Opus / Sonnet / Haiku / Opus Plan）\n权限模式（编辑前确认 / 自动接受 / 计划 / 全部允许）\n计划模式 + ExitPlanMode 审批弹窗（Markdown + Mermaid 渲染）\n基于 PreToolUse 钩子的逐工具审批（复选框）\n恢复对话会话（--resume）+ 过期时自动回退\n本地文件/文件夹附加（📄+ / 📁+ webkitdirectory 递归）\n斜杠命令面板（Context/Model/Permission/Slash，筛选 + ↑↓ 导航）\n实时工具时间轴指示（⏳/✓/✕）\n独立聊天字体设置 + Ctrl+滚轮调整大小\n对话历史管理（已固定 / 最近，重命名、固定、删除）\n后台对话 — 开始新聊天后仍持续接收响应\n分叉对话（右键消息 → 从此处分叉，注入此前记录）\n消息右键菜单（复制文本 / Markdown，附加上下文，分叉）\nMermaid 图自动 SVG 渲染 + 右键另存/复制为 PNG/SVG\nGFM 表格自动渲染（制表符对齐文本也自动转换）\nAskUserQuestion / ToolSearch 工具已屏蔽（非交互模式稳定性）\n按 requestId 进程隔离 — 多对话并发，精确停止"
+  },
+  "vNewly": {
+    "heading": "── v2.0.6 新增 ──",
+    "body": "PWD 自动跟随后台轮询 — 零 Shell 历史（独立 SSH exec 通道轮询 /proc/PID/cwd）\n会话 / 文件树 / Claude 侧边栏触发器圆角\n工作区标签拖动重排\n小标签右侧控件切换（⋯ 按钮）— 分割 / 浮动 / 透明度的浮动弹窗\n终端右键菜单新增主题切换（按终端）\nMermaid 图右键菜单另存/复制为 PNG/SVG\n计划审批弹窗也自动渲染 Mermaid\nGFM 表格 + 制表符对齐文本自动转换\n广播栏 / 文件传输会话下拉：🟢 已连接 / ⚪ 未连接 分组\n修复：单击简易标题栏会还原最大化窗口（5px 拖动阈值）\n终端 vi 等全屏应用立即同步尺寸 — refit 跳过隐藏终端\n修复：Alt+Enter 最大化 + 小标签浮动切换会导致视图空白\n帮助 / 信息弹窗可滚动，关闭时自动恢复终端焦点\n窗口重新获得焦点时自动聚焦终端（Alt+Tab 等）"
+  },
+  "inputBroadcast": {
+    "heading": "── 输入 / 广播 ──",
+    "body": "批量文本发送（当前 / 可见标签 / 已连接 / 全部会话延迟连接）\n快速连接栏（host / user / password / enc 即时连接）\nCtrl+C / Ctrl+D 广播\n广播历史（↑↓ 导航）\nEsc 不关闭栏 — 仅通过 ✕ 按钮关闭"
+  },
+  "search": {
+    "heading": "── 查找 / 搜索 ──",
+    "body": "终端查找（Ctrl+Shift+F）、历史、高亮\n上一个 / 下一个导航"
+  },
+  "settings": {
+    "heading": "── 设置（选项） ──",
+    "body": "默认本地 Shell 选择\n注册/取消注册资源管理器右键\"在此打开\"\n更改会话存储路径\n快捷键自定义\n终端设置（单词分隔符、回滚等）\n内置手册查看器（docs/MANUAL.md）"
+  },
+  "windowsIntegration": {
+    "heading": "── Windows 系统集成 ──",
+    "body": "无边框 / 透明 / 最大化-还原 窗口\n资源管理器\"在此打开\" → 在该目录中的工作区 Shell"
+  },
+  "techStack": {
+    "heading": "── 技术栈 ──",
+    "body": "Electron + React + TypeScript + Vite\nxterm.js（终端）、Monaco Editor（代码编辑器）\nnode-pty（本地 Shell）、ssh2（SSH/SFTP）\nwebdav-server（SFTP→WebDAV 代理）\nmarked（Markdown）、iconv-lite（编码）\nClaude Code CLI (@anthropic-ai/claude-code)"
+  }
+}

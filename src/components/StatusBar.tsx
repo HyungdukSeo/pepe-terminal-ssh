@@ -1,5 +1,6 @@
 // src/components/StatusBar.tsx
 import React, { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { Tab } from '../App';
 import type { LayoutNode, PanelSession } from '../utils/layoutUtils';
 import { collectAllSessions } from '../utils/layoutUtils';
@@ -27,6 +28,7 @@ function getActiveSession(layout: LayoutNode, panelId: string | null): PanelSess
 }
 
 export const StatusBar: React.FC<Props> = ({ activeTab, selectedPanelId, tabs, onClickVpn }) => {
+  const { t } = useTranslation('statusBar');
   const [time, setTime] = useState(new Date());
   const [copyInfo, setCopyInfo] = useState<string | null>(null);
   const [vpnState, setVpnState] = useState<{ status: string; assignedIp?: string; configName?: string }>({ status: 'disconnected' });
@@ -48,12 +50,12 @@ export const StatusBar: React.FC<Props> = ({ activeTab, selectedPanelId, tabs, o
   useEffect(() => {
     const handler = (e: Event) => {
       const { charCount, lineCount } = (e as CustomEvent).detail;
-      setCopyInfo(`복사됨: ${charCount}자 / ${lineCount}줄`);
+      setCopyInfo(t('copied', { chars: charCount, lines: lineCount }));
       setTimeout(() => setCopyInfo(null), 3000);
     };
     window.addEventListener('status-copy', handler);
     return () => window.removeEventListener('status-copy', handler);
-  }, []);
+  }, [t]);
 
   // 활성 세션 정보
   const activeSess = activeTab ? getActiveSession(activeTab.layout, selectedPanelId) : null;
@@ -77,11 +79,11 @@ export const StatusBar: React.FC<Props> = ({ activeTab, selectedPanelId, tabs, o
         ) : (
           <>
             <span className="status-dot disconnected" />
-            <span className="status-info">연결 없음</span>
+            <span className="status-info">{t('noConnection')}</span>
           </>
         )}
         <span className="status-separator">|</span>
-        <span className="status-info">세션: {totalSessions}개</span>
+        <span className="status-info">{t('sessions')}: {totalSessions}</span>
         {activeTab && (
           <>
             <span className="status-separator">|</span>
@@ -97,8 +99,8 @@ export const StatusBar: React.FC<Props> = ({ activeTab, selectedPanelId, tabs, o
           onClick={onClickVpn}
           style={{ cursor: onClickVpn ? 'pointer' : 'default', display: 'inline-flex', alignItems: 'center', gap: 4 }}
           title={vpnState.status === 'connected'
-            ? `VPN 연결됨${vpnState.assignedIp ? ` (${vpnState.assignedIp})` : ''} — 클릭해서 VPN 화면 열기`
-            : `VPN ${vpnState.status} — 클릭해서 VPN 화면 열기`}>
+            ? `${t('vpnConnected')}${vpnState.assignedIp ? ` (${vpnState.assignedIp})` : ''}`
+            : `${t('vpnLabel')} ${vpnState.status}`}>
           <span style={{
             display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
             background: vpnState.status === 'connected' ? '#7fcf6e'
@@ -106,7 +108,7 @@ export const StatusBar: React.FC<Props> = ({ activeTab, selectedPanelId, tabs, o
               : (vpnState.status === 'disconnected' ? '#555' : '#d8b556'),
             boxShadow: vpnState.status === 'connected' ? '0 0 6px #7fcf6e' : 'none',
           }} />
-          <span style={{ fontSize: 11 }}>VPN{vpnState.status === 'connected' && vpnState.assignedIp ? ` · ${vpnState.assignedIp}` : ''}</span>
+          <span style={{ fontSize: 11 }}>{t('vpnLabel')}{vpnState.status === 'connected' && vpnState.assignedIp ? ` · ${vpnState.assignedIp}` : ''}</span>
         </span>
         <span className="status-separator">|</span>
         <span className="status-info">{dateStr}</span>
