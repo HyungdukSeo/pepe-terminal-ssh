@@ -2752,6 +2752,21 @@ function App() {
             onSplit={(nodeId, dir) => openSplitSessionPicker(dir, nodeId)}
             onSplitWithPicker={(nodeId, dir) => openSplitSessionPickerWithPrompt(dir, nodeId)}
             onClose={nodeId => closePanel(activeTab.id, nodeId)}
+            onContainerResize={(nodeId, sizes) => {
+              // 컨테이너 노드의 sizes 를 트리에 저장 — 워크스페이스 전환 후 복원
+              updateLayout(activeTab.id, root => {
+                const walk = (node: any): any => {
+                  if (node.id === nodeId && (node.type === 'row' || node.type === 'column')) {
+                    return { ...node, sizes: [...sizes] };
+                  }
+                  if (node.type !== 'leaf' && node.children) {
+                    return { ...node, children: node.children.map(walk) };
+                  }
+                  return node;
+                };
+                return walk(root);
+              });
+            }}
             floatingPanelId={floatingPanelId}
             fullscreenTermId={fullscreenTermId}
             workspaceList={tabs.map(t => ({ id: t.id, title: t.title }))}

@@ -16,7 +16,13 @@ export type Panel = {
 };
 
 export type LeafNode = { id: string; type: 'leaf'; panel: Panel };
-export type ContainerNode = { id: string; type: 'row' | 'column'; children: LayoutNode[] };
+export type ContainerNode = {
+  id: string;
+  type: 'row' | 'column';
+  children: LayoutNode[];
+  // 사용자가 드래그로 조절한 자식 비율 — children.length 와 길이 동일. 미설정 시 모두 동일 비율.
+  sizes?: number[];
+};
 export type LayoutNode = LeafNode | ContainerNode;
 
 export function makeId(prefix = 'id') {
