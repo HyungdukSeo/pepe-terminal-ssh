@@ -1,5 +1,6 @@
 // src/components/FileExplorer.tsx
 import React, { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { FixedSizeList as VList, ListChildComponentProps } from 'react-window';
 import { FilePanel, PanelSource } from './FilePanel';
 import type { PanelSession } from '../utils/layoutUtils';
@@ -11,9 +12,11 @@ type Props = {
 };
 
 export const FileExplorer: React.FC<Props> = ({ sessions }) => {
-  const [sources, setSources] = useState<PanelSource[]>([{ mode: 'local', label: '🖥️ 로컬' }]);
-  const [leftSource, setLeftSource] = useState<PanelSource>({ mode: 'local', label: '🖥️ 로컬' });
-  const [rightSource, setRightSource] = useState<PanelSource>({ mode: 'local', label: '🖥️ 로컬' });
+  const { t } = useTranslation('fileExplorer');
+  const localLabel = t('local');
+  const [sources, setSources] = useState<PanelSource[]>([{ mode: 'local', label: localLabel }]);
+  const [leftSource, setLeftSource] = useState<PanelSource>({ mode: 'local', label: localLabel });
+  const [rightSource, setRightSource] = useState<PanelSource>({ mode: 'local', label: localLabel });
   const [leftPath, setLeftPath] = useState('C:\\');
   const [rightPath, setRightPath] = useState('C:\\');
   const [leftSelected, setLeftSelected] = useState<Set<string>>(new Set());
@@ -147,7 +150,7 @@ export const FileExplorer: React.FC<Props> = ({ sessions }) => {
       const connId = `sftp-${Date.now()}`;
       try {
         const result = await api.feSftpConnect?.(connId, info.host, Number(info.port) || 22, info.username, { type: 'password', password: info.auth?.password ?? '' });
-        if (!result?.success) { alert(`연결 실패: ${result?.error || '알 수 없는 오류'}`); return; }
+        if (!result?.success) { alert(t('connectFail', { err: result?.error || t('unknownError') })); return; }
         const newSrc: PanelSource = { mode: 'remote', termId: connId, label: `🔌 ${info.username}@${info.host}` };
         setSources(prev => {
           if (prev.find(s => s.termId === connId)) return prev;
@@ -164,7 +167,7 @@ export const FileExplorer: React.FC<Props> = ({ sessions }) => {
           setRightSource(newSrc);
           try { const home = await api.feHomeDir('remote', connId); setRightPath(home || '/'); } catch { setRightPath('/'); }
         }
-      } catch (err: any) { alert(`연결 실패: ${err}`); }
+      } catch (err: any) { alert(t('connectFail', { err })); }
     };
     window.addEventListener('fe-quick-sftp-connect', handler);
     return () => window.removeEventListener('fe-quick-sftp-connect', handler);
@@ -173,7 +176,7 @@ export const FileExplorer: React.FC<Props> = ({ sessions }) => {
   // sessions prop 변경 시 소스 목록 갱신
   const sessKey = sessions.map(s => s.termId).join(',');
   useEffect(() => {
-    const newSources: PanelSource[] = [{ mode: 'local', label: '🖥️ 로컬' }];
+    const newSources: PanelSource[] = [{ mode: 'local', label: localLabel }];
     // 이미 터미널로 연결된 세션의 sessionId
     const connectedSessionIds = new Set(sessions.map(s => s.sessionId).filter(Boolean));
     // 1) 이미 연결된 세션을 먼저 🟢 로 추가
@@ -195,7 +198,7 @@ export const FileExplorer: React.FC<Props> = ({ sessions }) => {
         newSources.push(s);
       }
     }
-    newSources.push({ mode: 'sftp-connect' as any, label: '🔌 SFTP 직접 연결...' });
+    newSources.push({ mode: 'sftp-connect' as any, label: t('sftpDirectOption') });
     setSources(newSources);
     // 최초 1회만: 원격 소스가 있고 rightSource가 로컬이면 첫 원격을 오른쪽 기본으로
     if (initDone && sessions.length > 0 && rightSource.mode === 'local' && !rightSourceSetRef.current) {
@@ -236,7 +239,7 @@ export const FileExplorer: React.FC<Props> = ({ sessions }) => {
   const realizeLazyRemote = async (src: PanelSource): Promise<PanelSource | null> => {
     if (src.mode !== 'lazy-remote' || !src.sessionId) return null;
     const sess = allSessionsList.find(s => s.id === src.sessionId);
-    if (!sess) { alert('세션 정보를 찾을 수 없습니다'); return null; }
+    if (!sess) { alert(t('remoteSessionMissing')); return null; }
     const connId = `fe-lazy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const jumpOpts = sess.jumpTargetHost?.trim()
       ? { host: sess.jumpTargetHost.trim(), user: sess.jumpTargetUser || 'root', port: Number(sess.jumpTargetPort) || 22, password: sess.jumpTargetPassword || undefined }
@@ -244,11 +247,11 @@ export const FileExplorer: React.FC<Props> = ({ sessions }) => {
     try {
       const r: any = await api?.feSftpConnect?.(connId, sess.host, sess.port || 22, sess.username, sess.auth, jumpOpts);
       if (!r?.success) {
-        alert(`연결 실패 (${sess.name}): ${r?.error || '알 수 없는 오류'}`);
+        alert(t('connectFailNamed', { name: sess.name, err: r?.error || t('unknownError') }));
         return null;
       }
     } catch (err: any) {
-      alert(`연결 실패 (${sess.name}): ${err?.message || err}`);
+      alert(t('connectFailNamed', { name: sess.name, err: err?.message || err }));
       return null;
     }
     setLazyConns(prev => [...prev, connId]);
@@ -297,8 +300,8 @@ export const FileExplorer: React.FC<Props> = ({ sessions }) => {
     if (src.mode !== 'remote' || !src.termId) return;
     try { await api?.feSftpDisconnect?.(src.termId); } catch {}
     setSources(prev => prev.filter(s => s.termId !== src.termId));
-    if (leftSource.termId === src.termId) { setLeftSource({ mode: 'local', label: '🖥️ 로컬' }); setLeftPath(await getHomeWithRetry('local')); }
-    if (rightSource.termId === src.termId) { setRightSource({ mode: 'local', label: '🖥️ 로컬' }); setRightPath(await getHomeWithRetry('local')); }
+    if (leftSource.termId === src.termId) { setLeftSource({ mode: 'local', label: localLabel }); setLeftPath(await getHomeWithRetry('local')); }
+    if (rightSource.termId === src.termId) { setRightSource({ mode: 'local', label: localLabel }); setRightPath(await getHomeWithRetry('local')); }
   };
 
   const handleSftpConnect = async () => {
@@ -307,7 +310,7 @@ export const FileExplorer: React.FC<Props> = ({ sessions }) => {
     const connId = `sftp-${Date.now()}`;
     try {
       const result = await api.feSftpConnect?.(connId, sftpHost, sftpPort, sftpUser, { type: 'password', password: sftpPass });
-      if (!result?.success) { alert(`연결 실패: ${result?.error || '알 수 없는 오류'}`); setSftpConnecting(false); return; }
+      if (!result?.success) { alert(t('connectFail', { error: result?.error || t('unknownError') })); setSftpConnecting(false); return; }
       const newSrc: PanelSource = { mode: 'remote', termId: connId, label: `🔌 ${sftpUser}@${sftpHost}` };
       setSources(prev => [...prev, newSrc]);
       if (showSftpConnect === 'left') {
@@ -317,7 +320,7 @@ export const FileExplorer: React.FC<Props> = ({ sessions }) => {
         setRightSource(newSrc);
         try { const home = await api.feHomeDir('remote', connId); setRightPath(home || '/'); } catch { setRightPath('/'); }
       }
-    } catch (err: any) { alert(`연결 실패: ${err}`); }
+    } catch (err: any) { alert(t('connectFail', { err })); }
     setSftpConnecting(false);
     setShowSftpConnect(null);
     setSftpHost(''); setSftpPort(22); setSftpUser(''); setSftpPass('');
@@ -345,10 +348,10 @@ export const FileExplorer: React.FC<Props> = ({ sessions }) => {
           name,
         );
         if (result && !result.success) {
-          alert(`전송 실패: ${name}\n${result.error}`);
+          alert(t('transferFail', { name, err: result.error }));
         }
       } catch (err: any) {
-        alert(`전송 실패: ${name}\n${err}`);
+        alert(t('transferFail', { name, err }));
       }
     }
 
@@ -374,7 +377,7 @@ export const FileExplorer: React.FC<Props> = ({ sessions }) => {
           name,
         );
       } catch (err: any) {
-        alert(`전송 실패: ${name}\n${err}`);
+        alert(t('transferFail', { name, err }));
       }
     }
     setTransferring(false);
@@ -414,8 +417,8 @@ export const FileExplorer: React.FC<Props> = ({ sessions }) => {
           />
         </div>
         <div className="fe-transfer-btns">
-          <button className="fe-transfer-btn" onClick={() => transferFiles('left-to-right')} disabled={transferring || leftSelected.size === 0} title="오른쪽으로 전송">→</button>
-          <button className="fe-transfer-btn" onClick={() => transferFiles('right-to-left')} disabled={transferring || rightSelected.size === 0} title="왼쪽으로 전송">←</button>
+          <button className="fe-transfer-btn" onClick={() => transferFiles('left-to-right')} disabled={transferring || leftSelected.size === 0} title={t('transferToRight')}>→</button>
+          <button className="fe-transfer-btn" onClick={() => transferFiles('right-to-left')} disabled={transferring || rightSelected.size === 0} title={t('transferToLeft')}>←</button>
         </div>
         <div className={`fe-panel-wrap ${selectedSide === 'right' ? 'selected' : ''}`} onMouseDownCapture={() => setSelectedSide('right')}>
           <FilePanel panelId="right" refreshKey={refreshKey}
@@ -429,9 +432,9 @@ export const FileExplorer: React.FC<Props> = ({ sessions }) => {
       </div>
       <div className="fe-transfers-resize" onMouseDown={onResizeStart} />
       <div className="fe-transfers" style={{ height: transfersHeight, display: 'flex', flexDirection: 'column' }}>
-        <div className="fe-transfers-header">전송 목록</div>
+        <div className="fe-transfers-header">{t('tabTransfersHeader')}</div>
         {transfers.length === 0 ? (
-          <div className="fe-transfers-empty">전송 대기 중...</div>
+          <div className="fe-transfers-empty">{t('tabTransfersEmpty')}</div>
         ) : (
           <div style={{ flex: 1, minHeight: 0 }}>
             <VList height={Math.max(0, transfersHeight - 28)} width="100%" itemCount={transfers.length} itemSize={24} overscanCount={10}>
@@ -456,23 +459,23 @@ export const FileExplorer: React.FC<Props> = ({ sessions }) => {
       {showSftpConnect && (
         <div className="session-editor-backdrop" onClick={() => setShowSftpConnect(null)}>
           <div className="session-editor" onClick={e => e.stopPropagation()} style={{ width: 400 }}>
-            <h3>🔌 SFTP 직접 연결</h3>
+            <h3>{t('sftpDirectTitle')}</h3>
             <div className="session-editor-grid">
-              <label>호스트</label>
+              <label>{t('host')}</label>
               <input value={sftpHost} onChange={e => setSftpHost(e.target.value)} placeholder="192.168.0.1" autoFocus />
-              <label>포트</label>
+              <label>{t('port')}</label>
               <input type="number" value={sftpPort} onChange={e => setSftpPort(Number(e.target.value) || 22)} />
-              <label>사용자</label>
+              <label>{t('user')}</label>
               <input value={sftpUser} onChange={e => setSftpUser(e.target.value)} placeholder="root" />
-              <label>비밀번호</label>
+              <label>{t('password')}</label>
               <input type="password" value={sftpPass} onChange={e => setSftpPass(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter') handleSftpConnect(); }}
               />
             </div>
             <div className="session-editor-actions">
-              <button className="btn-cancel" onClick={() => setShowSftpConnect(null)}>취소</button>
+              <button className="btn-cancel" onClick={() => setShowSftpConnect(null)}>{t('cancel')}</button>
               <button className="btn-save" onClick={handleSftpConnect} disabled={sftpConnecting}>
-                {sftpConnecting ? '연결 중...' : '연결'}
+                {sftpConnecting ? t('connecting') : t('connect')}
               </button>
             </div>
           </div>
@@ -480,6 +483,6 @@ export const FileExplorer: React.FC<Props> = ({ sessions }) => {
       )}
     </div>
   ); } catch (err: any) {
-    return <div style={{ padding: 20, color: '#e74c3c' }}>파일 탐색기 로드 실패: {String(err)}</div>;
+    return <div style={{ padding: 20, color: '#e74c3c' }}>{t('loadFail', { err: String(err) })}</div>;
   }
 };

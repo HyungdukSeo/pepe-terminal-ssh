@@ -1,0 +1,12 @@
+{
+  "placeholder": "Rechercher...",
+  "history": "Historique de recherche",
+  "prev": "Précédent (Maj+Entrée)",
+  "next": "Suivant (Entrée)",
+  "caseSensitive": "Respecter la casse",
+  "regex": "Expression régulière",
+  "modeCurrent": "Onglet actuel",
+  "modeAll": "Tous les onglets",
+  "popout": "Détacher dans une fenêtre externe (déplaçable vers un autre écran)",
+  "close": "Fermer (Échap)"
+}

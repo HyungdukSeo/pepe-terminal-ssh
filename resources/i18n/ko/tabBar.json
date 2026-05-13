@@ -1,0 +1,18 @@
+{
+  "addWorkspace": "새 워크스페이스",
+  "addTooltip": "새 워크스페이스 (터미널/브라우저)",
+  "terminalWorkspace": "💻 터미널 워크스페이스",
+  "browserWorkspace": "🌐 브라우저 워크스페이스",
+  "compareWorkspace": "🔍 파일 비교 워크스페이스",
+  "logAnalyzerWorkspace": "📊 로그 분석 워크스페이스",
+  "vpnWorkspace": "🔒 VPN 워크스페이스",
+  "translationEditor": "🌐 다국어 지원 워크스페이스",
+  "fileTransferTab": "📁 파일 전송",
+  "workspaceN": "워크스페이스 {{n}}",
+  "workspace": "워크스페이스",
+  "shellSelect": "쉘 선택",
+  "scrollPrev": "이전",
+  "scrollNext": "다음",
+  "renameContext": "이름 변경",
+  "closeContext": "닫기"
+}

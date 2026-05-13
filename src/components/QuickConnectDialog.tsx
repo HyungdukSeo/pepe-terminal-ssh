@@ -1,5 +1,6 @@
 // src/components/QuickConnectDialog.tsx
 import React, { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { isValidHost, normalizeHost } from '../utils/hostValidate';
 
 export type QuickConnectResult = {
@@ -19,6 +20,7 @@ type Props = {
 };
 
 export const QuickConnectBar: React.FC<Props> = ({ onConnect, onCancel, forceProtocol }) => {
+  const { t } = useTranslation('quickConnect');
   const [host, setHost] = useState('');
   const [port, setPort] = useState('22');
   const [username, setUsername] = useState('');
@@ -56,24 +58,24 @@ export const QuickConnectBar: React.FC<Props> = ({ onConnect, onCancel, forcePro
 
   return (
     <div className="quick-connect-bar" onKeyDown={onKey}>
-      <button className="quick-connect-close" onClick={onCancel} title="닫기">✕</button>
-      <span className="quick-connect-label">빠른 연결</span>
+      <button className="quick-connect-close" onClick={onCancel} title={t('close')}>✕</button>
+      <span className="quick-connect-label">{t('label')}</span>
       <select
         className="quick-connect-input quick-connect-proto"
         value={protocol}
         onChange={e => setProtocol(e.target.value as 'ssh' | 'sftp')}
         disabled={!!forceProtocol}
-        title={forceProtocol ? '파일 전송 워크스페이스에서는 SFTP 고정' : '프로토콜'}
+        title={forceProtocol ? t('sftpFixed') : t('protocolTitle')}
       >
         <option value="ssh">SSH</option>
         <option value="sftp">SFTP</option>
       </select>
       <input
         className={`quick-connect-input quick-connect-host ${hostValid ? '' : 'invalid'}`}
-        placeholder="host (IPv4/IPv6/도메인)"
+        placeholder={t('hostPlaceholder')}
         value={host}
         onChange={e => setHost(e.target.value)}
-        title={hostValid ? '' : '유효한 IPv4/IPv6/호스트명을 입력하세요'}
+        title={hostValid ? '' : t('hostInvalid')}
       />
       <span className="quick-connect-sep">:</span>
       <input
@@ -84,7 +86,7 @@ export const QuickConnectBar: React.FC<Props> = ({ onConnect, onCancel, forcePro
       />
       <input
         className="quick-connect-input quick-connect-user"
-        placeholder="username"
+        placeholder={t('username')}
         value={username}
         onChange={e => setUsername(e.target.value)}
       />
@@ -92,7 +94,7 @@ export const QuickConnectBar: React.FC<Props> = ({ onConnect, onCancel, forcePro
         <input
           className="quick-connect-input quick-connect-pw"
           type={showPassword ? 'text' : 'password'}
-          placeholder="password"
+          placeholder={t('password')}
           value={password}
           onChange={e => setPassword(e.target.value)}
         />
@@ -100,7 +102,7 @@ export const QuickConnectBar: React.FC<Props> = ({ onConnect, onCancel, forcePro
           type="button"
           className="quick-connect-eye"
           onClick={() => setShowPassword(p => !p)}
-          title={showPassword ? '숨기기' : '보기'}
+          title={showPassword ? t('hidePassword') : t('showPassword')}
         >
           {showPassword ? '🙈' : '👁'}
         </button>
@@ -109,7 +111,7 @@ export const QuickConnectBar: React.FC<Props> = ({ onConnect, onCancel, forcePro
         className="quick-connect-input quick-connect-enc"
         value={encoding}
         onChange={e => setEncoding(e.target.value)}
-        title="인코딩"
+        title={t('encoding')}
       >
         <option value="utf-8">utf-8</option>
         <option value="cp949">cp949</option>
@@ -121,7 +123,7 @@ export const QuickConnectBar: React.FC<Props> = ({ onConnect, onCancel, forcePro
         onClick={submit}
         disabled={!canConnect}
       >
-        연결
+        {t('connect')}
       </button>
     </div>
   );

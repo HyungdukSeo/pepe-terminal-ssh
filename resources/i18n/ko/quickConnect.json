@@ -1,0 +1,14 @@
+{
+  "close": "닫기",
+  "label": "빠른 연결",
+  "protocolTitle": "프로토콜",
+  "sftpFixed": "파일 전송 워크스페이스에서는 SFTP 고정",
+  "hostPlaceholder": "host (IPv4/IPv6/도메인)",
+  "hostInvalid": "유효한 IPv4/IPv6/호스트명을 입력하세요",
+  "encoding": "인코딩",
+  "username": "사용자 이름",
+  "password": "비밀번호",
+  "showPassword": "보기",
+  "hidePassword": "숨기기",
+  "connect": "연결"
+}

@@ -1,0 +1,12 @@
+{
+  "back": "后退",
+  "forward": "前进",
+  "stop": "停止",
+  "refresh": "刷新",
+  "urlPlaceholder": "网址或搜索内容",
+  "go": "前往",
+  "zoomOut": "缩小 (Ctrl+-)",
+  "zoomReset": "100% (Ctrl+0)",
+  "zoomIn": "放大 (Ctrl+=)",
+  "devTools": "开发者工具"
+}

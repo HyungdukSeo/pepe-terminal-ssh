@@ -1,0 +1,12 @@
+{
+  "binaryNotEditable": "لا يمكن تحرير الملفات الثنائية.",
+  "cannotRead": "تعذر قراءة الملف.",
+  "tooLarge": "الملف كبير جدًا ({{size}} ميغابايت > 5 ميغابايت).",
+  "loading": "جارٍ تحميل الملف...",
+  "saved": "تم الحفظ",
+  "saveError": "فشل الحفظ: {{error}}",
+  "unknownError": "خطأ غير معروف",
+  "analyzeWithClaude": "تحليل باستخدام Claude",
+  "saving": "جارٍ الحفظ...",
+  "saveBtn": "حفظ (Ctrl+S)"
+}

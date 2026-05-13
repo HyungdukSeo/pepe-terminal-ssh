@@ -1,0 +1,67 @@
+{
+  "title": "الخيارات",
+  "dragToMove": "اسحب للتحريك",
+  "tabs": {
+    "terminal": "الطرفية",
+    "session": "الجلسات",
+    "keybindings": "اختصارات المفاتيح"
+  },
+  "clipboard": {
+    "heading": "الحافظة",
+    "autoCopyOnSelect": "نسخ النص المحدد تلقائياً إلى الحافظة",
+    "includeTrailingNewline": "تضمين سطر جديد في نهاية النسخ",
+    "trimTrailingWhitespace": "إزالة المسافات الزائدة عند النسخ"
+  },
+  "paste": {
+    "heading": "لصق",
+    "multiLineNote": "عند لصق عدة أسطر:",
+    "dialog": "فتح نافذة لصق متعدد الأسطر",
+    "direct": "اللصق مباشرة في الطرفية"
+  },
+  "font": {
+    "heading": "الخط",
+    "defaultLabel": "الافتراضي (Cascadia Mono)",
+    "size": "حجم الخط",
+    "claudeHeading": "خط محادثة Claude",
+    "claudeHint": "مستقل عن الطرفية. Ctrl+عجلة الفأرة في المحادثة يعدّل الحجم أيضاً.",
+    "claudeDefaultLabel": "الافتراضي (خط واجهة النظام)",
+    "claudeSize": "حجم خط محادثة Claude"
+  },
+  "scrollback": {
+    "heading": "ذاكرة التمرير (الأسطر)",
+    "hint": "عدد أسطر الإخراج السابقة المحفوظة لكل جلسة طرفية (الافتراضي: 10000)"
+  },
+  "defaultShell": {
+    "heading": "الصدفة المحلية الافتراضية"
+  },
+  "wordSeparator": {
+    "heading": "أحرف فاصل الكلمات",
+    "hint": "الأحرف التي تقطع تحديد الكلمة عند النقر المزدوج"
+  },
+  "sessionsPath": {
+    "heading": "مسار تخزين الجلسات",
+    "unknown": "(غير معروف)",
+    "open": "فتح المجلد",
+    "change": "تغيير المسار...",
+    "reset": "إعادة التعيين",
+    "editFile": "تحرير الملف"
+  },
+  "contextMenu": {
+    "heading": "قائمة النقر بزر الفأرة الأيمن في المستكشف",
+    "hint": "يضيف \"فتح PePe Terminal هنا\" إلى قائمة النقر بزر الفأرة الأيمن في مستكشف Windows.",
+    "register": "تسجيل",
+    "unregister": "إلغاء التسجيل",
+    "registered": "● مسجَّل",
+    "notRegistered": "○ غير مسجَّل"
+  },
+  "keybindings": {
+    "pressKey": "اضغط مفتاحاً...",
+    "cancel": "إلغاء",
+    "change": "تغيير",
+    "reset": "إعادة تعيين"
+  },
+  "actions": {
+    "cancel": "إلغاء",
+    "save": "حفظ"
+  }
+}

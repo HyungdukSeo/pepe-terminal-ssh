@@ -13,6 +13,8 @@ import { installX11DisplayHook } from './x11Display';
 import { startBundledX11, stopBundledX11, stopAllBundledX11, listRunningX11 } from './x11Bundled';
 import { stopEmbeddedX11 } from './x11Server';
 import { getVpnService } from './vpnService';
+import { listLanguages, listNamespaces, loadNamespace, loadBundledNamespace, loadOverrideNamespace, saveOverrideNamespace, addLanguage, removeLanguage } from './i18nStore';
+import { t, setCurrentLang } from './i18n';
 // MCP 서버 스크립트를 번들에 임베드 (vite ?raw) — 런타임에 임시 파일로 추출 후 spawn
 // @ts-ignore
 import mcpSshServerScript from './mcpSshServer.cjs?raw';
@@ -252,7 +254,7 @@ ipcMain.handle('sessions:path', () => {
 ipcMain.handle('sessions:set-path', async () => {
   if (!mainWindow) return null;
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: '세션 저장 경로 선택',
+    title: t('dialog.sessionsPathTitle'),
     properties: ['openDirectory'],
   });
   if (result.canceled || result.filePaths.length === 0) return null;
@@ -341,7 +343,7 @@ ipcMain.handle('paste-modal:open', (_e, { id, text }: { id: string; text: string
     skipTaskbar: true,
     alwaysOnTop: true,
     show: false,
-    title: '여러 줄 붙여넣기',
+    title: t('popup.pasteModalTitle'),
     webPreferences: { nodeIntegration: true, contextIsolation: false },
   });
   try { win.setAlwaysOnTop(true, 'floating'); } catch {}
@@ -363,15 +365,15 @@ ipcMain.handle('paste-modal:open', (_e, { id, text }: { id: string; text: string
     .btn-paste { background:#2b6b9b; border:1px solid #3a8bc8 !important; color:#fff; }
   </style></head><body>
     <div class="header">
-      <strong>여러 줄 붙여넣기</strong>
+      <strong>${t('paste.title')}</strong>
       <button id="x">✕</button>
     </div>
     <div class="body">
-      <p>다음 텍스트를 붙여넣을까요?</p>
+      <p>${t('paste.prompt')}</p>
       <textarea id="t" autofocus spellcheck="false"></textarea>
       <div class="actions">
-        <button id="c" class="btn-cancel">취소 (Esc)</button>
-        <button id="p" class="btn-paste">붙여넣기 (Ctrl+Enter)</button>
+        <button id="c" class="btn-cancel">${t('paste.cancel')}</button>
+        <button id="p" class="btn-paste">${t('paste.paste')}</button>
       </div>
     </div>
     <script>
@@ -417,7 +419,7 @@ ipcMain.handle('options:open', () => {
     backgroundColor: '#111',
     parent: mainWindow,
     skipTaskbar: true,
-    title: '옵션',
+    title: t('popup.optionsTitle'),
     webPreferences: { nodeIntegration: false, contextIsolation: true, preload: path.join(__dirname, 'preload.js') },
   });
   win.setMenu(null);
@@ -453,7 +455,7 @@ ipcMain.handle('session-editor:open', (_e, { sessionId }: { sessionId: string })
     skipTaskbar: true,
     alwaysOnTop: true,
     show: false,
-    title: '세션 편집',
+    title: t('popup.sessionEditorTitle'),
     webPreferences: { nodeIntegration: false, contextIsolation: true, preload: path.join(__dirname, 'preload.js') },
   });
   try { win.setAlwaysOnTop(true, 'floating'); } catch {}
@@ -497,7 +499,7 @@ ipcMain.handle('search:open-window', () => {
     show: false,
     skipTaskbar: true,
     alwaysOnTop: true,
-    title: '검색',
+    title: t('popup.searchTitle'),
     webPreferences: { nodeIntegration: true, contextIsolation: false, backgroundThrottling: false },
   });
   // 메인 창보다 위, 다른 alwaysOnTop 창보다는 아래 (UI 레벨)
@@ -531,22 +533,22 @@ ipcMain.handle('search:open-window', () => {
     .close{padding:1px 5px;}
   </style></head><body>
     <div class="row">
-      <span class="grip" title="드래그하여 이동">⋮⋮</span>
+      <span class="grip" title="${t('search.dragToMove')}">⋮⋮</span>
       <div class="input-wrap">
-        <input id="q" type="text" placeholder="검색..." autofocus spellcheck="false" />
-        <button class="hist-toggle" id="hist" title="검색 이력" tabindex="-1">▾</button>
+        <input id="q" type="text" placeholder="${t('search.placeholder')}" autofocus spellcheck="false" />
+        <button class="hist-toggle" id="hist" title="${t('search.history')}" tabindex="-1">▾</button>
       </div>
       <span class="count" id="cnt">0/0</span>
       <button id="prev" title="Previous (Shift+Enter)">▲</button>
       <button id="next" title="Next (Enter)">▼</button>
-      <button id="aa" title="대소문자">Aa</button>
-      <button id="re" title="정규식">.*</button>
+      <button id="aa" title="${t('search.caseSensitive')}">Aa</button>
+      <button id="re" title="${t('search.regex')}">.*</button>
       <div class="mode">
-        <button id="m-cur" class="active" title="현재 탭">현재탭</button>
-        <button id="m-all" title="전체 탭">전체</button>
+        <button id="m-cur" class="active" title="${t('search.currentTab')}">${t('search.currentTabShort')}</button>
+        <button id="m-all" title="${t('search.allTabs')}">${t('search.allShort')}</button>
       </div>
-      <button id="dock" title="앱 안으로 되돌리기">📌</button>
-      <button id="x" class="close" title="닫기 (Esc)">✕</button>
+      <button id="dock" title="${t('search.dockToApp')}">📌</button>
+      <button id="x" class="close" title="${t('search.closeEsc')}">✕</button>
     </div>
     <script>
       const { ipcRenderer } = require('electron');
@@ -1240,7 +1242,7 @@ function walkXshellDir(dir: string, relPath: string, folders: Folder[], sessions
 ipcMain.handle('dialog:pick-files', async (_e, { multi }: { multi?: boolean }) => {
   if (!mainWindow) return { paths: [] };
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: multi ? '파일 선택 (다중)' : '파일 선택',
+    title: multi ? t('dialog.pickFilesMulti') : t('dialog.pickFile'),
     properties: multi ? ['openFile', 'multiSelections'] : ['openFile'],
   });
   if (result.canceled) return { paths: [] };
@@ -1250,7 +1252,7 @@ ipcMain.handle('dialog:pick-files', async (_e, { multi }: { multi?: boolean }) =
 ipcMain.handle('dialog:pick-folder', async () => {
   if (!mainWindow) return { path: null };
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: '폴더 선택',
+    title: t('dialog.pickFolder'),
     properties: ['openDirectory'],
   });
   if (result.canceled || result.filePaths.length === 0) return { path: null };
@@ -1263,7 +1265,7 @@ ipcMain.handle('fe:list-dir', async (_e, { mode, termId, dirPath }: { mode: stri
     if (mode === 'local') {
       return { files: await bridge.handleLocalListDir(dirPath) };
     } else {
-      if (!termId) return { error: '연결 ID가 없습니다' };
+      if (!termId) return { error: t('error.noConnectionId') };
       return { files: await bridge.handleSFTPListDir(termId, dirPath) };
     }
   } catch (err: any) { return { error: `${dirPath}: ${String(err)}` }; }
@@ -1312,7 +1314,7 @@ ipcMain.handle('compare:write', async (_e, { mode, termId, filePath, content }: 
       await fs.promises.writeFile(filePath, content, 'utf-8');
       return { ok: true };
     } else {
-      if (!termId) return { ok: false, error: '연결 ID가 없습니다' };
+      if (!termId) return { ok: false, error: t('error.noConnectionId') };
       const bridge = getSSHBridge();
       await bridge.handleSFTPWriteFile(termId, filePath, content);
       return { ok: true };
@@ -1328,14 +1330,14 @@ ipcMain.handle('compare:read', async (_e, { mode, termId, filePath, maxBytes }: 
   try {
     if (mode === 'local') {
       const stat = await fs.promises.stat(filePath);
-      if (stat.size > cap) return { error: `파일이 너무 큽니다 (${(stat.size / 1024 / 1024).toFixed(1)}MB > ${(cap / 1024 / 1024).toFixed(0)}MB)`, size: stat.size };
+      if (stat.size > cap) return { error: t('error.fileTooLargeCap', { mb: (stat.size / 1024 / 1024).toFixed(1), cap: (cap / 1024 / 1024).toFixed(0) }), size: stat.size };
       const buf = await fs.promises.readFile(filePath);
       return { content: buf.toString('utf-8'), size: stat.size };
     } else {
-      if (!termId) return { error: '연결 ID가 없습니다' };
+      if (!termId) return { error: t('error.noConnectionId') };
       const bridge = getSSHBridge();
       const buf = await bridge.handleSFTPReadFile(termId, filePath);
-      if (buf.length > cap) return { error: `파일이 너무 큽니다 (${(buf.length / 1024 / 1024).toFixed(1)}MB)`, size: buf.length };
+      if (buf.length > cap) return { error: t('error.fileTooLarge', { mb: (buf.length / 1024 / 1024).toFixed(1) }), size: buf.length };
       return { content: buf.toString('utf-8'), size: buf.length };
     }
   } catch (err: any) {
@@ -1425,7 +1427,7 @@ ipcMain.handle('fe:sftp-disconnect', (_e, { connId }: any) => {
 ipcMain.handle('sql:save-csv', async (_e, { defaultName, content }: { defaultName?: string; content: string }) => {
   if (!mainWindow) return { success: false, error: 'no window' };
   const r = await dialog.showSaveDialog(mainWindow, {
-    title: 'CSV로 저장',
+    title: t('dialog.saveCsv'),
     defaultPath: defaultName || 'query-result.csv',
     filters: [{ name: 'CSV', extensions: ['csv'] }, { name: 'All Files', extensions: ['*'] }],
   });
@@ -1463,7 +1465,7 @@ ipcMain.handle('sftp:download', async (_e, { panelId, remotePath, isDir }: { pan
   if (isDir) {
     // 폴더 다운로드 — 부모 폴더 고른 뒤 그 안에 원격 폴더 이름으로 재귀 복사
     const pick = await dialog.showOpenDialog(mainWindow, {
-      title: '다운로드 받을 위치 선택',
+      title: t('dialog.saveDownloadLocation'),
       properties: ['openDirectory', 'createDirectory'],
     });
     if (pick.canceled || pick.filePaths.length === 0) return null;
@@ -1482,7 +1484,7 @@ ipcMain.handle('sftp:download', async (_e, { panelId, remotePath, isDir }: { pan
   }
   // 파일 다운로드 — 저장 이름까지 지정
   const result = await dialog.showSaveDialog(mainWindow, {
-    title: '원격 파일 저장',
+    title: t('dialog.saveRemoteFile'),
     defaultPath: baseName,
   });
   if (result.canceled || !result.filePath) return null;
@@ -1499,7 +1501,7 @@ ipcMain.handle('sftp:download-multi', async (_e, { panelId, items }: { panelId: 
   if (!mainWindow || !items || items.length === 0) return null;
   const bridge = getSSHBridge();
   const pick = await dialog.showOpenDialog(mainWindow, {
-    title: `${items.length}개 항목 다운로드 — 저장 폴더 선택`,
+    title: t('dialog.downloadMultiTitle', { count: items.length }),
     properties: ['openDirectory', 'createDirectory'],
   });
   if (pick.canceled || pick.filePaths.length === 0) return null;
@@ -1528,7 +1530,7 @@ ipcMain.handle('sftp:upload', async (_e, { panelId, remotePath, kind }: { panelI
   const isFolder = kind === 'folder';
   const isMulti = kind === 'multi-file';
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: isFolder ? '업로드할 폴더 선택' : (isMulti ? '업로드할 파일 선택 (다중)' : '업로드할 파일 선택'),
+    title: isFolder ? t('dialog.uploadFolder') : (isMulti ? t('dialog.uploadFileMulti') : t('dialog.uploadFile')),
     properties: isFolder ? ['openDirectory'] : (isMulti ? ['openFile', 'multiSelections'] : ['openFile']),
   });
   if (result.canceled || result.filePaths.length === 0) return null;
@@ -1803,7 +1805,7 @@ ipcMain.handle('pty:list-shells', async () => {
     for (const p of pwshPaths) {
       try { fs.accessSync(p); shells.push({ name: 'PowerShell Core', path: p, icon: '⚡' }); break; } catch {}
     }
-    shells.push({ name: '명령 프롬프트 (CMD)', path: 'cmd.exe', icon: '▪' });
+    shells.push({ name: 'CMD', path: 'cmd.exe', icon: '▪' });
     const gitBashPaths = [
       path.join(process.env.ProgramFiles || '', 'Git', 'bin', 'bash.exe'),
       path.join(process.env['ProgramFiles(x86)'] || '', 'Git', 'bin', 'bash.exe'),
@@ -1993,6 +1995,68 @@ ipcMain.on('pty:kill', (_e, { panelId }: { panelId: string }) => {
   if (proc) { proc.kill(); ptyProcesses.delete(panelId); }
 });
 
+// ── i18n ──
+ipcMain.handle('i18n:list-languages', () => listLanguages());
+ipcMain.handle('i18n:list-namespaces', (_e, { lang }: { lang: string }) => listNamespaces(lang));
+ipcMain.handle('i18n:load', (_e, { lang, ns }: { lang: string; ns: string }) => loadNamespace(lang, ns));
+ipcMain.handle('i18n:load-bundled', (_e, { lang, ns }: { lang: string; ns: string }) => loadBundledNamespace(lang, ns));
+ipcMain.handle('i18n:load-override', (_e, { lang, ns }: { lang: string; ns: string }) => loadOverrideNamespace(lang, ns));
+ipcMain.handle('i18n:save-override', (_e, { lang, ns, kv }: { lang: string; ns: string; kv: Record<string, string> }) => saveOverrideNamespace(lang, ns, kv));
+ipcMain.handle('i18n:add-language', (_e, { lang }: { lang: string }) => addLanguage(lang));
+ipcMain.handle('i18n:remove-language', (_e, { lang }: { lang: string }) => removeLanguage(lang));
+ipcMain.handle('i18n:set-lang', (_e, { lang }: { lang: string }) => { setCurrentLang(lang); return { ok: true }; });
+// AI 자동 번역 — Anthropic Claude API. ko 기준으로 target 언어로 번역. 빈 값/혹은 전체 강제 갱신.
+// API 키 우선순위: 인자로 받은 키 > 환경변수 ANTHROPIC_API_KEY
+ipcMain.handle('i18n:auto-translate', async (_e, { sourceLang, targetLang, items, apiKey }: { sourceLang: string; targetLang: string; items: Record<string, string>; apiKey?: string }) => {
+  const key = (apiKey || process.env.ANTHROPIC_API_KEY || '').trim();
+  if (!key) return { ok: false, error: 'ANTHROPIC_API_KEY 환경변수가 없거나 빈 값입니다 (또는 인자로 전달)' };
+  const keys = Object.keys(items);
+  if (keys.length === 0) return { ok: true, translations: {} };
+  // 키-값 쌍 JSON 으로 만들어 Claude 에게 줌. {{var}} 자리표시자는 보존 요구.
+  const prompt = `다음 ${sourceLang} 번역 키-값 JSON 을 ${targetLang} 로 번역해 주세요. 규칙:
+- 출력은 정확히 같은 키를 갖는 JSON 객체 1개만 (설명/마크다운 코드블럭 없이 순수 JSON).
+- 값만 ${targetLang} 로 번역. 키는 그대로.
+- {{변수}} 같은 자리표시자는 변형 없이 그대로 유지.
+- 이모지/특수문자는 유지.
+- 짧고 자연스러운 UI 문구로.
+
+입력 JSON:
+${JSON.stringify(items, null, 2)}`;
+  try {
+    const resp = await (globalThis as any).fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 4096,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    });
+    if (!resp.ok) {
+      const errText = await resp.text();
+      return { ok: false, error: `API ${resp.status}: ${errText.slice(0, 300)}` };
+    }
+    const data: any = await resp.json();
+    const text: string = data?.content?.[0]?.text || '';
+    // 응답이 마크다운 코드블럭 안에 있을 수도 있음 — 추출
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) return { ok: false, error: '응답에서 JSON 을 찾지 못함', raw: text.slice(0, 300) };
+    let translations: Record<string, string>;
+    try {
+      translations = JSON.parse(match[0]);
+    } catch (e: any) {
+      return { ok: false, error: 'JSON 파싱 실패: ' + e.message, raw: match[0].slice(0, 300) };
+    }
+    return { ok: true, translations };
+  } catch (err: any) {
+    return { ok: false, error: String(err?.message || err) };
+  }
+});
+
 // ── OpenVPN ──
 const vpn = getVpnService();
 const safeSend = (channel: string, payload: any) => {
@@ -2107,7 +2171,7 @@ ipcMain.handle('vpn:list-configs', () => vpn.listConfigs());
 ipcMain.handle('vpn:import-config', async (_e, { srcPath }: { srcPath?: string }) => {
   if (!srcPath) {
     const r = await dialog.showOpenDialog(mainWindow!, {
-      title: 'OpenVPN 설정 파일 (.ovpn) 가져오기',
+      title: t('dialog.vpnImportTitle'),
       filters: [{ name: 'OpenVPN config', extensions: ['ovpn'] }, { name: 'All Files', extensions: ['*'] }],
       properties: ['openFile'],
     });
@@ -2129,7 +2193,7 @@ const recordingStreams: Map<string, { stream: fs.WriteStream; path: string; star
 function recPickFilePath(suggested: string): string | null {
   if (!mainWindow) return null;
   const res = dialog.showSaveDialogSync(mainWindow, {
-    title: '터미널 녹화 파일 저장',
+    title: t('dialog.recordingSaveTitle'),
     defaultPath: suggested,
     filters: [{ name: 'Recording Log (ANSI)', extensions: ['log'] }, { name: 'All Files', extensions: ['*'] }],
   });

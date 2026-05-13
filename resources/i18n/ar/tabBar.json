@@ -1,0 +1,19 @@
+{
+  "addWorkspace": "مساحة عمل جديدة",
+  "addTooltip": "مساحة عمل جديدة (طرفية/متصفح)",
+  "terminalWorkspace": "💻 مساحة عمل الطرفية",
+  "browserWorkspace": "🌐 مساحة عمل المتصفح",
+  "compareWorkspace": "🔍 مساحة عمل مقارنة الملفات",
+  "logAnalyzerWorkspace": "📊 مساحة عمل محلل السجلات",
+  "vpnWorkspace": "🔒 مساحة عمل VPN",
+  "translationEditor": "📝 مساحة عمل اللغة",
+  "workspace": "مساحة العمل",
+  "shellSelect": "اختيار الصدفة",
+  "scrollPrev": "السابق",
+  "scrollNext": "التالي",
+  "renameContext": "إعادة تسمية",
+  "closeContext": "إغلاق",
+  "i18nWorkspace": "🌐 مساحة عمل الترجمة",
+  "fileTransferTab": "📁 نقل الملفات",
+  "workspaceN": "مساحة العمل {{n}}"
+}

@@ -1,0 +1,47 @@
+{
+  "dialog": {
+    "sessionsPathTitle": "اختر مجلد تخزين الجلسات",
+    "pickFilesMulti": "اختر الملفات (متعددة)",
+    "pickFile": "اختر ملفًا",
+    "pickFolder": "اختر مجلدًا",
+    "saveCsv": "حفظ كملف CSV",
+    "saveDownloadLocation": "اختر موقع التنزيل",
+    "saveRemoteFile": "حفظ الملف البعيد",
+    "downloadMultiTitle": "تنزيل {{count}} عنصرًا — اختر مجلد الوجهة",
+    "uploadFolder": "اختر مجلدًا للرفع",
+    "uploadFileMulti": "اختر ملفات للرفع (متعددة)",
+    "uploadFile": "اختر ملفًا للرفع",
+    "vpnImportTitle": "استيراد ملف إعداد OpenVPN (.ovpn)",
+    "recordingSaveTitle": "حفظ تسجيل الطرفية"
+  },
+  "popup": {
+    "optionsTitle": "الخيارات",
+    "sessionEditorTitle": "تعديل الجلسة",
+    "searchTitle": "بحث",
+    "pasteModalTitle": "لصق أسطر متعددة"
+  },
+  "search": {
+    "dragToMove": "اسحب للنقل",
+    "placeholder": "بحث...",
+    "history": "سجل البحث",
+    "caseSensitive": "حساس لحالة الأحرف",
+    "regex": "تعبير نمطي",
+    "currentTab": "التبويب الحالي",
+    "allTabs": "كل التبويبات",
+    "currentTabShort": "الحالي",
+    "allShort": "الكل",
+    "dockToApp": "إرجاع إلى التطبيق",
+    "closeEsc": "إغلاق (Esc)"
+  },
+  "paste": {
+    "title": "لصق أسطر متعددة",
+    "prompt": "هل تريد لصق النص التالي؟",
+    "cancel": "إلغاء (Esc)",
+    "paste": "لصق (Ctrl+Enter)"
+  },
+  "error": {
+    "noConnectionId": "لا يوجد معرف اتصال",
+    "fileTooLargeCap": "الملف كبير جدًا ({{mb}}MB > {{cap}}MB)",
+    "fileTooLarge": "الملف كبير جدًا ({{mb}}MB)"
+  }
+}

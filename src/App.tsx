@@ -1,5 +1,6 @@
 // src/App.tsx
 import { useState, useCallback, useEffect, useRef, useMemo, Fragment } from 'react';
+import { useTranslation } from 'react-i18next';
 import { createPortal } from 'react-dom';
 import { FixedSizeList as VList, ListChildComponentProps } from 'react-window';
 import './App.css';
@@ -18,6 +19,7 @@ import { BrowserPane } from './components/BrowserPane';
 import { CompareWorkspace } from './components/CompareWorkspace';
 import { LogAnalyzer } from './components/LogAnalyzer';
 import { VpnWorkspace } from './components/VpnWorkspace';
+import { TranslationEditor } from './components/TranslationEditor';
 import { QuickConnectBar, QuickConnectResult } from './components/QuickConnectDialog';
 import { StatusBar } from './components/StatusBar';
 import { resetTermConnectState, clearScrollbackInTerm, clearScreenInTerm, clearAllInTerm, applyThemeToAll, applyThemeToTerm, applyFontToTerm, applyFontToAll, getCurrentThemeName, registerTermSession, getTermSessionInfo, getWordSeparator, setWordSeparator, refitAllTerms, applyScrollbackToAll, applyScrollbackToTerm, cloneTermStyle, isTermConnected, isTermConnecting, isTermPty, subscribeConnectedChange, focusTerm, pasteToTerm, getSelectionFromTerm, selectAllInTerm, promptPasswordAndConnect, startInitialConnectWatchdog, getCurrentPwdForTerm, refitTerm, searchInTerm, searchNextInTerm, searchPrevInTerm, clearSearchInTerm, highlightAllMatches, clearHighlights, searchFromTop, getAllTermIds, applyCursorStyleToTerm, markQuickConnectPending, clearQuickConnectPending, writeToTerm, isRecording, stopRecording, recordingState } from './components/TerminalPanel';
@@ -53,8 +55,8 @@ import {
 export type { LayoutNode, ContainerNode, LeafNode, Panel, PanelSession } from './utils/layoutUtils';
 
 export type TabId = string;
-export type TabType = 'terminal' | 'fileExplorer' | 'fileEditor' | 'sqlTool' | 'browser' | 'compare' | 'logAnalyzer' | 'vpn';
-export type Tab = { id: TabId; title: string; layout: LayoutNode; type?: TabType; editor?: { termId: string; remotePath: string; fileName: string }; sqlTool?: { sessionId: string; sessionName: string }; browser?: { url: string }; compare?: {}; logAnalyzer?: {}; vpn?: {} };
+export type TabType = 'terminal' | 'fileExplorer' | 'fileEditor' | 'sqlTool' | 'browser' | 'compare' | 'logAnalyzer' | 'vpn' | 'i18nEditor';
+export type Tab = { id: TabId; title: string; customTitle?: boolean; layout: LayoutNode; type?: TabType; editor?: { termId: string; remotePath: string; fileName: string }; sqlTool?: { sessionId: string; sessionName: string }; browser?: { url: string }; compare?: {}; logAnalyzer?: {}; vpn?: {}; i18nEditor?: {} };
 
 // 일괄전송 히스토리 (앱 실행 중 유지, 최대 50개)
 const broadcastHistory: string[] = [];
@@ -68,6 +70,14 @@ function addBroadcastHistory(text: string) {
 }
 
 function App() {
+  const { t: tm } = useTranslation('menu');
+  const { t: ttab } = useTranslation('tabBar');
+  const { t: ta } = useTranslation('about');
+  const { t: to } = useTranslation('options');
+  const { t: tk } = useTranslation('keybindings');
+  const { t: tfe } = useTranslation('fileExplorer');
+  const { t: tterm } = useTranslation('terminal');
+  const { t: tb } = useTranslation('broadcast');
   const [tabs, setTabs] = useState<Tab[]>(() => {
     return [{ id: 'tab-1', title: 'Workspace 1', layout: createInitialLayout('tab-1') }];
   });
@@ -232,17 +242,23 @@ function App() {
       (window as any).api?.getStartupCwd?.().catch(() => null),
     ]).then(([shells, prefs, cwd]: [any[], any, string | null]) => {
       if (shells?.length) setAvailableShells(shells);
-      const name = prefs?.defaultShellName || shells?.[0]?.name || 'Windows PowerShell';
+      // 레거시 이름 마이그레이션 (예전 "명령 프롬프트 (CMD)" → "CMD")
+      const renameLegacy = (n?: string) => n === '명령 프롬프트 (CMD)' ? 'CMD' : n;
+      let name = renameLegacy(prefs?.defaultShellName) || shells?.[0]?.name || 'Windows PowerShell';
       const spath = prefs?.defaultShellPath || shells?.[0]?.path || 'powershell.exe';
+      if (prefs?.defaultShellName && prefs.defaultShellName !== name) {
+        try { (window as any).api?.setUIPrefs?.({ defaultShellName: name }); } catch {}
+      }
       setDefaultShell({ name, path: spath });
-      // 초기 탭의 세션명/경로/cwd를 업데이트
+      // 초기 탭의 세션명/경로/cwd를 업데이트 + 모든 탭의 레거시 sessionName 마이그레이션
       setTabs(prev => prev.map((t, i) => {
-        if (i !== 0) return t;
         const update = (node: LayoutNode): LayoutNode => {
           if (node.type === 'leaf') {
-            return { ...node, panel: { ...node.panel, sessions: node.panel.sessions.map(s =>
-              !s.sessionId ? { ...s, sessionName: name, shellPath: spath, shellCwd: cwd || undefined } : s
-            )}};
+            return { ...node, panel: { ...node.panel, sessions: node.panel.sessions.map(s => {
+              // 레거시 이름 정리는 모든 탭에 적용
+              const migrated = s.sessionName === '명령 프롬프트 (CMD)' ? { ...s, sessionName: 'CMD' } : s;
+              return (i === 0 && !migrated.sessionId) ? { ...migrated, sessionName: name, shellPath: spath, shellCwd: cwd || undefined } : migrated;
+            })}};
           }
           return { ...node, children: node.children.map(update) } as LayoutNode;
         };
@@ -307,8 +323,8 @@ function App() {
         ([id, key]) => id !== listeningAction && key === combo
       );
       if (duplicate) {
-        const dupLabel = KEYBINDING_LABELS[duplicate[0]] || duplicate[0];
-        setKeybindingWarning(`"${combo}"는 "${dupLabel}"에 이미 할당되어 있습니다.`);
+        const dupLabel = tk(`labels.${duplicate[0]}`, { defaultValue: KEYBINDING_LABELS[duplicate[0]] || duplicate[0] });
+        setKeybindingWarning(tk('duplicateWarn', { combo, dupLabel }));
         setTimeout(() => setKeybindingWarning(null), 5000);
       } else {
         setKeybindingWarning(null);
@@ -410,7 +426,7 @@ function App() {
         const r: any = await (window as any).api?.feSftpConnect?.(connId, sess.host, sess.port || 22, sess.username, sess.auth, jumpOpts);
         if (cancelled) return;
         if (!r?.success) {
-          alert(`연결 실패 (${sess.name}): ${r?.error || '알 수 없는 오류'}`);
+          alert(tfe('connectFailNamed', { name: sess.name, err: r?.error || tfe('unknownError') }));
           setRemotePickerConnecting(false);
           return;
         }
@@ -422,7 +438,7 @@ function App() {
           if (!cancelled) setRemotePickerPath(homePath || '/');
         } catch { if (!cancelled) setRemotePickerPath('/'); }
       } catch (err: any) {
-        if (!cancelled) alert(`연결 실패: ${err?.message || err}`);
+        if (!cancelled) alert(tfe('connectFail', { err: err?.message || err }));
       }
       if (!cancelled) setRemotePickerConnecting(false);
     })();
@@ -892,12 +908,12 @@ function App() {
     } else {
       text = broadcastAppendNewline ? (broadcastText.endsWith('\n') ? broadcastText : broadcastText + '\n') : broadcastText;
       label = '텍스트';
-      if (!text) { flashBroadcastNotice('텍스트를 입력하세요', 'warn'); return; }
+      if (!text) { flashBroadcastNotice(tb('emptyText'), 'warn'); return; }
       addBroadcastHistory(broadcastText);
     }
     const targets = collectBroadcastTargets(scope);
     if (targets.length === 0) {
-      flashBroadcastNotice('대상 세션이 없습니다', 'warn');
+      flashBroadcastNotice(tb('noTargets'), 'warn');
       return;
     }
     for (const tid of targets) {
@@ -1217,7 +1233,7 @@ function App() {
   const addCompareTab = () => {
     const id = `compare-${Date.now()}`;
     const layout = createInitialLayout(id);
-    setTabs(prev => [...prev, { id, title: '🔍 파일 비교', layout, type: 'compare', compare: {} }]);
+    setTabs(prev => [...prev, { id, title: ttab('compareWorkspace'), layout, type: 'compare', compare: {} }]);
     setActiveTabId(id);
   };
 
@@ -1225,7 +1241,17 @@ function App() {
   const addLogAnalyzerTab = () => {
     const id = `log-${Date.now()}`;
     const layout = createInitialLayout(id);
-    setTabs(prev => [...prev, { id, title: '📊 로그 분석', layout, type: 'logAnalyzer', logAnalyzer: {} }]);
+    setTabs(prev => [...prev, { id, title: ttab('logAnalyzerWorkspace'), layout, type: 'logAnalyzer', logAnalyzer: {} }]);
+    setActiveTabId(id);
+  };
+
+  // 번역 편집 워크스페이스 추가 (단일 인스턴스)
+  const addI18nEditorTab = () => {
+    const existing = tabs.find(t => t.type === 'i18nEditor');
+    if (existing) { setActiveTabId(existing.id); return; }
+    const id = `i18n-${Date.now()}`;
+    const layout = createInitialLayout(id);
+    setTabs(prev => [...prev, { id, title: ttab('translationEditor'), layout, type: 'i18nEditor', i18nEditor: {} }]);
     setActiveTabId(id);
   };
 
@@ -1235,7 +1261,7 @@ function App() {
     if (existing) { setActiveTabId(existing.id); return; }
     const id = `vpn-${Date.now()}`;
     const layout = createInitialLayout(id);
-    setTabs(prev => [...prev, { id, title: '🔒 VPN', layout, type: 'vpn', vpn: {} }]);
+    setTabs(prev => [...prev, { id, title: ttab('vpnWorkspace'), layout, type: 'vpn', vpn: {} }]);
     setActiveTabId(id);
   };
 
@@ -1327,7 +1353,7 @@ function App() {
   };
 
   const renameTab = (id: TabId, name: string) => {
-    setTabs(prev => prev.map(t => t.id === id ? { ...t, title: name } : t));
+    setTabs(prev => prev.map(t => t.id === id ? { ...t, title: name, customTitle: true } : t));
   };
 
   const closeTab = (id: TabId) => {
@@ -1648,7 +1674,7 @@ function App() {
     if (!activeTab) return;
     // 녹화 중인 세션을 닫으면 자동 stop + 사용자 확인 (파일 데이터 유실 방지)
     if (isRecording(termId)) {
-      const ok = window.confirm('이 세션은 녹화 중입니다. 닫으면 녹화가 종료됩니다. 계속하시겠습니까?');
+      const ok = window.confirm(tterm('recordCloseConfirm'));
       if (!ok) return;
       stopRecording(termId).catch(() => {});
     }
@@ -1707,7 +1733,7 @@ function App() {
           } else {
             const msg = result?.error || '알 수 없는 오류';
             console.error('[fe-sftp-connect dblclick] failed:', msg);
-            alert(`파일 전송 연결 실패 (${sessionName})\n\n${msg}`);
+            alert(tfe('fileTransferConnectFail', { name: sessionName, msg }));
           }
         } catch (err: any) {
           console.error('[fe-sftp-connect dblclick] exception:', err);
@@ -1839,7 +1865,7 @@ function App() {
       let feTab = tabs.find(t => t.type === 'fileExplorer');
       if (!feTab) {
         const id = `tab-fe-${Date.now()}`;
-        feTab = { id, title: '📁 파일 전송', layout: createInitialLayout(id), type: 'fileExplorer' };
+        feTab = { id, title: tm('tools.fileTransfer'), layout: createInitialLayout(id), type: 'fileExplorer' };
         setTabs(prev => [...prev, feTab!]);
       }
       setActiveTabId(feTab.id);
@@ -1964,32 +1990,32 @@ function App() {
 
   const menuDefs: MenuDef[] = [
     {
-      label: '파일',
+      label: tm('file.title'),
       items: [
-        { label: '➕ 새 워크스페이스', action: () => addTab() },
-        { label: '✖ 워크스페이스 닫기', action: () => activeTab && closeTab(activeTab.id), disabled: tabs.length <= 1 },
+        { label: tm('file.newWorkspace'), action: () => addTab() },
+        { label: tm('file.closeWorkspace'), action: () => activeTab && closeTab(activeTab.id), disabled: tabs.length <= 1 },
         { separator: true, label: '' },
-        { label: '📤 세션 내보내기...', action: () => (window as any).api.exportSessions() },
-        { label: '📥 세션 가져오기...', action: async () => { const r = await (window as any).api.importSessions(); if (r) { window.dispatchEvent(new Event('sessions-reload')); showToast(r.addedCount != null ? `${r.addedCount}개 세션 가져옴 (총 ${r.totalParsed}개 중)` : '세션을 가져왔습니다.'); } } },
+        { label: tm('file.exportSessions'), action: () => (window as any).api.exportSessions() },
+        { label: tm('file.importSessions'), action: async () => { const r = await (window as any).api.importSessions(); if (r) { window.dispatchEvent(new Event('sessions-reload')); showToast(r.addedCount != null ? tm('file.importedToast', { added: r.addedCount, total: r.totalParsed }) : tm('file.importedToastSimple')); } } },
         { separator: true, label: '' },
-        { label: '🚪 종료', action: () => window.close() },
+        { label: tm('file.quit'), action: () => window.close() },
       ],
     },
     {
-      label: '편집',
+      label: tm('edit.title'),
       items: [
-        { label: '📋 복사', shortcut: getKeybinding('copy') || 'Ctrl+Shift+C', action: () => document.execCommand('copy') },
-        { label: '📎 붙여넣기', shortcut: getKeybinding('paste') || 'Ctrl+Shift+V', action: () => { navigator.clipboard.readText().then(text => { const tid = getActiveTermId(); if (!tid) return; pasteToTerm(tid, text); }); } },
-        { label: '🔘 전체 선택', shortcut: getKeybinding('selectAll'), action: () => { const tid = getActiveTermId(); if (tid) selectAllInTerm(tid); } },
+        { label: tm('edit.copy'), shortcut: getKeybinding('copy') || 'Ctrl+Shift+C', action: () => document.execCommand('copy') },
+        { label: tm('edit.paste'), shortcut: getKeybinding('paste') || 'Ctrl+Shift+V', action: () => { navigator.clipboard.readText().then(text => { const tid = getActiveTermId(); if (!tid) return; pasteToTerm(tid, text); }); } },
+        { label: tm('edit.selectAll'), shortcut: getKeybinding('selectAll'), action: () => { const tid = getActiveTermId(); if (tid) selectAllInTerm(tid); } },
         { separator: true, label: '' },
-        { label: '🔍 찾기', shortcut: getKeybinding('find') || 'Ctrl+Shift+F', action: () => setShowSearch(true) },
+        { label: tm('edit.find'), shortcut: getKeybinding('find') || 'Ctrl+Shift+F', action: () => setShowSearch(true) },
       ],
     },
     {
-      label: '보기',
+      label: tm('view.title'),
       items: [
         {
-          label: '🎨 테마',
+          label: tm('view.theme'),
           submenu: getThemeList().map(t => ({
             label: t,
             action: () => handleThemeChange(t),
@@ -2003,9 +2029,9 @@ function App() {
                 <text x="5" y="11" fontFamily="Arial,sans-serif" fontWeight="700" fontSize="9">A</text>
                 <text x="11" y="11" fontFamily="Arial,sans-serif" fontWeight="700" fontSize="12">A</text>
               </svg>
-              글꼴 크기 +
+              {tm('view.fontSizeUp')}
             </span>
-          ), shortcut: 'Ctrl+휠 위', action: () => applyFontToAll(undefined, (Number(localStorage.getItem('terminalFontSize')) || 14) + 1) },
+          ), shortcut: tm('view.wheelUp'), action: () => applyFontToAll(undefined, (Number(localStorage.getItem('terminalFontSize')) || 14) + 1) },
         { label: (
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
               <svg width="20" height="14" viewBox="0 0 20 14" fill="currentColor">
@@ -2013,20 +2039,20 @@ function App() {
                 <text x="9" y="11" fontFamily="Arial,sans-serif" fontWeight="700" fontSize="9">A</text>
                 <text x="15" y="11" fontFamily="Arial,sans-serif" fontWeight="700" fontSize="6">A</text>
               </svg>
-              글꼴 크기 -
+              {tm('view.fontSizeDown')}
             </span>
-          ), shortcut: 'Ctrl+휠 아래', action: () => applyFontToAll(undefined, Math.max(8, (Number(localStorage.getItem('terminalFontSize')) || 14) - 1)) },
+          ), shortcut: tm('view.wheelDown'), action: () => applyFontToAll(undefined, Math.max(8, (Number(localStorage.getItem('terminalFontSize')) || 14) - 1)) },
       ],
     },
     {
-      label: '창',
+      label: tm('window.title'),
       items: [
         { label: (
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <rect x="1" y="1" width="12" height="12" rx="1.5" /><line x1="7" y1="1" x2="7" y2="13" />
               </svg>
-              가로 분할 (좌/우)
+              {tm('window.splitH')}
             </span>
           ), shortcut: getKeybinding('splitSessionV'), action: () => { if (activeTab && selectedPanelId) openSplitSessionPicker('row', selectedPanelId); }, disabled: !selectedPanelId },
         { label: (
@@ -2034,7 +2060,7 @@ function App() {
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <rect x="1" y="1" width="12" height="12" rx="1.5" /><line x1="1" y1="7" x2="13" y2="7" />
               </svg>
-              세로 분할 (상/하)
+              {tm('window.splitV')}
             </span>
           ), shortcut: getKeybinding('splitSessionH'), action: () => { if (activeTab && selectedPanelId) openSplitSessionPicker('column', selectedPanelId); }, disabled: !selectedPanelId },
         { separator: true, label: '' },
@@ -2050,62 +2076,62 @@ function App() {
                 <line x1="5" y1="9" x2="5" y2="12.5" stroke="#000" strokeWidth="0.6" />
                 <line x1="6.5" y1="9" x2="7.5" y2="12.5" stroke="#000" strokeWidth="0.6" />
               </svg>
-              화면 지우기
+              {tm('window.clearScreen')}
             </span>
           ), shortcut: getKeybinding('clearScreen') || 'Ctrl+Shift+L', action: () => { const tid = getActiveTermId(); if (tid) clearScreenInTerm(tid); } },
-        { label: '🗑 스크롤 버퍼 지우기', shortcut: getKeybinding('clearScrollback') || 'Ctrl+Shift+B', action: () => { const tid = getActiveTermId(); if (tid) clearScrollbackInTerm(tid); } },
-        { label: '🧼 모두 지우기', shortcut: getKeybinding('clearAll') || 'Ctrl+Shift+A', action: () => { const tid = getActiveTermId(); if (tid) clearAllInTerm(tid); } },
+        { label: tm('window.clearScrollback'), shortcut: getKeybinding('clearScrollback') || 'Ctrl+Shift+B', action: () => { const tid = getActiveTermId(); if (tid) clearScrollbackInTerm(tid); } },
+        { label: tm('window.clearAll'), shortcut: getKeybinding('clearAll') || 'Ctrl+Shift+A', action: () => { const tid = getActiveTermId(); if (tid) clearAllInTerm(tid); } },
       ],
     },
     {
-      label: '도구',
+      label: tm('tools.title'),
       items: [
-        { label: '📁 파일 전송', action: () => {
+        { label: tm('tools.fileTransfer'), action: () => {
           const id = `tab-fe-${Date.now()}`;
-          setTabs(prev => [...prev, { id, title: '📁 파일 전송', layout: createInitialLayout(id), type: 'fileExplorer' }]);
+          setTabs(prev => [...prev, { id, title: tm('tools.fileTransfer'), layout: createInitialLayout(id), type: 'fileExplorer' }]);
           setActiveTabId(id);
         }},
         { separator: true, label: '' },
-        { label: showToolbar ? '🧰 도구 모음 바 숨기기' : '🧰 도구 모음 바 표시', action: () => setShowToolbar(v => !v) },
-        { label: showQuickConnect ? '⚡ 빠른 연결 바 숨기기' : '⚡ 빠른 연결 바 표시', action: () => setShowQuickConnect(v => !v) },
-        { label: showClaudeChat ? '🤖 Claude 채팅 숨기기' : '🤖 Claude 채팅 표시', action: () => setShowClaudeChat(v => !v) },
-        { label: showBroadcast ? '📢 텍스트 일괄 전송 바 숨기기' : '📢 텍스트 일괄 전송 바 표시', action: () => { setShowBroadcast(v => !v); } },
+        { label: showToolbar ? tm('tools.toolbarHide') : tm('tools.toolbarShow'), action: () => setShowToolbar(v => !v) },
+        { label: showQuickConnect ? tm('tools.quickConnectHide') : tm('tools.quickConnectShow'), action: () => setShowQuickConnect(v => !v) },
+        { label: showClaudeChat ? tm('tools.claudeHide') : tm('tools.claudeShow'), action: () => setShowClaudeChat(v => !v) },
+        { label: showBroadcast ? tm('tools.broadcastHide') : tm('tools.broadcastShow'), action: () => { setShowBroadcast(v => !v); } },
         { separator: true, label: '' },
-        { label: '🖥️ X 서버 시작 (DISPLAY=:0)', action: async () => {
+        { label: tm('tools.xStart'), action: async () => {
           try {
             const r = await (window as any).api?.x11Start?.(0);
             if (r?.usedBundled) {
-              setInfoModal({ title: 'X 서버 시작', text: `✅ DISPLAY=:0  PID=${r.pid}` });
+              setInfoModal({ title: tm('tools.xStartTitle'), text: tm('tools.xStartOk', { pid: r.pid }) });
               setTimeout(() => { setInfoModal(null); restoreTerminalFocus(); }, 1200);
             } else {
-              setInfoModal({ title: 'X 서버 시작', text: `⚠️ 번들/외부 X 서버 사용 안 함\n\n${(r?.logs || []).slice(-5).join('\n')}` });
+              setInfoModal({ title: tm('tools.xStartTitle'), text: `${tm('tools.xStartNoBundle')}\n\n${(r?.logs || []).slice(-5).join('\n')}` });
             }
           } catch (e: any) {
-            setInfoModal({ title: 'X 서버 시작 실패', text: String(e?.message || e) });
+            setInfoModal({ title: tm('tools.xStartFail'), text: String(e?.message || e) });
           }
         }},
-        { label: '🛑 X 서버 중지', action: async () => {
+        { label: tm('tools.xStop'), action: async () => {
           try {
             await (window as any).api?.x11Stop?.(0);
-            setInfoModal({ title: 'X 서버 중지', text: '✅ 중지 완료.' });
+            setInfoModal({ title: tm('tools.xStopTitle'), text: tm('tools.xStopOk') });
             setTimeout(() => { setInfoModal(null); restoreTerminalFocus(); }, 1200);
           } catch (e: any) {
-            setInfoModal({ title: 'X 서버 중지 실패', text: String(e?.message || e) });
+            setInfoModal({ title: tm('tools.xStopFail'), text: String(e?.message || e) });
           }
         }},
-        { label: 'ℹ️ X 서버 상태', action: async () => {
+        { label: tm('tools.xStatus'), action: async () => {
           try {
             const r = await (window as any).api?.x11Status?.();
             const text = r?.anyRunning
-              ? `🟢 실행 중\n\n` + r.running.map((x: any) => `  • DISPLAY=:${x.displayNum}  PID=${x.pid}`).join('\n')
-              : '⚫ 실행 중인 X 서버 없음.';
-            setInfoModal({ title: 'X 서버 상태', text });
+              ? `${tm('tools.xStatusRunning')}\n\n` + r.running.map((x: { displayNum: number; pid: number }) => `  • DISPLAY=:${x.displayNum}  PID=${x.pid}`).join('\n')
+              : tm('tools.xStatusNone');
+            setInfoModal({ title: tm('tools.xStatusTitle'), text });
           } catch (e: any) {
-            setInfoModal({ title: 'X 서버 상태 조회 실패', text: String(e?.message || e) });
+            setInfoModal({ title: tm('tools.xStatusFail'), text: String(e?.message || e) });
           }
         }},
         { separator: true, label: '' },
-        { label: '⚙ 옵션...', action: async () => {
+        { label: tm('tools.options'), action: async () => {
           setWordSepValue(getWordSeparator());
           setTermSettings(getTerminalSettings());
           setOptFontFamily(localStorage.getItem('terminalFontFamily') || '');
@@ -2136,13 +2162,13 @@ function App() {
       ],
     },
     {
-      label: '도움말',
+      label: tm('help.title'),
       items: [
-        { label: '📖 매뉴얼...', action: () => setShowManual(true) },
+        { label: tm('help.manual'), action: () => setShowManual(true) },
         { separator: true, label: '' },
-        { label: '⌨ 단축키 목록', action: () => { setKeybindingListQuery(''); setShowKeybindingList(true); } },
+        { label: tm('help.keybindings'), action: () => { setKeybindingListQuery(''); setShowKeybindingList(true); } },
         { separator: true, label: '' },
-        { label: 'ℹ PePe Terminal(SSH) 정보', action: async () => {
+        { label: tm('help.about'), action: async () => {
           let sessPath = '';
           try { sessPath = await (window as any).api.getSessionsPath(); } catch {}
           // 버전은 Electron 에서 동적으로 가져옴 (package.json 기반 — 빌드시마다 자동 반영)
@@ -2151,113 +2177,18 @@ function App() {
           // 최신 릴리즈 노트도 동적으로 — docs/RELEASE_v{version}.md 가 있으면 사용
           let releaseNotes = '';
           try { releaseNotes = await (window as any).api?.getReleaseNotes?.() || ''; } catch {}
-          setInfoModal({ title: 'ℹ PePe Terminal(SSH) 정보', text: (
-          `PePe Terminal(SSH) v${version || '?'}\n\n` +
-          '만든이: Claude (feat. ghjeong[prompt])\n\n' +
-          '── 터미널 기본 ──\n' +
-          'SSH/SFTP 원격 접속 (비밀번호/키/Expect-Send 로그인)\n' +
-          'ProxyJump — primary 호스트 경유 점프 타겟 SSH+SFTP 직결\n' +
-          '로컬 쉘 (PowerShell, CMD, Git Bash, WSL)\n' +
-          '기본 쉘 설정 / 미니탭별 쉘 선택\n' +
-          '테마 / 글꼴 / 인코딩(utf-8/cp949/euc-kr) 변경\n' +
-          '자동 재연결 (30초), 초기 연결 watchdog (20초 × 3회 재시도)\n' +
-          '터미널 투명도 (0~100 슬라이더) / 데스크톱 투시 / Alt+Enter 전체화면\n\n' +
-          '── 워크스페이스 / 패널 ──\n' +
-          '다중 워크스페이스 탭\n' +
-          '분할 패널 (가로/세로/타일 ⊞ N×ceil√N)\n' +
-          '플로팅 확대 (패널 전체화면 오버레이)\n' +
-          '패널별 미니탭, 탭 간 드래그앤드롭\n' +
-          '미니탭 휠 스크롤 / ‹ › 버튼\n' +
-          '탭별 선택 패널 기억 (재진입 시 자동 포커스)\n' +
-          '선택된 패널 클릭 포커스 → 파일트리/Claude 컨텍스트 자동 전환\n\n' +
-          '── 세션 관리 ──\n' +
-          '폴더 + 세션 혼합 정렬 (Ctrl+↑/↓ 이동, 다중 선택)\n' +
-          'Shift+클릭 범위 선택 / Ctrl+클릭 다중 선택\n' +
-          '세션 가져오기/내보내기 (SecureCRT, Xshell)\n' +
-          '세션 재클릭으로 encoding 창 토글\n' +
-          'host:port 호버 플로팅 툴팁\n' +
-          '폴더 펼침/접힘 상태 영속화 (앱 재시작 후 유지)\n' +
-          '세션 편집:\n' +
-          '  - 파일트리 초기 경로 지정\n' +
-          '  - ProxyJump 점프 호스트 설정\n' +
-          '  - 파일트리 자동추적 옵션 (cd 시 동기화)\n' +
-          '  - 로그인 스크립트 (Expect/Send)\n\n' +
-          '── 원격 파일 탐색/편집 (VS Code Remote 스타일) ──\n' +
-          '워크스페이스 공유 파일 트리 (선택된 패널 세션 기준)\n' +
-          '파일트리 핀/자동숨김 (📌 토글)\n' +
-          '파일트리 너비 드래그 리사이즈 (160~800px)\n' +
-          'SFTP 목록, mtime 정렬, 확장자별 색상/아이콘 (15+ 카테고리)\n' +
-          '다중 선택 (Ctrl/Shift+클릭) + 일괄 다운로드\n' +
-          '우클릭 메뉴: 파일 열기 / Claude 첨부 / 경로 복사 / 삭제\n' +
-          'Monaco 에디터 탭 (구문강조, Ctrl+S 저장)\n' +
-          '듀얼 패널 파일 탐색기 (SFTP/로컬 양방향) + ProxyJump 지원\n\n' +
-          '── Claude Code 통합 ──\n' +
-          '우측 Claude 채팅 사이드바 (핀/자동숨김, 드래그 리사이즈)\n' +
-          '세션/파일트리/Claude 모두 unpin 시 z-index 마우스호버 우선\n' +
-          'WebDAV 브리지 — 원격 SSH 를 로컬 UNC 로 실시간 마운트\n' +
-          'Unix 경로 자동 UNC 번역 (/view/... → \\\\127.0.0.1@port\\...)\n' +
-          'MCP ssh_exec — Claude 가 원격 SSH 명령 실행 (cleartool 등)\n' +
-          '모델 선택 (Opus / Sonnet / Haiku / Opus Plan)\n' +
-          '권한 모드 (편집 전 확인 / 자동 수락 / 계획 / 모두 허용)\n' +
-          'Plan 모드 + ExitPlanMode 승인 모달 (마크다운 + Mermaid 렌더)\n' +
-          'PreToolUse hooks 기반 툴 단위 승인 (체크박스)\n' +
-          '대화 세션 이어가기 (--resume) + stale 세션 자동 폴백\n' +
-          '로컬 파일/폴더 첨부 (📄+ / 📁+ webkitdirectory 재귀)\n' +
-          '슬래시 명령 팔레트 (Context/Model/Permission/Slash, 필터 + ↑↓ 네비)\n' +
-          '툴 타임라인 실시간 인디케이터 (⏳/✓/✕)\n' +
-          '채팅창 독립 폰트 설정 + Ctrl+Wheel 크기 조절\n' +
-          '대화 이력 관리 (Pinned/Recents, 이름 변경, 핀 고정, 삭제)\n' +
-          '대화 백그라운드 진행 — + 새 대화 시작해도 이전 대화 응답 계속 수신\n' +
-          '대화 포크 (메시지 우클릭 → 여기서 포크하기, 이전 컨텍스트 transcript 자동 inject)\n' +
-          '메시지 우클릭 메뉴 (텍스트/마크다운 복사, 컨텍스트 첨부, 포크)\n' +
-          'Mermaid 다이어그램 자동 SVG 렌더 + 우클릭 PNG/SVG 저장·복사\n' +
-          'GFM 테이블 자동 렌더 (탭 정렬 텍스트도 표로 자동 변환)\n' +
-          'AskUserQuestion / ToolSearch 도구 차단 (비대화형 모드 안정성)\n' +
-          'requestId 단위 프로세스 분리 — 다중 대화 동시 진행, 정확한 stop\n\n' +
-          '── v2.0.6 신규 ──\n' +
-          'PWD 자동추적 백그라운드 폴링 — 셸 history 0건 (별도 SSH exec 채널로 /proc/PID/cwd 폴링)\n' +
-          '세션관리/파일트리/Claude 사이드바 트리거 둥근 모서리\n' +
-          '워크스페이스 탭 드래그로 순서 변경\n' +
-          '미니탭바 우측 컨트롤 토글 (⋯ 버튼) — 분할/플로팅/투명도 플로팅 팝업\n' +
-          '터미널 우클릭 메뉴에 테마 변경 추가 (per-term)\n' +
-          'Mermaid 다이어그램 PNG/SVG 저장·복사 + 우클릭 메뉴\n' +
-          'Plan 승인 모달도 Mermaid 자동 렌더\n' +
-          'GFM 테이블 + 탭 정렬 텍스트 자동 변환\n' +
-          '일괄전송바·파일전송 세션 드롭다운: 🟢 연결됨 / ⚪ 연결안됨 그룹화\n' +
-          '타이틀바 단순 클릭으로 최대화 창 복원되던 문제 수정 (5px 드래그 임계값)\n' +
-          '터미널 vi 등 풀스크린 앱 사이즈 즉시 동기화 — refit 시 숨겨진 터미널 스킵\n' +
-          'Alt+Enter 최대화 + 미니탭 플로팅 토글 시 화면 사라지는 문제 수정\n' +
-          '도움말/정보 모달 스크롤 가능, 닫을 때 자동 터미널 포커스 복원\n' +
-          '윈도우 포커스 복귀 시 자동 터미널 포커스 (Alt+Tab 등)\n\n' +
-          '── 입력/브로드캐스트 ──\n' +
-          '텍스트 일괄 전송 (현재/보이는 탭/연결된 세션/전체 세션 lazy connect)\n' +
-          '빠른 연결 바 (host/user/password/enc 즉석 접속)\n' +
-          'Ctrl+C / Ctrl+D 브로드캐스트\n' +
-          '브로드캐스트 히스토리 (↑↓ 네비)\n' +
-          'Esc 로 바가 닫히지 않음 — 닫기는 ✕ 버튼으로만\n\n' +
-          '── 찾기 / 검색 ──\n' +
-          '터미널 찾기 (Ctrl+Shift+F), 이력, 하이라이트\n' +
-          '이전 / 다음 네비게이션\n\n' +
-          '── 설정 (옵션) ──\n' +
-          '기본 로컬 쉘 선택\n' +
-          '탐색기 우클릭 "Open here" 등록/해제\n' +
-          '세션 저장 경로 변경\n' +
-          '단축키 커스터마이즈\n' +
-          '터미널 설정 (word separator, scrollback 등)\n' +
-          '내부 매뉴얼 뷰어 (docs/MANUAL.md)\n\n' +
-          '── Windows 시스템 연동 ──\n' +
-          '윈도우 프레임 없음 / 투명 / 최대화-복원\n' +
-          '탐색기 "Open here" → 워크스페이스 해당 디렉토리 쉘\n\n' +
-          '── 기술 스택 ──\n' +
-          'Electron + React + TypeScript + Vite\n' +
-          'xterm.js (터미널), Monaco Editor (코드 편집)\n' +
-          'node-pty (로컬 쉘), ssh2 (SSH/SFTP)\n' +
-          'webdav-server (SFTP→WebDAV 프록시)\n' +
-          'marked (Markdown), iconv-lite (인코딩)\n' +
-          'Claude Code CLI (@anthropic-ai/claude-code)\n\n' +
-          '── 세션 저장 경로 ──\n' +
-          (sessPath || '(알 수 없음)') +
-          (releaseNotes ? `\n\n──────────────────────────────\n📋 v${version} 릴리즈 노트\n──────────────────────────────\n${releaseNotes}` : '')
+          const sections = [
+            'terminalBasics','workspacePanel','sessionMgmt','remoteExplorer','claudeIntegration',
+            'vNewly','inputBroadcast','search','settings','windowsIntegration','techStack'
+          ];
+          const body = sections.map(s => `${ta(`${s}.heading`)}\n${ta(`${s}.body`)}`).join('\n\n');
+          setInfoModal({ title: tm('help.about'), text: (
+          `${ta('title', { version: version || '?' })}\n\n` +
+          `${ta('credits')}\n\n` +
+          body + '\n\n' +
+          `${ta('sessionsPath')}\n` +
+          (sessPath || ta('unknown')) +
+          (releaseNotes ? `\n\n${ta('releaseNotesHeader', { version })}\n${releaseNotes}` : '')
         ) }); } },
       ],
     },
@@ -2431,7 +2362,7 @@ function App() {
           let feTab = tabs.find(t => t.type === 'fileExplorer');
           if (!feTab) {
             const id = `tab-fe-${Date.now()}`;
-            feTab = { id, title: '📁 파일 전송', layout: createInitialLayout(id), type: 'fileExplorer' };
+            feTab = { id, title: tm('tools.fileTransfer'), layout: createInitialLayout(id), type: 'fileExplorer' };
             setTabs(prev => [...prev, feTab!]);
           }
           setActiveTabId(feTab.id);
@@ -2453,11 +2384,11 @@ function App() {
             } else {
               const msg = result?.error || '알 수 없는 오류';
               console.error('[fe-sftp-connect] failed:', msg);
-              alert(`파일 전송 연결 실패 (${sessionName})\n\n${msg}\n\nDevTools Console 에 [sftp-connect] 로그 확인 권장.`);
+              alert(tfe('fileTransferConnectFailWithDevtools', { name: sessionName, msg }));
             }
           } catch (err: any) {
             console.error('[fe-sftp-connect] exception:', err);
-            alert(`파일 전송 연결 예외: ${err?.message || err}`);
+            alert(tfe('fileTransferConnectException', { err: err?.message || err }));
           }
         }}
         onOpenSqlTool={(sessionId, sessionName) => {
@@ -2473,7 +2404,7 @@ function App() {
       <div className="app-main">
         <div className="tab-bar-row">
           <MenuBar menus={menuDefs} />
-          <TabBar tabs={tabs} activeTabId={activeTabId} onChange={setActiveTabId} onAddTab={addTab} onAddBrowserTab={addBrowserTab} onAddCompareTab={addCompareTab} onAddLogAnalyzerTab={addLogAnalyzerTab} onAddVpnTab={addVpnTab} onCloseTab={closeTab} onRenameTab={renameTab}
+          <TabBar tabs={tabs} activeTabId={activeTabId} onChange={setActiveTabId} onAddTab={addTab} onAddBrowserTab={addBrowserTab} onAddCompareTab={addCompareTab} onAddLogAnalyzerTab={addLogAnalyzerTab} onAddVpnTab={addVpnTab} onAddI18nEditorTab={addI18nEditorTab} onCloseTab={closeTab} onRenameTab={renameTab}
           onReorderTabs={(fromId, toId) => {
             setTabs(prev => {
               const from = prev.findIndex(t => t.id === fromId);
@@ -2568,45 +2499,45 @@ function App() {
                 title="드래그하여 빠른연결 좌/우 또는 상단으로"
                 onMouseDown={onDragStart}
               >⋮⋮</span>
-              <button className="tool-btn" title="파일 전송" onClick={() => {
+              <button className="tool-btn" title={tm('tools.fileTransfer')} onClick={() => {
             const id = `tab-fe-${Date.now()}`;
-            setTabs(prev => [...prev, { id, title: '📁 파일 전송', layout: createInitialLayout(id), type: 'fileExplorer' }]);
+            setTabs(prev => [...prev, { id, title: tm('tools.fileTransfer'), layout: createInitialLayout(id), type: 'fileExplorer' }]);
             setActiveTabId(id);
           }}>📁</button>
           <span className="tool-sep" />
-          <button className={`tool-btn ${showQuickConnect ? 'active' : ''}`} title={showQuickConnect ? '빠른 연결 바 숨기기' : '빠른 연결 바 표시'} onClick={() => setShowQuickConnect(v => !v)}>⚡</button>
-          <button className={`tool-btn ${showClaudeChat ? 'active' : ''}`} title={showClaudeChat ? 'Claude 채팅 숨기기' : 'Claude 채팅 표시'} onClick={() => setShowClaudeChat(v => !v)}>🤖</button>
-          <button className={`tool-btn ${showBroadcast ? 'active' : ''}`} title={showBroadcast ? '텍스트 일괄 전송 바 숨기기' : '텍스트 일괄 전송 바 표시'} onClick={() => setShowBroadcast(v => !v)}>📢</button>
+          <button className={`tool-btn ${showQuickConnect ? 'active' : ''}`} title={showQuickConnect ? tm('tools.quickConnectHide') : tm('tools.quickConnectShow')} onClick={() => setShowQuickConnect(v => !v)}>⚡</button>
+          <button className={`tool-btn ${showClaudeChat ? 'active' : ''}`} title={showClaudeChat ? tm('tools.claudeHide') : tm('tools.claudeShow')} onClick={() => setShowClaudeChat(v => !v)}>🤖</button>
+          <button className={`tool-btn ${showBroadcast ? 'active' : ''}`} title={showBroadcast ? tm('tools.broadcastHide') : tm('tools.broadcastShow')} onClick={() => setShowBroadcast(v => !v)}>📢</button>
           <span className="tool-sep" />
-          <button className="tool-btn" title="X 서버 시작 (DISPLAY=:0)" onClick={async () => {
+          <button className="tool-btn" title={tm('tools.xStart')} onClick={async () => {
             try {
               const r = await (window as any).api?.x11Start?.(0);
               if (r?.usedBundled) {
-                setInfoModal({ title: 'X 서버 시작', text: `✅ DISPLAY=:0  PID=${r.pid}` });
+                setInfoModal({ title: tm('tools.xStartTitle'), text: tm('tools.xStartOk', { pid: r.pid }) });
                 setTimeout(() => { setInfoModal(null); restoreTerminalFocus(); }, 1200);
               } else {
-                setInfoModal({ title: 'X 서버 시작', text: `⚠️ 번들/외부 X 서버 사용 안 함\n\n${(r?.logs || []).slice(-5).join('\n')}` });
+                setInfoModal({ title: tm('tools.xStartTitle'), text: `${tm('tools.xStartNoBundle')}\n\n${(r?.logs || []).slice(-5).join('\n')}` });
               }
-            } catch (e: any) { setInfoModal({ title: 'X 서버 시작 실패', text: String(e?.message || e) }); }
+            } catch (e: any) { setInfoModal({ title: tm('tools.xStartFail'), text: String(e?.message || e) }); }
           }}>🖥️</button>
-          <button className="tool-btn" title="X 서버 중지" onClick={async () => {
+          <button className="tool-btn" title={tm('tools.xStop')} onClick={async () => {
             try {
               await (window as any).api?.x11Stop?.(0);
-              setInfoModal({ title: 'X 서버 중지', text: '✅ 중지 완료.' });
+              setInfoModal({ title: tm('tools.xStopTitle'), text: tm('tools.xStopOk') });
               setTimeout(() => { setInfoModal(null); restoreTerminalFocus(); }, 1200);
-            } catch (e: any) { setInfoModal({ title: 'X 서버 중지 실패', text: String(e?.message || e) }); }
+            } catch (e: any) { setInfoModal({ title: tm('tools.xStopFail'), text: String(e?.message || e) }); }
           }}>🛑</button>
-          <button className="tool-btn" title="X 서버 상태" onClick={async () => {
+          <button className="tool-btn" title={tm('tools.xStatus')} onClick={async () => {
             try {
               const r = await (window as any).api?.x11Status?.();
               const text = r?.anyRunning
-                ? `🟢 실행 중\n\n` + r.running.map((x: any) => `  • DISPLAY=:${x.displayNum}  PID=${x.pid}`).join('\n')
-                : '⚫ 실행 중인 X 서버 없음.';
-              setInfoModal({ title: 'X 서버 상태', text });
-            } catch (e: any) { setInfoModal({ title: 'X 서버 상태 조회 실패', text: String(e?.message || e) }); }
+                ? `${tm('tools.xStatusRunning')}\n\n` + r.running.map((x: { displayNum: number; pid: number }) => `  • DISPLAY=:${x.displayNum}  PID=${x.pid}`).join('\n')
+                : tm('tools.xStatusNone');
+              setInfoModal({ title: tm('tools.xStatusTitle'), text });
+            } catch (e: any) { setInfoModal({ title: tm('tools.xStatusFail'), text: String(e?.message || e) }); }
           }}>ℹ️</button>
           <span className="tool-sep" />
-          <button className="tool-btn" title="옵션" onClick={async () => {
+          <button className="tool-btn" title={tm('tools.options')} onClick={async () => {
             setWordSepValue(getWordSeparator());
             setTermSettings(getTerminalSettings());
             setOptFontFamily(localStorage.getItem('terminalFontFamily') || '');
@@ -2723,6 +2654,15 @@ function App() {
           );
         })}
 
+        {/* 번역 편집 탭 - 마운트 유지 */}
+        {tabs.filter(t => t.type === 'i18nEditor').map(t => (
+          <div key={t.id} style={{ display: activeTab?.id === t.id ? 'flex' : 'none', flex: 1, minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
+            <ErrorBoundary label="번역 편집">
+              <TranslationEditor />
+            </ErrorBoundary>
+          </div>
+        ))}
+
         {/* VPN 탭 - 마운트 유지 (연결 상태 보존) */}
         {tabs.filter(t => t.type === 'vpn').map(t => (
           <div key={t.id} style={{ display: activeTab?.id === t.id ? 'flex' : 'none', flex: 1, minHeight: 0 }}>
@@ -2757,7 +2697,7 @@ function App() {
           </div>
         ))}
 
-        {activeTab && activeTab.type !== 'fileExplorer' && activeTab.type !== 'fileEditor' && activeTab.type !== 'sqlTool' && activeTab.type !== 'browser' && activeTab.type !== 'compare' && activeTab.type !== 'logAnalyzer' && activeTab.type !== 'vpn' && (() => {
+        {activeTab && activeTab.type !== 'fileExplorer' && activeTab.type !== 'fileEditor' && activeTab.type !== 'sqlTool' && activeTab.type !== 'browser' && activeTab.type !== 'compare' && activeTab.type !== 'logAnalyzer' && activeTab.type !== 'vpn' && activeTab.type !== 'i18nEditor' && (() => {
           // 워크스페이스 레벨 파일 트리 — 선택된 패널의 활성 세션이 SSH 연결이면 표시
           let fileTreeNode: React.ReactNode = null;
           if (selectedPanelId) {
@@ -2821,7 +2761,7 @@ function App() {
                       <button
                         className={`workspace-file-tree-pin ${remoteTreePinned ? 'pinned' : ''}`}
                         onClick={() => setRemoteTreePinned(p => !p)}
-                        title={remoteTreePinned ? 'Unpin (자동 숨김)' : 'Pin (고정)'}
+                        title={remoteTreePinned ? tfe('unpinTooltip') : tfe('pinTooltip')}
                       >📌</button>
                     </div>
                     <RemoteFileTree
@@ -2835,7 +2775,7 @@ function App() {
                     />
                     <div
                       className="workspace-file-tree-resizer"
-                      title="드래그하여 너비 조절 (더블클릭: 기본값 240)"
+                      title={tfe('resizeWidth')}
                       onMouseDown={e => {
                         e.preventDefault();
                         const startX = e.clientX;
@@ -2938,17 +2878,17 @@ function App() {
 
       {showBroadcast && (
         <div className="broadcast-bar">
-          <button className="broadcast-close" onClick={() => setShowBroadcast(false)} title="닫기">✕</button>
-          <span className="broadcast-label" title="텍스트 일괄 전송">📢</span>
+          <button className="broadcast-close" onClick={() => setShowBroadcast(false)} title={tb('close')}>✕</button>
+          <span className="broadcast-label" title={tb('label')}>📢</span>
           <select
             className="broadcast-scope"
             value={broadcastScope}
             onChange={e => setBroadcastScope(e.target.value as any)}
-            title="전송 대상"
+            title={tb('scope')}
           >
-            <option value="visible">보이는 탭 ({collectBroadcastTargets('visible').length})</option>
-            <option value="current">현재 세션 ({collectBroadcastTargets('current').length})</option>
-            <option value="connected">연결된 세션 ({collectBroadcastTargets('connected').length})</option>
+            <option value="visible">{tb('scopeVisible', { count: collectBroadcastTargets('visible').length })}</option>
+            <option value="current">{tb('scopeCurrent', { count: collectBroadcastTargets('current').length })}</option>
+            <option value="connected">{tb('scopeConnected', { count: collectBroadcastTargets('connected').length })}</option>
           </select>
           <div style={{ position: 'relative', flex: 1, display: 'flex' }}>
             <input
@@ -2992,14 +2932,14 @@ function App() {
                   }
                 }
               }}
-              placeholder="전송할 텍스트 (Enter 전송, Ctrl+C/^C, Ctrl+D/^D)"
+              placeholder={tb('inputPlaceholder')}
               style={{ flex: 1, borderRadius: '4px 0 0 4px' }}
             />
             <button
               className="broadcast-history-toggle"
               onMouseDown={e => e.preventDefault()}
               onClick={() => { setBroadcastShowHistory(v => !v); setBroadcastHistoryIdx(-1); }}
-              title="전송 이력"
+              title={tb('historyToggle')}
             >▾</button>
             {broadcastShowHistory && broadcastHistory.length > 0 && (
               <div className="broadcast-history-dropdown">
@@ -3012,16 +2952,16 @@ function App() {
               </div>
             )}
           </div>
-          <label className="broadcast-chk" title="끝에 개행(Enter) 추가">
+          <label className="broadcast-chk" title={tb('appendNewline')}>
             <input type="checkbox" checked={broadcastAppendNewline} onChange={e => setBroadcastAppendNewline(e.target.checked)} />
             <span>↵</span>
           </label>
-          <button className="broadcast-btn" onClick={() => sendBroadcast(broadcastScope)} title="텍스트 전송 (Enter)">전송</button>
-          <button className="broadcast-btn" onClick={() => { setBcastXferFiles([]); setBcastXferPath(''); setBcastXferLog([]); setShowBcastFileXfer(true); }} title="여러 세션에 파일/폴더 일괄 업로드">📤 파일전송</button>
-          <button className="broadcast-btn ctrl" onClick={() => sendBroadcast(broadcastScope, { raw: '\x1b[A', label: '↑' })} title="위 방향키 (이전 명령) 전송">↑</button>
-          <button className="broadcast-btn ctrl" onClick={() => sendBroadcast(broadcastScope, { raw: '\x1b[B', label: '↓' })} title="아래 방향키 (다음 명령) 전송">↓</button>
-          <button className="broadcast-btn ctrl" onClick={() => sendBroadcast(broadcastScope, { raw: '\x03', label: '^C' })} title="Ctrl+C (SIGINT) 전송">^C</button>
-          <button className="broadcast-btn ctrl" onClick={() => sendBroadcast(broadcastScope, { raw: '\x04', label: '^D' })} title="Ctrl+D (EOF) 전송">^D</button>
+          <button className="broadcast-btn" onClick={() => sendBroadcast(broadcastScope)} title={tb('sendTitle')}>{tb('send')}</button>
+          <button className="broadcast-btn" onClick={() => { setBcastXferFiles([]); setBcastXferPath(''); setBcastXferLog([]); setShowBcastFileXfer(true); }} title={tb('fileXferTitle')}>{tb('fileXfer')}</button>
+          <button className="broadcast-btn ctrl" onClick={() => sendBroadcast(broadcastScope, { raw: '\x1b[A', label: '↑' })} title={tb('arrowUp')}>↑</button>
+          <button className="broadcast-btn ctrl" onClick={() => sendBroadcast(broadcastScope, { raw: '\x1b[B', label: '↓' })} title={tb('arrowDown')}>↓</button>
+          <button className="broadcast-btn ctrl" onClick={() => sendBroadcast(broadcastScope, { raw: '\x03', label: '^C' })} title={tb('ctrlC')}>^C</button>
+          <button className="broadcast-btn ctrl" onClick={() => sendBroadcast(broadcastScope, { raw: '\x04', label: '^D' })} title={tb('ctrlD')}>^D</button>
           {broadcastNotice && (
             <span className={`broadcast-notice ${broadcastNotice.kind}`}>{broadcastNotice.text}</span>
           )}
@@ -3079,67 +3019,67 @@ function App() {
           setShowOptions(false);
         }}>
           <div className="session-editor" onClick={e => e.stopPropagation()} style={{ width: 640 }}>
-            <h3 style={isOptionsPopout ? { userSelect: 'none' } : { cursor: 'move', userSelect: 'none' }} onMouseDown={isOptionsPopout ? undefined : onDragStart} title={isOptionsPopout ? '' : '드래그하여 이동'}>옵션</h3>
+            <h3 style={isOptionsPopout ? { userSelect: 'none' } : { cursor: 'move', userSelect: 'none' }} onMouseDown={isOptionsPopout ? undefined : onDragStart} title={isOptionsPopout ? '' : to('dragToMove')}>{to('title')}</h3>
 
             <div className="options-body">
               <div className="options-tabs options-tabs-side">
-                <button className={`options-tab ${optionsTab === 'terminal' ? 'active' : ''}`} onClick={() => setOptionsTab('terminal')}>터미널</button>
-                <button className={`options-tab ${optionsTab === 'session' ? 'active' : ''}`} onClick={() => setOptionsTab('session')}>세션</button>
-                <button className={`options-tab ${optionsTab === 'keybindings' ? 'active' : ''}`} onClick={() => setOptionsTab('keybindings')}>단축키</button>
+                <button className={`options-tab ${optionsTab === 'terminal' ? 'active' : ''}`} onClick={() => setOptionsTab('terminal')}>{to('tabs.terminal')}</button>
+                <button className={`options-tab ${optionsTab === 'session' ? 'active' : ''}`} onClick={() => setOptionsTab('session')}>{to('tabs.session')}</button>
+                <button className={`options-tab ${optionsTab === 'keybindings' ? 'active' : ''}`} onClick={() => setOptionsTab('keybindings')}>{to('tabs.keybindings')}</button>
               </div>
               <div className="options-pane">
 
             {optionsTab === 'terminal' && (
               <div className="options-content">
                 <div style={{ marginBottom: 16 }}>
-                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>클립보드</div>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{to('clipboard.heading')}</div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                     <label className="settings-checkbox">
                       <input type="checkbox" checked={termSettings.autoCopyOnSelect}
                         onChange={e => setTermSettings(s => ({ ...s, autoCopyOnSelect: e.target.checked }))} />
-                      <span>선택한 텍스트를 자동으로 클립보드에 복사</span>
+                      <span>{to('clipboard.autoCopyOnSelect')}</span>
                     </label>
                     <label className="settings-checkbox">
                       <input type="checkbox" checked={termSettings.includeTrailingNewline}
                         onChange={e => setTermSettings(s => ({ ...s, includeTrailingNewline: e.target.checked }))} />
-                      <span>선택 영역 복사 시 마지막 줄 바꿈 문자 포함</span>
+                      <span>{to('clipboard.includeTrailingNewline')}</span>
                     </label>
                     <label className="settings-checkbox">
                       <input type="checkbox" checked={termSettings.trimTrailingWhitespace}
                         onChange={e => setTermSettings(s => ({ ...s, trimTrailingWhitespace: e.target.checked }))} />
-                      <span>복사 시 문자 뒤의 공백 제거하기</span>
+                      <span>{to('clipboard.trimTrailingWhitespace')}</span>
                     </label>
                   </div>
                 </div>
                 <div style={{ marginBottom: 16 }}>
-                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>붙여넣기</div>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{to('paste.heading')}</div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    <div style={{ color: '#aaa', fontSize: 12, marginBottom: 2 }}>여러 줄을 붙여넣는 경우:</div>
+                    <div style={{ color: '#aaa', fontSize: 12, marginBottom: 2 }}>{to('paste.multiLineNote')}</div>
                     <label className="settings-radio">
                       <input type="radio" name="multiLinePaste" checked={termSettings.multiLinePaste === 'dialog'}
                         onChange={() => setTermSettings(s => ({ ...s, multiLinePaste: 'dialog' }))} />
-                      <span>여러 줄 붙여넣기 대화 상자 열기</span>
+                      <span>{to('paste.dialog')}</span>
                     </label>
                     <label className="settings-radio">
                       <input type="radio" name="multiLinePaste" checked={termSettings.multiLinePaste === 'direct'}
                         onChange={() => setTermSettings(s => ({ ...s, multiLinePaste: 'direct' }))} />
-                      <span>터미널에 바로 붙여넣기</span>
+                      <span>{to('paste.direct')}</span>
                     </label>
                   </div>
                 </div>
                 <div style={{ marginBottom: 16 }}>
-                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>글꼴</div>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{to('font.heading')}</div>
                   <select
                     style={{ width: '100%', background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '8px', fontSize: 14, boxSizing: 'border-box', cursor: 'pointer' }}
                     value={optFontFamily}
                     onChange={e => setOptFontFamily(e.target.value)}
                   >
-                    <option value="">기본 (Cascadia Mono)</option>
+                    <option value="">{to('font.defaultLabel')}</option>
                     {availableFonts.map(f => <option key={f} value={f} style={{ fontFamily: `"${f}", monospace` }}>{f}</option>)}
                   </select>
                 </div>
                 <div style={{ marginBottom: 16 }}>
-                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>글꼴 크기</div>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{to('font.size')}</div>
                   <input
                     type="number"
                     min={8}
@@ -3151,19 +3091,19 @@ function App() {
                   />
                 </div>
                 <div style={{ marginBottom: 16, borderTop: '1px solid #333', paddingTop: 12 }}>
-                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Claude 채팅창 글꼴</div>
-                  <p style={{ color: '#888', fontSize: 12, margin: '0 0 6px' }}>터미널과 독립 설정. 채팅창에서 Ctrl+휠로도 크기 조절.</p>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{to('font.claudeHeading')}</div>
+                  <p style={{ color: '#888', fontSize: 12, margin: '0 0 6px' }}>{to('font.claudeHint')}</p>
                   <select
                     style={{ width: '100%', background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '8px', fontSize: 14, boxSizing: 'border-box', cursor: 'pointer' }}
                     value={claudeFontFamily}
                     onChange={e => { setClaudeFontFamily(e.target.value); setClaudeFontFamilyState(e.target.value); }}
                   >
-                    <option value="">기본 (시스템 UI 폰트)</option>
+                    <option value="">{to('font.claudeDefaultLabel')}</option>
                     {availableFonts.map(f => <option key={f} value={f} style={{ fontFamily: `"${f}", sans-serif` }}>{f}</option>)}
                   </select>
                 </div>
                 <div style={{ marginBottom: 16 }}>
-                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Claude 채팅창 글꼴 크기</div>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{to('font.claudeSize')}</div>
                   <input
                     type="number"
                     min={9}
@@ -3179,8 +3119,8 @@ function App() {
                   />
                 </div>
                 <div style={{ marginBottom: 16 }}>
-                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>스크롤백 버퍼(줄 수)</div>
-                  <p style={{ color: '#888', fontSize: 12, margin: '0 0 6px' }}>터미널 세션이 보관할 과거 출력 라인 수 (기본: 10000)</p>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{to('scrollback.heading')}</div>
+                  <p style={{ color: '#888', fontSize: 12, margin: '0 0 6px' }}>{to('scrollback.hint')}</p>
                   <input
                     type="number"
                     min={1000}
@@ -3195,7 +3135,7 @@ function App() {
                   />
                 </div>
                 <div style={{ marginBottom: 16 }}>
-                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>기본 로컬 쉘</div>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{to('defaultShell.heading')}</div>
                   <select
                     style={{ width: '100%', background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '8px', fontSize: 14, boxSizing: 'border-box', cursor: 'pointer' }}
                     value={optDefaultShellPath}
@@ -3205,8 +3145,8 @@ function App() {
                   </select>
                 </div>
                 <div style={{ marginBottom: 16 }}>
-                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>단어 구분 기호</div>
-                  <p style={{ color: '#888', fontSize: 12, margin: '0 0 6px' }}>더블클릭 시 단어 선택을 끊는 문자</p>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{to('wordSeparator.heading')}</div>
+                  <p style={{ color: '#888', fontSize: 12, margin: '0 0 6px' }}>{to('wordSeparator.hint')}</p>
                   <input
                     style={{ width: '100%', background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '8px', fontSize: 14, fontFamily: 'monospace', boxSizing: 'border-box' }}
                     value={wordSepValue}
@@ -3219,37 +3159,37 @@ function App() {
             {optionsTab === 'session' && (
               <div className="options-content">
                 <div style={{ marginBottom: 16 }}>
-                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>세션 저장 경로</div>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{to('sessionsPath.heading')}</div>
                   <div style={{ background: '#111', border: '1px solid #333', borderRadius: 4, padding: '8px 10px', fontSize: 12, fontFamily: 'monospace', color: '#aaa', wordBreak: 'break-all', marginBottom: 8 }}>
-                    {sessionsPathDisplay || '(알 수 없음)'}
+                    {sessionsPathDisplay || to('sessionsPath.unknown')}
                   </div>
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                    <button className="btn-add" onClick={() => (window as any).api.openSessionsFolder()}>경로 열기</button>
+                    <button className="btn-add" onClick={() => (window as any).api.openSessionsFolder()}>{to('sessionsPath.open')}</button>
                     <button className="btn-add" onClick={async () => {
                       const r = await (window as any).api.setSessionsPath();
                       if (r) { setSessionsPathDisplay(r.path); window.dispatchEvent(new Event('sessions-reload')); }
-                    }}>경로 변경...</button>
+                    }}>{to('sessionsPath.change')}</button>
                     <button className="btn-add" onClick={async () => {
                       const r = await (window as any).api.resetSessionsPath();
                       if (r) { setSessionsPathDisplay(r.path); window.dispatchEvent(new Event('sessions-reload')); }
-                    }}>기본값으로 초기화</button>
-                    <button className="btn-add" onClick={() => (window as any).api.openSessionsEditor()}>파일 편집</button>
+                    }}>{to('sessionsPath.reset')}</button>
+                    <button className="btn-add" onClick={() => (window as any).api.openSessionsEditor()}>{to('sessionsPath.editFile')}</button>
                   </div>
                 </div>
                 <div style={{ marginBottom: 16 }}>
-                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>탐색기 우클릭 메뉴</div>
-                  <p style={{ color: '#888', fontSize: 12, margin: '0 0 6px' }}>Windows 탐색기에서 우클릭 시 "Open PePe Terminal here" 메뉴를 표시합니다.</p>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{to('contextMenu.heading')}</div>
+                  <p style={{ color: '#888', fontSize: 12, margin: '0 0 6px' }}>{to('contextMenu.hint')}</p>
                   <div style={{ display: 'flex', gap: 6 }}>
                     <button className="btn-add" onClick={async () => {
                       const r = await (window as any).api?.registerContextMenu?.();
                       if (r?.success) { setContextMenuRegistered(true); }
-                    }}>등록</button>
+                    }}>{to('contextMenu.register')}</button>
                     <button className="btn-add" onClick={async () => {
                       const r = await (window as any).api?.unregisterContextMenu?.();
                       if (r?.success) { setContextMenuRegistered(false); }
-                    }}>해제</button>
+                    }}>{to('contextMenu.unregister')}</button>
                     <span style={{ color: contextMenuRegistered ? '#4caf50' : '#888', fontSize: 12, alignSelf: 'center' }}>
-                      {contextMenuRegistered ? '● 등록됨' : '○ 미등록'}
+                      {contextMenuRegistered ? to('contextMenu.registered') : to('contextMenu.notRegistered')}
                     </span>
                   </div>
                 </div>
@@ -3264,14 +3204,14 @@ function App() {
                     const isListening = listeningAction === actionId;
                     return (
                       <div className="keybinding-row" key={actionId}>
-                        <span className="keybinding-label">{KEYBINDING_LABELS[actionId] || actionId}</span>
+                        <span className="keybinding-label">{tk(`labels.${actionId}`, { defaultValue: KEYBINDING_LABELS[actionId] || actionId })}</span>
                         <input
                           className={`keybinding-combo ${isListening ? 'listening' : ''}`}
                           readOnly
-                          value={isListening ? '키를 누르세요...' : formatKeyComboForOS(draftCombo)}
+                          value={isListening ? to('keybindings.pressKey') : formatKeyComboForOS(draftCombo)}
                         />
                         <button className="keybinding-btn" onClick={() => setListeningAction(isListening ? null : actionId)}>
-                          {isListening ? '취소' : '변경'}
+                          {isListening ? to('keybindings.cancel') : to('keybindings.change')}
                         </button>
                       </div>
                     );
@@ -3285,7 +3225,7 @@ function App() {
                     setKeybindingsDraft({});
                     setListeningAction(null);
                     setKeybindingWarning(null);
-                  }}>초기화</button>
+                  }}>{to('keybindings.reset')}</button>
                 </div>
               </div>
             )}
@@ -3296,7 +3236,7 @@ function App() {
               <button className="btn-cancel" onClick={() => {
                 if (isOptionsPopout) { try { (window as any).api?.optionsClose?.(); } catch {} return; }
                 setShowOptions(false); setListeningAction(null);
-              }}>취소</button>
+              }}>{to('actions.cancel')}</button>
               <button className="btn-save" onClick={() => {
                 saveTerminalSettings(termSettings);
                 setWordSeparator(wordSepValue);
@@ -3318,7 +3258,7 @@ function App() {
                   // localStorage 의 디스크 flush 시간 확보 후 창 닫기 (즉시 닫으면 변경사항 유실 가능)
                   setTimeout(() => { try { (window as any).api?.optionsSaved?.(); } catch {} }, 250);
                 }
-              }}>저장</button>
+              }}>{to('actions.save')}</button>
             </div>
           </div>
         </div>
@@ -3560,75 +3500,75 @@ function App() {
         };
         const groups: { name: string; rows: Row[] }[] = [
           {
-            name: '사용자 지정 단축키',
-            rows: Object.keys(KEYBINDING_LABELS).map(id => ({ key: kb[id] ? fmt(kb[id]) : '(없음)', label: KEYBINDING_LABELS[id] })),
+            name: tk('groups.custom'),
+            rows: Object.keys(KEYBINDING_LABELS).map(id => ({ key: kb[id] ? fmt(kb[id]) : tk('none'), label: tk(`labels.${id}`, { defaultValue: KEYBINDING_LABELS[id] }) })),
           },
           {
-            name: '고정 단축키',
+            name: tk('groups.fixed'),
             rows: [
-              { key: fmt('Alt+1~9'), label: '미니탭 전환' },
-              { key: fmt('Alt+Enter'), label: '현재 터미널 전체화면 토글' },
-              { key: fmt('Ctrl+L'), label: '스크롤 맨 아래로' },
-              { key: fmt('Ctrl') + '+마우스 휠', label: '글꼴 크기 조절' },
-              { key: 'F2', label: '이름 변경' },
-              { key: '가운데 클릭', label: '탭 닫기' },
-              { key: fmt('Ctrl') + '+↑/↓', label: '세션/폴더 순서 이동' },
+              { key: fmt('Alt+1~9'), label: tk('fixed.minitabSwitch') },
+              { key: fmt('Alt+Enter'), label: tk('fixed.fullscreen') },
+              { key: fmt('Ctrl+L'), label: tk('fixed.scrollBottom') },
+              { key: fmt('Ctrl') + tk('fixed.wheelSuffix'), label: tk('fixed.fontSize') },
+              { key: 'F2', label: tk('fixed.rename') },
+              { key: tk('fixed.middleClick'), label: tk('fixed.closeTab') },
+              { key: fmt('Ctrl') + '+↑/↓', label: tk('fixed.moveOrder') },
             ],
           },
           {
-            name: '미니탭',
+            name: tk('groups.minitab'),
             rows: [
-              { key: '∨ 버튼', label: '쉘 선택 (PowerShell, CMD, Git Bash 등)' },
-              { key: '우클릭', label: '이름 변경 / 세션 복제 / 닫기' },
-              { key: '휠 스크롤', label: '좌우 스크롤 (‹ › 버튼)' },
+              { key: tk('minitab.shellBtn'), label: tk('minitab.shellSelector') },
+              { key: tk('minitab.rightClickKey'), label: tk('minitab.rightClick') },
+              { key: tk('minitab.wheelKey'), label: tk('minitab.wheel') },
             ],
           },
           {
-            name: '터미널',
+            name: tk('groups.terminal'),
             rows: [
-              { key: '우클릭', label: '복사 / 붙여넣기 / 찾기 / 글꼴 / 인코딩 / 화면 지우기 등' },
-              { key: '더블클릭 (세션)', label: '연결' },
+              { key: tk('terminal.rightClickKey'), label: tk('terminal.rightClick') },
+              { key: tk('terminal.dblClickKey'), label: tk('terminal.dblClickSession') },
             ],
           },
           {
-            name: '파일 트리 / 원격 편집',
+            name: tk('groups.fileTree'),
             rows: [
-              { key: '파일 더블클릭', label: '에디터 탭에서 열기' },
-              { key: fmt('Ctrl') + '+클릭 / ' + fmt('Shift') + '+클릭', label: '다중 선택 (일괄 다운로드)' },
-              { key: '우클릭', label: 'Claude 에 첨부 / 경로 복사 / 삭제' },
-              { key: '🔄', label: '현재 경로 새로고침' },
-              { key: '📌', label: '파일트리 고정/자동숨김 토글' },
-              { key: '좌측 경계 드래그', label: '너비 조절' },
-              { key: fmt('Ctrl+S') + ' (에디터)', label: '저장' },
+              { key: tk('fileTree.dblClickKey'), label: tk('fileTree.dblClickFile') },
+              { key: fmt('Ctrl') + '+클릭 / ' + fmt('Shift') + '+클릭', label: tk('fileTree.multiSelect') },
+              { key: tk('fileTree.rightClickKey'), label: tk('fileTree.rightClick') },
+              { key: '🔄', label: tk('fileTree.refresh') },
+              { key: '📌', label: tk('fileTree.pin') },
+              { key: tk('fileTree.resizeKey'), label: tk('fileTree.resize') },
+              { key: fmt('Ctrl+S') + tk('fileTree.saveKeySuffix'), label: tk('fileTree.save') },
             ],
           },
           {
-            name: 'Claude 채팅',
+            name: tk('groups.claude'),
             rows: [
-              { key: '🤖 영역 hover', label: '사이드바 펼침 (unpin 모드)' },
-              { key: '📌', label: '사이드바 고정/자동숨김 토글' },
-              { key: '좌측 경계 드래그', label: '너비 조절 (더블클릭 = 기본값)' },
-              { key: '/ 버튼', label: '슬래시 명령 팔레트 (↑↓ 탐색, Enter 실행, Esc 닫기)' },
-              { key: '📄+ / 📁+', label: '로컬 파일 / 폴더 첨부' },
-              { key: fmt('Ctrl') + '+Wheel', label: '채팅 폰트 크기 조절' },
-              { key: 'Enter (입력창)', label: '전송, ' + fmt('Shift+Enter') + ' = 줄바꿈' },
-              { key: '🗑', label: '대화 + 컨텍스트 초기화' },
+              { key: tk('claude.triggerHoverKey'), label: tk('claude.triggerHover') },
+              { key: '📌', label: tk('claude.pin') },
+              { key: tk('claude.resizeKey'), label: tk('claude.resize') },
+              { key: tk('claude.slashKey'), label: tk('claude.slashPalette') },
+              { key: tk('claude.attachKey'), label: tk('claude.attach') },
+              { key: fmt('Ctrl') + tk('claude.fontKey'), label: tk('claude.fontSize') },
+              { key: tk('claude.sendKey'), label: tk('claude.send', { newline: fmt('Shift+Enter') }) },
+              { key: tk('claude.clearKey'), label: tk('claude.clear') },
             ],
           },
           {
-            name: '일괄 전송',
+            name: tk('groups.broadcast'),
             rows: [
-              { key: 'Enter', label: '텍스트 전송' },
-              { key: fmt('Ctrl+C') + ' / ' + fmt('Ctrl+D'), label: '^C / ^D 신호 전송' },
-              { key: '↑/↓', label: '히스토리 탐색 / 세션 드롭다운' },
-              { key: 'Esc', label: '히스토리 드롭다운만 닫음 (바는 유지)' },
+              { key: 'Enter', label: tk('broadcast.send') },
+              { key: fmt('Ctrl+C') + ' / ' + fmt('Ctrl+D'), label: tk('broadcast.signal') },
+              { key: '↑/↓', label: tk('broadcast.history') },
+              { key: 'Esc', label: tk('broadcast.escClose') },
             ],
           },
           {
-            name: '빠른 연결 바',
+            name: tk('groups.quickConnect'),
             rows: [
-              { key: 'Enter', label: '연결' },
-              { key: 'Esc', label: '무시 (닫기는 ✕ 버튼으로만)' },
+              { key: 'Enter', label: tk('quickConnect.connect') },
+              { key: 'Esc', label: tk('quickConnect.esc') },
             ],
           },
         ];
@@ -3657,14 +3597,14 @@ function App() {
               tabIndex={-1}
             >
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 4px 8px', borderBottom: '1px solid #333' }}>
-                <h3 style={{ margin: 0 }}>⌨ 단축키 목록</h3>
-                <button onClick={closeAndFocus} title="닫기 (Esc)">✕</button>
+                <h3 style={{ margin: 0 }}>{tk('title')}</h3>
+                <button onClick={closeAndFocus} title={tk('close')}>✕</button>
               </div>
               <div style={{ padding: '8px 12px 4px' }}>
                 <input
                   type="text"
                   autoFocus
-                  placeholder="🔍 단축키 또는 기능 검색..."
+                  placeholder={tk('searchPlaceholder')}
                   value={keybindingListQuery}
                   onChange={e => setKeybindingListQuery(e.target.value)}
                   style={{ width: '100%', padding: '6px 10px', background: '#1e1e1e', color: '#ddd', border: '1px solid #444', borderRadius: 4, fontSize: 13, outline: 'none', boxSizing: 'border-box' }}
@@ -3672,7 +3612,7 @@ function App() {
               </div>
               <div style={{ overflow: 'auto', padding: '4px 12px 12px', fontSize: 12, color: '#ddd' }}>
                 {q && groups.every(g => g.rows.every(r => !isMatch(r))) && (
-                  <div style={{ padding: '8px 0', textAlign: 'center', color: '#888' }}>일치하는 단축키가 없습니다.</div>
+                  <div style={{ padding: '8px 0', textAlign: 'center', color: '#888' }}>{tk('noMatch')}</div>
                 )}
                 {groups.map(g => (
                   <div key={g.name} style={{ marginBottom: 12 }}>
@@ -3768,9 +3708,9 @@ function App() {
       {remotePickerOpen && (
         <div className="session-editor-backdrop" style={{ zIndex: 10000 }} onClick={() => setRemotePickerOpen(false)}>
           <div className="session-editor" onClick={e => e.stopPropagation()} style={{ width: 580, maxHeight: '80vh', display: 'flex', flexDirection: 'column', zIndex: 10001 }}>
-            <h3>🌐 원격 파일 선택</h3>
+            <h3>{tfe('remotePickerTitle')}</h3>
 
-            <label style={{ fontSize: 12, color: '#bbb' }}>소스 세션 (전체 목록, 미연결 세션 선택 시 백그라운드 SFTP 연결)</label>
+            <label style={{ fontSize: 12, color: '#bbb' }}>{tfe('remotePickerSourceLabel')}</label>
             {(() => {
               // 연결된 sessionId 맵 — 모든 워크스페이스의 모든 세션 검사
               const connectedSet = new Set<string>();
@@ -3810,14 +3750,14 @@ function App() {
                   setRemotePickerFiles([]);
                   setRemotePickerSelected(new Set());
                 }}>
-                  <option value="">(세션 선택)</option>
+                  <option value="">{tfe('remotePickerSelectSession')}</option>
                   {connected.length > 0 && (
-                    <optgroup label="🟢 연결됨">
+                    <optgroup label={tfe('groupConnected')}>
                       {connected.map(renderOption)}
                     </optgroup>
                   )}
                   {disconnected.length > 0 && (
-                    <optgroup label="⚪ 연결 안됨">
+                    <optgroup label={tfe('groupNotConnected')}>
                       {disconnected.map(renderOption)}
                     </optgroup>
                   )}
@@ -3826,11 +3766,11 @@ function App() {
             })()}
             {remotePickerConnecting && (
               <div style={{ fontSize: 11, color: '#f0c64c', marginTop: 4 }}>
-                연결 중...
+                {tfe('remotePickerConnecting')}
               </div>
             )}
 
-            <label style={{ fontSize: 12, color: '#bbb', marginTop: 10 }}>경로</label>
+            <label style={{ fontSize: 12, color: '#bbb', marginTop: 10 }}>{tfe('remotePickerPathLabel')}</label>
             <div style={{ display: 'flex', gap: 4 }}>
               <input type="text" value={remotePickerPath} onChange={e => setRemotePickerPath(e.target.value)}
                 onKeyDown={(e) => {
@@ -3845,22 +3785,22 @@ function App() {
                 const parent = remotePickerPath.replace(/\/[^/]+\/?$/, '') || '/';
                 setRemotePickerPath(parent);
                 setRemotePickerSelected(new Set());
-              }} title="상위 폴더" disabled={!remotePickerConnId}>▲</button>
+              }} title={tfe('remotePickerParent')} disabled={!remotePickerConnId}>▲</button>
               <button onClick={async () => {
                 if (!remotePickerConnId) return;
                 setRemotePickerLoading(true);
                 try { const r: any = await (window as any).api?.feListDir?.('remote', remotePickerPath, remotePickerConnId); setRemotePickerFiles(r?.files || []); } catch { setRemotePickerFiles([]); }
                 setRemotePickerLoading(false);
-              }} title="새로고침" disabled={!remotePickerConnId}>⟳</button>
+              }} title={tfe('remotePickerRefresh')} disabled={!remotePickerConnId}>⟳</button>
             </div>
 
             <div style={{ flex: 1, minHeight: 200, height: 320, border: '1px solid #333', borderRadius: 4, marginTop: 8, background: '#161616' }}>
               {!remotePickerConnId ? (
-                <div style={{ color: '#666', fontSize: 12, padding: 16, textAlign: 'center' }}>세션을 선택하세요</div>
+                <div style={{ color: '#666', fontSize: 12, padding: 16, textAlign: 'center' }}>{tfe('remotePickerPickHint')}</div>
               ) : remotePickerLoading || remotePickerConnecting ? (
-                <div style={{ color: '#888', fontSize: 12, padding: 16, textAlign: 'center' }}>로딩 중...</div>
+                <div style={{ color: '#888', fontSize: 12, padding: 16, textAlign: 'center' }}>{tfe('remotePickerLoading')}</div>
               ) : remotePickerFiles.length === 0 ? (
-                <div style={{ color: '#666', fontSize: 12, padding: 16, textAlign: 'center' }}>(비어있음 또는 경로 에러)</div>
+                <div style={{ color: '#666', fontSize: 12, padding: 16, textAlign: 'center' }}>{tfe('remotePickerEmpty')}</div>
               ) : (() => {
                 const sorted = remotePickerFiles
                   .filter(f => f.name !== '.' && f.name !== '..')
@@ -3896,11 +3836,11 @@ function App() {
               })()}
             </div>
             <div style={{ fontSize: 11, color: '#777', marginTop: 4 }}>
-              🟢 연결된 세션 / ⚪ 미연결 (선택 시 자동 연결). 클릭: 선택 / 더블클릭: 폴더 진입. {remotePickerSelected.size}개 선택됨
+              {tfe('remotePickerLegend', { count: remotePickerSelected.size })}
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
-              <button onClick={() => setRemotePickerOpen(false)}>닫기</button>
+              <button onClick={() => setRemotePickerOpen(false)}>{tfe('close')}</button>
               <button className="primary" disabled={remotePickerSelected.size === 0 || !remotePickerConnId}
                 onClick={() => {
                   const sess = remotePickerSessions.find(s => s.id === remotePickerSessionId);
@@ -3915,7 +3855,7 @@ function App() {
                   // 닫진 않음 — 여러 세션에서 연속 선택 가능하도록 유지. 세션만 초기화.
                   setRemotePickerSelected(new Set());
                 }}
-              >선택 항목 추가 ({remotePickerSelected.size}개)</button>
+              >{tfe('remotePickerAddSelected', { count: remotePickerSelected.size })}</button>
             </div>
           </div>
         </div>
@@ -3924,34 +3864,34 @@ function App() {
       {showBcastFileXfer && (
         <div className="session-editor-backdrop" onClick={() => !bcastXferInProgress && setShowBcastFileXfer(false)}>
           <div className="session-editor" onClick={e => e.stopPropagation()} style={{ width: 620, maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}>
-            <h3>📤 일괄 파일 전송</h3>
+            <h3>{tb('xferTitle')}</h3>
 
-            <label style={{ fontSize: 12, color: '#bbb', marginTop: 8 }}>대상 세션</label>
+            <label style={{ fontSize: 12, color: '#bbb', marginTop: 8 }}>{tb('xferTargets')}</label>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <select value={broadcastScope} onChange={e => setBroadcastScope(e.target.value as any)} style={{ flex: 1 }}>
-                <option value="visible">보이는 세션 모두</option>
-                <option value="current">현재 세션</option>
-                <option value="connected">연결된 세션 전체</option>
+                <option value="visible">{tb('xferScopeVisibleAll')}</option>
+                <option value="current">{tb('xferScopeCurrent')}</option>
+                <option value="connected">{tb('xferScopeConnectedAll')}</option>
               </select>
-              <span style={{ color: '#8ab', fontSize: 12 }}>{collectBroadcastTargets(broadcastScope).length}개</span>
+              <span style={{ color: '#8ab', fontSize: 12 }}>{tb('xferTargetsCount', { count: collectBroadcastTargets(broadcastScope).length })}</span>
             </div>
 
-            <label style={{ fontSize: 12, color: '#bbb', marginTop: 12 }}>원격 경로 (비우면 각 세션의 현재 경로 사용)</label>
+            <label style={{ fontSize: 12, color: '#bbb', marginTop: 12 }}>{tb('xferRemotePath')}</label>
             <input type="text" value={bcastXferPath} onChange={e => setBcastXferPath(e.target.value)}
-              placeholder="예: /tmp (선택사항)" />
+              placeholder={tb('xferRemotePathPlaceholder')} />
 
-            <label style={{ fontSize: 12, color: '#bbb', marginTop: 12 }}>업로드할 파일/폴더</label>
+            <label style={{ fontSize: 12, color: '#bbb', marginTop: 12 }}>{tb('xferFiles')}</label>
             <div style={{ display: 'flex', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
               <button onClick={async () => {
                 const r: any = await (window as any).api?.pickFiles?.(true);
                 if (r?.paths?.length) {
                   setBcastXferFiles(prev => [...prev, ...r.paths.map((p: string) => ({ path: p, isFolder: false }))]);
                 }
-              }}>+ 로컬 파일</button>
+              }}>{tb('xferAddLocalFile')}</button>
               <button onClick={async () => {
                 const r: any = await (window as any).api?.pickFolder?.();
                 if (r?.path) setBcastXferFiles(prev => [...prev, { path: r.path, isFolder: true }]);
-              }}>+ 로컬 폴더</button>
+              }}>{tb('xferAddLocalFolder')}</button>
               <button onClick={() => {
                 // 전체 세션 리스트에서 선택 — 미연결이면 백그라운드 연결
                 setRemotePickerSessionId('');
@@ -3960,16 +3900,16 @@ function App() {
                 setRemotePickerFiles([]);
                 setRemotePickerSelected(new Set());
                 setRemotePickerOpen(true);
-              }}>+ 원격 파일 (다른 서버)</button>
-              <button onClick={() => setBcastXferFiles([])} disabled={bcastXferFiles.length === 0}>모두 제거</button>
+              }}>{tb('xferAddRemote')}</button>
+              <button onClick={() => setBcastXferFiles([])} disabled={bcastXferFiles.length === 0}>{tb('xferRemoveAll')}</button>
             </div>
             <div style={{ flex: 1, minHeight: 100, maxHeight: 220, overflowY: 'auto', border: '1px solid #333', borderRadius: 4, padding: 6, background: '#161616' }}>
               {bcastXferFiles.length === 0 ? (
-                <div style={{ color: '#666', fontSize: 12, textAlign: 'center', padding: 16 }}>파일 또는 폴더를 추가하세요</div>
+                <div style={{ color: '#666', fontSize: 12, textAlign: 'center', padding: 16 }}>{tb('xferEmpty')}</div>
               ) : (
                 bcastXferFiles.map((f, i) => (
                   <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '3px 6px', gap: 6 }}>
-                    <span style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={`${f.sourceTermId ? `원격(${f.sourceLabel}):` : '로컬:'} ${f.path}`}>
+                    <span style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={`${f.sourceTermId ? `${tb('xferRemote')}(${f.sourceLabel}):` : `${tb('xferLocal')}:`} ${f.path}`}>
                       {f.sourceTermId ? '🌐' : '💻'} {f.isFolder ? '📁' : '📄'} {f.path}
                       {f.sourceTermId && <span style={{ color: '#8ab', fontSize: 10, marginLeft: 6 }}>[{f.sourceLabel}]</span>}
                     </span>
@@ -3986,13 +3926,13 @@ function App() {
               </div>
             )}
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
-              <button onClick={() => setShowBcastFileXfer(false)} disabled={bcastXferInProgress}>닫기</button>
+              <button onClick={() => setShowBcastFileXfer(false)} disabled={bcastXferInProgress}>{tb('xferClose')}</button>
               <button className="primary" disabled={bcastXferInProgress || bcastXferFiles.length === 0 || collectBroadcastTargets(broadcastScope).length === 0}
                 onClick={async () => {
                   const targets = collectBroadcastTargets(broadcastScope);
-                  if (targets.length === 0) { flashBroadcastNotice('대상 세션이 없습니다', 'warn'); return; }
+                  if (targets.length === 0) { flashBroadcastNotice(tb('noTargets'), 'warn'); return; }
                   setBcastXferInProgress(true);
-                  setBcastXferLog([`▶ ${targets.length}개 세션 × ${bcastXferFiles.length}개 항목 전송 시작`]);
+                  setBcastXferLog([tb('xferLogStart', { sessions: targets.length, items: bcastXferFiles.length })]);
                   const override = bcastXferPath.trim();
                   let okCount = 0;
                   let errCount = 0;
@@ -4005,7 +3945,7 @@ function App() {
                       const remotePath = basePath.endsWith('/') ? basePath + filename : basePath + '/' + filename;
                       // 동일 세션은 source == target 이므로 skip
                       if (f.sourceTermId && f.sourceTermId === tid) {
-                        setBcastXferLog(prev => [...prev, `↷ ${label}: ${filename} (소스와 동일 세션, 건너뜀)`]);
+                        setBcastXferLog(prev => [...prev, tb('xferLogSkipSame', { label, file: filename })]);
                         continue;
                       }
                       const src: any = f.sourceTermId
@@ -4019,22 +3959,22 @@ function App() {
                         );
                         if (r?.success) {
                           okCount++;
-                          setBcastXferLog(prev => [...prev, `✓ ${label}: ${filename} → ${basePath}`]);
+                          setBcastXferLog(prev => [...prev, tb('xferLogOk', { label, file: filename, path: basePath })]);
                         } else {
                           errCount++;
-                          setBcastXferLog(prev => [...prev, `✗ ${label}: ${filename} — ${r?.error || 'unknown'}`]);
+                          setBcastXferLog(prev => [...prev, tb('xferLogErr', { label, file: filename, err: r?.error || 'unknown' })]);
                         }
                       } catch (err: any) {
                         errCount++;
-                        setBcastXferLog(prev => [...prev, `✗ ${label}: ${filename} — ${err?.message || err}`]);
+                        setBcastXferLog(prev => [...prev, tb('xferLogErr', { label, file: filename, err: err?.message || err })]);
                       }
                     }
                   }
-                  setBcastXferLog(prev => [...prev, `● 완료: 성공 ${okCount}, 실패 ${errCount}`]);
+                  setBcastXferLog(prev => [...prev, tb('xferLogDone', { ok: okCount, err: errCount })]);
                   setBcastXferInProgress(false);
-                  flashBroadcastNotice(`파일전송 완료 (성공 ${okCount}/${okCount + errCount})`, errCount === 0 ? 'ok' : 'warn');
+                  flashBroadcastNotice(tb('xferDoneNotice', { ok: okCount, total: okCount + errCount }), errCount === 0 ? 'ok' : 'warn');
                 }}>
-                {bcastXferInProgress ? '전송 중...' : '전송'}
+                {bcastXferInProgress ? tb('xferInProgress') : tb('xferStart')}
               </button>
             </div>
           </div>
@@ -4190,7 +4130,7 @@ function App() {
                       const updated = { ...sess, auth: { ...(sess.auth || {}), type: 'password', password } };
                       await (window as any).api?.saveSession?.(updated);
                       try { window.dispatchEvent(new Event('sessions-reload')); } catch {}
-                      showToast('비밀번호가 세션에 저장되었습니다.');
+                      showToast(tb('passwordSaved'));
                     }
                   } catch {}
                   setTimeout(() => focusTerm(termId), 0);

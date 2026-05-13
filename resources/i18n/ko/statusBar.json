@@ -1,0 +1,7 @@
+{
+  "noConnection": "연결 없음",
+  "sessions": "세션",
+  "copied": "복사됨: {{chars}}자 / {{lines}}줄",
+  "vpnConnected": "VPN 연결됨",
+  "vpnLabel": "VPN"
+}

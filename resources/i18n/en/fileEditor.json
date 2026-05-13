@@ -1,0 +1,12 @@
+{
+  "binaryNotEditable": "Binary files cannot be edited.",
+  "cannotRead": "Cannot read file.",
+  "tooLarge": "File too large ({{size}}MB > 5MB).",
+  "loading": "Loading file...",
+  "saved": "Saved",
+  "saveError": "Save failed: {{error}}",
+  "unknownError": "Unknown error",
+  "analyzeWithClaude": "Analyze with Claude",
+  "saving": "Saving...",
+  "saveBtn": "Save (Ctrl+S)"
+}

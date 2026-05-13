@@ -1,0 +1,12 @@
+{
+  "back": "뒤로",
+  "forward": "앞으로",
+  "stop": "중지",
+  "refresh": "새로고침",
+  "urlPlaceholder": "URL 또는 검색어",
+  "go": "이동",
+  "zoomOut": "축소 (Ctrl+-)",
+  "zoomReset": "100% (Ctrl+0)",
+  "zoomIn": "확대 (Ctrl+=)",
+  "devTools": "DevTools"
+}

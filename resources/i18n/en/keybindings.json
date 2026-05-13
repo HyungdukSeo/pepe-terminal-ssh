@@ -1,0 +1,104 @@
+{
+  "title": "⌨ Keybinding list",
+  "close": "Close (Esc)",
+  "searchPlaceholder": "🔍 Search keybindings or actions...",
+  "noMatch": "No matching keybindings.",
+  "none": "(none)",
+  "duplicateWarn": "\"{{combo}}\" is already assigned to \"{{dupLabel}}\".",
+  "groups": {
+    "custom": "Customizable keybindings",
+    "fixed": "Fixed keybindings",
+    "minitab": "Minitab",
+    "terminal": "Terminal",
+    "fileTree": "File tree / Remote editing",
+    "claude": "Claude chat",
+    "broadcast": "Broadcast",
+    "quickConnect": "Quick-connect bar"
+  },
+  "labels": {
+    "fullscreen": "Toggle fullscreen",
+    "splitSessionV": "Empty-session horizontal split (left/right)",
+    "splitSessionH": "Empty-session vertical split (top/bottom)",
+    "nextTab": "Next minitab",
+    "prevTab": "Previous minitab",
+    "cloneSplitV": "Session horizontal split (left/right)",
+    "cloneSplitH": "Session vertical split (top/bottom)",
+    "find": "Find",
+    "clearScrollback": "Clear scrollback",
+    "clearScreen": "Clear screen",
+    "clearAll": "Clear all",
+    "toggleFileTree": "Toggle file tree",
+    "copy": "Copy (selection → clipboard)",
+    "paste": "Paste (clipboard → terminal)",
+    "selectAll": "Select all",
+    "diffPrevHunk": "File compare: previous hunk",
+    "diffNextHunk": "File compare: next hunk",
+    "diffApplyLeft": "File compare: apply target → source",
+    "diffApplyRight": "File compare: apply source → target"
+  },
+  "fixed": {
+    "minitabSwitch": "Switch minitab",
+    "fullscreen": "Toggle current terminal fullscreen",
+    "scrollBottom": "Scroll to bottom",
+    "fontSize": "Adjust font size",
+    "wheelSuffix": "+Mouse wheel",
+    "rename": "Rename",
+    "middleClick": "Middle click",
+    "closeTab": "Close tab",
+    "moveOrder": "Move session/folder order"
+  },
+  "minitab": {
+    "shellSelector": "Pick shell (PowerShell, CMD, Git Bash, etc.)",
+    "rightClick": "Rename / Duplicate session / Close",
+    "wheel": "Horizontal scroll (‹ › buttons)",
+    "shellBtn": "∨ button",
+    "rightClickKey": "Right-click",
+    "wheelKey": "Wheel scroll"
+  },
+  "terminal": {
+    "rightClick": "Copy / Paste / Find / Font / Encoding / Clear screen, etc.",
+    "dblClickSession": "Connect",
+    "rightClickKey": "Right-click",
+    "dblClickKey": "Double-click (session)"
+  },
+  "fileTree": {
+    "dblClickFile": "Open in editor tab",
+    "multiSelect": "Multi-select (bulk download)",
+    "rightClick": "Attach to Claude / Copy path / Delete",
+    "refresh": "Refresh current path",
+    "pin": "Toggle pin / auto-hide file tree",
+    "resize": "Adjust width",
+    "save": "Save",
+    "dblClickKey": "Double-click file",
+    "rightClickKey": "Right-click",
+    "resizeKey": "Drag left border",
+    "saveKeySuffix": " (editor)"
+  },
+  "claude": {
+    "triggerHover": "Expand sidebar (unpin mode)",
+    "pin": "Toggle pin / auto-hide sidebar",
+    "resize": "Adjust width (double-click = default)",
+    "slashPalette": "Slash command palette (↑↓ navigate, Enter run, Esc close)",
+    "attach": "Attach local file / folder",
+    "fontSize": "Adjust chat font size",
+    "send": "Send, {{newline}} = newline",
+    "clear": "Clear chat + context",
+    "triggerHoverKey": "🤖 area hover",
+    "resizeKey": "Drag left border",
+    "slashKey": "/ button",
+    "attachKey": "📄+ / 📁+",
+    "fontKey": "+Wheel",
+    "sendKey": "Enter (input)",
+    "clearKey": "🗑"
+  },
+  "broadcast": {
+    "send": "Send text",
+    "signal": "Send ^C / ^D signal",
+    "history": "Navigate history / session dropdown",
+    "escClose": "Closes only the history dropdown (bar remains)"
+  },
+  "quickConnect": {
+    "connect": "Connect",
+    "esc": "Ignored (close via ✕ only)"
+  }
+}

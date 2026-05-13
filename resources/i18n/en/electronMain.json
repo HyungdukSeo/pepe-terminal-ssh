@@ -1,0 +1,47 @@
+{
+  "dialog": {
+    "sessionsPathTitle": "Choose sessions storage folder",
+    "pickFilesMulti": "Select files (multiple)",
+    "pickFile": "Select file",
+    "pickFolder": "Select folder",
+    "saveCsv": "Save as CSV",
+    "saveDownloadLocation": "Choose download location",
+    "saveRemoteFile": "Save remote file",
+    "downloadMultiTitle": "Download {{count}} items — choose destination folder",
+    "uploadFolder": "Select folder to upload",
+    "uploadFileMulti": "Select files to upload (multiple)",
+    "uploadFile": "Select file to upload",
+    "vpnImportTitle": "Import OpenVPN config file (.ovpn)",
+    "recordingSaveTitle": "Save terminal recording"
+  },
+  "popup": {
+    "optionsTitle": "Options",
+    "sessionEditorTitle": "Edit session",
+    "searchTitle": "Search",
+    "pasteModalTitle": "Paste multiple lines"
+  },
+  "search": {
+    "dragToMove": "Drag to move",
+    "placeholder": "Search...",
+    "history": "Search history",
+    "caseSensitive": "Case sensitive",
+    "regex": "Regex",
+    "currentTab": "Current tab",
+    "allTabs": "All tabs",
+    "currentTabShort": "Current",
+    "allShort": "All",
+    "dockToApp": "Dock back into app",
+    "closeEsc": "Close (Esc)"
+  },
+  "paste": {
+    "title": "Paste multiple lines",
+    "prompt": "Paste the following text?",
+    "cancel": "Cancel (Esc)",
+    "paste": "Paste (Ctrl+Enter)"
+  },
+  "error": {
+    "noConnectionId": "No connection ID",
+    "fileTooLargeCap": "File too large ({{mb}}MB > {{cap}}MB)",
+    "fileTooLarge": "File too large ({{mb}}MB)"
+  }
+}

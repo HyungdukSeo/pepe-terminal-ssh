@@ -1,0 +1,67 @@
+{
+  "title": "Options",
+  "dragToMove": "Drag to move",
+  "tabs": {
+    "terminal": "Terminal",
+    "session": "Sessions",
+    "keybindings": "Keybindings"
+  },
+  "clipboard": {
+    "heading": "Clipboard",
+    "autoCopyOnSelect": "Auto-copy selected text to clipboard",
+    "includeTrailingNewline": "Include trailing newline when copying selection",
+    "trimTrailingWhitespace": "Trim trailing whitespace on copy"
+  },
+  "paste": {
+    "heading": "Paste",
+    "multiLineNote": "When pasting multiple lines:",
+    "dialog": "Open multi-line paste dialog",
+    "direct": "Paste directly into terminal"
+  },
+  "font": {
+    "heading": "Font",
+    "defaultLabel": "Default (Cascadia Mono)",
+    "size": "Font size",
+    "claudeHeading": "Claude chat font",
+    "claudeHint": "Independent of terminal. Ctrl+Wheel in chat also adjusts size.",
+    "claudeDefaultLabel": "Default (system UI font)",
+    "claudeSize": "Claude chat font size"
+  },
+  "scrollback": {
+    "heading": "Scrollback buffer (lines)",
+    "hint": "Number of past output lines retained per terminal session (default: 10000)"
+  },
+  "defaultShell": {
+    "heading": "Default local shell"
+  },
+  "wordSeparator": {
+    "heading": "Word separator characters",
+    "hint": "Characters that break word selection on double-click"
+  },
+  "sessionsPath": {
+    "heading": "Sessions storage path",
+    "unknown": "(unknown)",
+    "open": "Open folder",
+    "change": "Change path...",
+    "reset": "Reset to default",
+    "editFile": "Edit file"
+  },
+  "contextMenu": {
+    "heading": "Explorer right-click menu",
+    "hint": "Adds \"Open PePe Terminal here\" to the Windows Explorer right-click menu.",
+    "register": "Register",
+    "unregister": "Unregister",
+    "registered": "● Registered",
+    "notRegistered": "○ Not registered"
+  },
+  "keybindings": {
+    "pressKey": "Press a key...",
+    "cancel": "Cancel",
+    "change": "Change",
+    "reset": "Reset"
+  },
+  "actions": {
+    "cancel": "Cancel",
+    "save": "Save"
+  }
+}

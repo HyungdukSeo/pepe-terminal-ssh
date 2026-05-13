@@ -225,6 +225,19 @@ contextBridge.exposeInMainWorld('api', {
   onSearchPrev: (cb: (p?: any) => void) => { const h = (_: any, p: any) => cb(p); ipcRenderer.on('search:prev', h); return () => ipcRenderer.removeListener('search:prev', h); },
   onSearchClosed: (cb: () => void) => { const h = () => cb(); ipcRenderer.on('search:closed', h); return () => ipcRenderer.removeListener('search:closed', h); },
   onSearchDock: (cb: () => void) => { const h = () => cb(); ipcRenderer.on('search:dock', h); return () => ipcRenderer.removeListener('search:dock', h); },
+  // i18n
+  i18nListLanguages: () => ipcRenderer.invoke('i18n:list-languages'),
+  i18nListNamespaces: (lang: string) => ipcRenderer.invoke('i18n:list-namespaces', { lang }),
+  i18nLoad: (lang: string, ns: string) => ipcRenderer.invoke('i18n:load', { lang, ns }),
+  i18nLoadBundled: (lang: string, ns: string) => ipcRenderer.invoke('i18n:load-bundled', { lang, ns }),
+  i18nLoadOverride: (lang: string, ns: string) => ipcRenderer.invoke('i18n:load-override', { lang, ns }),
+  i18nSaveOverride: (lang: string, ns: string, kv: Record<string, string>) => ipcRenderer.invoke('i18n:save-override', { lang, ns, kv }),
+  i18nAddLanguage: (lang: string) => ipcRenderer.invoke('i18n:add-language', { lang }),
+  i18nRemoveLanguage: (lang: string) => ipcRenderer.invoke('i18n:remove-language', { lang }),
+  i18nAutoTranslate: (sourceLang: string, targetLang: string, items: Record<string, string>, apiKey?: string) =>
+    ipcRenderer.invoke('i18n:auto-translate', { sourceLang, targetLang, items, apiKey }),
+  i18nSetLang: (lang: string) => ipcRenderer.invoke('i18n:set-lang', { lang }),
+
   // OpenVPN
   vpnAvailable: () => ipcRenderer.invoke('vpn:available'),
   vpnState: () => ipcRenderer.invoke('vpn:state'),

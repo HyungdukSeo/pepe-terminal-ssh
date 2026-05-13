@@ -1,0 +1,12 @@
+{
+  "binaryNotEditable": "Les fichiers binaires ne peuvent pas être modifiés.",
+  "cannotRead": "Impossible de lire le fichier.",
+  "tooLarge": "Fichier trop volumineux ({{size}} Mo > 5 Mo).",
+  "loading": "Chargement du fichier...",
+  "saved": "Enregistré",
+  "saveError": "Échec de l'enregistrement : {{error}}",
+  "unknownError": "Erreur inconnue",
+  "analyzeWithClaude": "Analyser avec Claude",
+  "saving": "Enregistrement...",
+  "saveBtn": "Enregistrer (Ctrl+S)"
+}

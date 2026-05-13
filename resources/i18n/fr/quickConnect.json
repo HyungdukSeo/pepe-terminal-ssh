@@ -1,0 +1,14 @@
+{
+  "close": "Fermer",
+  "label": "Connexion rapide",
+  "protocolTitle": "Protocole",
+  "sftpFixed": "L'espace de transfert de fichiers utilise uniquement SFTP",
+  "hostPlaceholder": "hôte (IPv4/IPv6/domaine)",
+  "hostInvalid": "Saisissez un IPv4/IPv6/nom d'hôte valide",
+  "encoding": "Encodage",
+  "showPassword": "Afficher",
+  "hidePassword": "Masquer",
+  "connect": "Connecter",
+  "username": "nom d'utilisateur",
+  "password": "mot de passe"
+}

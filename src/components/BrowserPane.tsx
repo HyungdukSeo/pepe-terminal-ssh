@@ -2,6 +2,7 @@
 // 브라우저 워크스페이스 — Electron <webview> 로 외부 사이트 렌더.
 // 뒤로/앞으로/새로고침/URL 입력 바를 제공.
 import React, { useState, useRef, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 
 type Props = {
   initialUrl: string;
@@ -9,6 +10,7 @@ type Props = {
 };
 
 export const BrowserPane: React.FC<Props> = ({ initialUrl, onTitleChange }) => {
+  const { t } = useTranslation('browser');
   const webviewRef = useRef<any>(null);
   const [url, setUrl] = useState(initialUrl);
   const [editUrl, setEditUrl] = useState(initialUrl);
@@ -100,9 +102,9 @@ export const BrowserPane: React.FC<Props> = ({ initialUrl, onTitleChange }) => {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, background: '#1a1a1a' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '6px 8px', background: '#222', borderBottom: '1px solid #333' }}>
-        <button className="panel-btn" disabled={!canBack} onClick={() => webviewRef.current?.goBack()} title="뒤로">◀</button>
-        <button className="panel-btn" disabled={!canFwd} onClick={() => webviewRef.current?.goForward()} title="앞으로">▶</button>
-        <button className="panel-btn" onClick={() => loading ? webviewRef.current?.stop() : webviewRef.current?.reload()} title={loading ? '중지' : '새로고침'}>{loading ? '✕' : '⟳'}</button>
+        <button className="panel-btn" disabled={!canBack} onClick={() => webviewRef.current?.goBack()} title={t('back')}>◀</button>
+        <button className="panel-btn" disabled={!canFwd} onClick={() => webviewRef.current?.goForward()} title={t('forward')}>▶</button>
+        <button className="panel-btn" onClick={() => loading ? webviewRef.current?.stop() : webviewRef.current?.reload()} title={loading ? t('stop') : t('refresh')}>{loading ? '✕' : '⟳'}</button>
         <input
           type="text"
           value={editUrl}
@@ -110,17 +112,17 @@ export const BrowserPane: React.FC<Props> = ({ initialUrl, onTitleChange }) => {
           onKeyDown={e => { if (e.key === 'Enter') go(editUrl); }}
           spellCheck={false}
           style={{ flex: 1, padding: '4px 8px', background: '#111', border: '1px solid #333', borderRadius: 3, color: '#ddd', fontSize: 12 }}
-          placeholder="URL 또는 검색어"
+          placeholder={t('urlPlaceholder')}
         />
-        <button className="panel-btn" onClick={() => go(editUrl)} title="이동">↵</button>
+        <button className="panel-btn" onClick={() => go(editUrl)} title={t('go')}>↵</button>
         <div style={{ width: 1, height: 18, background: '#333', margin: '0 2px' }} />
-        <button className="panel-btn" onClick={zoomOut} title="축소 (Ctrl+-)">−</button>
-        <button className="panel-btn" onClick={zoomReset} title="100% (Ctrl+0)" style={{ minWidth: 42, fontSize: 11 }}>
+        <button className="panel-btn" onClick={zoomOut} title={t('zoomOut')}>−</button>
+        <button className="panel-btn" onClick={zoomReset} title={t('zoomReset')} style={{ minWidth: 42, fontSize: 11 }}>
           {Math.round(zoom * 100)}%
         </button>
-        <button className="panel-btn" onClick={zoomIn} title="확대 (Ctrl+=)">+</button>
+        <button className="panel-btn" onClick={zoomIn} title={t('zoomIn')}>+</button>
         <div style={{ width: 1, height: 18, background: '#333', margin: '0 2px' }} />
-        <button className="panel-btn" onClick={() => { try { webviewRef.current?.openDevTools(); } catch {} }} title="DevTools">{'<>'}</button>
+        <button className="panel-btn" onClick={() => { try { webviewRef.current?.openDevTools(); } catch {} }} title={t('devTools')}>{'<>'}</button>
       </div>
       {/* @ts-ignore — webview 는 React 표준 element 가 아니지만 Electron 환경에서 동작 */}
       <webview

@@ -1,0 +1,47 @@
+{
+  "dialog": {
+    "sessionsPathTitle": "Choisir le dossier de stockage des sessions",
+    "pickFilesMulti": "Sélectionner des fichiers (plusieurs)",
+    "pickFile": "Sélectionner un fichier",
+    "pickFolder": "Sélectionner un dossier",
+    "saveCsv": "Enregistrer en CSV",
+    "saveDownloadLocation": "Choisir l'emplacement de téléchargement",
+    "saveRemoteFile": "Enregistrer le fichier distant",
+    "downloadMultiTitle": "Télécharger {{count}} éléments — choisir le dossier de destination",
+    "uploadFolder": "Sélectionner le dossier à envoyer",
+    "uploadFileMulti": "Sélectionner les fichiers à envoyer (plusieurs)",
+    "uploadFile": "Sélectionner le fichier à envoyer",
+    "vpnImportTitle": "Importer un fichier de configuration OpenVPN (.ovpn)",
+    "recordingSaveTitle": "Enregistrer l'enregistrement du terminal"
+  },
+  "popup": {
+    "optionsTitle": "Options",
+    "sessionEditorTitle": "Modifier la session",
+    "searchTitle": "Rechercher",
+    "pasteModalTitle": "Coller plusieurs lignes"
+  },
+  "search": {
+    "dragToMove": "Glisser pour déplacer",
+    "placeholder": "Rechercher...",
+    "history": "Historique de recherche",
+    "caseSensitive": "Sensible à la casse",
+    "regex": "Regex",
+    "currentTab": "Onglet actuel",
+    "allTabs": "Tous les onglets",
+    "currentTabShort": "Actuel",
+    "allShort": "Tous",
+    "dockToApp": "Réintégrer à l'app",
+    "closeEsc": "Fermer (Échap)"
+  },
+  "paste": {
+    "title": "Coller plusieurs lignes",
+    "prompt": "Coller le texte suivant ?",
+    "cancel": "Annuler (Échap)",
+    "paste": "Coller (Ctrl+Entrée)"
+  },
+  "error": {
+    "noConnectionId": "Aucun ID de connexion",
+    "fileTooLargeCap": "Fichier trop volumineux ({{mb}} Mo > {{cap}} Mo)",
+    "fileTooLarge": "Fichier trop volumineux ({{mb}} Mo)"
+  }
+}

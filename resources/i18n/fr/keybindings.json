@@ -1,0 +1,104 @@
+{
+  "title": "⌨ Liste des raccourcis",
+  "close": "Fermer (Échap)",
+  "searchPlaceholder": "🔍 Rechercher des raccourcis ou actions...",
+  "noMatch": "Aucun raccourci correspondant.",
+  "none": "(aucun)",
+  "groups": {
+    "custom": "Raccourcis personnalisables",
+    "fixed": "Raccourcis fixes",
+    "minitab": "Minitab",
+    "terminal": "Terminal",
+    "fileTree": "Arborescence de fichiers / Édition distante",
+    "claude": "Chat Claude",
+    "broadcast": "Diffusion",
+    "quickConnect": "Barre de connexion rapide"
+  },
+  "labels": {
+    "fullscreen": "Basculer en plein écran",
+    "splitSessionV": "Division horizontale de session vide (gauche/droite)",
+    "splitSessionH": "Division verticale de session vide (haut/bas)",
+    "nextTab": "Minitab suivant",
+    "prevTab": "Minitab précédent",
+    "cloneSplitV": "Division horizontale de session (gauche/droite)",
+    "cloneSplitH": "Division verticale de session (haut/bas)",
+    "find": "Rechercher",
+    "clearScrollback": "Effacer l'historique",
+    "clearScreen": "Effacer l'écran",
+    "clearAll": "Tout effacer",
+    "toggleFileTree": "Basculer l'arborescence de fichiers",
+    "copy": "Copier (sélection → presse-papiers)",
+    "paste": "Coller (presse-papiers → terminal)",
+    "selectAll": "Tout sélectionner",
+    "diffPrevHunk": "Comparaison de fichiers : bloc précédent",
+    "diffNextHunk": "Comparaison de fichiers : bloc suivant",
+    "diffApplyLeft": "Comparaison de fichiers : appliquer cible → source",
+    "diffApplyRight": "Comparaison de fichiers : appliquer source → cible"
+  },
+  "fixed": {
+    "minitabSwitch": "Changer de minitab",
+    "fullscreen": "Basculer le terminal actuel en plein écran",
+    "scrollBottom": "Défiler vers le bas",
+    "fontSize": "Ajuster la taille de la police",
+    "wheelSuffix": "+Molette de la souris",
+    "rename": "Renommer",
+    "middleClick": "Clic du milieu",
+    "closeTab": "Fermer l'onglet",
+    "moveOrder": "Déplacer l'ordre de session/dossier"
+  },
+  "minitab": {
+    "shellSelector": "Choisir le shell (PowerShell, CMD, Git Bash, etc.)",
+    "rightClick": "Renommer / Dupliquer la session / Fermer",
+    "wheel": "Défilement horizontal (boutons ‹ ›)",
+    "shellBtn": "Bouton ∨",
+    "rightClickKey": "Clic droit",
+    "wheelKey": "Défilement molette"
+  },
+  "terminal": {
+    "rightClick": "Copier / Coller / Rechercher / Police / Encodage / Effacer l'écran, etc.",
+    "dblClickSession": "Se connecter",
+    "rightClickKey": "Clic droit",
+    "dblClickKey": "Double-clic (session)"
+  },
+  "fileTree": {
+    "dblClickFile": "Ouvrir dans l'onglet éditeur",
+    "multiSelect": "Sélection multiple (téléchargement groupé)",
+    "rightClick": "Attacher à Claude / Copier le chemin / Supprimer",
+    "refresh": "Actualiser le chemin actuel",
+    "pin": "Basculer épingler / masquer automatiquement l'arborescence",
+    "resize": "Ajuster la largeur",
+    "save": "Enregistrer",
+    "dblClickKey": "Double-clic sur fichier",
+    "rightClickKey": "Clic droit",
+    "resizeKey": "Glisser le bord gauche",
+    "saveKeySuffix": " (éditeur)"
+  },
+  "claude": {
+    "triggerHover": "Déployer la barre latérale (mode non épinglé)",
+    "pin": "Basculer épingler / masquer automatiquement la barre latérale",
+    "resize": "Ajuster la largeur (double-clic = par défaut)",
+    "slashPalette": "Palette de commandes slash (↑↓ naviguer, Entrée exécuter, Échap fermer)",
+    "attach": "Joindre un fichier / dossier local",
+    "fontSize": "Ajuster la taille de la police du chat",
+    "send": "Envoyer, {{newline}} = nouvelle ligne",
+    "clear": "Effacer le chat + contexte",
+    "triggerHoverKey": "Survol de la zone 🤖",
+    "resizeKey": "Glisser le bord gauche",
+    "slashKey": "Bouton /",
+    "attachKey": "📄+ / 📁+",
+    "fontKey": "+Molette",
+    "sendKey": "Entrée (saisie)",
+    "clearKey": "🗑"
+  },
+  "broadcast": {
+    "send": "Envoyer le texte",
+    "signal": "Envoyer le signal ^C / ^D",
+    "history": "Naviguer dans l'historique / menu déroulant de session",
+    "escClose": "Ferme uniquement le menu d'historique (la barre reste)"
+  },
+  "quickConnect": {
+    "connect": "Se connecter",
+    "esc": "Ignoré (fermer uniquement via ✕)"
+  },
+  "duplicateWarn": "« {{combo}} » est déjà attribué à « {{dupLabel}} »."
+}

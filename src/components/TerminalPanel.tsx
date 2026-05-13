@@ -1,6 +1,8 @@
 // src/components/TerminalPanel.tsx
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import ReactDOM from 'react-dom';
+import { useTranslation } from 'react-i18next';
+import i18n from '../i18n';
 import type { Panel, PanelSession } from '../utils/layoutUtils';
 import { ContextMenu } from './ContextMenu';
 import { RemoteFileTree } from './RemoteFileTree';
@@ -14,6 +16,10 @@ import { matchKeybinding, isKeybindingListening } from '../utils/keybindings';
 import 'xterm/css/xterm.css';
 
 // ── 모듈 레벨: 컴포넌트 lifecycle과 독립 ──
+
+// terminal namespace 미리 로드 — 모듈 레벨 함수에서 i18n.t('terminal:...') 호출하기 위함
+try { i18n.loadNamespaces('terminal'); } catch {}
+const tt = (key: string, opts?: any) => i18n.t(`terminal:${key}`, opts) as string;
 
 let currentThemeName = localStorage.getItem('terminalTheme') || 'Default Dark';
 const defaultFontSize = Number(localStorage.getItem('terminalFontSize')) || 14;
@@ -1436,7 +1442,7 @@ export function promptPasswordAndConnect(termId: string, sessionId: string, cols
     activePasswordPrompt.delete(termId);
     if (password === null) {
       // 취소 — 그냥 정리만
-      try { term.write('\r\n\x1b[90m연결 취소\x1b[0m\r\n'); } catch {}
+      try { term.write(`\r\n\x1b[90m${tt('output.connectionCancel')}\x1b[0m\r\n`); } catch {}
       sshConnecting.delete(termId);
       try { window.dispatchEvent(new Event('term-connect-changed')); } catch {}
       return;
@@ -1550,7 +1556,7 @@ function ensureSSHSetup(termId: string) {
     if (recordingState.has(termId)) {
       recordMark(termId, `disconnected at ${new Date().toLocaleString()}`);
     }
-    try { term.write('\r\n\x1b[90m연결이 종료되었습니다.\x1b[0m\r\n'); } catch {}
+    try { term.write(`\r\n\x1b[90m${tt('output.connectionClosed')}\x1b[0m\r\n`); } catch {}
     // 세션이 등록되어 있으면 재연결 카운트다운 시작
     if (termSessionMap.has(termId)) {
       startReconnectCountdown(termId);
@@ -1573,7 +1579,7 @@ function ensureSSHSetup(termId: string) {
       termPasswordCache.delete(termId);
       // watchdog 도 중단 (자동 재시도 사이클 멈춤)
       try { clearInitialConnectWatchdog(termId); } catch {}
-      try { term.write(`\r\n\x1b[91m✕ 인증 실패: 비밀번호가 올바르지 않습니다.\x1b[0m\r\n`); } catch {}
+      try { term.write(`\r\n\x1b[91m${tt('output.authFailed')}\x1b[0m\r\n`); } catch {}
       const info = termSessionMap.get(termId);
       if (info?.sessionId) {
         // 저장 세션 — 약간 늦춰서 비밀번호 입력 모달 다시 띄움 (SSH disconnect cleanup 시간 확보)
@@ -1601,7 +1607,7 @@ function ensureSSHSetup(termId: string) {
                     resolve: (result: any) => {
                       if (result === null) {
                         quickConnectPending.delete(termId);
-                        try { term.write('\r\n\x1b[90m✕ 연결 취소됨.\x1b[0m\r\n'); } catch {}
+                        try { term.write(`\r\n\x1b[90m${tt('output.connectionCancelled')}\x1b[0m\r\n`); } catch {}
                         return;
                       }
                       let nextUsername = sessInfo.username;
@@ -1632,7 +1638,7 @@ function ensureSSHSetup(termId: string) {
     // 그 외 일시적 오류는 watchdog 재시도
     const ok = tryInitialReconnect(termId);
     if (!ok) {
-      try { term.write(`\r\n\x1b[91mSSH 오류: ${p.error || 'Unknown error'}\x1b[0m\r\n`); } catch {}
+      try { term.write(`\r\n\x1b[91m${tt('output.sshError', { error: p.error || 'Unknown error' })}\x1b[0m\r\n`); } catch {}
     }
   });
 
@@ -1654,7 +1660,7 @@ function ensureSSHSetup(termId: string) {
       } else if (data === '\x03') {
         // Ctrl+C → 취소
         disposable.dispose();
-        term.write('\r\n\x1b[90m인증 취소\x1b[0m\r\n');
+        term.write(`\r\n\x1b[90m${tt('output.authCancel')}\x1b[0m\r\n`);
         window.api?.disconnectSSH?.(termId);
       } else {
         pwBuf += data;
@@ -1704,7 +1710,7 @@ function ensurePtySetup(termId: string) {
       ptyExitSuppressed.delete(termId);
       return;
     }
-    try { term.write('\r\n\x1b[90m셸이 종료되었습니다.\x1b[0m\r\n'); } catch {}
+    try { term.write(`\r\n\x1b[90m${tt('output.shellExited')}\x1b[0m\r\n`); } catch {}
   });
 }
 
@@ -1932,11 +1938,11 @@ function fireInitialReconnect(termId: string, reason: string) {
   const attempts = initialConnectAttempts.get(termId) || 1;
   if (attempts >= INITIAL_CONNECT_MAX_ATTEMPTS) {
     initialConnectAttempts.delete(termId);
-    try { entry?.term.write(`\r\n\x1b[91m연결 실패 (${INITIAL_CONNECT_MAX_ATTEMPTS}회 재시도 후 포기) — ${reason}\x1b[0m\r\n`); } catch {}
+    try { entry?.term.write(`\r\n\x1b[91m${tt('output.connectFailedFinal', { attempts: INITIAL_CONNECT_MAX_ATTEMPTS, reason })}\x1b[0m\r\n`); } catch {}
     sshConnecting.delete(termId);
     return;
   }
-  try { entry?.term.write(`\r\n\x1b[33m${reason} — 자동 재시도 ${attempts}/${INITIAL_CONNECT_MAX_ATTEMPTS - 1} (${INITIAL_CONNECT_RETRY_GAP_MS / 1000}초 대기)\x1b[0m\r\n`); } catch {}
+  try { entry?.term.write(`\r\n\x1b[33m${tt('output.connectRetry', { reason, attempt: attempts, max: INITIAL_CONNECT_MAX_ATTEMPTS - 1, sec: INITIAL_CONNECT_RETRY_GAP_MS / 1000 })}\x1b[0m\r\n`); } catch {}
   try { window.api?.disconnectSSH?.(termId); } catch {}
   sshConnecting.delete(termId);
   // 재시도 대기 — bastion sshd MaxStartups 가 drop 한 경우 앞선 세션이 인증 완료할 시간
@@ -1980,8 +1986,8 @@ function startReconnectCountdown(termId: string) {
   const state: any = { timer: null, fireTimer: null, cancelled: false, disp: null };
   reconnectState.set(termId, state);
 
-  term.write(`\r\n\x1b[91m원격 호스트 연결 끊김 (${sessionName} ${host}) ${timeStr}\x1b[0m\r\n`);
-  term.write(`\r\n\x1b[33m30초 후 재연결합니다. 아무 키나 누르면 취소됩니다.\x1b[0m\r\n`);
+  term.write(`\r\n\x1b[91m${tt('output.remoteDisconnected', { sessionName, host, time: timeStr })}\x1b[0m\r\n`);
+  term.write(`\r\n\x1b[33m${tt('output.reconnectIn30s')}\x1b[0m\r\n`);
 
   // 시각적 카운트다운(점)만 setInterval 로 갱신. 실제 재연결 발사는 단일 setTimeout 으로 처리해
   // 패널 전환/쓰로틀 등에 영향 없이 정확히 30초 후에만 1회 발동.
@@ -2008,7 +2014,7 @@ function startReconnectCountdown(termId: string) {
     if (state.disp) { state.disp.dispose(); state.disp = null; }
     if (state.timer) { clearInterval(state.timer); state.timer = null; }
     reconnectState.delete(termId);
-    term.write('\r\n\x1b[33m재연결 중...\x1b[0m\r\n');
+    term.write(`\r\n\x1b[33m${tt('output.reconnecting')}\x1b[0m\r\n`);
     sshConnecting.delete(termId);
     globalConnected.delete(termId);
     try {
@@ -2040,7 +2046,7 @@ function startReconnectCountdown(termId: string) {
       if (state.fireTimer) { clearTimeout(state.fireTimer); state.fireTimer = null; }
       reconnectState.delete(termId);
       reconnectUserCancelled.add(termId);
-      term.write('\r\n\x1b[90m재연결이 취소되었습니다.\x1b[0m\r\n');
+      term.write(`\r\n\x1b[90m${tt('output.reconnectCancelled')}\x1b[0m\r\n`);
     }
     disp.dispose();
     state.disp = null;
@@ -2068,6 +2074,7 @@ interface MultiPasteModalProps {
 }
 // @ts-expect-error unused (kept for fallback)
 const MultiPasteModal: React.FC<MultiPasteModalProps> = ({ text, onChange, onCancel, onPaste }) => {
+  const { t } = useTranslation('terminal');
   const [pos, setPos] = useState(() => {
     const w = 600, h = 480;
     return { x: Math.max(0, (window.innerWidth - w) / 2), y: Math.max(0, window.innerHeight * 0.1), w, h };
@@ -2138,12 +2145,12 @@ const MultiPasteModal: React.FC<MultiPasteModalProps> = ({ text, onChange, onCan
           cursor: 'move', userSelect: 'none', background: '#222',
         }}
       >
-        <strong style={{ fontSize: 13 }}>여러 줄 붙여넣기</strong>
+        <strong style={{ fontSize: 13 }}>{t('multiLinePaste.title')}</strong>
         <button onClick={onCancel} style={{ background: 'transparent', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: 16, padding: 0 }}>✕</button>
       </div>
       {/* 본문 */}
       <div style={{ padding: 14, display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
-        <p style={{ color: '#888', fontSize: 12, margin: '0 0 8px' }}>다음 텍스트를 붙여넣을까요?</p>
+        <p style={{ color: '#888', fontSize: 12, margin: '0 0 8px' }}>{t('multiLinePaste.prompt')}</p>
         <textarea
           autoFocus
           ref={el => { if (el && (el as any).__focused !== true) { (el as any).__focused = true; setTimeout(() => el.focus(), 0); } }}
@@ -2161,8 +2168,8 @@ const MultiPasteModal: React.FC<MultiPasteModalProps> = ({ text, onChange, onCan
           }}
         />
         <div style={{ display: 'flex', gap: 8, marginTop: 12, justifyContent: 'flex-end' }}>
-          <button onClick={onCancel} style={{ padding: '6px 16px', background: '#333', border: '1px solid #555', color: '#eee', borderRadius: 4, cursor: 'pointer' }}>취소 (Esc)</button>
-          <button onClick={onPaste} style={{ padding: '6px 16px', background: '#2b6b9b', border: '1px solid #3a8bc8', color: '#fff', borderRadius: 4, cursor: 'pointer' }}>붙여넣기 (Ctrl+Enter)</button>
+          <button onClick={onCancel} style={{ padding: '6px 16px', background: '#333', border: '1px solid #555', color: '#eee', borderRadius: 4, cursor: 'pointer' }}>{t('multiLinePaste.cancelHint')}</button>
+          <button onClick={onPaste} style={{ padding: '6px 16px', background: '#2b6b9b', border: '1px solid #3a8bc8', color: '#fff', borderRadius: 4, cursor: 'pointer' }}>{t('multiLinePaste.pasteHint')}</button>
         </div>
       </div>
       {/* 리사이즈 핸들들 — 우, 하, 우하 (좌상단 고정) */}
@@ -2259,6 +2266,7 @@ export const TerminalPanel: React.FC<Props> = ({
   isFloating, onToggleFloat, isSelected: _isSelected, onSplitWithPicker,
   workspaceList, currentWorkspaceId, onMoveSessionToWorkspace,
 }) => {
+  const { t } = useTranslation('terminal');
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mountedTermRef = useRef<string | null>(null);
   const onSelectRef = useRef(onSelect);
@@ -2430,7 +2438,7 @@ export const TerminalPanel: React.FC<Props> = ({
         // 1회만 표시 — tab 전환 등으로 initConnect 가 재실행돼도 중복 출력 안 함.
         if (!quickConnectPlaceholderShown.has(activeTermId)) {
           quickConnectPlaceholderShown.add(activeTermId);
-          try { term.write('\r\n\x1b[96m▶ SSH 연결을 시도하는 중...\x1b[0m\r\n'); } catch {}
+          try { term.write(`\r\n\x1b[96m${tt('output.tryingSSH')}\x1b[0m\r\n`); } catch {}
         }
       } else if (termSessionMap.get(activeTermId)?.quickSession) {
         // 빠른연결로 등록된 termId 인데 quickConnectPending 플래그가 없는 경우 (재시도 사이 윈도우 등) —
@@ -2846,9 +2854,9 @@ export const TerminalPanel: React.FC<Props> = ({
                 }}>&times;</span>
               </span>
             ))}
-            <span className="panel-session-tab-add" onClick={e => { e.stopPropagation(); onAddSession?.(nodeId); }} title="새 세션">+</span>
+            <span className="panel-session-tab-add" onClick={e => { e.stopPropagation(); onAddSession?.(nodeId); }} title={t('ui.newSession')}>+</span>
             {availableShells && availableShells.length > 0 && (
-              <span className="panel-session-tab-add panel-shell-btn" onClick={e => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setShellMenu(prev => prev ? null : { x: r.left, y: r.bottom }); }} title="쉘 선택">∨</span>
+              <span className="panel-session-tab-add panel-shell-btn" onClick={e => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setShellMenu(prev => prev ? null : { x: r.left, y: r.bottom }); }} title={t('ui.shellSelect')}>∨</span>
             )}
           </div>
             <button className="panel-tabs-scroll-btn" onClick={() => {
@@ -2863,9 +2871,9 @@ export const TerminalPanel: React.FC<Props> = ({
         ) : (
           <span className="panel-header-label" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
             Empty
-            <span className="panel-session-tab-add" onClick={e => { e.stopPropagation(); onAddSession?.(nodeId); }} title="새 세션">+</span>
+            <span className="panel-session-tab-add" onClick={e => { e.stopPropagation(); onAddSession?.(nodeId); }} title={t('ui.newSession')}>+</span>
             {availableShells && availableShells.length > 0 && (
-              <span className="panel-session-tab-add panel-shell-btn" onClick={e => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setShellMenu(prev => prev ? null : { x: r.left, y: r.bottom }); }} title="쉘 선택">∨</span>
+              <span className="panel-session-tab-add panel-shell-btn" onClick={e => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setShellMenu(prev => prev ? null : { x: r.left, y: r.bottom }); }} title={t('ui.shellSelect')}>∨</span>
             )}
           </span>
         )}
@@ -2874,7 +2882,7 @@ export const TerminalPanel: React.FC<Props> = ({
         <button
           className={`panel-controls-toggle ${showPanelControls ? 'open' : ''}`}
           onClick={e => { e.stopPropagation(); setShowPanelControls(v => !v); }}
-          title={showPanelControls ? '컨트롤 숨기기' : '패널 컨트롤'}
+          title={showPanelControls ? t('ui.controlHide') : t('ui.panelControls')}
         >
           <svg className="panel-controls-toggle-icon" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
             <line x1="2" y1="3.5" x2="12" y2="3.5" />
@@ -2906,7 +2914,7 @@ export const TerminalPanel: React.FC<Props> = ({
                 else if (containerRef.current) containerRef.current.style.background = `rgba(0,0,0,${val})`;
                 forceUpdate(n => n + 1);
               }}
-              title={`투명도 ${curPct}%`}
+              title={t('ui.transparencyPct', { pct: curPct })}
             />
           );
         })()}
@@ -2920,19 +2928,19 @@ export const TerminalPanel: React.FC<Props> = ({
                 if (isRecording(activeTermId)) {
                   const r = await stopRecording(activeTermId);
                   if (r.ok && r.path) {
-                    try { getOrCreateTerm(activeTermId).term.write(`\r\n\x1b[90m● 녹화 종료 — ${r.path}\x1b[0m\r\n`); } catch {}
+                    try { getOrCreateTerm(activeTermId).term.write(`\r\n\x1b[90m${tt('output.recordEnd', { path: r.path })}\x1b[0m\r\n`); } catch {}
                   }
                 } else {
                   const sessName = activeSession?.sessionName || 'terminal';
                   const r = await startRecording(activeTermId, sessName);
                   if (r.ok && r.path) {
-                    try { getOrCreateTerm(activeTermId).term.write(`\r\n\x1b[91m● 녹화 시작 — ${r.path}\x1b[0m\r\n`); } catch {}
+                    try { getOrCreateTerm(activeTermId).term.write(`\r\n\x1b[91m${tt('output.recordBegin', { path: r.path })}\x1b[0m\r\n`); } catch {}
                   } else if (r.reason && r.reason !== 'cancelled') {
-                    try { getOrCreateTerm(activeTermId).term.write(`\r\n\x1b[91m✕ 녹화 시작 실패: ${r.reason}\x1b[0m\r\n`); } catch {}
+                    try { getOrCreateTerm(activeTermId).term.write(`\r\n\x1b[91m${tt('output.recordFailed', { reason: r.reason })}\x1b[0m\r\n`); } catch {}
                   }
                 }
               }}
-              title={recOn ? '녹화 중지' : '녹화 시작 (파일에 저장)'}
+              title={recOn ? t('ui.recordStopTitle') : t('ui.recordStartTitle')}
               disabled={!activeTermId}
             >
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round">
@@ -2943,25 +2951,25 @@ export const TerminalPanel: React.FC<Props> = ({
             </button>
           );
         })()}
-        <button className="panel-btn" onClick={() => onSplit(nodeId, 'row')} title="가로 분할 (좌/우, 빈 패널)">
+        <button className="panel-btn" onClick={() => onSplit(nodeId, 'row')} title={t('ui.splitHTitle')}>
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5">
             <rect x="1" y="1" width="12" height="12" rx="1.5" /><line x1="7" y1="1" x2="7" y2="13" />
           </svg>
         </button>
-        <button className="panel-btn" onClick={() => onSplit(nodeId, 'column')} title="세로 분할 (상/하, 빈 패널)">
+        <button className="panel-btn" onClick={() => onSplit(nodeId, 'column')} title={t('ui.splitVTitle')}>
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5">
             <rect x="1" y="1" width="12" height="12" rx="1.5" /><line x1="1" y1="7" x2="13" y2="7" />
           </svg>
         </button>
         {onSplitWithPicker && (
           <>
-            <button className="panel-btn" onClick={() => onSplitWithPicker(nodeId, 'row')} title="세션 선택해서 가로 분할 (좌/우)">
+            <button className="panel-btn" onClick={() => onSplitWithPicker(nodeId, 'row')} title={t('ui.splitHPickTitle')}>
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <rect x="1" y="1" width="12" height="12" rx="1.5" /><line x1="7" y1="1" x2="7" y2="13" />
                 <circle cx="10" cy="10" r="2" fill="currentColor" stroke="none" />
               </svg>
             </button>
-            <button className="panel-btn" onClick={() => onSplitWithPicker(nodeId, 'column')} title="세션 선택해서 세로 분할 (상/하)">
+            <button className="panel-btn" onClick={() => onSplitWithPicker(nodeId, 'column')} title={t('ui.splitVPickTitle')}>
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <rect x="1" y="1" width="12" height="12" rx="1.5" /><line x1="1" y1="7" x2="13" y2="7" />
                 <circle cx="10" cy="10" r="2" fill="currentColor" stroke="none" />
@@ -2972,7 +2980,7 @@ export const TerminalPanel: React.FC<Props> = ({
         <button
           className={`panel-btn ${isFloating ? 'panel-btn-active' : ''}`}
           onClick={() => onToggleFloat?.(nodeId)}
-          title={isFloating ? '원래 크기로' : '플로팅 확대 (모든 터미널 위에)'}
+          title={isFloating ? t('ui.floatRestore') : t('ui.floatExpand')}
         >
           {isFloating ? (
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -2993,7 +3001,7 @@ export const TerminalPanel: React.FC<Props> = ({
             setTermAutoTrack(activeTermId, newVal);
             try { await (window as any).api?.setSSHAutoTrack?.(activeTermId, newVal); } catch {}
           }}
-          title={autoTrackOn ? 'PWD 자동추적 끄기 (cd 시 파일트리 동기화)' : 'PWD 자동추적 켜기 (cd 시 파일트리 동기화)'}
+          title={autoTrackOn ? t('ui.autoTrackOn') : t('ui.autoTrackOff')}
         >
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
             <path d="M2 4 L5 4 L7 2 L12 2 L12 12 L2 12 Z" />
@@ -3035,7 +3043,7 @@ export const TerminalPanel: React.FC<Props> = ({
                   />
                   <div
                     className="panel-file-tree-resizer"
-                    title="드래그하여 너비 조절 (더블클릭: 기본값 240)"
+                    title={t('ui.resizeHandle')}
                     onMouseDown={e => {
                       e.preventDefault();
                       const startX = e.clientX;
@@ -3067,16 +3075,16 @@ export const TerminalPanel: React.FC<Props> = ({
           x={miniCtx.x} y={miniCtx.y}
           onClose={() => setMiniCtx(null)}
           items={[
-            { label: '이름 변경', onClick: () => { setRenamingTermId(miniCtx.termId); setRenameValue(miniCtx.name); } },
-            { label: '세션 편집', onClick: () => {
+            { label: t('menu.renameTab'), onClick: () => { setRenamingTermId(miniCtx.termId); setRenameValue(miniCtx.name); } },
+            { label: t('menu.editSession'), onClick: () => {
               const info = termSessionMap.get(miniCtx.termId);
               if (info?.sessionId) {
                 // 전역 이벤트로 App.tsx 가 SessionEditor 모달 띄우도록
                 window.dispatchEvent(new CustomEvent('open-session-editor', { detail: { sessionId: info.sessionId, termId: miniCtx.termId } }));
               }
             } },
-            { label: '세션 복제', onClick: () => { onDuplicateSession?.(nodeId, miniCtx.termId); } },
-            { label: '세션 재연결', onClick: async () => {
+            { label: t('menu.duplicateSession'), onClick: () => { onDuplicateSession?.(nodeId, miniCtx.termId); } },
+            { label: t('menu.reconnectSession'), onClick: async () => {
               const tid = miniCtx.termId;
               const info = termSessionMap.get(tid);
               if (!info) return;
@@ -3104,12 +3112,12 @@ export const TerminalPanel: React.FC<Props> = ({
               } catch {}
             }},
             ...(onMoveSessionToWorkspace ? [{
-              label: '다른 워크스페이스로 이동...',
+              label: t('menu.moveToWorkspace'),
               onClick: () => {
                 setMoveWorkspaceCtx({ x: miniCtx.x, y: miniCtx.y, termId: miniCtx.termId });
               },
             }] : []),
-            { label: '닫기', onClick: () => { window.api?.disconnectSSH?.(miniCtx.termId); onCloseSession?.(nodeId, miniCtx.termId); } },
+            { label: t('menu.close'), onClick: () => { window.api?.disconnectSSH?.(miniCtx.termId); onCloseSession?.(nodeId, miniCtx.termId); } },
           ]}
         />
       )}
@@ -3122,7 +3130,7 @@ export const TerminalPanel: React.FC<Props> = ({
               label: `→ ${w.title}`,
               onClick: () => onMoveSessionToWorkspace(nodeId, moveWorkspaceCtx.termId, w.id),
             }))),
-            { label: '+ 새 워크스페이스로 이동', onClick: () => onMoveSessionToWorkspace(nodeId, moveWorkspaceCtx.termId, '__new__') },
+            { label: t('menu.newWorkspace'), onClick: () => onMoveSessionToWorkspace(nodeId, moveWorkspaceCtx.termId, '__new__') },
           ]}
         />
       )}
@@ -3132,7 +3140,7 @@ export const TerminalPanel: React.FC<Props> = ({
           x={termCtx.x} y={termCtx.y}
           onClose={() => setTermCtx(null)}
           items={[
-            { label: '복사', onClick: () => {
+            { label: t('menu.copy'), onClick: () => {
               const entry = termStore.get(activeTermId);
               if (!entry) return;
               const settings = getTerminalSettings();
@@ -3142,7 +3150,7 @@ export const TerminalPanel: React.FC<Props> = ({
               if (!settings.includeTrailingNewline) sel = sel.replace(/\n$/, '');
               navigator.clipboard.writeText(sel).catch(() => {});
             }},
-            { label: '붙여넣기', onClick: () => {
+            { label: t('menu.paste'), onClick: () => {
               const tid = activeTermId;
               navigator.clipboard.readText().then(text => {
                 if (!text) return;
@@ -3160,32 +3168,32 @@ export const TerminalPanel: React.FC<Props> = ({
                 }
               }).catch(() => {});
             }},
-            { label: '전체 선택', onClick: () => selectAllInTerm(activeTermId) },
-            { label: '찾기...', onClick: () => {
+            { label: t('menu.selectAll'), onClick: () => selectAllInTerm(activeTermId) },
+            { label: t('menu.find'), onClick: () => {
               try { window.dispatchEvent(new CustomEvent('open-search')); } catch {}
             }},
-            { label: '화면 지우기', onClick: () => clearScreenInTerm(activeTermId) },
-            { label: '스크롤 버퍼 지우기', onClick: () => clearScrollbackInTerm(activeTermId) },
-            { label: '스크롤 버퍼 크기 변경...', onClick: () => {
+            { label: t('menu.clearScreen'), onClick: () => clearScreenInTerm(activeTermId) },
+            { label: t('menu.clearScrollbackBuffer'), onClick: () => clearScrollbackInTerm(activeTermId) },
+            { label: t('menu.changeScrollback'), onClick: () => {
               const cur = getScrollbackForTerm(activeTermId);
               setScrollbackDialog({ value: String(cur) });
             }},
-            { label: '인코딩 변경...', onClick: async () => {
+            { label: t('menu.changeEncoding'), onClick: async () => {
               let current = 'utf-8';
               try { current = (await (window as any).api?.getSSHEncoding?.(activeTermId)) || 'utf-8'; } catch {}
               setEncodingCtx({ x: termCtx.x, y: termCtx.y, current: current.toLowerCase() });
             }},
-            { label: '글꼴...', onClick: () => {
+            { label: t('menu.fontDots'), onClick: () => {
               const entry = termStore.get(activeTermId);
               const curFamily = entry ? (entry.term.options.fontFamily || '') : '';
               const curSize = entry ? (entry.term.options.fontSize || 14) : 14;
               setFontDialog({ termId: activeTermId, family: curFamily, size: curSize });
             }},
-            { label: '테마 변경...', onClick: () => {
+            { label: t('menu.changeTheme'), onClick: () => {
               const cur = termThemeCache.get(activeTermId) || '';
               setThemePickerCtx({ x: termCtx.x, y: termCtx.y, current: cur });
             }},
-            { label: '세션 편집...', onClick: () => {
+            { label: t('menu.editSessionDots'), onClick: () => {
               const info = termSessionMap.get(activeTermId);
               if (info?.sessionId) {
                 window.dispatchEvent(new CustomEvent('open-session-editor', { detail: { sessionId: info.sessionId, termId: activeTermId } }));
@@ -3223,8 +3231,8 @@ export const TerminalPanel: React.FC<Props> = ({
       {scrollbackDialog && activeTermId && ReactDOM.createPortal(
         <div className="session-editor-backdrop" onClick={() => setScrollbackDialog(null)}>
           <div className="session-editor" style={{ width: 320 }} onClick={e => e.stopPropagation()}>
-            <h3>스크롤 버퍼 크기 변경</h3>
-            <div style={{ padding: '8px 0', color: '#aaa', fontSize: 12 }}>줄 수 (1000 ~ 1000000)</div>
+            <h3>{t('dialogs.scrollbackTitle')}</h3>
+            <div style={{ padding: '8px 0', color: '#aaa', fontSize: 12 }}>{t('dialogs.scrollbackHint')}</div>
             <input
               type="number"
               autoFocus
@@ -3245,12 +3253,12 @@ export const TerminalPanel: React.FC<Props> = ({
               style={{ width: '100%', background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '8px', fontSize: 14, fontFamily: 'monospace', boxSizing: 'border-box' }}
             />
             <div className="session-editor-actions" style={{ marginTop: 12 }}>
-              <button className="btn-cancel" onClick={() => setScrollbackDialog(null)}>취소</button>
+              <button className="btn-cancel" onClick={() => setScrollbackDialog(null)}>{t('dialogs.cancel')}</button>
               <button className="btn-save" onClick={() => {
                 const n = Math.max(1000, Math.min(1000000, Number(scrollbackDialog.value) || 0));
                 if (n) applyScrollbackToTerm(activeTermId, n);
                 setScrollbackDialog(null);
-              }}>적용</button>
+              }}>{t('dialogs.apply')}</button>
             </div>
           </div>
         </div>,
@@ -3262,9 +3270,9 @@ export const TerminalPanel: React.FC<Props> = ({
           onMouseUp={e => { if ((e.currentTarget as any).__bg && e.target === e.currentTarget) setFontDialog(null); }}
         >
           <div className="session-editor" onClick={e => e.stopPropagation()} style={{ width: 360 }}>
-            <h3>글꼴 설정</h3>
+            <h3>{t('dialogs.fontTitle')}</h3>
             <div style={{ marginBottom: 12 }}>
-              <div style={{ color: '#ccc', fontSize: 12, marginBottom: 4 }}>글꼴</div>
+              <div style={{ color: '#ccc', fontSize: 12, marginBottom: 4 }}>{t('dialogs.fontLabel')}</div>
               <select
                 style={{ width: '100%', background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '6px 8px', fontSize: 13, cursor: 'pointer' }}
                 value={fontDialog.family}
@@ -3274,7 +3282,7 @@ export const TerminalPanel: React.FC<Props> = ({
                   applyFontToTerm(fontDialog.termId, f || undefined, fontDialog.size);
                 }}
               >
-                <option value="">기본 (Cascadia Mono)</option>
+                <option value="">{t('dialogs.fontDefault')}</option>
                 {(() => {
                   const fonts = ['Cascadia Mono','Cascadia Code','Consolas','Courier New','D2Coding','D2Coding ligature','Fira Code','Fira Mono','JetBrains Mono','Source Code Pro','Ubuntu Mono','IBM Plex Mono','Hack','Inconsolata','Noto Sans Mono','Roboto Mono','NanumGothicCoding','Malgun Gothic','Lucida Console','DejaVu Sans Mono'];
                   return fonts.filter(f => { try { return document.fonts.check(`12px "${f}"`); } catch { return false; } })
@@ -3283,7 +3291,7 @@ export const TerminalPanel: React.FC<Props> = ({
               </select>
             </div>
             <div style={{ marginBottom: 16 }}>
-              <div style={{ color: '#ccc', fontSize: 12, marginBottom: 4 }}>크기</div>
+              <div style={{ color: '#ccc', fontSize: 12, marginBottom: 4 }}>{t('dialogs.sizeLabel')}</div>
               <input type="number" min={8} max={40} step={1}
                 style={{ width: 80, background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '6px 8px', fontSize: 13, fontFamily: 'monospace' }}
                 value={fontDialog.size}
@@ -3295,7 +3303,7 @@ export const TerminalPanel: React.FC<Props> = ({
               />
             </div>
             <div className="session-editor-actions">
-              <button className="btn-save" onClick={() => setFontDialog(null)}>확인</button>
+              <button className="btn-save" onClick={() => setFontDialog(null)}>{t('dialogs.ok')}</button>
             </div>
           </div>
         </div>,

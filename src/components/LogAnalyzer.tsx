@@ -4,6 +4,7 @@
 // 파싱 포맷 (제시된 로그 전용):
 //   MMDD HH:MM:SS.ffff TID (file, line) LEVEL <function> message
 import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { FixedSizeList as VList, ListChildComponentProps } from 'react-window';
 import type { PanelSession } from '../utils/layoutUtils';
 import { RemotePathPicker } from './RemotePathPicker';
@@ -82,6 +83,7 @@ const MultiSelectDropdown: React.FC<{
   width?: number;
   popupWidth?: number;
 }> = ({ label, options, selected, onChange, width = 100, popupWidth = 260 }) => {
+  const { t } = useTranslation('logAnalyzer');
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState('');
   const ref = useRef<HTMLDivElement | null>(null);
@@ -112,14 +114,14 @@ const MultiSelectDropdown: React.FC<{
 
   const allSelected = options.length > 0 && options.every(o => selected.has(o.value));
   const someSelected = selected.size > 0 && !allSelected;
-  const summary = selected.size === 0 ? '전체' : selected.size === 1 ? [...selected][0] : `${selected.size}개`;
+  const summary = selected.size === 0 ? t('all') : selected.size === 1 ? [...selected][0] : t('selectedSummary', { count: selected.size });
 
   return (
     <>
       <button
         ref={btnRef}
         onClick={openMenu}
-        title={`${label} — ${selected.size === 0 ? '필터 없음' : selected.size + '개 선택'}`}
+        title={t('filterTooltip', { label, state: selected.size === 0 ? t('noFilter') : t('selectedCount', { count: selected.size }) })}
         style={{
           width, fontSize: 11, padding: '3px 6px', textAlign: 'left',
           background: selected.size > 0 ? '#2b4e74' : '#222',
@@ -145,20 +147,20 @@ const MultiSelectDropdown: React.FC<{
               value={filter}
               onChange={e => setFilter(e.target.value)}
               onKeyDown={e => { e.stopPropagation(); if (e.key === 'Escape') setOpen(false); }}
-              placeholder="🔍 검색"
+              placeholder={t('searchPlaceholder')}
               style={{ flex: 1, fontSize: 11, padding: '2px 4px' }}
             />
           </div>
           <div style={{ padding: '4px 8px', display: 'flex', gap: 6, borderBottom: '1px solid #2a2a2a', fontSize: 11 }}>
-            <button onClick={() => onChange(new Set(options.map(o => o.value)))} style={{ fontSize: 10, padding: '1px 6px' }}>전체</button>
-            <button onClick={() => onChange(new Set())} style={{ fontSize: 10, padding: '1px 6px' }}>해제</button>
+            <button onClick={() => onChange(new Set(options.map(o => o.value)))} style={{ fontSize: 10, padding: '1px 6px' }}>{t('all')}</button>
+            <button onClick={() => onChange(new Set())} style={{ fontSize: 10, padding: '1px 6px' }}>{t('deselect')}</button>
             <span style={{ marginLeft: 'auto', color: '#888' }}>
-              {someSelected ? `${selected.size}/${options.length}` : (allSelected ? '전체 선택' : '없음')}
+              {someSelected ? `${selected.size}/${options.length}` : (allSelected ? t('allSelected') : t('none'))}
             </span>
           </div>
           <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
             {filtered.length === 0 ? (
-              <div style={{ padding: 10, fontSize: 11, color: '#666', textAlign: 'center' }}>없음</div>
+              <div style={{ padding: 10, fontSize: 11, color: '#666', textAlign: 'center' }}>{t('none')}</div>
             ) : filtered.map(opt => {
               const isSel = selected.has(opt.value);
               return (
@@ -185,6 +187,7 @@ const MultiSelectDropdown: React.FC<{
 };
 
 export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
+  const { t } = useTranslation('logAnalyzer');
   const [srcMode, setSrcMode] = useState<'local' | 'remote'>('local');
   const [srcTermId, setSrcTermId] = useState<string>('');
   const [srcPath, setSrcPath] = useState<string>('');
@@ -239,8 +242,8 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
     setEntries([]);
     setSelectedIdx(null);
     setLevelFilter(new Set()); setFileFilter(new Set()); setLineFilter(new Set()); setFnFilter(new Set());
-    if (!srcPath) { setLoadErr('경로를 입력하세요'); return; }
-    if (srcMode === 'remote' && !srcTermId) { setLoadErr('원격 세션을 선택하세요'); return; }
+    if (!srcPath) { setLoadErr(t('enterPath')); return; }
+    if (srcMode === 'remote' && !srcTermId) { setLoadErr(t('selectRemote')); return; }
     setLoading(true);
     try {
       const r = await api.compareRead?.(srcMode, srcPath, srcMode === 'remote' ? srcTermId : undefined, 50 * 1024 * 1024);
@@ -248,7 +251,7 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
       const txt: string = r?.content ?? '';
       const parsed = parseLog(txt);
       setEntries(parsed);
-      setSourceLabel(`${srcMode === 'local' ? '🖥️' : '🟢'} ${srcPath} (${parsed.length} lines)`);
+      setSourceLabel(t('sourceLabel', { icon: srcMode === 'local' ? '🖥️' : '🟢', path: srcPath, count: parsed.length }));
     } catch (err: any) {
       setLoadErr(String(err?.message || err));
     } finally {
@@ -313,7 +316,7 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
   const exportCsv = useCallback(async () => {
     const parsedRows = filtered.filter(e => e.parsed);
     if (parsedRows.length === 0) {
-      setLoadErr('내보낼 파싱 데이터가 없습니다');
+      setLoadErr(t('noExportData'));
       setTimeout(() => setLoadErr(''), 2500);
       return;
     }
@@ -340,11 +343,11 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
     try {
       const r = await api.sqlSaveCsv?.(defaultName, content);
       if (r?.success && r?.path) {
-        setLoadErr(''); setSourceLabel(prev => prev + ` · CSV 저장됨: ${r.path}`);
+        setLoadErr(''); setSourceLabel(prev => prev + t('csvSaved', { path: r.path }));
         setTimeout(() => setSourceLabel(prev => prev.replace(/ · CSV 저장됨: .+$/, '')), 4000);
       }
     } catch (err: any) {
-      setLoadErr('CSV 저장 실패: ' + String(err?.message || err));
+      setLoadErr(t('csvSaveFail', { error: String(err?.message || err) }));
     }
   }, [filtered, srcPath]);
 
@@ -400,10 +403,10 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
               else { setSrcMode('remote'); setSrcTermId(v); }
             }}
             style={{ width: 220, fontSize: 12 }}>
-            <option value="local">🖥️ 로컬</option>
+            <option value="local">{t('local')}</option>
             {sourceOptions.map(o => <option key={o.termId} value={o.termId}>{o.label}</option>)}
           </select>
-          <input type="text" value={srcPath} placeholder={srcMode === 'local' ? 'C:\\path\\to\\app.log' : '/var/log/app.log'}
+          <input type="text" value={srcPath} placeholder={srcMode === 'local' ? t('pathPlaceholderLocal') : t('pathPlaceholderRemote')}
             onChange={e => setSrcPath(e.target.value)}
             onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') loadFile(); }}
             style={{ flex: 1, minWidth: 0, fontSize: 12, padding: '3px 6px' }} />
@@ -415,16 +418,16 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
                   if (r?.paths?.[0]) setSrcPath(r.paths[0]);
                 } catch {}
               } else {
-                if (!srcTermId) { setLoadErr('원격 세션을 선택하세요'); return; }
+                if (!srcTermId) { setLoadErr(t('selectRemote')); return; }
                 setFilePickerOpen(true);
               }
             }}
-            title="파일 선택" style={{ padding: '3px 10px', fontSize: 12 }}>📂</button>
+            title={t('pickFile')} style={{ padding: '3px 10px', fontSize: 12 }}>📂</button>
           <button className="primary" onClick={loadFile} disabled={loading} style={{ padding: '4px 14px' }}>
-            {loading ? '로딩...' : '로드'}
+            {loading ? t('loading') : t('load')}
           </button>
-          <button onClick={exportCsv} disabled={loading || entries.length === 0} title="현재 필터링된 파싱 항목을 CSV 로 저장 (Excel 호환, BOM 포함)" style={{ padding: '4px 12px' }}>
-            💾 CSV 저장
+          <button onClick={exportCsv} disabled={loading || entries.length === 0} title={t('exportCsvTooltip')} style={{ padding: '4px 12px' }}>
+            {t('exportCsv')}
           </button>
         </div>
         {sourceLabel && !loading && <div style={{ fontSize: 11, color: '#888' }}>{sourceLabel}</div>}
@@ -433,22 +436,22 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
         {/* 필터 바 — 검색 + 멀티셀렉트 드롭다운들 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', flexWrap: 'wrap' }}>
           <input type="text" value={search} onChange={e => setSearch(e.target.value)}
-            placeholder="🔍 메시지/함수/파일 검색 (쉼표로 다중 OR: foo,bar,baz)"
-            title="쉼표(,) 로 구분된 여러 키워드 중 하나라도 포함되면 매칭. 키워드 안에 쉼표 자체가 필요하면 \, 로 이스케이프"
+            placeholder={t('searchMsg')}
+            title={t('searchTooltip')}
             onKeyDown={e => e.stopPropagation()}
             style={{ flex: 1, minWidth: 200, fontSize: 12, padding: '3px 6px' }} />
-          <MultiSelectDropdown label="Level" options={levelOptions} selected={levelFilter} onChange={setLevelFilter} width={120} popupWidth={220} />
-          <MultiSelectDropdown label="File" options={fileOptions} selected={fileFilter} onChange={setFileFilter} width={150} popupWidth={300} />
-          <MultiSelectDropdown label="Line" options={lineOptions} selected={lineFilter} onChange={setLineFilter} width={110} popupWidth={180} />
-          <MultiSelectDropdown label="Function" options={fnOptions} selected={fnFilter} onChange={setFnFilter} width={170} popupWidth={320} />
+          <MultiSelectDropdown label={t('filterLabels.level')} options={levelOptions} selected={levelFilter} onChange={setLevelFilter} width={120} popupWidth={220} />
+          <MultiSelectDropdown label={t('filterLabels.file')} options={fileOptions} selected={fileFilter} onChange={setFileFilter} width={150} popupWidth={300} />
+          <MultiSelectDropdown label={t('filterLabels.line')} options={lineOptions} selected={lineFilter} onChange={setLineFilter} width={110} popupWidth={180} />
+          <MultiSelectDropdown label={t('filterLabels.function')} options={fnOptions} selected={fnFilter} onChange={setFnFilter} width={170} popupWidth={320} />
           {totalActiveFilters > 0 && (
-            <button onClick={clearAllFilters} style={{ fontSize: 11, padding: '3px 8px', color: '#d8b556' }} title="모든 필터 해제">
-              ✕ 필터 {totalActiveFilters} 해제
+            <button onClick={clearAllFilters} style={{ fontSize: 11, padding: '3px 8px', color: '#d8b556' }} title={t('clearFiltersTitle')}>
+              {t('clearFilters', { count: totalActiveFilters })}
             </button>
           )}
           <label style={{ fontSize: 11, color: '#bbb', display: 'flex', alignItems: 'center', gap: 3 }}>
             <input type="checkbox" checked={hideUnparsed} onChange={e => setHideUnparsed(e.target.checked)} />
-            파싱 실패 숨김
+            {t('hideUnparsed')}
           </label>
           <span style={{ fontSize: 11, color: '#888' }}>
             {filtered.length.toLocaleString()} / {entries.length.toLocaleString()}
@@ -461,17 +464,17 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
         <div style={{ display: 'flex', padding: '0 8px', background: '#1c1c1c', borderBottom: '1px solid #333', fontSize: 11, color: '#888', height: 24, boxSizing: 'border-box', alignItems: 'center' }}>
           {/* 컬럼 헤더 + 우측 리사이저 (마지막 message 제외) */}
           {([
-            ['idx', '#'], ['time', 'Time'], ['level', 'Level'], ['file', 'File'], ['line', 'Line'], ['fn', 'Function'],
+            ['idx', t('columns.idx')], ['time', t('columns.time')], ['level', t('columns.level')], ['file', t('columns.file')], ['line', t('columns.line')], ['fn', t('columns.function')],
           ] as [keyof typeof colW, string][]).map(([key, label]) => (
             <div key={key} style={{ width: colW[key], display: 'flex', alignItems: 'center', flexShrink: 0, position: 'relative' }}>
               <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: 4 }}>{label}</span>
               <div onMouseDown={e => onColResizeStart(key, e)}
                 style={{ width: 6, height: '100%', cursor: 'col-resize', position: 'absolute', right: -3, top: 0, zIndex: 2 }}
-                title="드래그로 너비 조절" />
+                title={t('resizeColumn')} />
               <div style={{ width: 1, height: 14, background: '#444', position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)' }} />
             </div>
           ))}
-          <div style={{ flex: 1, paddingLeft: 6 }}>Message</div>
+          <div style={{ flex: 1, paddingLeft: 6 }}>{t('columns.message')}</div>
         </div>
         <VList
           height={tableHeight - 24}
@@ -498,7 +501,7 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
                 <div style={{ flex: 1, paddingLeft: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: e.parsed ? '#ccc' : '#666' }} title={e.msg || e.raw}>
                   {e.msg || e.raw}
                   {e.parsed && e.raw.includes('\n') && (
-                    <span style={{ color: '#d8b556', marginLeft: 6, fontSize: 10 }}>+{e.raw.split('\n').length - 1}줄</span>
+                    <span style={{ color: '#d8b556', marginLeft: 6, fontSize: 10 }}>{t('extraLines', { count: e.raw.split('\n').length - 1 })}</span>
                   )}
                 </div>
               </div>
@@ -512,27 +515,27 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
       {/* 상세 패널 */}
       <div style={{ height: `${bottomPct}%`, minHeight: 80, background: '#1e1e1e', borderTop: '1px solid #333', overflow: 'auto', padding: 8, fontSize: 11, fontFamily: 'monospace' }}>
         {!selectedEntry ? (
-          <div style={{ color: '#666', textAlign: 'center', padding: 16 }}>위에서 라인을 선택하면 상세 정보가 표시됩니다</div>
+          <div style={{ color: '#666', textAlign: 'center', padding: 16 }}>{t('selectLineHint')}</div>
         ) : (
           <div>
-            <div style={{ color: '#888', marginBottom: 6, fontSize: 10 }}>라인 #{selectedEntry.idx + 1}</div>
+            <div style={{ color: '#888', marginBottom: 6, fontSize: 10 }}>{t('lineNum', { num: selectedEntry.idx + 1 })}</div>
             {selectedEntry.parsed ? (
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                 <tbody>
-                  <tr><td style={{ color: '#888', width: 80, verticalAlign: 'top' }}>Date</td><td>{selectedEntry.date}</td></tr>
-                  <tr><td style={{ color: '#888', verticalAlign: 'top' }}>Time</td><td style={{ color: '#9ab' }}>{selectedEntry.time}</td></tr>
-                  <tr><td style={{ color: '#888', verticalAlign: 'top' }}>TID</td><td>{selectedEntry.tid}</td></tr>
-                  <tr><td style={{ color: '#888', verticalAlign: 'top' }}>Level</td><td style={{ color: LEVEL_COLOR[selectedEntry.level || ''] || '#ccc' }}>{selectedEntry.level}</td></tr>
-                  <tr><td style={{ color: '#888', verticalAlign: 'top' }}>File</td><td style={{ color: '#999' }}>{selectedEntry.file}</td></tr>
-                  <tr><td style={{ color: '#888', verticalAlign: 'top' }}>Line</td><td style={{ color: '#9ab' }}>{selectedEntry.line}</td></tr>
-                  {selectedEntry.fn && <tr><td style={{ color: '#888', verticalAlign: 'top' }}>Function</td><td style={{ color: '#7fbeea' }}>{selectedEntry.fn}</td></tr>}
-                  <tr><td style={{ color: '#888', verticalAlign: 'top' }}>Message</td><td style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{selectedEntry.msg}</td></tr>
-                  <tr><td style={{ color: '#888', verticalAlign: 'top', paddingTop: 6 }}>Raw</td><td style={{ color: '#666', whiteSpace: 'pre-wrap', wordBreak: 'break-all', paddingTop: 6 }}>{selectedEntry.raw}</td></tr>
+                  <tr><td style={{ color: '#888', width: 80, verticalAlign: 'top' }}>{t('field.date')}</td><td>{selectedEntry.date}</td></tr>
+                  <tr><td style={{ color: '#888', verticalAlign: 'top' }}>{t('field.time')}</td><td style={{ color: '#9ab' }}>{selectedEntry.time}</td></tr>
+                  <tr><td style={{ color: '#888', verticalAlign: 'top' }}>{t('field.tid')}</td><td>{selectedEntry.tid}</td></tr>
+                  <tr><td style={{ color: '#888', verticalAlign: 'top' }}>{t('field.level')}</td><td style={{ color: LEVEL_COLOR[selectedEntry.level || ''] || '#ccc' }}>{selectedEntry.level}</td></tr>
+                  <tr><td style={{ color: '#888', verticalAlign: 'top' }}>{t('field.file')}</td><td style={{ color: '#999' }}>{selectedEntry.file}</td></tr>
+                  <tr><td style={{ color: '#888', verticalAlign: 'top' }}>{t('field.line')}</td><td style={{ color: '#9ab' }}>{selectedEntry.line}</td></tr>
+                  {selectedEntry.fn && <tr><td style={{ color: '#888', verticalAlign: 'top' }}>{t('field.function')}</td><td style={{ color: '#7fbeea' }}>{selectedEntry.fn}</td></tr>}
+                  <tr><td style={{ color: '#888', verticalAlign: 'top' }}>{t('field.message')}</td><td style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{selectedEntry.msg}</td></tr>
+                  <tr><td style={{ color: '#888', verticalAlign: 'top', paddingTop: 6 }}>{t('field.raw')}</td><td style={{ color: '#666', whiteSpace: 'pre-wrap', wordBreak: 'break-all', paddingTop: 6 }}>{selectedEntry.raw}</td></tr>
                 </tbody>
               </table>
             ) : (
               <div>
-                <div style={{ color: '#d8b556', marginBottom: 4 }}>파싱되지 않은 라인 (raw)</div>
+                <div style={{ color: '#d8b556', marginBottom: 4 }}>{t('unparsedHeading')}</div>
                 <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: '#aaa' }}>{selectedEntry.raw}</pre>
               </div>
             )}

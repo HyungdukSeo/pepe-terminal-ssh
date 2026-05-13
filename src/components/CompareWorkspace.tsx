@@ -3,6 +3,7 @@
 // 동일 상대경로의 파일 쌍에 대해 size 기반 상태(same/changed/left-only/right-only) 산출.
 // 행 클릭 시 하단 Monaco DiffEditor 에서 양쪽 파일 내용 비교.
 import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { FixedSizeList as VList, ListChildComponentProps } from 'react-window';
 import { DiffEditor, type DiffOnMount } from '@monaco-editor/react';
 import type { PanelSession } from '../utils/layoutUtils';
@@ -53,12 +54,12 @@ function statusBg(s: DiffStatus, selected: boolean): string {
     case 'same': return 'transparent';
   }
 }
-function statusLabel(s: DiffStatus): string {
+function statusLabel(s: DiffStatus, t: (k: string) => string): string {
   switch (s) {
-    case 'changed': return '변경됨';
-    case 'left-only': return '소스만';
-    case 'right-only': return '타겟만';
-    case 'same': return '동일';
+    case 'changed': return t('changed');
+    case 'left-only': return t('sourceOnly');
+    case 'right-only': return t('targetOnly');
+    case 'same': return t('same');
   }
 }
 function formatSize(n: number | undefined): string {
@@ -69,9 +70,10 @@ function formatSize(n: number | undefined): string {
 }
 
 export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
+  const { t } = useTranslation('compare');
   // 양쪽 소스 + 경로 — UI 입력
-  const [leftSrc, setLeftSrc] = useState<Source>({ mode: 'local', label: '🖥️ 로컬', basePath: '' });
-  const [rightSrc, setRightSrc] = useState<Source>({ mode: 'local', label: '🖥️ 로컬', basePath: '' });
+  const [leftSrc, setLeftSrc] = useState<Source>({ mode: 'local', label: t('local'), basePath: '' });
+  const [rightSrc, setRightSrc] = useState<Source>({ mode: 'local', label: t('local'), basePath: '' });
 
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState('');
@@ -100,7 +102,7 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
 
   // 가용 소스 목록 (드롭다운) — 연결된 세션(termId 있음) 만 SFTP 비교 가능. lazy 는 일단 제외.
   const sourceOptions = useMemo<Source[]>(() => {
-    const opts: Source[] = [{ mode: 'local', label: '🖥️ 로컬', basePath: '' }];
+    const opts: Source[] = [{ mode: 'local', label: t('local'), basePath: '' }];
     for (const s of sessions) {
       if (!s.termId) continue;
       opts.push({ mode: 'remote', termId: s.termId, sessionId: s.sessionId, label: `🟢 ${s.sessionName}`, basePath: '' });
@@ -119,17 +121,17 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
     setRows([]);
     setSelectedRel(null);
     setLeftContent(''); setRightContent('');
-    if (!leftSrc.basePath || !rightSrc.basePath) { setScanError('양쪽 경로를 입력하세요'); return; }
-    if (leftSrc.mode === 'remote' && !leftSrc.termId) { setScanError('소스 원격 세션이 연결되지 않았습니다'); return; }
-    if (rightSrc.mode === 'remote' && !rightSrc.termId) { setScanError('타겟 원격 세션이 연결되지 않았습니다'); return; }
+    if (!leftSrc.basePath || !rightSrc.basePath) { setScanError(t('enterBothPaths')); return; }
+    if (leftSrc.mode === 'remote' && !leftSrc.termId) { setScanError(t('sourceNoSession')); return; }
+    if (rightSrc.mode === 'remote' && !rightSrc.termId) { setScanError(t('targetNoSession')); return; }
     setScanning(true);
     try {
       const [lRes, rRes] = await Promise.all([
         api.compareWalk?.(leftSrc.mode, leftSrc.basePath, leftSrc.termId),
         api.compareWalk?.(rightSrc.mode, rightSrc.basePath, rightSrc.termId),
       ]);
-      if (lRes?.error) throw new Error('소스: ' + lRes.error);
-      if (rRes?.error) throw new Error('타겟: ' + rRes.error);
+      if (lRes?.error) throw new Error(t('sourceErrorPrefix', { error: lRes.error }));
+      if (rRes?.error) throw new Error(t('targetErrorPrefix', { error: rRes.error }));
       const lEntries: WalkEntry[] = lRes?.entries || [];
       const rEntries: WalkEntry[] = rRes?.entries || [];
       setTruncated(!!(lRes?.truncated || rRes?.truncated));
@@ -191,9 +193,9 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
       if (row.status !== 'right-only') tasks.push(api.compareRead?.(leftSrc.mode, joinL, leftSrc.termId)); else tasks.push(Promise.resolve({ content: '' }));
       if (row.status !== 'left-only') tasks.push(api.compareRead?.(rightSrc.mode, joinR, rightSrc.termId)); else tasks.push(Promise.resolve({ content: '' }));
       const [l, r] = await Promise.all(tasks);
-      if (l?.error) setContentErr('소스 읽기 실패: ' + l.error);
+      if (l?.error) setContentErr(t('sourceReadFail', { error: l.error }));
       else { setLeftContent(l?.content ?? ''); setLeftOriginal(l?.content ?? ''); }
-      if (r?.error) setContentErr((prev) => prev ? prev + ' / 타겟 읽기 실패: ' + r.error : '타겟 읽기 실패: ' + r.error);
+      if (r?.error) setContentErr((prev) => prev ? prev + ' / ' + t('targetReadFail', { error: r.error }) : t('targetReadFail', { error: r.error }));
       else { setRightContent(r?.content ?? ''); setRightOriginal(r?.content ?? ''); }
     } catch (err: any) {
       setContentErr(String(err?.message || err));
@@ -208,25 +210,25 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
   const saveSide = useCallback(async (side: Side) => {
     if (side === 'left') {
       if (!leftFilePath || !leftDirty) return;
-      setSavingMsg('소스 저장 중...');
+      setSavingMsg(t('saving', { side: t('source') }));
       const r = await api.compareWrite?.(leftSrc.mode, leftFilePath, leftContent, leftSrc.termId);
       if (r?.ok) {
         setLeftOriginal(leftContent);
-        setSavingMsg(`✓ 소스 저장됨 (${leftFilePath})`);
+        setSavingMsg(t('saveSuccess', { side: t('source'), path: leftFilePath }));
         setTimeout(() => setSavingMsg(''), 2500);
       } else {
-        setSavingMsg(`✕ 소스 저장 실패: ${r?.error || 'unknown'}`);
+        setSavingMsg(t('saveFailed', { side: t('source'), reason: r?.error || 'unknown' }));
       }
     } else {
       if (!rightFilePath || !rightDirty) return;
-      setSavingMsg('타겟 저장 중...');
+      setSavingMsg(t('saving', { side: t('target') }));
       const r = await api.compareWrite?.(rightSrc.mode, rightFilePath, rightContent, rightSrc.termId);
       if (r?.ok) {
         setRightOriginal(rightContent);
-        setSavingMsg(`✓ 타겟 저장됨 (${rightFilePath})`);
+        setSavingMsg(t('saveSuccess', { side: t('target'), path: rightFilePath }));
         setTimeout(() => setSavingMsg(''), 2500);
       } else {
-        setSavingMsg(`✕ 타겟 저장 실패: ${r?.error || 'unknown'}`);
+        setSavingMsg(t('saveFailed', { side: t('target'), reason: r?.error || 'unknown' }));
       }
     }
   }, [leftFilePath, leftContent, leftOriginal, leftSrc, rightFilePath, rightContent, rightOriginal, rightSrc, leftDirty, rightDirty]);
@@ -246,7 +248,7 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
     if (!ed) return;
     const changes = ed.getLineChanges?.() as any[] | null;
     if (!changes || changes.length === 0) {
-      setSavingMsg('적용할 변경이 없습니다');
+      setSavingMsg(t('noChangesToApply'));
       setTimeout(() => setSavingMsg(''), 1500);
       return;
     }
@@ -410,12 +412,12 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
 
   const renderSourcePicker = (side: Side, src: Source) => (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%' }}>
-      <span style={{ fontSize: 12, color: '#bbb', width: 50, flexShrink: 0 }}>{side === 'left' ? '소스' : '타겟'}</span>
+      <span style={{ fontSize: 12, color: '#bbb', width: 50, flexShrink: 0 }}>{side === 'left' ? t('source') : t('target')}</span>
       <select
         value={src.mode === 'remote' ? (src.termId || '') : 'local'}
         onChange={e => {
           const v = e.target.value;
-          if (v === 'local') updateSrc(side, { mode: 'local', termId: undefined, sessionId: undefined, label: '🖥️ 로컬' });
+          if (v === 'local') updateSrc(side, { mode: 'local', termId: undefined, sessionId: undefined, label: t('local') });
           else {
             const opt = sourceOptions.find(o => o.termId === v);
             if (opt) updateSrc(side, { mode: 'remote', termId: opt.termId, sessionId: opt.sessionId, label: opt.label });
@@ -423,7 +425,7 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
         }}
         style={{ width: 180, fontSize: 12 }}
       >
-        <option value="local">🖥️ 로컬</option>
+        <option value="local">{t('local')}</option>
         {sourceOptions.filter(o => o.mode === 'remote').map(o => (
           <option key={o.termId} value={o.termId}>{o.label}</option>
         ))}
@@ -431,7 +433,7 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
       <input
         type="text"
         value={src.basePath}
-        placeholder={src.mode === 'local' ? 'C:\\path\\to\\dir' : '/remote/path'}
+        placeholder={src.mode === 'local' ? t('pathPlaceholderLocal') : t('pathPlaceholderRemote')}
         onChange={e => updateSrc(side, { basePath: e.target.value })}
         onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') startCompare(); }}
         style={{ flex: 1, minWidth: 0, fontSize: 12, padding: '3px 6px' }}
@@ -444,11 +446,11 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
               if (r?.path) updateSrc(side, { basePath: r.path });
             } catch {}
           } else {
-            if (!src.termId) { setScanError(side === 'left' ? '소스 원격 세션이 연결되지 않았습니다' : '타겟 원격 세션이 연결되지 않았습니다'); return; }
+            if (!src.termId) { setScanError(side === 'left' ? t('sourceNoSession') : t('targetNoSession')); return; }
             setPickerSide(side);
           }
         }}
-        title="디렉토리 선택"
+        title={t('directoryPicker')}
         style={{ padding: '3px 8px', fontSize: 12, flexShrink: 0 }}
       >📁</button>
     </div>
@@ -489,7 +491,7 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
         {renderSourcePicker('right', rightSrc)}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <button className="primary" onClick={startCompare} disabled={scanning} style={{ padding: '4px 14px' }}>
-            {scanning ? '비교 중...' : '🔍 비교'}
+            {scanning ? t('comparing') : t('compare')}
           </button>
           <button onClick={() => {
             // 소스 ↔ 타겟 스위치 — 서버/세션/경로 통째로 교환
@@ -497,22 +499,22 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
             setRightSrc(leftSrc);
             setRows([]);
             setSelectedRel(null);
-          }} title="소스와 타겟 교환 (서버 + 경로)" style={{ padding: '4px 10px' }}>⇄ 스위치</button>
+          }} title={t('switchTitle')} style={{ padding: '4px 10px' }}>{t('switch')}</button>
           <label style={{ fontSize: 12, color: '#bbb', display: 'flex', alignItems: 'center', gap: 4 }}>
             <input type="checkbox" checked={hideSame} onChange={e => setHideSame(e.target.checked)} />
-            동일 항목 숨김
+            {t('hideSame')}
           </label>
-          <label style={{ fontSize: 12, color: '#bbb', display: 'flex', alignItems: 'center', gap: 4 }} title="한쪽 폴더에만 있는 파일은 표시하지 않음 — 변경된 파일만 집중해서 볼 때">
+          <label style={{ fontSize: 12, color: '#bbb', display: 'flex', alignItems: 'center', gap: 4 }} title={t('hideUnpairedTitle')}>
             <input type="checkbox" checked={hideUnpaired} onChange={e => setHideUnpaired(e.target.checked)} />
-            한쪽만 있는 항목 숨김
+            {t('hideUnpaired')}
           </label>
           {rows.length > 0 && (
             <span style={{ fontSize: 11, color: '#888' }}>
-              변경 <span style={{ color: statusColor('changed') }}>{counts.c}</span> ·
-              소스만 <span style={{ color: statusColor('left-only') }}>{counts.l}</span> ·
-              타겟만 <span style={{ color: statusColor('right-only') }}>{counts.r}</span> ·
-              동일 <span style={{ color: statusColor('same') }}>{counts.s}</span>
-              {truncated && <span style={{ color: '#d8b556', marginLeft: 8 }}>⚠ 결과 잘림 (50000+)</span>}
+              {t('countChanged')} <span style={{ color: statusColor('changed') }}>{counts.c}</span> ·
+              {t('countSourceOnly')} <span style={{ color: statusColor('left-only') }}>{counts.l}</span> ·
+              {t('countTargetOnly')} <span style={{ color: statusColor('right-only') }}>{counts.r}</span> ·
+              {t('countSame')} <span style={{ color: statusColor('same') }}>{counts.s}</span>
+              {truncated && <span style={{ color: '#d8b556', marginLeft: 8 }}>{t('resultTruncated')}</span>}
             </span>
           )}
           {scanError && <span style={{ color: '#e36b6b', fontSize: 12 }}>{scanError}</span>}
@@ -523,7 +525,7 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
       <div ref={setListWrapRef} style={{ height: `${topPct}%`, minHeight: 100, overflow: 'hidden', background: '#161616', position: 'relative' }}>
         {rows.length === 0 ? (
           <div style={{ color: '#666', fontSize: 12, padding: 16, textAlign: 'center' }}>
-            양쪽 경로 입력 후 비교 버튼을 누르세요
+            {t('enterBothHint')}
           </div>
         ) : (
           <VList height={listHeight} width="100%" itemCount={filteredRows.length} itemSize={ROW_H} overscanCount={12}>
@@ -551,7 +553,7 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
                     loadDiff(row);
                   }}
                 >
-                  <span style={{ width: 70, color: statusColor(row.status), fontSize: 11 }}>{statusLabel(row.status)}</span>
+                  <span style={{ width: 70, color: statusColor(row.status), fontSize: 11 }}>{statusLabel(row.status, t)}</span>
                   <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {row.isDir ? '📁' : '📄'} {row.relPath}
                   </span>
@@ -569,17 +571,17 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
       <div
         onMouseDown={onResizeStart}
         style={{ height: 4, cursor: 'row-resize', background: '#333', flexShrink: 0 }}
-        title="드래그하여 영역 조절"
+        title={t('resizerTooltip')}
       />
 
       {/* 하단: Monaco DiffEditor — 양쪽 편집 가능 + 적용/저장 툴바 */}
       <div style={{ flex: 1, minHeight: 100, position: 'relative', background: '#1e1e1e', display: 'flex', flexDirection: 'column' }}>
         {!selectedRel ? (
           <div style={{ color: '#666', fontSize: 12, padding: 16, textAlign: 'center' }}>
-            상단에서 파일을 선택하면 변경 내역이 여기에 표시됩니다 (양쪽 직접 편집 가능)
+            {t('selectFileHint')}
           </div>
         ) : contentLoading ? (
-          <div style={{ color: '#888', fontSize: 12, padding: 16, textAlign: 'center' }}>로딩 중...</div>
+          <div style={{ color: '#888', fontSize: 12, padding: 16, textAlign: 'center' }}>{t('loading')}</div>
         ) : contentErr ? (
           <div style={{ color: '#e36b6b', fontSize: 12, padding: 16 }}>{contentErr}</div>
         ) : (
@@ -588,23 +590,23 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
               {/* 1행: 경로 + 저장 + 전체 적용 */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span style={{ color: leftDirty ? '#d8b556' : '#888', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={leftFilePath}>
-                  {leftDirty && '● '}소스: {leftFilePath || '(없음)'}
+                  {leftDirty && '● '}{t('sourceLabelLine', { path: leftFilePath || t('noPath') })}
                 </span>
-                <button onClick={() => saveSide('left')} disabled={!leftDirty} title="소스 파일에 저장 (Ctrl+S)" style={{ padding: '2px 8px', fontSize: 11 }}>💾 소스 저장</button>
-                <button onClick={() => applyAll('right-to-left')} title="타겟 전체를 소스 에디터에 복사 (저장은 별도)" style={{ padding: '2px 8px', fontSize: 11 }}>◀◀ 전체</button>
-                <button onClick={() => applyAll('left-to-right')} title="소스 전체를 타겟 에디터에 복사 (저장은 별도)" style={{ padding: '2px 8px', fontSize: 11 }}>전체 ▶▶</button>
-                <button onClick={() => saveSide('right')} disabled={!rightDirty} title="타겟 파일에 저장" style={{ padding: '2px 8px', fontSize: 11 }}>💾 타겟 저장</button>
+                <button onClick={() => saveSide('left')} disabled={!leftDirty} title={t('saveSourceTitle')} style={{ padding: '2px 8px', fontSize: 11 }}>{t('saveSource')}</button>
+                <button onClick={() => applyAll('right-to-left')} title={t('applyAllRightToLeftTitle')} style={{ padding: '2px 8px', fontSize: 11 }}>{t('applyAllToSource')}</button>
+                <button onClick={() => applyAll('left-to-right')} title={t('applyAllLeftToRightTitle')} style={{ padding: '2px 8px', fontSize: 11 }}>{t('applyAllToTarget')}</button>
+                <button onClick={() => saveSide('right')} disabled={!rightDirty} title={t('saveTargetTitle')} style={{ padding: '2px 8px', fontSize: 11 }}>{t('saveTarget')}</button>
                 <span style={{ color: rightDirty ? '#d8b556' : '#888', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'right' }} title={rightFilePath}>
-                  타겟: {rightFilePath || '(없음)'}{rightDirty && ' ●'}
+                  {t('targetLabelLine', { path: rightFilePath || t('noPath') })}{rightDirty && ' ●'}
                 </span>
               </div>
               {/* 2행: hunk 단위 양방향 적용 */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ color: '#888', flex: 1 }}>현재 변경:</span>
-                <button onClick={() => navigateHunk('prev')} title={`이전 변경 (${formatKeyComboForOS(getKeybinding('diffPrevHunk'))})`} style={{ padding: '2px 8px', fontSize: 11 }}>▲ 이전</button>
-                <button onClick={() => navigateHunk('next')} title={`다음 변경 (${formatKeyComboForOS(getKeybinding('diffNextHunk'))})`} style={{ padding: '2px 8px', fontSize: 11 }}>▼ 다음</button>
-                <button onClick={() => applyCurrentHunk('right-to-left')} title={`타겟의 현재 hunk → 소스에 적용 (${formatKeyComboForOS(getKeybinding('diffApplyLeft'))})`} style={{ padding: '2px 8px', fontSize: 11 }}>◀ 적용</button>
-                <button onClick={() => applyCurrentHunk('left-to-right')} title={`소스의 현재 hunk → 타겟에 적용 (${formatKeyComboForOS(getKeybinding('diffApplyRight'))})`} style={{ padding: '2px 8px', fontSize: 11 }}>적용 ▶</button>
+                <span style={{ color: '#888', flex: 1 }}>{t('currentChange')}</span>
+                <button onClick={() => navigateHunk('prev')} title={t('prevHunkTitle', { combo: formatKeyComboForOS(getKeybinding('diffPrevHunk')) })} style={{ padding: '2px 8px', fontSize: 11 }}>{t('prevHunk')}</button>
+                <button onClick={() => navigateHunk('next')} title={t('nextHunkTitle', { combo: formatKeyComboForOS(getKeybinding('diffNextHunk')) })} style={{ padding: '2px 8px', fontSize: 11 }}>{t('nextHunk')}</button>
+                <button onClick={() => applyCurrentHunk('right-to-left')} title={t('applyLeftTitle', { combo: formatKeyComboForOS(getKeybinding('diffApplyLeft')) })} style={{ padding: '2px 8px', fontSize: 11 }}>{t('applyToSource')}</button>
+                <button onClick={() => applyCurrentHunk('left-to-right')} title={t('applyRightTitle', { combo: formatKeyComboForOS(getKeybinding('diffApplyRight')) })} style={{ padding: '2px 8px', fontSize: 11 }}>{t('applyToTarget')}</button>
                 <span style={{ flex: 1 }} />
               </div>
             </div>

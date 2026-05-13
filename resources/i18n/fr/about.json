@@ -1,0 +1,51 @@
+{
+  "title": "PePe Terminal(SSH) v{{version}}",
+  "credits": "Créé par : Claude (feat. ghjeong[prompt])",
+  "unknown": "(inconnu)",
+  "sessionsPath": "── Chemin de stockage des sessions ──",
+  "releaseNotesHeader": "──────────────────────────────\n📋 Notes de version v{{version}}\n──────────────────────────────",
+  "terminalBasics": {
+    "heading": "── Bases du terminal ──",
+    "body": "Accès distant SSH/SFTP (mot de passe / clé / connexion Expect-Send)\nProxyJump — SSH+SFTP direct vers une cible via hôte principal\nShells locaux (PowerShell, CMD, Git Bash, WSL)\nShell par défaut / sélection de shell par mini-onglet\nChangement de thème / police / encodage (utf-8/cp949/euc-kr)\nReconnexion auto (30s), watchdog de connexion initiale (20s × 3 tentatives)\nTransparence du terminal (curseur 0–100) / transparence bureau / plein écran Alt+Entrée"
+  },
+  "workspacePanel": {
+    "heading": "── Espace de travail / Panneaux ──",
+    "body": "Onglets multiples d'espace de travail\nPanneaux divisés (horizontal / vertical / tuilage ⊞ N×ceil√N)\nZoom flottant (superposition panneau plein écran)\nMini-onglets par panneau, glisser-déposer entre onglets\nDéfilement molette des mini-onglets / boutons ‹ ›\nMémoire du panneau sélectionné par onglet (focus auto au retour)\nClic-focus sur panneau → arborescence / contexte Claude auto-basculés"
+  },
+  "sessionMgmt": {
+    "heading": "── Gestion des sessions ──",
+    "body": "Tri mixte dossiers + sessions (Ctrl+↑/↓ déplacer, sélection multiple)\nSélection par plage Maj+clic / sélection multiple Ctrl+clic\nImport / export de sessions (SecureCRT, Xshell)\nRe-clic sur session pour basculer la popup d'encodage\nInfo-bulle flottante host:port au survol\nÉtat plié/déplié des dossiers conservé entre redémarrages\nÉditeur de session :\n  - Chemin initial de l'arborescence\n  - Configuration de l'hôte ProxyJump\n  - Suivi auto de l'arborescence (sync sur cd)\n  - Script de connexion (Expect/Send)"
+  },
+  "remoteExplorer": {
+    "heading": "── Explorateur / Éditeur de fichiers distants (style VS Code Remote) ──",
+    "body": "Arborescence partagée dans l'espace de travail (selon le panneau sélectionné)\nÉpinglage / masquage auto de l'arborescence (bascule 📌)\nRedimensionnement par glisser de la largeur (160–800px)\nListage SFTP, tri par mtime, couleurs/icônes par extension (15+ catégories)\nSélection multiple (Ctrl/Maj+clic) + téléchargement groupé\nMenu contextuel : Ouvrir / Attacher à Claude / Copier chemin / Supprimer\nOnglets éditeur Monaco (coloration syntaxique, Ctrl+S pour enregistrer)\nExplorateur double-volet (SFTP/local bidirectionnel) + support ProxyJump"
+  },
+  "claudeIntegration": {
+    "heading": "── Intégration Claude Code ──",
+    "body": "Barre latérale de chat Claude à droite (épingler / masquer auto, redimensionnable)\nQuand session / arborescence / Claude sont tous détachés, le z-index suit le survol\nPont WebDAV — monte SSH distant en chemin UNC local en temps réel\nTraduction auto Unix→UNC (/view/... → \\\\127.0.0.1@port\\...)\nMCP ssh_exec — Claude exécute des commandes SSH distantes (cleartool, etc.)\nSélection de modèle (Opus / Sonnet / Haiku / Opus Plan)\nModes de permission (confirmer avant édition / auto / plan / tout autoriser)\nMode Plan + modal d'approbation ExitPlanMode (rendu Markdown + Mermaid)\nApprobation par outil via hook PreToolUse (cases à cocher)\nReprise de conversation (--resume) + repli auto si obsolète\nAttachement local fichier/dossier (📄+ / 📁+ webkitdirectory récursif)\nPalette de commandes slash (Context/Model/Permission/Slash, filtre + navigation ↑↓)\nIndicateur de chronologie d'outils en direct (⏳/✓/✕)\nPolice de chat indépendante + ajustement Ctrl+Molette\nGestion de l'historique (Épinglés / Récents, renommer, épingler, supprimer)\nConversation en arrière-plan — continue à recevoir des réponses même après nouveau chat\nFork de conversation (clic droit message → Fork ici, transcription précédente injectée)\nMenu clic droit sur message (copier texte / markdown, attacher contexte, fork)\nDiagrammes Mermaid rendus en SVG + clic droit pour enregistrer/copier en PNG/SVG\nTableaux GFM auto-rendus (texte aligné par tab aussi converti)\nOutils AskUserQuestion / ToolSearch bloqués (stabilité mode non-interactif)\nIsolation de processus par requestId — conversations concurrentes, arrêt précis"
+  },
+  "vNewly": {
+    "heading": "── Nouveautés v2.0.6 ──",
+    "body": "Suivi auto du PWD en arrière-plan — zéro historique shell (canal SSH exec séparé interrogeant /proc/PID/cwd)\nCoins arrondis sur déclencheurs session / arborescence / barre Claude\nRéorganisation des onglets d'espace de travail par glisser\nBascule des contrôles droits des mini-onglets (bouton ⋯) — popup flottant pour split / flottant / transparence\nMenu contextuel terminal inclut le changement de thème (par terminal)\nDiagrammes Mermaid enregistrer/copier en PNG/SVG via clic droit\nLa modal d'approbation Plan rend aussi Mermaid auto\nConversion auto tableaux GFM + texte aligné par tab\nBarre de diffusion / liste sessions transfert : 🟢 connecté / ⚪ déconnecté\nCorrigé : clic sur titlebar simple restaurait la fenêtre maximisée (seuil glisser 5px)\nApplis plein écran (vi etc.) synchronisent la taille immédiatement — refit ignore terminaux masqués\nCorrigé : Alt+Entrée + bascule mini-onglet flottant vidait la vue\nModals d'aide/info défilables, refocus auto terminal à la fermeture\nFocus auto terminal au retour de la fenêtre (Alt+Tab etc.)"
+  },
+  "inputBroadcast": {
+    "heading": "── Saisie / Diffusion ──",
+    "body": "Envoi groupé de texte (actuelle / onglet visible / connectées / toutes-sessions connexion paresseuse)\nBarre de connexion rapide (host / utilisateur / mot de passe / enc instantanés)\nDiffusion Ctrl+C / Ctrl+D\nHistorique de diffusion (navigation ↑↓)\nÉchap ne ferme pas la barre — fermer via bouton ✕ uniquement"
+  },
+  "search": {
+    "heading": "── Recherche ──",
+    "body": "Recherche terminal (Ctrl+Maj+F), historique, surlignage\nNavigation précédent / suivant"
+  },
+  "settings": {
+    "heading": "── Paramètres (Options) ──",
+    "body": "Sélection du shell local par défaut\nEnreg./désenreg. du clic droit Explorateur « Ouvrir ici »\nChanger le chemin de stockage des sessions\nPersonnalisation des raccourcis clavier\nParamètres terminal (séparateur de mots, scrollback, etc.)\nVisionneuse de manuel intégrée (docs/MANUAL.md)"
+  },
+  "windowsIntegration": {
+    "heading": "── Intégration système Windows ──",
+    "body": "Fenêtre sans cadre / transparente / maximiser-restaurer\nExplorateur « Ouvrir ici » → shell d'espace de travail dans ce dossier"
+  },
+  "techStack": {
+    "heading": "── Stack technique ──",
+    "body": "Electron + React + TypeScript + Vite\nxterm.js (terminal), Monaco Editor (éditeur)\nnode-pty (shell local), ssh2 (SSH/SFTP)\nwebdav-server (proxy SFTP→WebDAV)\nmarked (Markdown), iconv-lite (encodage)\nClaude Code CLI (@anthropic-ai/claude-code)"
+  }
+}

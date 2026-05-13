@@ -1,0 +1,47 @@
+{
+  "dialog": {
+    "sessionsPathTitle": "选择会话存储文件夹",
+    "pickFilesMulti": "选择文件（多个）",
+    "pickFile": "选择文件",
+    "pickFolder": "选择文件夹",
+    "saveCsv": "另存为 CSV",
+    "saveDownloadLocation": "选择下载位置",
+    "saveRemoteFile": "保存远程文件",
+    "downloadMultiTitle": "下载 {{count}} 项 — 选择目标文件夹",
+    "uploadFolder": "选择要上传的文件夹",
+    "uploadFileMulti": "选择要上传的文件（多个）",
+    "uploadFile": "选择要上传的文件",
+    "vpnImportTitle": "导入 OpenVPN 配置文件 (.ovpn)",
+    "recordingSaveTitle": "保存终端录制"
+  },
+  "popup": {
+    "optionsTitle": "选项",
+    "sessionEditorTitle": "编辑会话",
+    "searchTitle": "搜索",
+    "pasteModalTitle": "粘贴多行"
+  },
+  "search": {
+    "dragToMove": "拖动以移动",
+    "placeholder": "搜索...",
+    "history": "搜索历史",
+    "caseSensitive": "区分大小写",
+    "regex": "正则",
+    "currentTab": "当前标签",
+    "allTabs": "所有标签",
+    "currentTabShort": "当前",
+    "allShort": "全部",
+    "dockToApp": "停靠回应用",
+    "closeEsc": "关闭 (Esc)"
+  },
+  "paste": {
+    "title": "粘贴多行",
+    "prompt": "是否粘贴以下文本？",
+    "cancel": "取消 (Esc)",
+    "paste": "粘贴 (Ctrl+Enter)"
+  },
+  "error": {
+    "noConnectionId": "无连接 ID",
+    "fileTooLargeCap": "文件过大 ({{mb}}MB > {{cap}}MB)",
+    "fileTooLarge": "文件过大 ({{mb}}MB)"
+  }
+}

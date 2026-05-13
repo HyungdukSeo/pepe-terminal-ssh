@@ -1,0 +1,7 @@
+{
+  "noConnection": "غير متصل",
+  "sessions": "الجلسات",
+  "copied": "تم النسخ: {{chars}} حرفًا / {{lines}} سطرًا",
+  "vpnConnected": "تم الاتصال بـ VPN",
+  "vpnLabel": "VPN"
+}

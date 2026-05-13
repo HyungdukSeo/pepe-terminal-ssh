@@ -1,6 +1,7 @@
 // src/components/FileEditor.tsx
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import Editor, { OnMount } from '@monaco-editor/react';
+import { useTranslation } from 'react-i18next';
 
 // Electron 환경에서 Monaco 우클릭 메뉴의 Paste 가 동작하지 않는 문제 수정.
 // 원인: standalone monaco 의 PasteAction 이 clipboardService.triggerPaste() 에 의존하는데
@@ -69,6 +70,7 @@ function isBinaryFile(filename: string): boolean {
 }
 
 export const FileEditor: React.FC<Props> = ({ termId, remotePath, fileName, onDirtyChange, onAnalyzeWithClaude }) => {
+  const { t } = useTranslation('fileEditor');
   const [content, setContent] = useState<string>('');
   const [originalContent, setOriginalContent] = useState<string>('');
   const [loading, setLoading] = useState(true);
@@ -88,7 +90,7 @@ export const FileEditor: React.FC<Props> = ({ termId, remotePath, fileName, onDi
   // 파일 로드
   useEffect(() => {
     if (isBinaryFile(fileName)) {
-      setError('바이너리 파일은 편집할 수 없습니다.');
+      setError(t('binaryNotEditable'));
       setLoading(false);
       return;
     }
@@ -104,12 +106,12 @@ export const FileEditor: React.FC<Props> = ({ termId, remotePath, fileName, onDi
         setEncoding(enc);
         const result = await (window as any).api?.sftpReadFile?.(termId, remotePath, enc);
         if (!result?.success) {
-          setError(result?.error || '파일을 읽을 수 없습니다.');
+          setError(result?.error || t('cannotRead'));
           setLoading(false);
           return;
         }
         if (result.size > MAX_FILE_SIZE) {
-          setError(`파일이 너무 큽니다 (${(result.size / 1024 / 1024).toFixed(1)}MB > 5MB).`);
+          setError(t('tooLarge', { size: (result.size / 1024 / 1024).toFixed(1) }));
           setLoading(false);
           return;
         }
@@ -131,14 +133,14 @@ export const FileEditor: React.FC<Props> = ({ termId, remotePath, fileName, onDi
       const result = await (window as any).api?.sftpWriteFile?.(termId, remotePath, content, encoding);
       if (result?.success) {
         setOriginalContent(content);
-        setNotice({ text: '저장됨', kind: 'ok' });
+        setNotice({ text: t('saved'), kind: 'ok' });
         setTimeout(() => setNotice(null), 2000);
       } else {
-        setNotice({ text: `저장 실패: ${result?.error || '알 수 없는 오류'}`, kind: 'err' });
+        setNotice({ text: t('saveError', { error: result?.error || t('unknownError') }), kind: 'err' });
         setTimeout(() => setNotice(null), 4000);
       }
     } catch (err: any) {
-      setNotice({ text: `저장 실패: ${err}`, kind: 'err' });
+      setNotice({ text: t('saveError', { error: String(err) }), kind: 'err' });
       setTimeout(() => setNotice(null), 4000);
     }
     setSaving(false);
@@ -152,7 +154,7 @@ export const FileEditor: React.FC<Props> = ({ termId, remotePath, fileName, onDi
     installMonacoPasteOverride(monaco);
   };
 
-  if (loading) return <div className="file-editor-loading">파일을 불러오는 중...</div>;
+  if (loading) return <div className="file-editor-loading">{t('loading')}</div>;
   if (error) return <div className="file-editor-error">⚠ {error}</div>;
 
   return (
@@ -161,12 +163,12 @@ export const FileEditor: React.FC<Props> = ({ termId, remotePath, fileName, onDi
         <span className="file-editor-path">{remotePath}</span>
         {dirty && <span className="file-editor-dirty">●</span>}
         {onAnalyzeWithClaude && (
-          <button className="file-editor-claude" onClick={() => onAnalyzeWithClaude({ fileName, remotePath, content })} title="Claude로 분석">
+          <button className="file-editor-claude" onClick={() => onAnalyzeWithClaude({ fileName, remotePath, content })} title={t('analyzeWithClaude')}>
             🤖 Claude
           </button>
         )}
         <button className="file-editor-save" onClick={save} disabled={!dirty || saving}>
-          {saving ? '저장 중...' : '저장 (Ctrl+S)'}
+          {saving ? t('saving') : t('saveBtn')}
         </button>
         {notice && <span className={`file-editor-notice ${notice.kind}`}>{notice.text}</span>}
       </div>

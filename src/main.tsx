@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import App from './App'
 import SessionEditorPopout from './SessionEditorPopout'
 import './index.css'
+import './i18n'  // i18next 초기화 (side-effect import — App 렌더 전에 lng 셋팅)
 
 const params = new URLSearchParams(window.location.search);
 const popout = params.get('popout');

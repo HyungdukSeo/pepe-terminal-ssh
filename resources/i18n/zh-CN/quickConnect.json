@@ -1,0 +1,14 @@
+{
+  "close": "关闭",
+  "label": "快速连接",
+  "protocolTitle": "协议",
+  "sftpFixed": "文件传输工作区仅使用 SFTP",
+  "hostPlaceholder": "主机（IPv4/IPv6/域名）",
+  "hostInvalid": "请输入有效的 IPv4/IPv6/主机名",
+  "encoding": "编码",
+  "showPassword": "显示",
+  "hidePassword": "隐藏",
+  "connect": "连接",
+  "username": "用户名",
+  "password": "密码"
+}

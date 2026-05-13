@@ -1,0 +1,51 @@
+{
+  "title": "PePe Terminal(SSH) v{{version}}",
+  "credits": "Created by: Claude (feat. ghjeong[prompt])",
+  "unknown": "(unknown)",
+  "sessionsPath": "── Sessions storage path ──",
+  "releaseNotesHeader": "──────────────────────────────\n📋 v{{version}} Release Notes\n──────────────────────────────",
+  "terminalBasics": {
+    "heading": "── Terminal Basics ──",
+    "body": "SSH/SFTP remote access (password / key / Expect-Send login)\nProxyJump — direct SSH+SFTP to a jump target via primary host\nLocal shells (PowerShell, CMD, Git Bash, WSL)\nDefault shell setting / per-minitab shell selection\nTheme / font / encoding (utf-8/cp949/euc-kr) change\nAuto-reconnect (30s), initial connection watchdog (20s × 3 retries)\nTerminal transparency (0–100 slider) / desktop see-through / Alt+Enter fullscreen"
+  },
+  "workspacePanel": {
+    "heading": "── Workspace / Panels ──",
+    "body": "Multiple workspace tabs\nSplit panels (horizontal / vertical / tile ⊞ N×ceil√N)\nFloating zoom (full-screen panel overlay)\nPer-panel minitabs, drag-and-drop between tabs\nMinitab wheel scrolling / ‹ › buttons\nPer-tab selected-panel memory (auto-focus on re-entry)\nClick-focus on selected panel → file tree / Claude context auto-switch"
+  },
+  "sessionMgmt": {
+    "heading": "── Session Management ──",
+    "body": "Mixed folder + session sorting (Ctrl+↑/↓ move, multi-select)\nShift+click range select / Ctrl+click multi-select\nSession import / export (SecureCRT, Xshell)\nRe-click session to toggle encoding popup\nhost:port hover floating tooltip\nFolder expand/collapse state persisted across app restarts\nSession editor:\n  - Initial file-tree path\n  - ProxyJump host configuration\n  - File tree auto-follow option (sync on cd)\n  - Login script (Expect/Send)"
+  },
+  "remoteExplorer": {
+    "heading": "── Remote File Explorer / Editor (VS Code Remote style) ──",
+    "body": "Workspace-shared file tree (based on selected panel's session)\nFile tree pin / auto-hide (📌 toggle)\nFile tree width drag-resize (160–800px)\nSFTP listing, mtime sort, per-extension color/icons (15+ categories)\nMulti-select (Ctrl/Shift+click) + bulk download\nContext menu: Open / Attach to Claude / Copy path / Delete\nMonaco editor tabs (syntax highlight, Ctrl+S save)\nDual-pane file explorer (SFTP/local both ways) + ProxyJump support"
+  },
+  "claudeIntegration": {
+    "heading": "── Claude Code Integration ──",
+    "body": "Right-side Claude chat sidebar (pin / auto-hide, drag resize)\nWhen session / file tree / Claude all unpinned, z-index follows mouse hover\nWebDAV bridge — mount remote SSH as a local UNC path in real time\nAutomatic Unix→UNC path translation (/view/... → \\\\127.0.0.1@port\\...)\nMCP ssh_exec — Claude runs remote SSH commands (cleartool etc.)\nModel selection (Opus / Sonnet / Haiku / Opus Plan)\nPermission modes (confirm before edit / auto-accept / plan / allow all)\nPlan mode + ExitPlanMode approval modal (Markdown + Mermaid render)\nPreToolUse-hook based per-tool approval (checkboxes)\nResume conversation sessions (--resume) + automatic fallback on stale\nLocal file/folder attach (📄+ / 📁+ webkitdirectory recursive)\nSlash command palette (Context/Model/Permission/Slash, filter + ↑↓ navigation)\nLive tool timeline indicator (⏳/✓/✕)\nIndependent chat font setting + Ctrl+Wheel size adjust\nConversation history management (Pinned / Recents, rename, pin, delete)\nBackground conversation — keeps receiving responses even after starting a new chat\nFork conversation (right-click message → Fork from here, previous transcript injected)\nMessage right-click menu (copy text / markdown, attach context, fork)\nMermaid diagrams auto SVG render + right-click save/copy as PNG/SVG\nGFM tables auto-render (tab-aligned text also auto-converted)\nAskUserQuestion / ToolSearch tools blocked (non-interactive mode stability)\nPer-requestId process isolation — multiple concurrent conversations, accurate stop"
+  },
+  "vNewly": {
+    "heading": "── v2.0.6 New ──",
+    "body": "PWD auto-follow background polling — zero shell history (separate SSH exec channel polling /proc/PID/cwd)\nRounded corners on session / file tree / Claude sidebar triggers\nWorkspace tabs reorder by drag\nMinitab right-side controls toggle (⋯ button) — floating popup for split / float / transparency\nTerminal context menu now includes theme change (per-term)\nMermaid diagrams save/copy as PNG/SVG via right-click menu\nPlan approval modal also auto-renders Mermaid\nGFM tables + tab-aligned text auto-conversion\nBroadcast bar / file-transfer session dropdown: 🟢 connected / ⚪ disconnected grouping\nFixed: simple titlebar click would restore maximized window (5px drag threshold)\nTerminal vi etc. full-screen apps sync size immediately — refit skips hidden terminals\nFixed: Alt+Enter maximize + minitab float toggle would blank the view\nHelp / info modals scrollable, auto-restores terminal focus on close\nAuto-focus terminal when window regains focus (Alt+Tab etc.)"
+  },
+  "inputBroadcast": {
+    "heading": "── Input / Broadcast ──",
+    "body": "Bulk text send (current / visible-tab / connected / all-sessions lazy connect)\nQuick-connect bar (host / user / password / enc instant connection)\nCtrl+C / Ctrl+D broadcast\nBroadcast history (↑↓ navigation)\nEsc does not close the bar — close via ✕ button only"
+  },
+  "search": {
+    "heading": "── Find / Search ──",
+    "body": "Terminal find (Ctrl+Shift+F), history, highlight\nPrevious / next navigation"
+  },
+  "settings": {
+    "heading": "── Settings (Options) ──",
+    "body": "Default local shell selection\nRegister/unregister Explorer right-click \"Open here\"\nChange session storage path\nKeybinding customization\nTerminal settings (word separator, scrollback, etc.)\nBuilt-in manual viewer (docs/MANUAL.md)"
+  },
+  "windowsIntegration": {
+    "heading": "── Windows System Integration ──",
+    "body": "Frameless / transparent / maximize-restore window\nExplorer \"Open here\" → workspace shell in that directory"
+  },
+  "techStack": {
+    "heading": "── Tech Stack ──",
+    "body": "Electron + React + TypeScript + Vite\nxterm.js (terminal), Monaco Editor (code editor)\nnode-pty (local shell), ssh2 (SSH/SFTP)\nwebdav-server (SFTP→WebDAV proxy)\nmarked (Markdown), iconv-lite (encoding)\nClaude Code CLI (@anthropic-ai/claude-code)"
+  }
+}

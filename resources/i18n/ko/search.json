@@ -1,0 +1,12 @@
+{
+  "placeholder": "검색...",
+  "history": "검색 이력",
+  "prev": "이전 (Shift+Enter)",
+  "next": "다음 (Enter)",
+  "caseSensitive": "대소문자 구분",
+  "regex": "정규식",
+  "modeCurrent": "현재탭",
+  "modeAll": "전체",
+  "popout": "외부 창으로 분리 (다른 모니터로 이동 가능)",
+  "close": "닫기 (Esc)"
+}

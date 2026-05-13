@@ -1,0 +1,7 @@
+{
+  "noConnection": "Not connected",
+  "sessions": "Sessions",
+  "copied": "Copied: {{chars}} chars / {{lines}} lines",
+  "vpnConnected": "VPN connected",
+  "vpnLabel": "VPN"
+}

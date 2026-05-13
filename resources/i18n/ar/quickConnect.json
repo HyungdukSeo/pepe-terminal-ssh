@@ -1,0 +1,14 @@
+{
+  "close": "إغلاق",
+  "label": "اتصال سريع",
+  "protocolTitle": "البروتوكول",
+  "sftpFixed": "مساحة نقل الملفات تستخدم SFTP فقط",
+  "hostPlaceholder": "المضيف (IPv4/IPv6/نطاق)",
+  "hostInvalid": "أدخل IPv4/IPv6/اسم مضيف صالحًا",
+  "encoding": "الترميز",
+  "showPassword": "إظهار",
+  "hidePassword": "إخفاء",
+  "connect": "اتصال",
+  "username": "اسم المستخدم",
+  "password": "كلمة المرور"
+}
