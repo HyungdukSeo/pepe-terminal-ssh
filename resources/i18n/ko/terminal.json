@@ -95,6 +95,8 @@
     "floatRestore": "원래 크기로",
     "autoTrackOn": "PWD 자동추적 끄기 (cd 시 파일트리 동기화)",
     "autoTrackOff": "PWD 자동추적 켜기 (cd 시 파일트리 동기화)",
+    "pinPin": "패널 고정 (출력 펼치기)",
+    "pinUnpin": "패널 고정 해제 (출력 접기)",
     "resizeHandle": "드래그하여 너비 조절 (더블클릭: 기본값 240)"
   },
   "dialogs": {

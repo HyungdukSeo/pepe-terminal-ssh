@@ -64,7 +64,7 @@
   "fileTree": {
     "dblClickFile": "에디터 탭에서 열기",
     "multiSelect": "다중 선택 (일괄 다운로드)",
-    "rightClick": "Claude 에 첨부 / 경로 복사 / 삭제",
+    "rightClick": "AI Chat에 첨부 / 경로 복사 / 삭제",
     "refresh": "현재 경로 새로고침",
     "pin": "파일트리 고정/자동숨김 토글",
     "resize": "너비 조절",

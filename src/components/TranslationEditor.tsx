@@ -10,7 +10,8 @@ import { searchLanguages } from './languageCodes';
 
 const api = (window as any).api || {};
 
-export const TranslationEditor: React.FC = () => {
+type AgentType = 'claude' | 'gemini' | 'codex';
+export const TranslationEditor: React.FC<{ aiAgent?: AgentType }> = ({ aiAgent = 'claude' }) => {
   const { t } = useTranslation('translationEditor');
   const [languages, setLanguages] = useState<string[]>([]);
   const [namespaces, setNamespaces] = useState<string[]>([]);
@@ -243,14 +244,21 @@ export const TranslationEditor: React.FC = () => {
     translateDisposeRef.current = dispose || null;
 
     try {
-      const r = await (window as any).api?.claudeSend?.(
-        claudeSessionId, prompt, undefined, true, undefined, null, 'bypassPermissions', undefined, false, requestId,
-      );
+      let r: any;
+      if (aiAgent === 'gemini') {
+        r = await (window as any).api?.geminiSend?.(claudeSessionId, prompt, requestId, undefined, true);
+      } else if (aiAgent === 'codex') {
+        r = await (window as any).api?.codexSend?.(claudeSessionId, prompt, requestId, undefined, 'full-auto');
+      } else {
+        r = await (window as any).api?.claudeSend?.(
+          claudeSessionId, prompt, undefined, true, undefined, null, 'bypassPermissions', undefined, false, requestId,
+        );
+      }
       if (!r?.success) finish(false, r?.error || '?');
     } catch (e: any) {
       finish(false, e?.message || String(e));
     }
-  }, [table, baseLang, currentNs]);
+  }, [table, baseLang, currentNs, aiAgent]);
 
   useEffect(() => () => { try { translateDisposeRef.current?.(); } catch {} }, []);
 

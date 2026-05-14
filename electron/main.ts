@@ -2914,7 +2914,7 @@ ipcMain.handle('gemini:check', async () => {
   }
 });
 
-ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model }: { sessionId: string; prompt: string; requestId?: string; model?: string }) => {
+ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, yolo }: { sessionId: string; prompt: string; requestId?: string; model?: string; yolo?: boolean }) => {
   try {
     // 같은 sessionId로 실행 중인 Codex 프로세스 정리
     const prevCodex = codexProcesses.get(sessionId);
@@ -2939,10 +2939,11 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model }
     };
 
     const modelFlag = model ? ` -m ${model}` : '';
+    const yoloFlag = yolo !== false ? ' --yolo' : '';
     const isWin = process.platform === 'win32';
     const shellCmd = isWin
-      ? `chcp 65001 >nul && type "${tmpFile}" | gemini${modelFlag} --yolo`
-      : `cat "${tmpFile}" | gemini${modelFlag} --yolo`;
+      ? `chcp 65001 >nul && type "${tmpFile}" | gemini${modelFlag}${yoloFlag}`
+      : `cat "${tmpFile}" | gemini${modelFlag}${yoloFlag}`;
 
     const cwd = process.env.USERPROFILE || process.env.HOME || os.homedir();
     const proc = spawn(shellCmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd });
@@ -3040,7 +3041,7 @@ ipcMain.handle('codex:check', async () => {
   }
 });
 
-ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model }: { sessionId: string; prompt: string; requestId?: string; model?: string }) => {
+ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model }: { sessionId: string; prompt: string; requestId?: string; model?: string; approvalPolicy?: 'suggest' | 'auto-edit' | 'full-auto' }) => {
   try {
     // 같은 sessionId로 실행 중인 Gemini 프로세스 정리
     const prevGemini = geminiProcesses.get(sessionId);
@@ -3065,6 +3066,7 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model }:
     };
 
     const modelFlag = model ? ` -m ${model}` : '';
+    // codex exec 서브커맨드는 --approval-policy 미지원 (인터랙티브 전용 플래그)
     const isWin = process.platform === 'win32';
     const shellCmd = isWin
       ? `chcp 65001 >nul && type "${tmpFile}" | codex exec${modelFlag} --skip-git-repo-check -c "sandbox_permissions=[\"disk-full-read-access\",\"network-full-access\"]"`
@@ -3078,12 +3080,42 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model }:
 
     let stdoutBuf = '';
     proc.stdout.setEncoding('utf-8');
+    // codex exec 은 stdin 프롬프트를 stdout 으로 에코하는 경우가 있음
+    // 프롬프트 구분자 이전 내용 + ERROR JSON 라인은 필터링
+    let promptEchoDone = false;
+    const PROMPT_END_MARKER = '--- 사용자 요청 ---';
     proc.stdout.on('data', (data: string) => {
       stdoutBuf += data;
+      // 프롬프트 에코가 끝나는 마커를 찾으면 그 이후부터만 전달
+      if (!promptEchoDone) {
+        const markerIdx = stdoutBuf.indexOf(PROMPT_END_MARKER);
+        if (markerIdx !== -1) {
+          // 마커 이후 첫 줄바꿈부터 실제 응답
+          const afterMarker = stdoutBuf.indexOf('\n', markerIdx);
+          stdoutBuf = afterMarker !== -1 ? stdoutBuf.slice(afterMarker + 1) : '';
+          promptEchoDone = true;
+        } else if (stdoutBuf.length > prompt.length + 200) {
+          // 마커 못 찾고 버퍼가 프롬프트보다 충분히 크면 에코 없는 것으로 간주
+          promptEchoDone = true;
+        } else {
+          return; // 아직 에코 중
+        }
+      }
       const lines = stdoutBuf.split('\n');
       stdoutBuf = lines.pop() || '';
       for (const line of lines) {
-        if (!line) continue;
+        if (!line.trim()) continue;
+        // ERROR JSON 라인 → error 메시지로 변환
+        if (line.startsWith('ERROR:')) {
+          try {
+            const obj = JSON.parse(line.slice(6).trim());
+            const msg = obj?.error?.message || line;
+            mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: msg } });
+          } catch {
+            mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: line } });
+          }
+          continue;
+        }
         mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'text', text: line + '\n' } });
       }
     });
@@ -3094,11 +3126,21 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model }:
       mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: String(err) } });
     });
     proc.on('close', (code: number) => {
-      if (stdoutBuf) {
-        mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'text', text: stdoutBuf } });
+      if (stdoutBuf.trim()) {
+        // 남은 버퍼도 ERROR 체크
+        if (stdoutBuf.trimStart().startsWith('ERROR:')) {
+          try {
+            const obj = JSON.parse(stdoutBuf.trimStart().slice(6).trim());
+            mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: obj?.error?.message || stdoutBuf } });
+          } catch {
+            mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: stdoutBuf } });
+          }
+        } else {
+          mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'text', text: stdoutBuf } });
+        }
       }
       // stdout이 비어있고 에러 종료면 stderr에서 실제 에러 메시지 추출
-      if (!stdoutBuf.trim() && code !== 0 && codexStderrBuf.trim()) {
+      if (code !== 0 && codexStderrBuf.trim()) {
         const CODEX_META = /^(Reading prompt from stdin|OpenAI Codex v|--------+|workdir:|model:|provider:|approval:|sandbox:|reasoning effort:|reasoning summaries:|session id:|tokens used|user$|codex$)/m;
         const errLines = codexStderrBuf.split('\n').filter(l => l.trim() && !CODEX_META.test(l));
         if (errLines.length) {

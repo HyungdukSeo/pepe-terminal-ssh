@@ -36,6 +36,7 @@ type ParsedResult = {
 type Props = {
   sessionId: string;
   sessionName: string;
+  aiAgent?: 'claude' | 'gemini' | 'codex';
 };
 
 const HISTORY_KEY_PREFIX = 'sqltool-history-';
@@ -234,7 +235,7 @@ function buildIsqlCommand(dbms: DbmsCfg, sql: string): string {
   return `isql -s ${shellQuote(host)} -u ${shellQuote(dbms.user)} -p ${shellQuote(dbms.password)} -port ${port} -silent <<'PEPE_SQL_EOF'\n${normalized}PEPE_SQL_EOF`;
 }
 
-export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName }) => {
+export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAgent = 'claude' }) => {
   const [session, setSession] = useState<Session | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [connected, setConnected] = useState(false);
@@ -743,9 +744,9 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName }) =>
     const prompt =
       `당신은 Altibase DB SQL 작성을 돕는 어시스턴트입니다. ` +
       `아래 사용자의 요청/메모/미완성 SQL 을 보고, 의도에 맞는 Altibase SQL 쿼리를 작성해 주세요. ` +
-      `결과는 반드시 \`\`\`sql 코드 블록 1개 안에 SQL 만 작성하세요. ` +
-      `설명·주석은 코드 블록 밖에 1~2줄로만 간단히 적어 주세요. ` +
-      `테이블/컬럼이 불명확한 경우 합리적인 가정을 코드 블록 안 -- 주석으로 명시하세요.${tableHint}\n\n` +
+      `결과는 반드시 \`\`\`sql 코드 블록 1개 안에 작성하세요. ` +
+      `설명이나 가정은 코드 블록 밖에 쓰지 말고, 코드 블록 안에 -- 주석으로 포함하세요. ` +
+      `테이블/컬럼이 불명확한 경우 합리적인 가정을 -- 주석으로 SQL 위에 명시하세요.${tableHint}\n\n` +
       `--- 사용자 요청 ---\n${userText}`;
 
     const dispose = (window as any).api?.onClaudeStream?.((p: any) => {
@@ -772,7 +773,17 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName }) =>
         // ```sql ... ``` 블록 추출 — 없으면 응답 전체 사용
         let extracted = collected.trim();
         const blockMatch = collected.match(/```(?:sql|SQL)?\s*\n?([\s\S]*?)```/);
-        if (blockMatch) extracted = blockMatch[1].trim();
+        if (blockMatch) {
+          extracted = blockMatch[1].trim();
+          // 코드 블록 밖 설명이 있으면 -- 주석으로 변환해 SQL 앞에 추가
+          const before = collected.slice(0, collected.indexOf(blockMatch[0])).trim();
+          const after = collected.slice(collected.indexOf(blockMatch[0]) + blockMatch[0].length).trim();
+          const outside = [before, after].filter(Boolean).join(' ').trim();
+          if (outside) {
+            const commentLines = outside.split('\n').map(l => `-- ${l.trim()}`).filter(l => l !== '-- ').join('\n');
+            extracted = commentLines + '\n' + extracted;
+          }
+        }
         if (!extracted) {
           flashHint('AI 응답이 비어있음');
         } else {
@@ -790,9 +801,16 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName }) =>
     generateDisposeRef.current = dispose || null;
 
     try {
-      const r = await (window as any).api?.claudeSend?.(
-        claudeSessionId, prompt, undefined, true, undefined, null, 'bypassPermissions', undefined, false, requestId,
-      );
+      let r: any;
+      if (aiAgent === 'gemini') {
+        r = await (window as any).api?.geminiSend?.(claudeSessionId, prompt, requestId, undefined, true);
+      } else if (aiAgent === 'codex') {
+        r = await (window as any).api?.codexSend?.(claudeSessionId, prompt, requestId, undefined, 'full-auto');
+      } else {
+        r = await (window as any).api?.claudeSend?.(
+          claudeSessionId, prompt, undefined, true, undefined, null, 'bypassPermissions', undefined, false, requestId,
+        );
+      }
       if (!r?.success && !finalized) {
         finalized = true;
         flashHint(`AI 호출 실패: ${r?.error || '?'}`);

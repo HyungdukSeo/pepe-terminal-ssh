@@ -158,5 +158,19 @@
     "effortMedium": "Effort: Medium",
     "effortHigh": "Effort: High",
     "effortMax": "Effort: Max"
+  },
+  "askPlaceholderGemini": "Ask Gemini.",
+  "askEditorHintGemini": "Right-click a file/folder in the file tree → \"Attach to Claude\" to pass context.",
+  "askPlaceholderCodex": "Ask Codex.",
+  "askEditorHintCodex": "Right-click a file/folder in the file tree → \"Attach to Claude\" to pass context.",
+  "geminiModelSelect": "Select Gemini model",
+  "geminiAutoApprove": "Auto-approve",
+  "geminiAutoApproveTitle": "--yolo: automatically approve all file reads/writes/executions",
+  "codexModelSelect": "Select Codex model",
+  "codexApprovalTitle": "File edit / command execution approval policy",
+  "codexApproval": {
+    "suggest": "Suggest (confirm all)",
+    "autoEdit": "Auto-edit (auto file edits)",
+    "fullAuto": "Full-auto (approve all)"
   }
 }

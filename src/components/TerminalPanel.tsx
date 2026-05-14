@@ -361,6 +361,7 @@ export function toggleTreeVisibleForTerm(_termId: string) {
   treeVisibleChangeListeners.forEach(fn => fn());
 }
 
+
 // 각 터미널(세션)의 현재 원격 디렉토리. sshBridge 에서 주입한 OSC 7 hook 의 출력을
 // xterm 의 OSC 핸들러가 여기에 저장. 트리 열 때 initialPath 로 사용.
 const termCurrentPwd: Map<string, string> = new Map();
@@ -2295,6 +2296,7 @@ export const TerminalPanel: React.FC<Props> = ({
     treeVisibleChangeListeners.add(fn);
     return () => { treeVisibleChangeListeners.delete(fn); };
   }, []);
+
 
   // SSH 리스너 설정
   useEffect(() => {

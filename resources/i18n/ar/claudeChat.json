@@ -158,5 +158,19 @@
     "effortMax": "الجهد: أقصى"
   },
   "pinnedSection": "📌 المثبتة",
-  "recentsSection": "🕒 الأخيرة"
+  "recentsSection": "🕒 الأخيرة",
+  "askPlaceholderGemini": "اسأل Gemini.",
+  "askEditorHintGemini": "انقر بزر الفأرة الأيمن على ملف/مجلد في شجرة الملفات ← \"إرفاق إلى Claude\" لتمرير السياق.",
+  "askPlaceholderCodex": "اسأل Codex.",
+  "askEditorHintCodex": "انقر بزر الفأرة الأيمن على ملف/مجلد في شجرة الملفات ← \"إرفاق إلى Claude\" لتمرير السياق.",
+  "geminiModelSelect": "",
+  "geminiAutoApprove": "",
+  "geminiAutoApproveTitle": "",
+  "codexModelSelect": "",
+  "codexApprovalTitle": "",
+  "codexApproval": {
+    "suggest": "",
+    "autoEdit": "",
+    "fullAuto": ""
+  }
 }

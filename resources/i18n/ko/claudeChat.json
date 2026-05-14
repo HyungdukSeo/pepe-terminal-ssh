@@ -42,7 +42,7 @@
   "confirmDeleteHistory": "\"{{title}}\" 대화를 삭제할까요?",
   "noTitle": "(제목 없음)",
   "askPlaceholder": "Claude에게 질문하세요.",
-  "askEditorHint": "에디터의 \"🤖 Claude\" 버튼이나, 파일 트리에서 파일/폴더를 우클릭 → \"Claude에 첨부\"로 컨텍스트를 전달할 수 있습니다.",
+  "askEditorHint": "에디터의 \"🤖 Claude\" 버튼이나, 파일 트리에서 파일/폴더를 우클릭 → \"AI Chat에 첨부\"로 컨텍스트를 전달할 수 있습니다.",
   "thinking": "🤔 생각 중...",
   "stop": "응답 중단",
   "stopShort": "중단",
@@ -158,5 +158,19 @@
     "effortMedium": "작업량: 보통",
     "effortHigh": "작업량: 높음",
     "effortMax": "작업량: Max"
+  },
+  "askPlaceholderGemini": "Gemini에게 질문하세요.",
+  "askEditorHintGemini": "파일 트리에서 파일/폴더를 우클릭 → \"AI Chat에 첨부\"로 컨텍스트를 전달할 수 있습니다.",
+  "askPlaceholderCodex": "Codex에게 질문하세요.",
+  "askEditorHintCodex": "파일 트리에서 파일/폴더를 우클릭 → \"AI Chat에 첨부\"로 컨텍스트를 전달할 수 있습니다.",
+  "geminiModelSelect": "Gemini 모델 선택",
+  "geminiAutoApprove": "자동 승인",
+  "geminiAutoApproveTitle": "--yolo: 모든 파일 읽기/쓰기/실행을 자동 승인",
+  "codexModelSelect": "Codex 모델 선택",
+  "codexApprovalTitle": "파일 편집/명령 실행 승인 정책",
+  "codexApproval": {
+    "suggest": "Suggest (모두 확인)",
+    "autoEdit": "Auto-edit (편집 자동)",
+    "fullAuto": "Full-auto (모두 자동)"
   }
 }

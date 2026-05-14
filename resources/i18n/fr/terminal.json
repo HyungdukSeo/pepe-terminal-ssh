@@ -94,6 +94,8 @@
     "floatRestore": "Restaurer la taille",
     "autoTrackOn": "Désactiver le suivi auto PWD (synchroniser l'arborescence sur cd)",
     "autoTrackOff": "Activer le suivi auto PWD (synchroniser l'arborescence sur cd)",
+    "pinPin": "Épingler le panneau (développer la sortie)",
+    "pinUnpin": "Désépingler le panneau (réduire la sortie)",
     "resizeHandle": "Glisser pour redimensionner la largeur (double-clic : par défaut 240)"
   },
   "dialogs": {

@@ -168,17 +168,29 @@ type Props = {
   pinned?: boolean;
   onTogglePin?: () => void;
   aiAgent?: 'claude' | 'gemini' | 'codex';
+  onAgentChange?: (agent: 'claude' | 'gemini' | 'codex') => void;
 };
 
 let sessionCounter = 0;
 
-export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContextConsumed, mountEntries = [], onClearMounted, onRemoveMountedEntry, connectedSessions = [], defaultSshSession, pinned = true, onTogglePin, aiAgent = 'claude' }) => {
+export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContextConsumed, mountEntries = [], onClearMounted, onRemoveMountedEntry, connectedSessions = [], defaultSshSession, pinned = true, onTogglePin, aiAgent = 'claude', onAgentChange }) => {
   // 채팅창 내에서 독립적으로 전환 가능한 에이전트 (전역 설정과 분리)
   const [currentAgent, setCurrentAgentState] = useState<AgentType>(aiAgent);
   const currentAgentRef = useRef<AgentType>(aiAgent);
   const setCurrentAgent = (a: AgentType) => { currentAgentRef.current = a; setCurrentAgentState(a); };
-  // 전역 설정이 바뀌면 현재 에이전트도 동기화
-  useEffect(() => { setCurrentAgent(aiAgent); }, [aiAgent]);
+  // 전역 설정(옵션 패널 등)이 바뀌면 내부 에이전트 + 저장된 설정 복원
+  useEffect(() => {
+    if (currentAgentRef.current === aiAgent) return;
+    saveCurrentAgentSettings();
+    const saved = agentSettingsMemory.current[aiAgent];
+    setCurrentAgent(aiAgent);
+    setModelRaw(saved?.model ?? defaultModelFor(aiAgent));
+    setEffort(saved?.effort ?? 'medium');
+    setPermissionMode(saved?.permissionMode ?? 'default');
+    setPerToolApproval(saved?.perToolApproval ?? true);
+    setGeminiYolo(saved?.geminiYolo ?? true);
+    setCodexApprovalPolicy(saved?.codexApprovalPolicy ?? 'full-auto');
+  }, [aiAgent]); // eslint-disable-line react-hooks/exhaustive-deps
   const { t: tt } = useTranslation('claudeChat');
   // 사용자가 선택한 활성 SSH 세션 (드롭다운). 처음엔 defaultSshSession.
   const [selectedSshTermId, setSelectedSshTermId] = useState<string | null>(defaultSshSession?.termId || null);
@@ -334,8 +346,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             if (lower.includes('opus')) return has1m ? 'opus[1m]' : 'opus';
             return 'default';
           };
-          // 초기 로드 시에만 settings.json 값으로 model 설정
-          setModel(normalize(m));
+          // 초기 로드 시에만 settings.json 값으로 model 설정 (메모리 저장 없이 raw 업데이트)
+          setModelRaw(normalize(m));
         }
       } catch {}
     })();
@@ -446,6 +458,13 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     try { return localStorage.getItem('claudeEffort') || 'medium'; } catch { return 'medium'; }
   });
   useEffect(() => { try { localStorage.setItem('claudeEffort', effort); } catch {} }, [effort]);
+  // Gemini: --yolo 온/오프 (기본 true)
+  const [geminiYolo, setGeminiYolo] = useState<boolean>(true);
+  // Codex: approval policy
+  const [codexApprovalPolicy, setCodexApprovalPolicy] = useState<'suggest' | 'auto-edit' | 'full-auto'>('full-auto');
+  // 에이전트별 설정 메모리 (탭 전환 시 복원)
+  type AgentSettings = { model: string; effort: string; permissionMode: 'bypassPermissions' | 'acceptEdits' | 'plan' | 'default'; perToolApproval: boolean; geminiYolo: boolean; codexApprovalPolicy: 'suggest' | 'auto-edit' | 'full-auto' };
+  const agentSettingsMemory = useRef<Partial<Record<AgentType, AgentSettings>>>({});
   // 동적 모델 목록 (Anthropic /v1/models)
   type AnthropicModel = { id: string; display_name: string; max_input_tokens?: number; capabilities?: any };
   const [availableModels, setAvailableModels] = useState<AnthropicModel[]>([]);
@@ -479,8 +498,28 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     }
   }, [permissionMode]);
   // 모델 선택 — 에이전트별 기본 모델
-  const defaultModelFor = (a: AgentType) => a === 'gemini' ? 'gemini-2.5-pro' : a === 'codex' ? 'gpt-5.5' : 'opus';
-  const [model, setModel] = useState<string>(defaultModelFor(aiAgent));
+  const defaultModelFor = (a: AgentType) => a === 'gemini' ? 'gemini-2.5-flash' : a === 'codex' ? 'o3' : 'opus';
+  const [model, setModelRaw] = useState<string>(defaultModelFor(aiAgent));
+  const saveCurrentAgentSettings = () => {
+    agentSettingsMemory.current[currentAgentRef.current] = {
+      model, effort, permissionMode, perToolApproval, geminiYolo, codexApprovalPolicy,
+    };
+  };
+  const setModel = (m: string) => { saveCurrentAgentSettings(); agentSettingsMemory.current[currentAgentRef.current]!.model = m; setModelRaw(m); };
+  // 에이전트 전환: 현재 설정 저장 후 이전 설정 복원
+  const switchAgent = (a: AgentType) => {
+    if (currentAgentRef.current === a) return;
+    saveCurrentAgentSettings();
+    const saved = agentSettingsMemory.current[a];
+    setCurrentAgent(a);
+    setModelRaw(saved?.model ?? defaultModelFor(a));
+    setEffort(saved?.effort ?? 'medium');
+    setPermissionMode(saved?.permissionMode ?? 'default');
+    setPerToolApproval(saved?.perToolApproval ?? true);
+    setGeminiYolo(saved?.geminiYolo ?? true);
+    setCodexApprovalPolicy(saved?.codexApprovalPolicy ?? 'full-auto');
+    onAgentChange?.(a);
+  };
   const [commandMenuOpen, setCommandMenuOpen] = useState(false);
   const [commandFilter, setCommandFilter] = useState('');
   const [commandHighlight, setCommandHighlight] = useState(0);
@@ -1124,7 +1163,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
 
     // 0.7) 포크/리로드된 대화 — 이전 메시지가 있으면 컨텍스트로 inject.
     // Claude: --resume 없이 새 세션이면 주입. Gemini/Codex: 항상 주입 (세션 개념 없음).
-    if ((currentAgent !== 'claude' || !claudeSessionIdRef.current) && messages.length > 0) {
+    if ((currentAgentRef.current !== 'claude' || !claudeSessionIdRef.current) && messages.length > 0) {
       // 메시지와 툴 호출을 seq 순으로 인터리브
       type TItem = { seq: number; kind: 'msg'; m: Message } | { seq: number; kind: 'tool'; t: ToolTimelineItem };
       const items: TItem[] = [
@@ -1153,10 +1192,10 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       }
       contextLines.push(
         `# 이전 대화 내역 (포크/이어쓰기 — 매우 중요)`,
-        `당신(${currentAgent === 'gemini' ? 'Gemini' : currentAgent === 'codex' ? 'Codex' : 'Claude'})은 새 CLI 세션에서 시작했지만, 사용자는 아래 대화의 연속으로 이번 질문을 합니다.`,
+        `당신(${currentAgentRef.current === 'gemini' ? 'Gemini' : currentAgentRef.current === 'codex' ? 'Codex' : 'Claude'})은 새 CLI 세션에서 시작했지만, 사용자는 아래 대화의 연속으로 이번 질문을 합니다.`,
         `**핵심 지침:**`,
-        `- 이번 질문의 작업/분석 **대상은 아래 transcript 에서 사용자가 다루던 그 코드/시스템**입니다 (transcript 의 ${currentAgent === 'gemini' ? 'Gemini' : currentAgent === 'codex' ? 'Codex' : 'Claude'} 답변 안에 명시된 경로/모듈/구조).`,
-        `- 절대로 다른 프로젝트(특히 ${currentAgent === 'gemini' ? 'Gemini' : currentAgent === 'codex' ? 'Codex' : 'Claude'} 프로세스의 cwd 인 Electron 앱)를 분석/탐색하지 마세요.`,
+        `- 이번 질문의 작업/분석 **대상은 아래 transcript 에서 사용자가 다루던 그 코드/시스템**입니다 (transcript 의 ${currentAgentRef.current === 'gemini' ? 'Gemini' : currentAgentRef.current === 'codex' ? 'Codex' : 'Claude'} 답변 안에 명시된 경로/모듈/구조).`,
+        `- 절대로 다른 프로젝트(특히 ${currentAgentRef.current === 'gemini' ? 'Gemini' : currentAgentRef.current === 'codex' ? 'Codex' : 'Claude'} 프로세스의 cwd 인 Electron 앱)를 분석/탐색하지 마세요.`,
         `- 이전에 분석/탐색한 내용은 이미 알고 있는 것으로 간주하고 그 결과를 활용하세요.`,
         `- 동일한 파일/디렉토리를 다시 읽거나 탐색하지 마세요. 필요하면 이전 결과를 참조하세요.`,
         `- 사용자에게 "이전 대화를 다시 알려주세요" 같은 요청을 하지 마세요.`,
@@ -1228,38 +1267,35 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     // 활성 SSH 세션이 선택되어 있으면 Bash 금지 + MCP ssh_exec 툴 제공
     // (activeMount 가 아직 준비 전이라도 MCP 는 사용 가능해야 함)
     const sshTermId = activeSshSession?.termId || activeMount?.termId;
-    const disallowBash = !!sshTermId;
-    const resumeSessionId = claudeSessionIdRef.current;
-    // 비대화형 모드(-p)에서는 'default' 권한이 항상 거부됨 → 대신 'plan' 모드로 변환
-    // (Claude 가 계획을 설명하지만 실행은 하지 않음 — 사용자는 다음 턴에 "실행해" 등으로 승인)
-    const approveKeywords = ['실행', '진행', '좋아', 'yes', 'ok', '승인', 'approve', '해줘', 'go ahead', '네'];
-    const isApproval = approveKeywords.some(k => text.toLowerCase().includes(k.toLowerCase()));
-    let effectivePermMode: string = permissionMode;
-    if (permissionMode === 'default') {
-      effectivePermMode = (isApproval && claudeSessionIdRef.current) ? 'bypassPermissions' : 'plan';
-    }
-    console.log('[ClaudeChat] permissionMode', permissionMode, '→ effective', effectivePermMode, 'isApproval', isApproval);
-
-    // Plan 모드에서는 Claude 에게 ExitPlanMode 툴 사용을 명확히 지시
-    if (effectivePermMode === 'plan') {
-      contextLines.push(
-        `# Plan 모드 지침 (반드시 준수)`,
-        `- 당신은 현재 Plan 모드로 실행되고 있습니다. 이것은 비대화형 모드이므로 사용자가 "/plan" 토글이나 모드 전환을 할 수 없습니다.`,
-        `- 파일 수정/생성/명령 실행이 필요하면 **반드시 ExitPlanMode 툴을 호출**해서 plan 파라미터에 계획을 담아 제시하세요.`,
-        `- ExitPlanMode 툴이 호출되면 외부 UI 에서 사용자에게 승인 모달이 표시되고, 승인 시 다음 턴에 실제로 실행됩니다.`,
-        `- 사용자에게 "/plan 을 입력하세요" / "Plan 모드를 종료하세요" 같은 안내를 하지 마세요. 당신이 직접 ExitPlanMode 를 호출해야 합니다.`,
-        `- 변경이 필요 없으면 ExitPlanMode 없이 정보만 응답하세요.`,
-        ``,
-      );
-    }
     // 전송 후 로컬 파일 첨부는 해제
     setLocalFileAttachments([]);
     try {
-      if (currentAgent === 'gemini') {
-        await (window as any).api?.geminiSend?.(sessionId, prompt, requestId, model);
-      } else if (currentAgent === 'codex') {
-        await (window as any).api?.codexSend?.(sessionId, prompt, requestId, model);
+      if (currentAgentRef.current === 'gemini') {
+        await (window as any).api?.geminiSend?.(sessionId, prompt, requestId, model, geminiYolo);
+      } else if (currentAgentRef.current === 'codex') {
+        await (window as any).api?.codexSend?.(sessionId, prompt, requestId, model, codexApprovalPolicy);
       } else {
+        const disallowBash = !!sshTermId;
+        const resumeSessionId = claudeSessionIdRef.current;
+        // 비대화형 모드(-p)에서는 'default' 권한이 항상 거부됨 → 대신 'plan' 모드로 변환
+        const approveKeywords = ['실행', '진행', '좋아', 'yes', 'ok', '승인', 'approve', '해줘', 'go ahead', '네'];
+        const isApproval = approveKeywords.some(k => text.toLowerCase().includes(k.toLowerCase()));
+        let effectivePermMode: string = permissionMode;
+        if (permissionMode === 'default') {
+          effectivePermMode = (isApproval && claudeSessionIdRef.current) ? 'bypassPermissions' : 'plan';
+        }
+        // Plan 모드에서는 Claude 에게 ExitPlanMode 툴 사용을 명확히 지시
+        if (effectivePermMode === 'plan') {
+          contextLines.push(
+            `# Plan 모드 지침 (반드시 준수)`,
+            `- 당신은 현재 Plan 모드로 실행되고 있습니다. 이것은 비대화형 모드이므로 사용자가 "/plan" 토글이나 모드 전환을 할 수 없습니다.`,
+            `- 파일 수정/생성/명령 실행이 필요하면 **반드시 ExitPlanMode 툴을 호출**해서 plan 파라미터에 계획을 담아 제시하세요.`,
+            `- ExitPlanMode 툴이 호출되면 외부 UI 에서 사용자에게 승인 모달이 표시되고, 승인 시 다음 턴에 실제로 실행됩니다.`,
+            `- 사용자에게 "/plan 을 입력하세요" / "Plan 모드를 종료하세요" 같은 안내를 하지 마세요. 당신이 직접 ExitPlanMode 를 호출해야 합니다.`,
+            `- 변경이 필요 없으면 ExitPlanMode 없이 정보만 응답하세요.`,
+            ``,
+          );
+        }
         await (window as any).api?.claudeSend?.(sessionId, prompt, addDirs, disallowBash, sshTermId, resumeSessionId, effectivePermMode, model, perToolApproval, requestId, effort);
       }
     } catch (err: any) {
@@ -1295,9 +1331,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     // 명시적 중단 — 활성 대화의 프로세스만 죽임
     const reqId = activeRequestIdRef.current;
     try {
-      if (currentAgent === 'gemini') {
+      if (currentAgentRef.current === 'gemini') {
         (window as any).api?.geminiStop?.(sessionId, reqId || undefined);
-      } else if (currentAgent === 'codex') {
+      } else if (currentAgentRef.current === 'codex') {
         (window as any).api?.codexStop?.(sessionId, reqId || undefined);
       } else {
         (window as any).api?.claudeStop?.(sessionId, reqId || undefined);
@@ -1614,17 +1650,17 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           <button
             className={`claude-chat-agent-btn ${currentAgent === 'claude' ? 'active' : ''}`}
             title="Claude Code"
-            onClick={() => { if (currentAgent !== 'claude') { setCurrentAgent('claude'); setModel(defaultModelFor('claude')); } }}
+            onClick={() => switchAgent('claude')}
           >🤖</button>
           <button
             className={`claude-chat-agent-btn ${currentAgent === 'gemini' ? 'active' : ''}`}
             title="Gemini"
-            onClick={() => { if (currentAgent !== 'gemini') { setCurrentAgent('gemini'); setModel(defaultModelFor('gemini')); } }}
+            onClick={() => switchAgent('gemini')}
           >✨</button>
           <button
             className={`claude-chat-agent-btn ${currentAgent === 'codex' ? 'active' : ''}`}
             title="Codex"
-            onClick={() => { if (currentAgent !== 'codex') { setCurrentAgent('codex'); setModel(defaultModelFor('codex')); } }}
+            onClick={() => switchAgent('codex')}
           >🧠</button>
         </div>
         {version && <span className="claude-chat-version" style={{ marginLeft: 4, color: '#666', fontSize: 11 }}>{version}</span>}
@@ -1934,8 +1970,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       <div className="claude-chat-messages" ref={scrollRef} style={showHistoryPanel ? { display: 'none' } : undefined}>
         {messages.length === 0 && (
           <div className="claude-chat-empty">
-            <p>{tt('askPlaceholder')}</p>
-            <p>{tt('askEditorHint')}</p>
+            <p>{currentAgent === 'gemini' ? tt('askPlaceholderGemini') : currentAgent === 'codex' ? tt('askPlaceholderCodex') : tt('askPlaceholder')}</p>
+            <p>{currentAgent === 'gemini' ? tt('askEditorHintGemini') : currentAgent === 'codex' ? tt('askEditorHintCodex') : tt('askEditorHint')}</p>
           </div>
         )}
         {(() => {
@@ -2191,34 +2227,56 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             )}
           </div>
           {currentAgent === 'gemini' ? (
-            <select
-              className="claude-chat-perm-select"
-              value={model}
-              onChange={e => setModel(e.target.value)}
-              title="Gemini 모델 선택"
-            >
-              <option value="gemini-3.1-pro">✨ Gemini 3.1 Pro</option>
-              <option value="gemini-3.1-pro-preview">✨ Gemini 3.1 Pro Preview</option>
-              <option value="gemini-3.1-flash-lite-preview">⚡ Gemini 3.1 Flash Lite</option>
-              <option value="gemini-3-pro">✨ Gemini 3 Pro</option>
-              <option value="gemini-3-flash-preview">⚡ Gemini 3 Flash</option>
-              <option value="gemini-2.5-pro">🔵 Gemini 2.5 Pro</option>
-              <option value="gemini-2.5-flash">⚡ Gemini 2.5 Flash</option>
-              <option value="gemini-2.5-flash-lite">⚡ Gemini 2.5 Flash Lite</option>
-            </select>
+            <>
+              <select
+                className="claude-chat-perm-select"
+                value={model}
+                onChange={e => setModel(e.target.value)}
+                title={tt('geminiModelSelect')}
+              >
+                <option value="gemini-3.1-pro">✨ Gemini 3.1 Pro</option>
+                <option value="gemini-3.1-pro-preview">✨ Gemini 3.1 Pro Preview</option>
+                <option value="gemini-3.1-flash-lite-preview">⚡ Gemini 3.1 Flash Lite</option>
+                <option value="gemini-3-pro">✨ Gemini 3 Pro</option>
+                <option value="gemini-3-flash-preview">⚡ Gemini 3 Flash</option>
+                <option value="gemini-2.5-pro">🔵 Gemini 2.5 Pro</option>
+                <option value="gemini-2.5-flash">⚡ Gemini 2.5 Flash</option>
+                <option value="gemini-2.5-flash-lite">⚡ Gemini 2.5 Flash Lite</option>
+              </select>
+              <label className="claude-chat-tool-approval-label" title={tt('geminiAutoApproveTitle')}>
+                <input type="checkbox" checked={geminiYolo} onChange={e => setGeminiYolo(e.target.checked)} />
+                {tt('geminiAutoApprove')}
+              </label>
+            </>
           ) : currentAgent === 'codex' ? (
-            <select
-              className="claude-chat-perm-select"
-              value={model}
-              onChange={e => setModel(e.target.value)}
-              title="Codex 모델 선택"
-            >
-              <option value="gpt-5.5">🚀 GPT-5.5</option>
-              <option value="gpt-5.4">🔵 GPT-5.4</option>
-              <option value="gpt-5.4-mini">⚡ GPT-5.4 Mini</option>
-              <option value="gpt-5.3-codex">🧠 GPT-5.3 Codex</option>
-              <option value="gpt-5.2">🟣 GPT-5.2</option>
-            </select>
+            <>
+              <select
+                className="claude-chat-perm-select"
+                value={model}
+                onChange={e => setModel(e.target.value)}
+                title={tt('codexModelSelect')}
+              >
+                <option value="gpt-5.5">🚀 GPT-5.5</option>
+                <option value="gpt-5.4">🔵 GPT-5.4</option>
+                <option value="gpt-5.4-mini">⚡ GPT-5.4 Mini</option>
+                <option value="gpt-5.3-codex">🧠 GPT-5.3 Codex</option>
+                <option value="gpt-5.2">🟣 GPT-5.2</option>
+                <option value="codex-mini-latest">🧠 Codex Mini</option>
+                <option value="o4-mini">⚡ o4-mini</option>
+                <option value="o3">🔵 o3</option>
+              </select>
+              <select
+                className="claude-chat-perm-select"
+                style={{ marginLeft: 'auto' }}
+                value={codexApprovalPolicy}
+                onChange={e => setCodexApprovalPolicy(e.target.value as 'suggest' | 'auto-edit' | 'full-auto')}
+                title={tt('codexApprovalTitle')}
+              >
+                <option value="suggest">{tt('codexApproval.suggest')}</option>
+                <option value="auto-edit">{tt('codexApproval.autoEdit')}</option>
+                <option value="full-auto">{tt('codexApproval.fullAuto')}</option>
+              </select>
+            </>
           ) : (
             <>
               <select
