@@ -169,8 +169,8 @@
   "codexModelSelect": "Codex 모델 선택",
   "codexApprovalTitle": "파일 편집/명령 실행 승인 정책",
   "codexApproval": {
-    "suggest": "Suggest (모두 확인)",
-    "autoEdit": "Auto-edit (편집 자동)",
-    "fullAuto": "Full-auto (모두 자동)"
+    "suggest": "Suggest (읽기전용 sandbox)",
+    "autoEdit": "Auto-edit (쓰기 허용 sandbox)",
+    "fullAuto": "Full-auto (쓰기 허용 sandbox)"
   }
 }
