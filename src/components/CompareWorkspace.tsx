@@ -194,6 +194,7 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
       if (row.status !== 'left-only') tasks.push(api.compareRead?.(rightSrc.mode, joinR, rightSrc.termId)); else tasks.push(Promise.resolve({ content: '' }));
       const [l, r] = await Promise.all(tasks);
       // EOL 정규화 — Mac 전용 (로컬 LF vs SFTP CRLF mismatch 회피).
+      // Windows 에서는 양쪽 모두 CRLF 라 정규화 시 오히려 의도와 다를 수 있어 원본 유지.
       const isMac = (typeof navigator !== 'undefined') && /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || '');
       const normEol = (s: string) => isMac ? s.replace(/\r\n?/g, '\n') : s;
       if (l?.error) setContentErr(t('sourceReadFail', { error: l.error }));
@@ -644,6 +645,11 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
                   minimap: { enabled: false },
                   fontSize: 12,
                   wordWrap: 'off',
+                  // Mac 에서 우측 한 줄 밀림 증상의 근본 원인은 EOL 불일치(LF vs CRLF) — onSelect 에서 정규화 처리.
+                  // 추가 UX 보조 옵션: 비슷한 라인 매칭 + 변경 없는 영역 접기.
+                  diffAlgorithm: 'advanced',
+                  experimental: { showMoves: true },
+                  hideUnchangedRegions: { enabled: true, contextLineCount: 3, revealLineCount: 20, minimumLineCount: 3 },
                 }}
               />
             </div>

@@ -1,6 +1,10 @@
 {
   "loading": "Claude CLI 확인 중...",
+  "loadingGemini": "Gemini CLI 확인 중...",
+  "loadingCodex": "Codex CLI 확인 중...",
   "notInstalled": "Claude Code CLI가 설치되지 않았습니다.",
+  "notInstalledGemini": "Gemini CLI가 설치되지 않았습니다.",
+  "notInstalledCodex": "Codex CLI가 설치되지 않았습니다.",
   "installCmd": "설치:",
   "loginHint": "로그인: 터미널에서 {{cmd}} 실행",
   "newConversation": "새 대화",

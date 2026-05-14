@@ -271,7 +271,7 @@ export const TranslationEditor: React.FC = () => {
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 12, color: '#bbb' }}>{t('nsLabel')}</span>
           <select value={currentNs} onChange={e => setCurrentNs(e.target.value)} style={{ fontSize: 12 }}>
-            {namespaces.map(ns => <option key={ns} value={ns}>{ns}</option>)}
+            {namespaces.map(ns => <option key={ns} value={ns}>{ns === 'claudeChat' ? 'AI Chat' : ns}</option>)}
           </select>
           <span style={{ width: 16 }} />
           <input type="text" value={filter} onChange={e => setFilter(e.target.value)} placeholder={t('filterPlaceholder')}

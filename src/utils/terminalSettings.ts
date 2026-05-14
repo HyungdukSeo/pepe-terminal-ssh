@@ -6,6 +6,7 @@ export type TerminalSettings = {
   trimTrailingWhitespace: boolean;
   multiLinePaste: 'dialog' | 'direct';
   scrollback: number;
+  aiAgent: 'claude' | 'gemini' | 'codex';
 };
 
 const DEFAULTS: TerminalSettings = {
@@ -14,6 +15,7 @@ const DEFAULTS: TerminalSettings = {
   trimTrailingWhitespace: true,
   multiLinePaste: 'dialog',
   scrollback: 10000,
+  aiAgent: 'claude',
 };
 
 let cached: TerminalSettings | null = null;

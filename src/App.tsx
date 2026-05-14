@@ -214,7 +214,7 @@ function App() {
   const [optFontFamily, setOptFontFamily] = useState(() => localStorage.getItem('terminalFontFamily') || '');
   const [optFontSize, setOptFontSize] = useState(() => Number(localStorage.getItem('terminalFontSize')) || 14);
   const [availableFonts, setAvailableFonts] = useState<string[]>([]);
-  const [optionsTab, setOptionsTab] = useState<'terminal' | 'session' | 'keybindings'>('terminal');
+  const [optionsTab, setOptionsTab] = useState<'terminal' | 'session' | 'keybindings' | 'ai'>('terminal');
   const [keybindingsState, setKeybindingsState] = useState<Record<string, string>>({});
   const [keybindingsDraft, setKeybindingsDraft] = useState<Record<string, string>>({});
 
@@ -2094,7 +2094,10 @@ function App() {
         { separator: true, label: '' },
         { label: showToolbar ? tm('tools.toolbarHide') : tm('tools.toolbarShow'), action: () => setShowToolbar(v => !v) },
         { label: showQuickConnect ? tm('tools.quickConnectHide') : tm('tools.quickConnectShow'), action: () => setShowQuickConnect(v => !v) },
-        { label: showClaudeChat ? tm('tools.claudeHide') : tm('tools.claudeShow'), action: () => setShowClaudeChat(v => !v) },
+        { label: showClaudeChat
+            ? (termSettings.aiAgent === 'gemini' ? tm('tools.claudeHide').replace('Claude', 'Gemini').replace('🤖', '✨') : termSettings.aiAgent === 'codex' ? tm('tools.claudeHide').replace('Claude', 'Codex').replace('🤖', '🧠') : tm('tools.claudeHide'))
+            : (termSettings.aiAgent === 'gemini' ? tm('tools.claudeShow').replace('Claude', 'Gemini').replace('🤖', '✨') : termSettings.aiAgent === 'codex' ? tm('tools.claudeShow').replace('Claude', 'Codex').replace('🤖', '🧠') : tm('tools.claudeShow')),
+          action: () => setShowClaudeChat(v => !v) },
         { label: showBroadcast ? tm('tools.broadcastHide') : tm('tools.broadcastShow'), action: () => { setShowBroadcast(v => !v); } },
         { separator: true, label: '' },
         { label: tm('tools.xStart'), action: async () => {
@@ -2506,7 +2509,7 @@ function App() {
           }}>📁</button>
           <span className="tool-sep" />
           <button className={`tool-btn ${showQuickConnect ? 'active' : ''}`} title={showQuickConnect ? tm('tools.quickConnectHide') : tm('tools.quickConnectShow')} onClick={() => setShowQuickConnect(v => !v)}>⚡</button>
-          <button className={`tool-btn ${showClaudeChat ? 'active' : ''}`} title={showClaudeChat ? tm('tools.claudeHide') : tm('tools.claudeShow')} onClick={() => setShowClaudeChat(v => !v)}>🤖</button>
+          <button className={`tool-btn ${showClaudeChat ? 'active' : ''}`} title={showClaudeChat ? (termSettings.aiAgent === 'gemini' ? tm('tools.claudeHide').replace('Claude', 'Gemini').replace('🤖', '✨') : termSettings.aiAgent === 'codex' ? tm('tools.claudeHide').replace('Claude', 'Codex').replace('🤖', '🧠') : tm('tools.claudeHide')) : (termSettings.aiAgent === 'gemini' ? tm('tools.claudeShow').replace('Claude', 'Gemini').replace('🤖', '✨') : termSettings.aiAgent === 'codex' ? tm('tools.claudeShow').replace('Claude', 'Codex').replace('🤖', '🧠') : tm('tools.claudeShow'))} onClick={() => setShowClaudeChat(v => !v)}>{termSettings.aiAgent === 'gemini' ? '✨' : termSettings.aiAgent === 'codex' ? '🧠' : '🤖'}</button>
           <button className={`tool-btn ${showBroadcast ? 'active' : ''}`} title={showBroadcast ? tm('tools.broadcastHide') : tm('tools.broadcastShow')} onClick={() => setShowBroadcast(v => !v)}>📢</button>
           <span className="tool-sep" />
           <button className="tool-btn" title={tm('tools.xStart')} onClick={async () => {
@@ -3024,6 +3027,7 @@ function App() {
             <div className="options-body">
               <div className="options-tabs options-tabs-side">
                 <button className={`options-tab ${optionsTab === 'terminal' ? 'active' : ''}`} onClick={() => setOptionsTab('terminal')}>{to('tabs.terminal')}</button>
+                <button className={`options-tab ${optionsTab === 'ai' ? 'active' : ''}`} onClick={() => setOptionsTab('ai')}>AI</button>
                 <button className={`options-tab ${optionsTab === 'session' ? 'active' : ''}`} onClick={() => setOptionsTab('session')}>{to('tabs.session')}</button>
                 <button className={`options-tab ${optionsTab === 'keybindings' ? 'active' : ''}`} onClick={() => setOptionsTab('keybindings')}>{to('tabs.keybindings')}</button>
               </div>
@@ -3090,34 +3094,6 @@ function App() {
                     onChange={e => setOptFontSize(Math.max(8, Math.min(40, Number(e.target.value) || 14)))}
                   />
                 </div>
-                <div style={{ marginBottom: 16, borderTop: '1px solid #333', paddingTop: 12 }}>
-                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{to('font.claudeHeading')}</div>
-                  <p style={{ color: '#888', fontSize: 12, margin: '0 0 6px' }}>{to('font.claudeHint')}</p>
-                  <select
-                    style={{ width: '100%', background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '8px', fontSize: 14, boxSizing: 'border-box', cursor: 'pointer' }}
-                    value={claudeFontFamily}
-                    onChange={e => { setClaudeFontFamily(e.target.value); setClaudeFontFamilyState(e.target.value); }}
-                  >
-                    <option value="">{to('font.claudeDefaultLabel')}</option>
-                    {availableFonts.map(f => <option key={f} value={f} style={{ fontFamily: `"${f}", sans-serif` }}>{f}</option>)}
-                  </select>
-                </div>
-                <div style={{ marginBottom: 16 }}>
-                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{to('font.claudeSize')}</div>
-                  <input
-                    type="number"
-                    min={9}
-                    max={32}
-                    step={1}
-                    style={{ width: 100, background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '8px', fontSize: 14, fontFamily: 'monospace', boxSizing: 'border-box' }}
-                    value={claudeFontSize}
-                    onChange={e => {
-                      const v = Math.max(9, Math.min(32, Number(e.target.value) || 13));
-                      setClaudeFontSize(v);
-                      setClaudeFontSizeState(v);
-                    }}
-                  />
-                </div>
                 <div style={{ marginBottom: 16 }}>
                   <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{to('scrollback.heading')}</div>
                   <p style={{ color: '#888', fontSize: 12, margin: '0 0 6px' }}>{to('scrollback.hint')}</p>
@@ -3151,6 +3127,59 @@ function App() {
                     style={{ width: '100%', background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '8px', fontSize: 14, fontFamily: 'monospace', boxSizing: 'border-box' }}
                     value={wordSepValue}
                     onChange={e => setWordSepValue(e.target.value)}
+                  />
+                </div>
+              </div>
+            )}
+
+            {optionsTab === 'ai' && (
+              <div className="options-content">
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{to('aiAgent.heading')}</div>
+                  <div style={{ display: 'flex', gap: '16px' }}>
+                    <label className="settings-radio">
+                      <input type="radio" name="aiAgent" checked={termSettings.aiAgent === 'claude'}
+                        onChange={() => setTermSettings(s => ({ ...s, aiAgent: 'claude' }))} />
+                      🤖 {to('aiAgent.claude')}
+                    </label>
+                    <label className="settings-radio">
+                      <input type="radio" name="aiAgent" checked={termSettings.aiAgent === 'gemini'}
+                        onChange={() => setTermSettings(s => ({ ...s, aiAgent: 'gemini' }))} />
+                      ✨ {to('aiAgent.gemini')}
+                    </label>
+                    <label className="settings-radio">
+                      <input type="radio" name="aiAgent" checked={termSettings.aiAgent === 'codex'}
+                        onChange={() => setTermSettings(s => ({ ...s, aiAgent: 'codex' }))} />
+                      🧠 {to('aiAgent.codex')}
+                    </label>
+                  </div>
+                </div>
+                <div style={{ marginBottom: 16, borderTop: '1px solid #333', paddingTop: 12 }}>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{to('font.claudeHeading')}</div>
+                  <p style={{ color: '#888', fontSize: 12, margin: '0 0 6px' }}>{to('font.claudeHint')}</p>
+                  <select
+                    style={{ width: '100%', background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '8px', fontSize: 14, boxSizing: 'border-box', cursor: 'pointer' }}
+                    value={claudeFontFamily}
+                    onChange={e => { setClaudeFontFamily(e.target.value); setClaudeFontFamilyState(e.target.value); }}
+                  >
+                    <option value="">{to('font.claudeDefaultLabel')}</option>
+                    {availableFonts.map(f => <option key={f} value={f} style={{ fontFamily: `"${f}", sans-serif` }}>{f}</option>)}
+                  </select>
+                </div>
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{to('font.claudeSize')}</div>
+                  <input
+                    type="number"
+                    min={9}
+                    max={32}
+                    step={1}
+                    style={{ width: 100, background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '8px', fontSize: 14, fontFamily: 'monospace', boxSizing: 'border-box' }}
+                    value={claudeFontSize}
+                    onChange={e => {
+                      const v = Math.max(9, Math.min(32, Number(e.target.value) || 13));
+                      setClaudeFontSize(v);
+                      setClaudeFontSizeState(v);
+                    }}
                   />
                 </div>
               </div>
@@ -3395,6 +3424,7 @@ function App() {
               }}
             />
             <ClaudeChat
+              aiAgent={termSettings.aiAgent}
               onClose={() => setShowClaudeChat(false)}
               pendingContext={claudeFileContext}
               onContextConsumed={() => setClaudeFileContext(null)}

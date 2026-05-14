@@ -18,6 +18,12 @@
     "dialog": "Open multi-line paste dialog",
     "direct": "Paste directly into terminal"
   },
+  "aiAgent": {
+    "heading": "AI Agent",
+    "claude": "Claude Code",
+    "gemini": "Gemini",
+    "codex": "Codex"
+  },
   "font": {
     "heading": "Font",
     "defaultLabel": "Default (Cascadia Mono)",

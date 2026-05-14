@@ -1,6 +1,10 @@
 {
   "loading": "正在检查 Claude CLI...",
+  "loadingGemini": "正在检查 Gemini CLI...",
+  "loadingCodex": "正在检查 Codex CLI...",
   "notInstalled": "未安装 Claude Code CLI。",
+  "notInstalledGemini": "Gemini CLI 未安装。",
+  "notInstalledCodex": "Codex CLI 未安装。",
   "installCmd": "安装:",
   "loginHint": "登录:在终端运行 {{cmd}}",
   "newConversation": "新建对话",

@@ -18,6 +18,12 @@
     "dialog": "Ouvrir la boîte de dialogue de collage multiligne",
     "direct": "Coller directement dans le terminal"
   },
+  "aiAgent": {
+    "heading": "Agent IA",
+    "claude": "Claude Code",
+    "gemini": "Gemini",
+    "codex": "Codex"
+  },
   "font": {
     "heading": "Police",
     "defaultLabel": "Par défaut (Cascadia Mono)",
