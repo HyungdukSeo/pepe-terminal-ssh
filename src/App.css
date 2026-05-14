@@ -4138,6 +4138,32 @@ body.popout-options .session-editor h3:first-child {
   font-size: 11px;
   margin-left: 6px;
 }
+.claude-chat-agent-switcher {
+  display: flex;
+  gap: 2px;
+  background: #111;
+  border: 1px solid #333;
+  border-radius: 6px;
+  padding: 2px;
+}
+.claude-chat-agent-btn {
+  background: transparent;
+  border: none;
+  color: #666;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  transition: background 0.15s, color 0.15s;
+}
+.claude-chat-agent-btn:hover {
+  background: #2a2a2a;
+  color: #ccc;
+}
+.claude-chat-agent-btn.active {
+  background: #2a2a4a;
+  color: #fff;
+}
 .claude-chat-header-actions {
   display: flex;
   gap: 4px;

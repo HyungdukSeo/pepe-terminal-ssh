@@ -18,6 +18,12 @@
     "dialog": "فتح نافذة لصق متعدد الأسطر",
     "direct": "اللصق مباشرة في الطرفية"
   },
+  "aiAgent": {
+    "heading": "وكيل الذكاء الاصطناعي",
+    "claude": "Claude Code",
+    "gemini": "Gemini",
+    "codex": "Codex"
+  },
   "font": {
     "heading": "الخط",
     "defaultLabel": "الافتراضي (Cascadia Mono)",

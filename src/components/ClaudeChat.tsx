@@ -117,11 +117,13 @@ function renderMd(content: string): string {
   return marked.parse(autoConvertTablesInMd(autoFenceMermaid(neutralizeSetextHeadings(content))), { breaks: true }) as string;
 }
 
+type AgentType = 'claude' | 'gemini' | 'codex';
 type Message = {
   role: 'user' | 'assistant';
   content: string;
   id: string;
   seq?: number; // 발생 순서 (타임라인 인터리브용)
+  agent?: AgentType; // 응답한 에이전트 (assistant 메시지에만)
 };
 type ToolTimelineItem = { id: string; label: string; status: 'running' | 'done' | 'error'; resultPreview?: string; seq?: number };
 type ChatHistoryEntry = {
@@ -165,11 +167,18 @@ type Props = {
   defaultSshSession?: { termId: string; label: string } | null;
   pinned?: boolean;
   onTogglePin?: () => void;
+  aiAgent?: 'claude' | 'gemini' | 'codex';
 };
 
 let sessionCounter = 0;
 
-export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContextConsumed, mountEntries = [], onClearMounted, onRemoveMountedEntry, connectedSessions = [], defaultSshSession, pinned = true, onTogglePin }) => {
+export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContextConsumed, mountEntries = [], onClearMounted, onRemoveMountedEntry, connectedSessions = [], defaultSshSession, pinned = true, onTogglePin, aiAgent = 'claude' }) => {
+  // 채팅창 내에서 독립적으로 전환 가능한 에이전트 (전역 설정과 분리)
+  const [currentAgent, setCurrentAgentState] = useState<AgentType>(aiAgent);
+  const currentAgentRef = useRef<AgentType>(aiAgent);
+  const setCurrentAgent = (a: AgentType) => { currentAgentRef.current = a; setCurrentAgentState(a); };
+  // 전역 설정이 바뀌면 현재 에이전트도 동기화
+  useEffect(() => { setCurrentAgent(aiAgent); }, [aiAgent]);
   const { t: tt } = useTranslation('claudeChat');
   // 사용자가 선택한 활성 SSH 세션 (드롭다운). 처음엔 defaultSshSession.
   const [selectedSshTermId, setSelectedSshTermId] = useState<string | null>(defaultSshSession?.termId || null);
@@ -305,7 +314,6 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const [usageProbe, setUsageProbe] = useState<string | null>(null);
   const [usageProbeLoading, setUsageProbeLoading] = useState(false);
   const [usageProbeExpanded, setUsageProbeExpanded] = useState(false);
-  const [claudeSettingsModel, setClaudeSettingsModel] = useState<string>(''); void claudeSettingsModel;
   // 마운트 시 ~/.claude/settings.json 읽어 model 자동 설정
   useEffect(() => {
     (async () => {
@@ -313,7 +321,6 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         const r: any = await (window as any).api?.claudeReadSettings?.();
         if (r?.success && r.settings?.model) {
           const m = String(r.settings.model);
-          setClaudeSettingsModel(m);
           // settings 의 model 값을 select 옵션으로 매핑
           // "claude-opus-4-7[1m]" / "opus[1m]" → "opus[1m]"
           // "claude-sonnet-4-6[1m]" / "sonnet[1m]" → "sonnet[1m]"
@@ -471,8 +478,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       if (!perToolApproval) setPerToolApproval(true);
     }
   }, [permissionMode]);
-  // 모델 선택 — claude CLI --model 플래그
-  const [model, setModel] = useState<string>('opus');
+  // 모델 선택 — 에이전트별 기본 모델
+  const defaultModelFor = (a: AgentType) => a === 'gemini' ? 'gemini-2.5-pro' : a === 'codex' ? 'gpt-5.5' : 'opus';
+  const [model, setModel] = useState<string>(defaultModelFor(aiAgent));
   const [commandMenuOpen, setCommandMenuOpen] = useState(false);
   const [commandFilter, setCommandFilter] = useState('');
   const [commandHighlight, setCommandHighlight] = useState(0);
@@ -513,14 +521,18 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     setActiveHistoryId(id);
   }, []);
 
-  // CLI 설치 확인
+  // CLI 설치 확인 (currentAgent 변경 시마다 재확인)
   useEffect(() => {
     (async () => {
-      const res = await (window as any).api?.claudeCheck?.();
+      const res = currentAgent === 'gemini'
+        ? await (window as any).api?.geminiCheck?.()
+        : currentAgent === 'codex'
+        ? await (window as any).api?.codexCheck?.()
+        : await (window as any).api?.claudeCheck?.();
       setInstalled(!!res?.installed);
       setVersion(res?.version || '');
     })();
-  }, []);
+  }, [currentAgent]);
 
   // Hook 승인 요청 리스너
   useEffect(() => {
@@ -685,7 +697,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               return prev.map(m => m.id === msgId ? { ...m, content: texts } : m);
             }
             currentAsstIdRef.current = msgId;
-            return [...prev, { role: 'assistant', content: texts, id: msgId, seq: nextSeq() }];
+            return [...prev, { role: 'assistant', content: texts, id: msgId, seq: nextSeq(), agent: currentAgentRef.current }];
           });
         } else if (thinkings.length > 0 && toolUses.length === 0) {
           setActivity(tt('thinking'));
@@ -725,7 +737,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           setChatHistory(hList => hList.map(h => h.id === aid ? { ...h, streaming: false, pendingRequestId: null } : h));
         }
       } else if (msg.type === 'error') {
-        setMessages(prev => [...prev, { role: 'assistant', content: `❌ ${msg.text}`, id: `err-${Date.now()}`, seq: nextSeq() }]);
+        setMessages(prev => [...prev, { role: 'assistant', content: `❌ ${msg.text}`, id: `err-${Date.now()}`, seq: nextSeq(), agent: currentAgentRef.current }]);
         setStreaming(false);
         activeRequestIdRef.current = null;
         if (reqId) requestToHistoryRef.current.delete(reqId);
@@ -739,7 +751,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           if (asstId) return prev.map(m => m.id === asstId ? { ...m, content: m.content + msg.text } : m);
           const newId = `asst-${Date.now()}`;
           currentAsstIdRef.current = newId;
-          return [...prev, { role: 'assistant', content: msg.text, id: newId, seq: nextSeq() }];
+          return [...prev, { role: 'assistant', content: msg.text, id: newId, seq: nextSeq(), agent: currentAgentRef.current }];
         });
       }
     });
@@ -1110,9 +1122,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       attachBadge = `🔗 활성 SSH: ${activeMount.label}\n\n`;
     }
 
-    // 0.7) 포크/리로드된 대화 — claudeSessionId 가 없는데 이전 메시지가 있으면 컨텍스트로 inject.
-    // (--resume 가 없으므로 Claude 는 이전 대화를 모름. 이를 prompt 에 명시해야 일관성 유지.)
-    if (!claudeSessionIdRef.current && messages.length > 0) {
+    // 0.7) 포크/리로드된 대화 — 이전 메시지가 있으면 컨텍스트로 inject.
+    // Claude: --resume 없이 새 세션이면 주입. Gemini/Codex: 항상 주입 (세션 개념 없음).
+    if ((currentAgent !== 'claude' || !claudeSessionIdRef.current) && messages.length > 0) {
       // 메시지와 툴 호출을 seq 순으로 인터리브
       type TItem = { seq: number; kind: 'msg'; m: Message } | { seq: number; kind: 'tool'; t: ToolTimelineItem };
       const items: TItem[] = [
@@ -1130,7 +1142,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       const transcriptLines: string[] = [];
       for (const it of items) {
         if (it.kind === 'msg') {
-          const who = it.m.role === 'user' ? '사용자' : 'Claude';
+          const who = it.m.role === 'user' ? '사용자' : it.m.agent === 'gemini' ? 'Gemini' : it.m.agent === 'codex' ? 'Codex' : 'Claude';
           transcriptLines.push(`### ${who}`, sanitizeUNC(it.m.content), '');
         } else {
           const status = it.t.status === 'done' ? '✓' : it.t.status === 'error' ? '✕' : '⏳';
@@ -1141,10 +1153,10 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       }
       contextLines.push(
         `# 이전 대화 내역 (포크/이어쓰기 — 매우 중요)`,
-        `당신(Claude)은 새 CLI 세션에서 시작했지만, 사용자는 아래 대화의 연속으로 이번 질문을 합니다.`,
+        `당신(${currentAgent === 'gemini' ? 'Gemini' : currentAgent === 'codex' ? 'Codex' : 'Claude'})은 새 CLI 세션에서 시작했지만, 사용자는 아래 대화의 연속으로 이번 질문을 합니다.`,
         `**핵심 지침:**`,
-        `- 이번 질문의 작업/분석 **대상은 아래 transcript 에서 사용자가 다루던 그 코드/시스템**입니다 (transcript 의 Claude 답변 안에 명시된 경로/모듈/구조).`,
-        `- 절대로 다른 프로젝트(특히 Claude 프로세스의 cwd 인 Electron 앱)를 분석/탐색하지 마세요.`,
+        `- 이번 질문의 작업/분석 **대상은 아래 transcript 에서 사용자가 다루던 그 코드/시스템**입니다 (transcript 의 ${currentAgent === 'gemini' ? 'Gemini' : currentAgent === 'codex' ? 'Codex' : 'Claude'} 답변 안에 명시된 경로/모듈/구조).`,
+        `- 절대로 다른 프로젝트(특히 ${currentAgent === 'gemini' ? 'Gemini' : currentAgent === 'codex' ? 'Codex' : 'Claude'} 프로세스의 cwd 인 Electron 앱)를 분석/탐색하지 마세요.`,
         `- 이전에 분석/탐색한 내용은 이미 알고 있는 것으로 간주하고 그 결과를 활용하세요.`,
         `- 동일한 파일/디렉토리를 다시 읽거나 탐색하지 마세요. 필요하면 이전 결과를 참조하세요.`,
         `- 사용자에게 "이전 대화를 다시 알려주세요" 같은 요청을 하지 마세요.`,
@@ -1243,7 +1255,13 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     // 전송 후 로컬 파일 첨부는 해제
     setLocalFileAttachments([]);
     try {
-      await (window as any).api?.claudeSend?.(sessionId, prompt, addDirs, disallowBash, sshTermId, resumeSessionId, effectivePermMode, model, perToolApproval, requestId, effort);
+      if (currentAgent === 'gemini') {
+        await (window as any).api?.geminiSend?.(sessionId, prompt, requestId, model);
+      } else if (currentAgent === 'codex') {
+        await (window as any).api?.codexSend?.(sessionId, prompt, requestId, model);
+      } else {
+        await (window as any).api?.claudeSend?.(sessionId, prompt, addDirs, disallowBash, sshTermId, resumeSessionId, effectivePermMode, model, perToolApproval, requestId, effort);
+      }
     } catch (err: any) {
       setMessages(prev => [...prev, { role: 'assistant', content: `❌ ${err}`, id: `err-${Date.now()}`, seq: nextSeq() }]);
       setStreaming(false);
@@ -1276,7 +1294,15 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const stop = () => {
     // 명시적 중단 — 활성 대화의 프로세스만 죽임
     const reqId = activeRequestIdRef.current;
-    try { (window as any).api?.claudeStop?.(sessionId, reqId || undefined); } catch {}
+    try {
+      if (currentAgent === 'gemini') {
+        (window as any).api?.geminiStop?.(sessionId, reqId || undefined);
+      } else if (currentAgent === 'codex') {
+        (window as any).api?.codexStop?.(sessionId, reqId || undefined);
+      } else {
+        (window as any).api?.claudeStop?.(sessionId, reqId || undefined);
+      }
+    } catch {}
     if (reqId) requestToHistoryRef.current.delete(reqId);
     activeRequestIdRef.current = null;
     setStreaming(false);
@@ -1342,7 +1368,15 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     // 삭제 대상 history 의 진행 중 프로세스 종료 + 매핑 정리
     for (const [reqId, hid] of Array.from(requestToHistoryRef.current.entries())) {
       if (hid === id) {
-        try { (window as any).api?.claudeStop?.(sessionId, reqId); } catch {}
+        try {
+          if (currentAgent === 'gemini') {
+            (window as any).api?.geminiStop?.(sessionId, reqId);
+          } else if (currentAgent === 'codex') {
+            (window as any).api?.codexStop?.(sessionId, reqId);
+          } else {
+            (window as any).api?.claudeStop?.(sessionId, reqId);
+          }
+        } catch {}
         requestToHistoryRef.current.delete(reqId);
       }
     }
@@ -1366,9 +1400,18 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     console.log('[ClaudeChat] approvePlan, streaming=', streaming);
     if (streaming) {
       pendingApprovalSendRef.current = text;
-      // claudeStop 으로 진행 중 프로세스 종료 (있다면) — end_turn 이미 됐으면 no-op
       const reqId = activeRequestIdRef.current;
-      if (reqId) { try { (window as any).api?.claudeStop?.(sessionId, reqId); } catch {} }
+      if (reqId) {
+        try {
+          if (currentAgent === 'gemini') {
+            (window as any).api?.geminiStop?.(sessionId, reqId);
+          } else if (currentAgent === 'codex') {
+            (window as any).api?.codexStop?.(sessionId, reqId);
+          } else {
+            (window as any).api?.claudeStop?.(sessionId, reqId);
+          }
+        } catch {}
+      }
     } else {
       send(text, []);
     }
@@ -1528,19 +1571,35 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   };
 
   if (installed === null) {
-    return <div className="claude-chat-container"><div className="claude-chat-loading">{tt('loading')}</div></div>;
+    return <div className="claude-chat-container"><div className="claude-chat-loading">{currentAgent === 'gemini' ? tt('loadingGemini') : currentAgent === 'codex' ? tt('loadingCodex') : tt('loading')}</div></div>;
   }
   if (!installed) {
+    const agentIcon = currentAgent === 'gemini' ? '✨ Gemini' : currentAgent === 'codex' ? '🧠 Codex' : '🤖 Claude';
+    const notInstalledMsg = currentAgent === 'gemini' ? tt('notInstalledGemini') : currentAgent === 'codex' ? tt('notInstalledCodex') : tt('notInstalled');
     return (
       <div className="claude-chat-container">
         <div className="claude-chat-header">
-          <span>🤖 Claude</span>
+          <span>{agentIcon}</span>
           {onClose && <button className="claude-chat-close" onClick={onClose}>×</button>}
         </div>
         <div className="claude-chat-notinstalled">
-          <p>{tt('notInstalled')}</p>
-          <p>{tt('installCmd')} <code>npm install -g @anthropic-ai/claude-code</code></p>
-          <p>{tt('loginHint', { cmd: 'claude' })}</p>
+          <p>{notInstalledMsg}</p>
+          {currentAgent === 'gemini' ? (
+            <>
+              <p>{tt('installCmd')} <code>npm install -g @google/gemini-cli</code></p>
+              <p>{tt('loginHint', { cmd: 'gemini' })}</p>
+            </>
+          ) : currentAgent === 'codex' ? (
+            <>
+              <p>{tt('installCmd')} <code>npm install -g @openai/codex</code></p>
+              <p>{tt('loginHint', { cmd: 'codex' })}</p>
+            </>
+          ) : (
+            <>
+              <p>{tt('installCmd')} <code>npm install -g @anthropic-ai/claude-code</code></p>
+              <p>{tt('loginHint', { cmd: 'claude' })}</p>
+            </>
+          )}
         </div>
       </div>
     );
@@ -1551,7 +1610,24 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   return (
     <div className="claude-chat-container">
       <div className="claude-chat-header">
-        <span>🤖 Claude <span className="claude-chat-version">{version}</span></span>
+        <div className="claude-chat-agent-switcher">
+          <button
+            className={`claude-chat-agent-btn ${currentAgent === 'claude' ? 'active' : ''}`}
+            title="Claude Code"
+            onClick={() => { if (currentAgent !== 'claude') { setCurrentAgent('claude'); setModel(defaultModelFor('claude')); } }}
+          >🤖</button>
+          <button
+            className={`claude-chat-agent-btn ${currentAgent === 'gemini' ? 'active' : ''}`}
+            title="Gemini"
+            onClick={() => { if (currentAgent !== 'gemini') { setCurrentAgent('gemini'); setModel(defaultModelFor('gemini')); } }}
+          >✨</button>
+          <button
+            className={`claude-chat-agent-btn ${currentAgent === 'codex' ? 'active' : ''}`}
+            title="Codex"
+            onClick={() => { if (currentAgent !== 'codex') { setCurrentAgent('codex'); setModel(defaultModelFor('codex')); } }}
+          >🧠</button>
+        </div>
+        {version && <span className="claude-chat-version" style={{ marginLeft: 4, color: '#666', fontSize: 11 }}>{version}</span>}
         <div className="claude-chat-header-actions">
           <button onClick={startNewConversation} title={tt('newConversation')}>＋</button>
           <button onClick={() => setShowHistoryPanel(v => !v)} title={tt('historyToggle')} className={showHistoryPanel ? 'active' : ''}>≡</button>
@@ -1903,7 +1979,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                 }
               }}
             >
-              <div className="claude-chat-msg-role">{g.m.role === 'user' ? '👤 You' : '🤖 Claude'}</div>
+              <div className="claude-chat-msg-role">{g.m.role === 'user' ? '👤 You' : (g.m.agent || currentAgent) === 'gemini' ? '✨ Gemini' : (g.m.agent || currentAgent) === 'codex' ? '🧠 Codex' : '🤖 Claude'}</div>
               <div
                 className="claude-chat-msg-content"
                 dangerouslySetInnerHTML={{ __html: renderMd(g.m.content) }}
@@ -2114,73 +2190,103 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               </div>
             )}
           </div>
-          <select
-            className="claude-chat-perm-select"
-            value={model}
-            onChange={e => setModel(e.target.value)}
-            title={tt('modelSelect')}
-          >
-            {availableModels.length > 0 ? (() => {
-              // API 응답을 정렬 — 최신 (created_at desc), Opus → Sonnet → Haiku 순
-              const tier = (id: string) => /opus/i.test(id) ? 0 : /sonnet/i.test(id) ? 1 : /haiku/i.test(id) ? 2 : 3;
-              const sorted = [...availableModels].sort((a, b) => {
-                const t = tier(a.id) - tier(b.id);
-                if (t !== 0) return t;
-                return (b.id.localeCompare(a.id));
-              });
-              const opts: JSX.Element[] = [];
-              for (const m of sorted) {
-                const icon = /opus/i.test(m.id) ? '🟣' : /sonnet/i.test(m.id) ? '🔵' : /haiku/i.test(m.id) ? '⚡' : '🤖';
-                const has1M = (m.max_input_tokens || 0) >= 1_000_000;
-                // 짧은 alias 가 있으면 그것을 value 로 — opus, sonnet, haiku
-                const shortAlias = /opus-4-7/i.test(m.id) ? 'opus' : /sonnet-4-6/i.test(m.id) ? 'sonnet' : /haiku-4-5/i.test(m.id) ? 'haiku' : m.id;
-                if (has1M) {
-                  opts.push(<option key={m.id + '-200k'} value={shortAlias}>{icon} {m.display_name} (200k)</option>);
-                  opts.push(<option key={m.id + '-1m'} value={shortAlias === m.id ? `${shortAlias}[1m]` : `${shortAlias}[1m]`}>{icon} {m.display_name} 1M</option>);
-                } else {
-                  opts.push(<option key={m.id} value={shortAlias}>{icon} {m.display_name}</option>);
-                }
-              }
-              return opts;
-            })() : (
-              <>
-                <option value="opus">🟣 Opus 4.7</option>
-                <option value="opus[1m]">🟣 Opus 4.7 1M</option>
-                <option value="sonnet">🔵 Sonnet 4.6</option>
-                <option value="haiku">⚡ Haiku 4.5</option>
-                <option value="claude-opus-4-6">🕘 Opus 4.6 레거시</option>
-              </>
-            )}
-          </select>
-          <select
-            className="claude-chat-perm-select"
-            value={effort}
-            onChange={e => setEffort(e.target.value)}
-            title={tt('effortTitle')}
-          >
-            {(() => {
-              // 모델별 지원 effort 레벨 — 첫 번째 모델의 capabilities.effort 참고
-              const supported = availableModels[0]?.capabilities?.effort;
-              const labels: Record<string, string> = { low: tt('effort.low'), medium: tt('effort.medium'), high: tt('effort.high'), max: tt('effort.max') };
-              const all = ['low', 'medium', 'high', 'max'];
-              const enabled = supported ? all.filter(k => supported[k]?.supported) : all;
-              return enabled.map(v => <option key={v} value={v}>{labels[v]}</option>);
-            })()}
-          </select>
-          <label className="claude-chat-tool-approval-label" title={tt('toolApprovalTitle')}>
-            <input type="checkbox" checked={perToolApproval} onChange={e => setPerToolApproval(e.target.checked)} />
-            {tt('toolApprovalLabel')}
-          </label>
-          <select
-            className="claude-chat-perm-select"
-            value={permissionMode}
-            onChange={e => setPermissionMode(e.target.value as any)}
-            title={tt('permissionTitle')}
-          >
-            <option value="default">{tt('perm.default')}</option>
-            <option value="acceptEdits">{tt('perm.acceptEdits')}</option>
-            <option value="plan">{tt('perm.plan')}</option>
-          </select>
+          {currentAgent === 'gemini' ? (
+            <select
+              className="claude-chat-perm-select"
+              value={model}
+              onChange={e => setModel(e.target.value)}
+              title="Gemini 모델 선택"
+            >
+              <option value="gemini-3.1-pro">✨ Gemini 3.1 Pro</option>
+              <option value="gemini-3.1-pro-preview">✨ Gemini 3.1 Pro Preview</option>
+              <option value="gemini-3.1-flash-lite-preview">⚡ Gemini 3.1 Flash Lite</option>
+              <option value="gemini-3-pro">✨ Gemini 3 Pro</option>
+              <option value="gemini-3-flash-preview">⚡ Gemini 3 Flash</option>
+              <option value="gemini-2.5-pro">🔵 Gemini 2.5 Pro</option>
+              <option value="gemini-2.5-flash">⚡ Gemini 2.5 Flash</option>
+              <option value="gemini-2.5-flash-lite">⚡ Gemini 2.5 Flash Lite</option>
+            </select>
+          ) : currentAgent === 'codex' ? (
+            <select
+              className="claude-chat-perm-select"
+              value={model}
+              onChange={e => setModel(e.target.value)}
+              title="Codex 모델 선택"
+            >
+              <option value="gpt-5.5">🚀 GPT-5.5</option>
+              <option value="gpt-5.4">🔵 GPT-5.4</option>
+              <option value="gpt-5.4-mini">⚡ GPT-5.4 Mini</option>
+              <option value="gpt-5.3-codex">🧠 GPT-5.3 Codex</option>
+              <option value="gpt-5.2">🟣 GPT-5.2</option>
+            </select>
+          ) : (
+            <>
+              <select
+                className="claude-chat-perm-select"
+                value={model}
+                onChange={e => setModel(e.target.value)}
+                title={tt('modelSelect')}
+              >
+                {availableModels.length > 0 ? (() => {
+                  const tier = (id: string) => /opus/i.test(id) ? 0 : /sonnet/i.test(id) ? 1 : /haiku/i.test(id) ? 2 : 3;
+                  const sorted = [...availableModels].sort((a, b) => {
+                    const t = tier(a.id) - tier(b.id);
+                    if (t !== 0) return t;
+                    return (b.id.localeCompare(a.id));
+                  });
+                  const opts: JSX.Element[] = [];
+                  for (const m of sorted) {
+                    const icon = /opus/i.test(m.id) ? '🟣' : /sonnet/i.test(m.id) ? '🔵' : /haiku/i.test(m.id) ? '⚡' : '🤖';
+                    const has1M = (m.max_input_tokens || 0) >= 1_000_000;
+                    const shortAlias = /opus-4-7/i.test(m.id) ? 'opus' : /sonnet-4-6/i.test(m.id) ? 'sonnet' : /haiku-4-5/i.test(m.id) ? 'haiku' : m.id;
+                    if (has1M) {
+                      opts.push(<option key={m.id + '-200k'} value={shortAlias}>{icon} {m.display_name} (200k)</option>);
+                      opts.push(<option key={m.id + '-1m'} value={`${shortAlias}[1m]`}>{icon} {m.display_name} 1M</option>);
+                    } else {
+                      opts.push(<option key={m.id} value={shortAlias}>{icon} {m.display_name}</option>);
+                    }
+                  }
+                  return opts;
+                })() : (
+                  <>
+                    <option value="opus">🟣 Opus 4.7</option>
+                    <option value="opus[1m]">🟣 Opus 4.7 1M</option>
+                    <option value="sonnet">🔵 Sonnet 4.6</option>
+                    <option value="haiku">⚡ Haiku 4.5</option>
+                    <option value="claude-opus-4-6">🕘 Opus 4.6 레거시</option>
+                  </>
+                )}
+              </select>
+              <select
+                className="claude-chat-perm-select"
+                value={effort}
+                onChange={e => setEffort(e.target.value)}
+                title={tt('effortTitle')}
+              >
+                {(() => {
+                  const supported = availableModels[0]?.capabilities?.effort;
+                  const labels: Record<string, string> = { low: tt('effort.low'), medium: tt('effort.medium'), high: tt('effort.high'), max: tt('effort.max') };
+                  const all = ['low', 'medium', 'high', 'max'];
+                  const enabled = supported ? all.filter(k => supported[k]?.supported) : all;
+                  return enabled.map(v => <option key={v} value={v}>{labels[v]}</option>);
+                })()}
+              </select>
+              <label className="claude-chat-tool-approval-label" title={tt('toolApprovalTitle')}>
+                <input type="checkbox" checked={perToolApproval} onChange={e => setPerToolApproval(e.target.checked)} />
+                {tt('toolApprovalLabel')}
+              </label>
+              <select
+                className="claude-chat-perm-select"
+                value={permissionMode}
+                onChange={e => setPermissionMode(e.target.value as any)}
+                title={tt('permissionTitle')}
+              >
+                <option value="default">{tt('perm.default')}</option>
+                <option value="acceptEdits">{tt('perm.acceptEdits')}</option>
+                <option value="plan">{tt('perm.plan')}</option>
+              </select>
+            </>
+          )}
         </div>
         <textarea
           className="claude-chat-input"
