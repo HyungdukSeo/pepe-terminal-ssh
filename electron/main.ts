@@ -2290,6 +2290,25 @@ const codexProcesses: Map<string, any> = new Map();
 
 // GUI .app 실행 환경의 minimal PATH 보강 — npm global bin / Homebrew / nvm 경로 추가.
 // claude:send 와 claude:check 양쪽에서 사용. nvm 은 versions/node/* glob 으로 모든 버전 bin 포함.
+// nvm alias 체인 resolve → 활성 버전의 bin 경로 반환
+function resolveNvmActiveBin(nvmDir: string): string | null {
+  try {
+    const aliasFile = path.join(nvmDir, 'alias', 'default');
+    if (!fs.existsSync(aliasFile)) return null;
+    let cur = fs.readFileSync(aliasFile, 'utf-8').trim();
+    for (let i = 0; i < 5; i++) {
+      if (cur.startsWith('v')) {
+        const binPath = path.join(nvmDir, 'versions', 'node', cur, 'bin');
+        return fs.existsSync(binPath) ? binPath : null;
+      }
+      const next = path.join(nvmDir, 'alias', cur);
+      if (!fs.existsSync(next)) break;
+      cur = fs.readFileSync(next, 'utf-8').trim();
+    }
+  } catch {}
+  return null;
+}
+
 function buildAugmentedPath(): string {
   const isWin = process.platform === 'win32';
   const extraPaths: string[] = [];
@@ -2300,15 +2319,32 @@ function buildAugmentedPath(): string {
   } else {
     const home = os.homedir();
     extraPaths.push('/usr/local/bin', '/opt/homebrew/bin', path.join(home, '.npm-global', 'bin'), path.join(home, '.volta', 'bin'));
-    // nvm — ~/.nvm/versions/node/<ver>/bin 탐색
+    // nvm — alias/default 체인으로 활성 버전 bin 먼저, 나머지 버전도 폴백으로 추가
     try {
-      const nvmRoot = path.join(home, '.nvm', 'versions', 'node');
+      const nvmDir = path.join(home, '.nvm');
+      const activeBin = resolveNvmActiveBin(nvmDir);
+      if (activeBin) extraPaths.unshift(activeBin); // 활성 버전 최우선
+      const nvmRoot = path.join(nvmDir, 'versions', 'node');
       if (fs.existsSync(nvmRoot)) {
-        for (const v of fs.readdirSync(nvmRoot)) {
-          extraPaths.push(path.join(nvmRoot, v, 'bin'));
+        for (const v of fs.readdirSync(nvmRoot).filter((v: string) => v.startsWith('v'))) {
+          const p = path.join(nvmRoot, v, 'bin');
+          if (p !== activeBin) extraPaths.push(p);
         }
       }
     } catch {}
+    // fnm — ~/.local/share/fnm/node-versions/<ver>/installation/bin
+    try {
+      const fnmRoot = path.join(home, '.local', 'share', 'fnm', 'node-versions');
+      if (fs.existsSync(fnmRoot)) {
+        for (const v of fs.readdirSync(fnmRoot).filter((v: string) => v.startsWith('v'))) {
+          extraPaths.push(path.join(fnmRoot, v, 'installation', 'bin'));
+        }
+      }
+    } catch {}
+    // n (node version manager) — /usr/local/lib/node_modules/.bin
+    extraPaths.push('/usr/local/lib/node_modules/.bin');
+    // Homebrew prefix (Apple Silicon vs Intel)
+    extraPaths.push('/opt/homebrew/bin', '/usr/local/bin');
   }
   const sep = isWin ? ';' : ':';
   return [process.env.PATH || '', ...extraPaths].filter(Boolean).join(sep);
@@ -2894,13 +2930,14 @@ ipcMain.handle('claude:stop', (_e, { sessionId, requestId }: { sessionId: string
   return { success: true };
 });
 
+
 ipcMain.handle('gemini:check', async () => {
   try {
     const { spawn } = require('child_process');
     const augmentedPath = buildAugmentedPath();
     const env = { ...process.env, PATH: augmentedPath, Path: augmentedPath };
     return await new Promise<{ installed: boolean; version?: string }>(resolve => {
-      const proc = spawn('gemini', ['--version'], { shell: true, env });
+      const proc = spawn('gemini', ['--version'], { shell: true, env, stdio: ['ignore', 'pipe', 'pipe'] });
       let output = '';
       proc.stdout?.on('data', (d: Buffer) => { output += d.toString(); });
       proc.on('error', () => resolve({ installed: false }));
@@ -2941,11 +2978,10 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
     const modelFlag = model ? ` -m ${model}` : '';
     const yoloFlag = yolo !== false ? ' --yolo' : '';
     const isWin = process.platform === 'win32';
+    const cwd = process.env.USERPROFILE || process.env.HOME || os.homedir();
     const shellCmd = isWin
       ? `chcp 65001 >nul && type "${tmpFile}" | gemini${modelFlag}${yoloFlag}`
       : `cat "${tmpFile}" | gemini${modelFlag}${yoloFlag}`;
-
-    const cwd = process.env.USERPROFILE || process.env.HOME || os.homedir();
     const proc = spawn(shellCmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd });
     geminiProcesses.set(procKey, proc);
 
@@ -3027,7 +3063,7 @@ ipcMain.handle('codex:check', async () => {
     const augmentedPath = buildAugmentedPath();
     const env = { ...process.env, PATH: augmentedPath, Path: augmentedPath };
     return await new Promise<{ installed: boolean; version?: string }>(resolve => {
-      const proc = spawn('codex', ['--version'], { shell: true, env });
+      const proc = spawn('codex', ['--version'], { shell: true, env, stdio: ['ignore', 'pipe', 'pipe'] });
       let output = '';
       proc.stdout?.on('data', (d: Buffer) => { output += d.toString(); });
       proc.on('error', () => resolve({ installed: false }));
@@ -3069,15 +3105,14 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
     // suggest → read-only, auto-edit/full-auto → danger-full-access (파일 쓰기 허용)
     const fullAccess = approvalPolicy === 'auto-edit' || approvalPolicy === 'full-auto';
     const isWin = process.platform === 'win32';
-    const shellCmd = isWin
-      ? fullAccess
-        ? `chcp 65001 >nul && type "${tmpFile}" | codex exec${modelFlag} --skip-git-repo-check --sandbox danger-full-access`
-        : `chcp 65001 >nul && type "${tmpFile}" | codex exec${modelFlag} --skip-git-repo-check -c "sandbox_permissions=[\\"disk-full-read-access\\",\\"network-full-access\\"]"`
-      : fullAccess
-        ? `cat "${tmpFile}" | codex exec${modelFlag} --skip-git-repo-check --sandbox danger-full-access`
-        : `cat "${tmpFile}" | codex exec${modelFlag} --skip-git-repo-check -c 'sandbox_permissions=["disk-full-read-access","network-full-access"]'`;
-
     const cwd = process.env.USERPROFILE || process.env.HOME || os.homedir();
+    const macInnerCmd = fullAccess
+      ? `cat "${tmpFile}" | codex exec${modelFlag} --skip-git-repo-check --sandbox danger-full-access`
+      : `cat "${tmpFile}" | codex exec${modelFlag} --skip-git-repo-check -c 'sandbox_permissions=["disk-full-read-access","network-full-access"]'`;
+    const winCmd = fullAccess
+      ? `chcp 65001 >nul && type "${tmpFile}" | codex exec${modelFlag} --skip-git-repo-check --sandbox danger-full-access`
+      : `chcp 65001 >nul && type "${tmpFile}" | codex exec${modelFlag} --skip-git-repo-check -c "sandbox_permissions=[\\"disk-full-read-access\\",\\"network-full-access\\"]"`;
+    const shellCmd = isWin ? winCmd : macInnerCmd;
     const proc = spawn(shellCmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd });
     codexProcesses.set(procKey, proc);
 

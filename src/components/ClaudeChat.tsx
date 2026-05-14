@@ -562,6 +562,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
 
   // CLI 설치 확인 (currentAgent 변경 시마다 재확인)
   useEffect(() => {
+    setInstalled(null); // 에이전트 전환 시 로딩 상태로 초기화
+    setVersion('');
     (async () => {
       const res = currentAgent === 'gemini'
         ? await (window as any).api?.geminiCheck?.()
