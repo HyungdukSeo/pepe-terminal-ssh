@@ -1,6 +1,10 @@
 {
   "loading": "Vérification de Claude CLI...",
+  "loadingGemini": "Vérification de Gemini CLI...",
+  "loadingCodex": "Vérification de Codex CLI...",
   "notInstalled": "Claude Code CLI n'est pas installé.",
+  "notInstalledGemini": "Gemini CLI n'est pas installé.",
+  "notInstalledCodex": "Codex CLI n'est pas installé.",
   "installCmd": "Installer :",
   "loginHint": "Connexion : exécutez {{cmd}} dans le terminal",
   "newConversation": "Nouvelle conversation",
@@ -154,5 +158,19 @@
     "effortMax": "Effort : max"
   },
   "pinnedSection": "📌 Épinglés",
-  "recentsSection": "🕒 Récents"
+  "recentsSection": "🕒 Récents",
+  "askPlaceholderGemini": "Demandez à Gemini.",
+  "askEditorHintGemini": "Clic droit sur un fichier/dossier dans l'arborescence → « Joindre à Claude » pour transmettre le contexte.",
+  "askPlaceholderCodex": "Demandez à Codex.",
+  "askEditorHintCodex": "Clic droit sur un fichier/dossier dans l'arborescence → « Joindre à Claude » pour transmettre le contexte.",
+  "geminiModelSelect": "",
+  "geminiAutoApprove": "",
+  "geminiAutoApproveTitle": "",
+  "codexModelSelect": "",
+  "codexApprovalTitle": "",
+  "codexApproval": {
+    "suggest": "",
+    "autoEdit": "",
+    "fullAuto": ""
+  }
 }

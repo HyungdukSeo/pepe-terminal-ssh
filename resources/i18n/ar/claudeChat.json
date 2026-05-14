@@ -1,6 +1,10 @@
 {
   "loading": "جارٍ التحقق من Claude CLI...",
+  "loadingGemini": "جارٍ التحقق من Gemini CLI...",
+  "loadingCodex": "جارٍ التحقق من Codex CLI...",
   "notInstalled": "واجهة سطر الأوامر Claude Code غير مثبتة.",
+  "notInstalledGemini": "Gemini CLI غير مثبت.",
+  "notInstalledCodex": "Codex CLI غير مثبت.",
   "installCmd": "التثبيت:",
   "loginHint": "تسجيل الدخول: شغّل {{cmd}} في الطرفية",
   "newConversation": "محادثة جديدة",
@@ -154,5 +158,19 @@
     "effortMax": "الجهد: أقصى"
   },
   "pinnedSection": "📌 المثبتة",
-  "recentsSection": "🕒 الأخيرة"
+  "recentsSection": "🕒 الأخيرة",
+  "askPlaceholderGemini": "اسأل Gemini.",
+  "askEditorHintGemini": "انقر بزر الفأرة الأيمن على ملف/مجلد في شجرة الملفات ← \"إرفاق إلى Claude\" لتمرير السياق.",
+  "askPlaceholderCodex": "اسأل Codex.",
+  "askEditorHintCodex": "انقر بزر الفأرة الأيمن على ملف/مجلد في شجرة الملفات ← \"إرفاق إلى Claude\" لتمرير السياق.",
+  "geminiModelSelect": "",
+  "geminiAutoApprove": "",
+  "geminiAutoApproveTitle": "",
+  "codexModelSelect": "",
+  "codexApprovalTitle": "",
+  "codexApproval": {
+    "suggest": "",
+    "autoEdit": "",
+    "fullAuto": ""
+  }
 }

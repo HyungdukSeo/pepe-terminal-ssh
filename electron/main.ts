@@ -1790,6 +1790,26 @@ app.on('before-quit', () => {
     } catch {}
   }
   claudeProcesses.clear();
+  for (const proc of geminiProcesses.values()) {
+    try {
+      if (process.platform === 'win32') {
+        require('child_process').spawn('taskkill', ['/pid', String(proc.pid), '/T', '/F']);
+      } else {
+        proc.kill('SIGTERM');
+      }
+    } catch {}
+  }
+  geminiProcesses.clear();
+  for (const proc of codexProcesses.values()) {
+    try {
+      if (process.platform === 'win32') {
+        require('child_process').spawn('taskkill', ['/pid', String(proc.pid), '/T', '/F']);
+      } else {
+        proc.kill('SIGTERM');
+      }
+    } catch {}
+  }
+  codexProcesses.clear();
 });
 
 let shellsCache: { name: string; path: string; icon?: string }[] | null = null;
@@ -2261,6 +2281,12 @@ app.on('before-quit', () => {
 
 // ── Claude Code CLI 연동 ──
 const claudeProcesses: Map<string, any> = new Map();
+
+// ── Gemini CLI 연동 ──
+const geminiProcesses: Map<string, any> = new Map();
+
+// ── Codex CLI 연동 ──
+const codexProcesses: Map<string, any> = new Map();
 
 // GUI .app 실행 환경의 minimal PATH 보강 — npm global bin / Homebrew / nvm 경로 추가.
 // claude:send 와 claude:check 양쪽에서 사용. nvm 은 versions/node/* glob 으로 모든 버전 bin 포함.
@@ -2864,6 +2890,288 @@ ipcMain.handle('claude:stop', (_e, { sessionId, requestId }: { sessionId: string
     } catch {}
     try { proc.kill('SIGKILL'); } catch {}
     claudeProcesses.delete(procKey);
+  }
+  return { success: true };
+});
+
+ipcMain.handle('gemini:check', async () => {
+  try {
+    const { spawn } = require('child_process');
+    const augmentedPath = buildAugmentedPath();
+    const env = { ...process.env, PATH: augmentedPath, Path: augmentedPath };
+    return await new Promise<{ installed: boolean; version?: string }>(resolve => {
+      const proc = spawn('gemini', ['--version'], { shell: true, env });
+      let output = '';
+      proc.stdout?.on('data', (d: Buffer) => { output += d.toString(); });
+      proc.on('error', () => resolve({ installed: false }));
+      proc.on('close', (code: number) => {
+        if (code === 0) resolve({ installed: true, version: output.trim() });
+        else resolve({ installed: false });
+      });
+    });
+  } catch {
+    return { installed: false };
+  }
+});
+
+ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, yolo }: { sessionId: string; prompt: string; requestId?: string; model?: string; yolo?: boolean }) => {
+  try {
+    // 같은 sessionId로 실행 중인 Codex 프로세스 정리
+    const prevCodex = codexProcesses.get(sessionId);
+    if (prevCodex) { try { prevCodex.kill('SIGKILL'); } catch {} codexProcesses.delete(sessionId); }
+    const { spawn } = require('child_process');
+    const procKey = requestId || sessionId;
+    const os = require('os');
+    const path = require('path');
+    const fs = require('fs');
+
+    const tmpFile = path.join(os.tmpdir(), `gemini-prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`);
+    fs.writeFileSync(tmpFile, prompt, 'utf-8');
+
+    const augmentedPath = buildAugmentedPath();
+    const spawnEnv = {
+      ...process.env,
+      PATH: augmentedPath,
+      Path: augmentedPath,
+      PYTHONIOENCODING: 'utf-8',
+      LANG: process.env.LANG || 'en_US.UTF-8',
+      LC_ALL: process.env.LC_ALL || 'en_US.UTF-8',
+    };
+
+    const modelFlag = model ? ` -m ${model}` : '';
+    const yoloFlag = yolo !== false ? ' --yolo' : '';
+    const isWin = process.platform === 'win32';
+    const shellCmd = isWin
+      ? `chcp 65001 >nul && type "${tmpFile}" | gemini${modelFlag}${yoloFlag}`
+      : `cat "${tmpFile}" | gemini${modelFlag}${yoloFlag}`;
+
+    const cwd = process.env.USERPROFILE || process.env.HOME || os.homedir();
+    const proc = spawn(shellCmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd });
+    geminiProcesses.set(procKey, proc);
+
+    const cleanupTmp = () => { try { fs.unlinkSync(tmpFile); } catch {} };
+
+    let stdoutBuf = '';
+    proc.stdout.setEncoding('utf-8');
+    proc.stdout.on('data', (data: string) => {
+      stdoutBuf += data;
+      const lines = stdoutBuf.split('\n');
+      stdoutBuf = lines.pop() || '';
+      for (const line of lines) {
+        if (!line) continue;
+        mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'text', text: line + '\n' } });
+      }
+    });
+    const GEMINI_NOISE = /YOLO mode is enabled|Ripgrep is not available|Falling back to GrepTool|^\s*$/;
+    let stderrBuf = '';
+    proc.stderr.on('data', (data: Buffer) => {
+      stderrBuf += data.toString();
+    });
+    proc.stderr.on('end', () => {
+      if (!stderrBuf.trim()) return;
+      const lines = stderrBuf.split('\n').filter(l => l.trim() && !GEMINI_NOISE.test(l));
+      if (!lines.length) return;
+      // 쿼터/API 에러: 사용자 친화적 메시지로 변환
+      const joined = lines.join('\n');
+      const quotaMatch = joined.match(/quota will reset after ([^\n.]+)/i);
+      if (quotaMatch) {
+        mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: `❌ Gemini API 할당량 초과. ${quotaMatch[1]} 후 재시도하세요.` } });
+        return;
+      }
+      const apiErrMatch = joined.match(/TerminalQuotaError|QUOTA_EXHAUSTED|429/);
+      if (apiErrMatch) {
+        mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: `❌ Gemini API 한도 초과 (429). 잠시 후 다시 시도하세요.` } });
+        return;
+      }
+      mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: joined } });
+    });
+    proc.on('error', (err: any) => {
+      mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: String(err) } });
+    });
+    proc.on('close', (code: number) => {
+      if (stdoutBuf) {
+        mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'text', text: stdoutBuf } });
+      }
+      cleanupTmp();
+      geminiProcesses.delete(procKey);
+      mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'done', code } });
+    });
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: String(err) };
+  }
+});
+
+ipcMain.handle('gemini:stop', (_e, { sessionId, requestId }: { sessionId: string; requestId?: string }) => {
+  const { spawn } = require('child_process');
+  const procKey = requestId || sessionId;
+  const proc = geminiProcesses.get(procKey);
+  if (proc) {
+    try {
+      if (process.platform === 'win32') {
+        const pid = proc.pid;
+        if (pid) spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+      } else {
+        try { process.kill(-proc.pid, 'SIGKILL'); } catch { try { proc.kill('SIGKILL'); } catch {} }
+      }
+    } catch {}
+    try { proc.kill('SIGKILL'); } catch {}
+    geminiProcesses.delete(procKey);
+  }
+  return { success: true };
+});
+
+ipcMain.handle('codex:check', async () => {
+  try {
+    const { spawn } = require('child_process');
+    const augmentedPath = buildAugmentedPath();
+    const env = { ...process.env, PATH: augmentedPath, Path: augmentedPath };
+    return await new Promise<{ installed: boolean; version?: string }>(resolve => {
+      const proc = spawn('codex', ['--version'], { shell: true, env });
+      let output = '';
+      proc.stdout?.on('data', (d: Buffer) => { output += d.toString(); });
+      proc.on('error', () => resolve({ installed: false }));
+      proc.on('close', (code: number) => {
+        if (code === 0) resolve({ installed: true, version: output.trim() });
+        else resolve({ installed: false });
+      });
+    });
+  } catch {
+    return { installed: false };
+  }
+});
+
+ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model }: { sessionId: string; prompt: string; requestId?: string; model?: string; approvalPolicy?: 'suggest' | 'auto-edit' | 'full-auto' }) => {
+  try {
+    // 같은 sessionId로 실행 중인 Gemini 프로세스 정리
+    const prevGemini = geminiProcesses.get(sessionId);
+    if (prevGemini) { try { prevGemini.kill('SIGKILL'); } catch {} geminiProcesses.delete(sessionId); }
+    const { spawn } = require('child_process');
+    const procKey = requestId || sessionId;
+    const os = require('os');
+    const path = require('path');
+    const fs = require('fs');
+
+    const tmpFile = path.join(os.tmpdir(), `codex-prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`);
+    fs.writeFileSync(tmpFile, prompt, 'utf-8');
+
+    const augmentedPath = buildAugmentedPath();
+    const spawnEnv = {
+      ...process.env,
+      PATH: augmentedPath,
+      Path: augmentedPath,
+      PYTHONIOENCODING: 'utf-8',
+      LANG: process.env.LANG || 'en_US.UTF-8',
+      LC_ALL: process.env.LC_ALL || 'en_US.UTF-8',
+    };
+
+    const modelFlag = model ? ` -m ${model}` : '';
+    // codex exec 서브커맨드는 --approval-policy 미지원 (인터랙티브 전용 플래그)
+    const isWin = process.platform === 'win32';
+    const shellCmd = isWin
+      ? `chcp 65001 >nul && type "${tmpFile}" | codex exec${modelFlag} --skip-git-repo-check -c "sandbox_permissions=[\"disk-full-read-access\",\"network-full-access\"]"`
+      : `cat "${tmpFile}" | codex exec${modelFlag} --skip-git-repo-check -c 'sandbox_permissions=["disk-full-read-access","network-full-access"]'`;
+
+    const cwd = process.env.USERPROFILE || process.env.HOME || os.homedir();
+    const proc = spawn(shellCmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd });
+    codexProcesses.set(procKey, proc);
+
+    const cleanupTmp = () => { try { fs.unlinkSync(tmpFile); } catch {} };
+
+    let stdoutBuf = '';
+    proc.stdout.setEncoding('utf-8');
+    // codex exec 은 stdin 프롬프트를 stdout 으로 에코하는 경우가 있음
+    // 프롬프트 구분자 이전 내용 + ERROR JSON 라인은 필터링
+    let promptEchoDone = false;
+    const PROMPT_END_MARKER = '--- 사용자 요청 ---';
+    proc.stdout.on('data', (data: string) => {
+      stdoutBuf += data;
+      // 프롬프트 에코가 끝나는 마커를 찾으면 그 이후부터만 전달
+      if (!promptEchoDone) {
+        const markerIdx = stdoutBuf.indexOf(PROMPT_END_MARKER);
+        if (markerIdx !== -1) {
+          // 마커 이후 첫 줄바꿈부터 실제 응답
+          const afterMarker = stdoutBuf.indexOf('\n', markerIdx);
+          stdoutBuf = afterMarker !== -1 ? stdoutBuf.slice(afterMarker + 1) : '';
+          promptEchoDone = true;
+        } else if (stdoutBuf.length > prompt.length + 200) {
+          // 마커 못 찾고 버퍼가 프롬프트보다 충분히 크면 에코 없는 것으로 간주
+          promptEchoDone = true;
+        } else {
+          return; // 아직 에코 중
+        }
+      }
+      const lines = stdoutBuf.split('\n');
+      stdoutBuf = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        // ERROR JSON 라인 → error 메시지로 변환
+        if (line.startsWith('ERROR:')) {
+          try {
+            const obj = JSON.parse(line.slice(6).trim());
+            const msg = obj?.error?.message || line;
+            mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: msg } });
+          } catch {
+            mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: line } });
+          }
+          continue;
+        }
+        mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'text', text: line + '\n' } });
+      }
+    });
+    // Codex stderr = 세션 헤더 + 대화 에코 (메타데이터) → 항상 버퍼링 후 에러 시에만 표시
+    let codexStderrBuf = '';
+    proc.stderr.on('data', (data: Buffer) => { codexStderrBuf += data.toString(); });
+    proc.on('error', (err: any) => {
+      mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: String(err) } });
+    });
+    proc.on('close', (code: number) => {
+      if (stdoutBuf.trim()) {
+        // 남은 버퍼도 ERROR 체크
+        if (stdoutBuf.trimStart().startsWith('ERROR:')) {
+          try {
+            const obj = JSON.parse(stdoutBuf.trimStart().slice(6).trim());
+            mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: obj?.error?.message || stdoutBuf } });
+          } catch {
+            mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: stdoutBuf } });
+          }
+        } else {
+          mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'text', text: stdoutBuf } });
+        }
+      }
+      // stdout이 비어있고 에러 종료면 stderr에서 실제 에러 메시지 추출
+      if (code !== 0 && codexStderrBuf.trim()) {
+        const CODEX_META = /^(Reading prompt from stdin|OpenAI Codex v|--------+|workdir:|model:|provider:|approval:|sandbox:|reasoning effort:|reasoning summaries:|session id:|tokens used|user$|codex$)/m;
+        const errLines = codexStderrBuf.split('\n').filter(l => l.trim() && !CODEX_META.test(l));
+        if (errLines.length) {
+          mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: errLines.join('\n') } });
+        }
+      }
+      cleanupTmp();
+      codexProcesses.delete(procKey);
+      mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'done', code } });
+    });
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: String(err) };
+  }
+});
+
+ipcMain.handle('codex:stop', (_e, { sessionId, requestId }: { sessionId: string; requestId?: string }) => {
+  const { spawn } = require('child_process');
+  const procKey = requestId || sessionId;
+  const proc = codexProcesses.get(procKey);
+  if (proc) {
+    try {
+      if (process.platform === 'win32') {
+        const pid = proc.pid;
+        if (pid) spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+      } else {
+        try { process.kill(-proc.pid, 'SIGKILL'); } catch { try { proc.kill('SIGKILL'); } catch {} }
+      }
+    } catch {}
+    try { proc.kill('SIGKILL'); } catch {}
+    codexProcesses.delete(procKey);
   }
   return { success: true };
 });

@@ -1,6 +1,10 @@
 {
   "loading": "正在检查 Claude CLI...",
+  "loadingGemini": "正在检查 Gemini CLI...",
+  "loadingCodex": "正在检查 Codex CLI...",
   "notInstalled": "未安装 Claude Code CLI。",
+  "notInstalledGemini": "Gemini CLI 未安装。",
+  "notInstalledCodex": "Codex CLI 未安装。",
   "installCmd": "安装:",
   "loginHint": "登录:在终端运行 {{cmd}}",
   "newConversation": "新建对话",
@@ -154,5 +158,19 @@
     "effortMax": "强度：最大"
   },
   "pinnedSection": "📌 已置顶",
-  "recentsSection": "🕒 最近"
+  "recentsSection": "🕒 最近",
+  "askPlaceholderGemini": "向 Gemini 提问。",
+  "askEditorHintGemini": "在文件树中右键文件/文件夹 → \"附加到 Claude\"以传递上下文。",
+  "askPlaceholderCodex": "向 Codex 提问。",
+  "askEditorHintCodex": "在文件树中右键文件/文件夹 → \"附加到 Claude\"以传递上下文。",
+  "geminiModelSelect": "",
+  "geminiAutoApprove": "",
+  "geminiAutoApproveTitle": "",
+  "codexModelSelect": "",
+  "codexApprovalTitle": "",
+  "codexApproval": {
+    "suggest": "",
+    "autoEdit": "",
+    "fullAuto": ""
+  }
 }

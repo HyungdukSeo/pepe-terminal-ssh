@@ -95,6 +95,8 @@
     "floatRestore": "Restore size",
     "autoTrackOn": "Disable PWD auto-track (sync file tree on cd)",
     "autoTrackOff": "Enable PWD auto-track (sync file tree on cd)",
+    "pinPin": "Pin panel (expand output)",
+    "pinUnpin": "Unpin panel (collapse output)",
     "resizeHandle": "Drag to resize width (double-click: default 240)"
   },
   "dialogs": {

@@ -94,6 +94,8 @@
     "floatRestore": "恢复大小",
     "autoTrackOn": "禁用 PWD 自动跟踪(cd 时同步文件树)",
     "autoTrackOff": "启用 PWD 自动跟踪(cd 时同步文件树)",
+    "pinPin": "固定面板（展开输出）",
+    "pinUnpin": "取消固定面板（折叠输出）",
     "resizeHandle": "拖动调整宽度(双击:默认 240)"
   },
   "dialogs": {

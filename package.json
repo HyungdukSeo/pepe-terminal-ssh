@@ -11,6 +11,7 @@
     "verify-openvpn": "node scripts/verify-openvpn-bundle.js",
     "build": "node scripts/verify-openvpn-bundle.js && tsc && vite build && node -e \"require('fs').copyFileSync('electron/mcpSshServer.cjs','dist-electron/mcpSshServer.cjs')\" && node scripts/patch-nsis-template.js && electron-builder",
     "build:skip-vpn": "node scripts/verify-openvpn-bundle.js --skip && tsc && vite build && node -e \"require('fs').copyFileSync('electron/mcpSshServer.cjs','dist-electron/mcpSshServer.cjs')\" && node scripts/patch-nsis-template.js && electron-builder",
+    "build:dev": "tsc && vite build && node -e \"require('fs').copyFileSync('electron/mcpSshServer.cjs','dist-electron/mcpSshServer.cjs')\" && electron-builder --dir",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview"
   },

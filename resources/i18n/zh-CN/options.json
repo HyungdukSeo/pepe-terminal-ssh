@@ -18,6 +18,12 @@
     "dialog": "打开多行粘贴对话框",
     "direct": "直接粘贴到终端"
   },
+  "aiAgent": {
+    "heading": "AI 代理",
+    "claude": "Claude Code",
+    "gemini": "Gemini",
+    "codex": "Codex"
+  },
   "font": {
     "heading": "字体",
     "defaultLabel": "默认 (Cascadia Mono)",

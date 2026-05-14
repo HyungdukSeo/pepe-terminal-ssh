@@ -186,6 +186,14 @@ contextBridge.exposeInMainWorld('api', {
   claudeGetMountPath: (panelId: string, remotePath: string) =>
     ipcRenderer.invoke('claude:get-mount-path', { panelId, remotePath }),
   claudeStop: (sessionId: string, requestId?: string) => ipcRenderer.invoke('claude:stop', { sessionId, requestId }),
+  geminiCheck: () => ipcRenderer.invoke('gemini:check'),
+  geminiSend: (sessionId: string, prompt: string, requestId?: string, model?: string, yolo?: boolean) =>
+    ipcRenderer.invoke('gemini:send', { sessionId, prompt, requestId, model, yolo }),
+  geminiStop: (sessionId: string, requestId?: string) => ipcRenderer.invoke('gemini:stop', { sessionId, requestId }),
+  codexCheck: () => ipcRenderer.invoke('codex:check'),
+  codexSend: (sessionId: string, prompt: string, requestId?: string, model?: string, approvalPolicy?: string) =>
+    ipcRenderer.invoke('codex:send', { sessionId, prompt, requestId, model, approvalPolicy }),
+  codexStop: (sessionId: string, requestId?: string) => ipcRenderer.invoke('codex:stop', { sessionId, requestId }),
   claudeProbeUsage: () => ipcRenderer.invoke('claude:probe-usage'),
   claudeProbeUsageTui: () => ipcRenderer.invoke('claude:probe-usage-tui'),
   claudeFetchUsageApi: () => ipcRenderer.invoke('claude:fetch-usage-api'),

@@ -24,7 +24,7 @@
   "newFolder": "새 폴더",
   "newFolderPrompt": "새 폴더 이름:",
   "copyPath": "경로 복사",
-  "attachClaude": "Claude 에 첨부",
+  "attachClaude": "AI Chat에 첨부",
   "fileTreeTitle": "파일 트리",
   "pinFileTree": "파일트리 고정",
   "unpinFileTree": "파일트리 자동숨김",
@@ -99,7 +99,7 @@
   "uploadFileMenu": "📥 파일 업로드",
   "uploadFileMulti": "📥 파일 업로드 (다중선택)",
   "uploadFolder": "📁 폴더 업로드 (재귀)",
-  "attachClaudeMenu": "🤖 Claude에 첨부",
+  "attachClaudeMenu": "🤖 AI Chat에 첨부",
   "copyPathMenu": "📋 경로 복사",
   "deleteMenu": "🗑 삭제"
 }

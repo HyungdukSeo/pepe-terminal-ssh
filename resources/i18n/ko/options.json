@@ -18,6 +18,12 @@
     "dialog": "여러 줄 붙여넣기 대화 상자 열기",
     "direct": "터미널에 바로 붙여넣기"
   },
+  "aiAgent": {
+    "heading": "AI Agent",
+    "claude": "Claude Code",
+    "gemini": "Gemini",
+    "codex": "Codex"
+  },
   "font": {
     "heading": "글꼴",
     "defaultLabel": "기본 (Cascadia Mono)",

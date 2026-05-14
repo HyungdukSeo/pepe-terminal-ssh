@@ -214,7 +214,7 @@ function App() {
   const [optFontFamily, setOptFontFamily] = useState(() => localStorage.getItem('terminalFontFamily') || '');
   const [optFontSize, setOptFontSize] = useState(() => Number(localStorage.getItem('terminalFontSize')) || 14);
   const [availableFonts, setAvailableFonts] = useState<string[]>([]);
-  const [optionsTab, setOptionsTab] = useState<'terminal' | 'session' | 'keybindings'>('terminal');
+  const [optionsTab, setOptionsTab] = useState<'terminal' | 'session' | 'keybindings' | 'ai'>('terminal');
   const [keybindingsState, setKeybindingsState] = useState<Record<string, string>>({});
   const [keybindingsDraft, setKeybindingsDraft] = useState<Record<string, string>>({});
 
@@ -245,7 +245,9 @@ function App() {
       // 레거시 이름 마이그레이션 (예전 "명령 프롬프트 (CMD)" → "CMD")
       const renameLegacy = (n?: string) => n === '명령 프롬프트 (CMD)' ? 'CMD' : n;
       let name = renameLegacy(prefs?.defaultShellName) || shells?.[0]?.name || 'Windows PowerShell';
-      const spath = prefs?.defaultShellPath || shells?.[0]?.path || 'powershell.exe';
+      // name 으로 shells 목록에서 path 를 찾아 일치시킴 — name/path 불일치 방지
+      const matchedShell = shells?.find((s: any) => s.name === name);
+      const spath = matchedShell?.path || prefs?.defaultShellPath || shells?.[0]?.path || 'powershell.exe';
       if (prefs?.defaultShellName && prefs.defaultShellName !== name) {
         try { (window as any).api?.setUIPrefs?.({ defaultShellName: name }); } catch {}
       }
@@ -296,6 +298,11 @@ function App() {
           setRemoteTreePinned(prefs.remoteTreePinned);
           if (!prefs.remoteTreePinned) setRemoteTreeVisible(false);
         }
+        if (typeof prefs?.terminalPinned === 'boolean') {
+          setTerminalPinned(prefs.terminalPinned);
+          if (!prefs.terminalPinned) setTerminalVisible(false);
+        }
+        terminalPinnedLoadedRef.current = true;
         remoteTreeWidthLoadedRef.current = true;
         remoteTreePinnedLoadedRef.current = true;
         claudeChatPinnedLoadedRef.current = true;
@@ -542,6 +549,11 @@ function App() {
   const remoteTreeWidthLoadedRef = useRef(false);
   const [remoteTreePinned, setRemoteTreePinned] = useState<boolean>(true);
   const [remoteTreeVisible, setRemoteTreeVisible] = useState<boolean>(true);
+  const [terminalPinned, setTerminalPinned] = useState<boolean>(true);
+  const [terminalVisible, setTerminalVisible] = useState<boolean>(true);
+  const terminalHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const terminalHoverShowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const terminalPinnedLoadedRef = useRef(false);
   // 어느 오버레이가 최상위인지 — hover 중인 쪽이 다른 쪽 위에 오도록
   const [topPanel, setTopPanel] = useState<'session' | 'filetree' | null>(null);
   const remoteTreePinnedLoadedRef = useRef(false);
@@ -579,6 +591,11 @@ function App() {
     try { (window as any).api?.setUIPrefs?.({ remoteTreePinned }); } catch {}
     if (remoteTreePinned) setRemoteTreeVisible(true);
   }, [remoteTreePinned]);
+  useEffect(() => {
+    if (!terminalPinnedLoadedRef.current) return;
+    try { (window as any).api?.setUIPrefs?.({ terminalPinned }); } catch {}
+    if (terminalPinned) setTerminalVisible(true);
+  }, [terminalPinned]);
   const [showClaudeChat, setShowClaudeChat] = useState(true);
   const [claudeChatWidth, setClaudeChatWidth] = useState<number>(360);
   const [claudeChatPinned, setClaudeChatPinned] = useState<boolean>(false);
@@ -2094,7 +2111,10 @@ function App() {
         { separator: true, label: '' },
         { label: showToolbar ? tm('tools.toolbarHide') : tm('tools.toolbarShow'), action: () => setShowToolbar(v => !v) },
         { label: showQuickConnect ? tm('tools.quickConnectHide') : tm('tools.quickConnectShow'), action: () => setShowQuickConnect(v => !v) },
-        { label: showClaudeChat ? tm('tools.claudeHide') : tm('tools.claudeShow'), action: () => setShowClaudeChat(v => !v) },
+        { label: showClaudeChat
+            ? (termSettings.aiAgent === 'gemini' ? tm('tools.claudeHide').replace('Claude', 'Gemini').replace('🤖', '✨') : termSettings.aiAgent === 'codex' ? tm('tools.claudeHide').replace('Claude', 'Codex').replace('🤖', '🧠') : tm('tools.claudeHide'))
+            : (termSettings.aiAgent === 'gemini' ? tm('tools.claudeShow').replace('Claude', 'Gemini').replace('🤖', '✨') : termSettings.aiAgent === 'codex' ? tm('tools.claudeShow').replace('Claude', 'Codex').replace('🤖', '🧠') : tm('tools.claudeShow')),
+          action: () => setShowClaudeChat(v => !v) },
         { label: showBroadcast ? tm('tools.broadcastHide') : tm('tools.broadcastShow'), action: () => { setShowBroadcast(v => !v); } },
         { separator: true, label: '' },
         { label: tm('tools.xStart'), action: async () => {
@@ -2133,7 +2153,7 @@ function App() {
         { separator: true, label: '' },
         { label: tm('tools.options'), action: async () => {
           setWordSepValue(getWordSeparator());
-          setTermSettings(getTerminalSettings());
+          setTermSettings(s => ({ ...getTerminalSettings(), aiAgent: s.aiAgent }));
           setOptFontFamily(localStorage.getItem('terminalFontFamily') || '');
           setOptFontSize(Number(localStorage.getItem('terminalFontSize')) || 14);
           setOptDefaultShellPath(defaultShell.path);
@@ -2506,7 +2526,7 @@ function App() {
           }}>📁</button>
           <span className="tool-sep" />
           <button className={`tool-btn ${showQuickConnect ? 'active' : ''}`} title={showQuickConnect ? tm('tools.quickConnectHide') : tm('tools.quickConnectShow')} onClick={() => setShowQuickConnect(v => !v)}>⚡</button>
-          <button className={`tool-btn ${showClaudeChat ? 'active' : ''}`} title={showClaudeChat ? tm('tools.claudeHide') : tm('tools.claudeShow')} onClick={() => setShowClaudeChat(v => !v)}>🤖</button>
+          <button className={`tool-btn ${showClaudeChat ? 'active' : ''}`} title={showClaudeChat ? (termSettings.aiAgent === 'gemini' ? tm('tools.claudeHide').replace('Claude', 'Gemini').replace('🤖', '✨') : termSettings.aiAgent === 'codex' ? tm('tools.claudeHide').replace('Claude', 'Codex').replace('🤖', '🧠') : tm('tools.claudeHide')) : (termSettings.aiAgent === 'gemini' ? tm('tools.claudeShow').replace('Claude', 'Gemini').replace('🤖', '✨') : termSettings.aiAgent === 'codex' ? tm('tools.claudeShow').replace('Claude', 'Codex').replace('🤖', '🧠') : tm('tools.claudeShow'))} onClick={() => setShowClaudeChat(v => !v)}>{termSettings.aiAgent === 'gemini' ? '✨' : termSettings.aiAgent === 'codex' ? '🧠' : '🤖'}</button>
           <button className={`tool-btn ${showBroadcast ? 'active' : ''}`} title={showBroadcast ? tm('tools.broadcastHide') : tm('tools.broadcastShow')} onClick={() => setShowBroadcast(v => !v)}>📢</button>
           <span className="tool-sep" />
           <button className="tool-btn" title={tm('tools.xStart')} onClick={async () => {
@@ -2537,9 +2557,11 @@ function App() {
             } catch (e: any) { setInfoModal({ title: tm('tools.xStatusFail'), text: String(e?.message || e) }); }
           }}>ℹ️</button>
           <span className="tool-sep" />
+          <button className={`tool-btn btn-pin${terminalPinned ? ' pinned' : ''}`} title={terminalPinned ? '터미널 패널 고정 해제 (unpin)' : '터미널 패널 고정 (pin)'} onClick={() => { setTerminalPinned(p => !p); setTimeout(() => { window.dispatchEvent(new Event('resize')); refitAllTerms(); }, 80); }}>📌</button>
+          <span className="tool-sep" />
           <button className="tool-btn" title={tm('tools.options')} onClick={async () => {
             setWordSepValue(getWordSeparator());
-            setTermSettings(getTerminalSettings());
+            setTermSettings(s => ({ ...getTerminalSettings(), aiAgent: s.aiAgent }));
             setOptFontFamily(localStorage.getItem('terminalFontFamily') || '');
             setOptFontSize(Number(localStorage.getItem('terminalFontSize')) || 14);
             setOptDefaultShellPath(defaultShell.path);
@@ -2622,7 +2644,7 @@ function App() {
         {tabs.filter(t => t.type === 'sqlTool' && t.sqlTool).map(t => (
           <div key={t.id} style={{ display: activeTab?.id === t.id ? 'flex' : 'none', flex: 1, minHeight: 0 }}>
             <ErrorBoundary label={`SQL Tool — ${t.sqlTool!.sessionName}`}>
-              <SqlToolWorkspace sessionId={t.sqlTool!.sessionId} sessionName={t.sqlTool!.sessionName} />
+              <SqlToolWorkspace sessionId={t.sqlTool!.sessionId} sessionName={t.sqlTool!.sessionName} aiAgent={termSettings.aiAgent} />
             </ErrorBoundary>
           </div>
         ))}
@@ -2658,7 +2680,7 @@ function App() {
         {tabs.filter(t => t.type === 'i18nEditor').map(t => (
           <div key={t.id} style={{ display: activeTab?.id === t.id ? 'flex' : 'none', flex: 1, minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
             <ErrorBoundary label="번역 편집">
-              <TranslationEditor />
+              <TranslationEditor aiAgent={termSettings.aiAgent} />
             </ErrorBoundary>
           </div>
         ))}
@@ -2809,41 +2831,107 @@ function App() {
           return (
             <div className="workspace-content-row" style={{ display: 'flex', flex: 1, minHeight: 0, position: 'relative' }}>
               {fileTreeNode}
-              <div className="workspace-content-col" style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-          <Layout root={activeTab.layout}
-            selectedPanelId={selectedPanelId}
-            onSplit={(nodeId, dir) => openSplitSessionPicker(dir, nodeId)}
-            onSplitWithPicker={(nodeId, dir) => openSplitSessionPickerWithPrompt(dir, nodeId)}
-            onClose={nodeId => closePanel(activeTab.id, nodeId)}
-            floatingPanelId={floatingPanelId}
-            fullscreenTermId={fullscreenTermId}
-            workspaceList={tabs.map(t => ({ id: t.id, title: t.title }))}
-            currentWorkspaceId={activeTab?.id}
-            onMoveSessionToWorkspace={handleMoveSessionToWorkspace}
-            onToggleFloat={nodeId => {
-              setFloatingPanelId(prev => prev === nodeId ? null : nodeId);
-              setTimeout(() => { window.dispatchEvent(new Event('resize')); refitAllTerms(); }, 120);
-            }}
-            onSelectPanel={id => setSelectedPanelId(id)}
-            onMovePanel={movePanel}
-            onSwitchSession={handleSwitchSession}
-            onCloseSession={handleCloseSession}
-            onMoveSession={handleMoveSession}
-            onSplitMoveSession={handleSplitMoveSession}
-            onReorderSession={handleReorderSession}
-            onAddSession={handleAddSession}
-            onRenameSession={handleRenameSession}
-            onConnectDrop={handleConnectDrop}
-            onDuplicateSession={handleDuplicateSession}
-            availableShells={availableShells}
-            treeWidth={remoteTreeWidth}
-            onTreeWidthChange={w => {
-              setRemoteTreeWidth(w);
-              if (remoteTreeWidthLoadedRef.current) { try { (window as any).api?.setUIPrefs?.({ remoteTreeWidth: w }); } catch {} }
-            }}
-            onOpenRemoteFile={handleOpenRemoteFile}
-            onAttachToClaude={handleAttachToClaude}
-          />
+              <div className="workspace-content-col" style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'row', position: 'relative' }}>
+                {/* unpin 상태일 때 세로 트리거 스트립 — 패널별 탭 */}
+                {!terminalPinned && (() => {
+                  // 현재 탭의 모든 leaf 노드 수집
+                  const leaves: { nodeId: string; name: string }[] = [];
+                  const walkLeaves = (node: any) => {
+                    if (node.type === 'leaf') {
+                      const sess = node.panel.sessions[node.panel.activeIdx];
+                      leaves.push({ nodeId: node.id, name: sess?.sessionName || 'Terminal' });
+                    } else if (node.children) node.children.forEach(walkLeaves);
+                  };
+                  if (activeTab?.layout) walkLeaves(activeTab.layout);
+                  const openPanel = (nodeId: string) => {
+                    if (terminalHideTimer.current) { clearTimeout(terminalHideTimer.current); terminalHideTimer.current = null; }
+                    if (terminalHoverShowTimer.current) { clearTimeout(terminalHoverShowTimer.current); terminalHoverShowTimer.current = null; }
+                    setSelectedPanelId(nodeId);
+                    setTerminalVisible(true);
+                  };
+                  return (
+                    <div className="terminal-sidebar-trigger">
+                      <div
+                        className="terminal-sidebar-trigger-top"
+                        title="터미널 열기"
+                        onClick={() => openPanel(leaves[0]?.nodeId || '')}
+                        onMouseEnter={() => {
+                          if (terminalHideTimer.current) { clearTimeout(terminalHideTimer.current); terminalHideTimer.current = null; }
+                          if (terminalHoverShowTimer.current) clearTimeout(terminalHoverShowTimer.current);
+                          terminalHoverShowTimer.current = setTimeout(() => setTerminalVisible(true), 300);
+                        }}
+                        onMouseLeave={() => {
+                          if (terminalHoverShowTimer.current) { clearTimeout(terminalHoverShowTimer.current); terminalHoverShowTimer.current = null; }
+                        }}
+                      >
+                        <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                          <rect x="1" y="3" width="12" height="9" rx="1.5" />
+                          <line x1="1" y1="6" x2="13" y2="6" />
+                          <line x1="4" y1="3" x2="4" y2="6" />
+                          <line x1="7" y1="3" x2="7" y2="6" />
+                        </svg>
+                      </div>
+                      {leaves.map(leaf => (
+                        <div
+                          key={leaf.nodeId}
+                          className={`terminal-sidebar-trigger-tab${selectedPanelId === leaf.nodeId ? ' active' : ''}`}
+                          title={leaf.name}
+                          onClick={() => openPanel(leaf.nodeId)}
+                        >
+                          <span className="terminal-sidebar-trigger-tab-text">{leaf.name}</span>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+                {/* 터미널 레이아웃 — pinned: 항상 표시 / unpinned: auto-hide 오버레이 */}
+                <div
+                  className={`terminal-layout-wrap${!terminalPinned ? ' auto-hide' : ''}${!terminalPinned && !terminalVisible ? ' hidden' : ''}`}
+                  onMouseLeave={() => {
+                    if (terminalPinned) return;
+                    if (terminalHideTimer.current) clearTimeout(terminalHideTimer.current);
+                    terminalHideTimer.current = setTimeout(() => { setTerminalVisible(false); setTimeout(() => { window.dispatchEvent(new Event('resize')); refitAllTerms(); }, 80); }, 500);
+                  }}
+                  onMouseEnter={() => {
+                    if (terminalPinned) return;
+                    if (terminalHideTimer.current) { clearTimeout(terminalHideTimer.current); terminalHideTimer.current = null; }
+                  }}
+                >
+                  <Layout root={activeTab.layout}
+                    selectedPanelId={selectedPanelId}
+                    onSplit={(nodeId, dir) => openSplitSessionPicker(dir, nodeId)}
+                    onSplitWithPicker={(nodeId, dir) => openSplitSessionPickerWithPrompt(dir, nodeId)}
+                    onClose={nodeId => closePanel(activeTab.id, nodeId)}
+                    floatingPanelId={floatingPanelId}
+                    fullscreenTermId={fullscreenTermId}
+                    workspaceList={tabs.map(t => ({ id: t.id, title: t.title }))}
+                    currentWorkspaceId={activeTab?.id}
+                    onMoveSessionToWorkspace={handleMoveSessionToWorkspace}
+                    onToggleFloat={nodeId => {
+                      setFloatingPanelId(prev => prev === nodeId ? null : nodeId);
+                      setTimeout(() => { window.dispatchEvent(new Event('resize')); refitAllTerms(); }, 120);
+                    }}
+                    onSelectPanel={id => setSelectedPanelId(id)}
+                    onMovePanel={movePanel}
+                    onSwitchSession={handleSwitchSession}
+                    onCloseSession={handleCloseSession}
+                    onMoveSession={handleMoveSession}
+                    onSplitMoveSession={handleSplitMoveSession}
+                    onReorderSession={handleReorderSession}
+                    onAddSession={handleAddSession}
+                    onRenameSession={handleRenameSession}
+                    onConnectDrop={handleConnectDrop}
+                    onDuplicateSession={handleDuplicateSession}
+                    availableShells={availableShells}
+                    treeWidth={remoteTreeWidth}
+                    onTreeWidthChange={w => {
+                      setRemoteTreeWidth(w);
+                      if (remoteTreeWidthLoadedRef.current) { try { (window as any).api?.setUIPrefs?.({ remoteTreeWidth: w }); } catch {} }
+                    }}
+                    onOpenRemoteFile={handleOpenRemoteFile}
+                    onAttachToClaude={handleAttachToClaude}
+                  />
+                </div>
               </div>
             </div>
           );
@@ -3024,6 +3112,7 @@ function App() {
             <div className="options-body">
               <div className="options-tabs options-tabs-side">
                 <button className={`options-tab ${optionsTab === 'terminal' ? 'active' : ''}`} onClick={() => setOptionsTab('terminal')}>{to('tabs.terminal')}</button>
+                <button className={`options-tab ${optionsTab === 'ai' ? 'active' : ''}`} onClick={() => setOptionsTab('ai')}>AI</button>
                 <button className={`options-tab ${optionsTab === 'session' ? 'active' : ''}`} onClick={() => setOptionsTab('session')}>{to('tabs.session')}</button>
                 <button className={`options-tab ${optionsTab === 'keybindings' ? 'active' : ''}`} onClick={() => setOptionsTab('keybindings')}>{to('tabs.keybindings')}</button>
               </div>
@@ -3090,34 +3179,6 @@ function App() {
                     onChange={e => setOptFontSize(Math.max(8, Math.min(40, Number(e.target.value) || 14)))}
                   />
                 </div>
-                <div style={{ marginBottom: 16, borderTop: '1px solid #333', paddingTop: 12 }}>
-                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{to('font.claudeHeading')}</div>
-                  <p style={{ color: '#888', fontSize: 12, margin: '0 0 6px' }}>{to('font.claudeHint')}</p>
-                  <select
-                    style={{ width: '100%', background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '8px', fontSize: 14, boxSizing: 'border-box', cursor: 'pointer' }}
-                    value={claudeFontFamily}
-                    onChange={e => { setClaudeFontFamily(e.target.value); setClaudeFontFamilyState(e.target.value); }}
-                  >
-                    <option value="">{to('font.claudeDefaultLabel')}</option>
-                    {availableFonts.map(f => <option key={f} value={f} style={{ fontFamily: `"${f}", sans-serif` }}>{f}</option>)}
-                  </select>
-                </div>
-                <div style={{ marginBottom: 16 }}>
-                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{to('font.claudeSize')}</div>
-                  <input
-                    type="number"
-                    min={9}
-                    max={32}
-                    step={1}
-                    style={{ width: 100, background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '8px', fontSize: 14, fontFamily: 'monospace', boxSizing: 'border-box' }}
-                    value={claudeFontSize}
-                    onChange={e => {
-                      const v = Math.max(9, Math.min(32, Number(e.target.value) || 13));
-                      setClaudeFontSize(v);
-                      setClaudeFontSizeState(v);
-                    }}
-                  />
-                </div>
                 <div style={{ marginBottom: 16 }}>
                   <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{to('scrollback.heading')}</div>
                   <p style={{ color: '#888', fontSize: 12, margin: '0 0 6px' }}>{to('scrollback.hint')}</p>
@@ -3151,6 +3212,59 @@ function App() {
                     style={{ width: '100%', background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '8px', fontSize: 14, fontFamily: 'monospace', boxSizing: 'border-box' }}
                     value={wordSepValue}
                     onChange={e => setWordSepValue(e.target.value)}
+                  />
+                </div>
+              </div>
+            )}
+
+            {optionsTab === 'ai' && (
+              <div className="options-content">
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{to('aiAgent.heading')}</div>
+                  <div style={{ display: 'flex', gap: '16px' }}>
+                    <label className="settings-radio">
+                      <input type="radio" name="aiAgent" checked={termSettings.aiAgent === 'claude'}
+                        onChange={() => setTermSettings(s => ({ ...s, aiAgent: 'claude' }))} />
+                      🤖 {to('aiAgent.claude')}
+                    </label>
+                    <label className="settings-radio">
+                      <input type="radio" name="aiAgent" checked={termSettings.aiAgent === 'gemini'}
+                        onChange={() => setTermSettings(s => ({ ...s, aiAgent: 'gemini' }))} />
+                      ✨ {to('aiAgent.gemini')}
+                    </label>
+                    <label className="settings-radio">
+                      <input type="radio" name="aiAgent" checked={termSettings.aiAgent === 'codex'}
+                        onChange={() => setTermSettings(s => ({ ...s, aiAgent: 'codex' }))} />
+                      🧠 {to('aiAgent.codex')}
+                    </label>
+                  </div>
+                </div>
+                <div style={{ marginBottom: 16, borderTop: '1px solid #333', paddingTop: 12 }}>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{to('font.claudeHeading')}</div>
+                  <p style={{ color: '#888', fontSize: 12, margin: '0 0 6px' }}>{to('font.claudeHint')}</p>
+                  <select
+                    style={{ width: '100%', background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '8px', fontSize: 14, boxSizing: 'border-box', cursor: 'pointer' }}
+                    value={claudeFontFamily}
+                    onChange={e => { setClaudeFontFamily(e.target.value); setClaudeFontFamilyState(e.target.value); }}
+                  >
+                    <option value="">{to('font.claudeDefaultLabel')}</option>
+                    {availableFonts.map(f => <option key={f} value={f} style={{ fontFamily: `"${f}", sans-serif` }}>{f}</option>)}
+                  </select>
+                </div>
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{to('font.claudeSize')}</div>
+                  <input
+                    type="number"
+                    min={9}
+                    max={32}
+                    step={1}
+                    style={{ width: 100, background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '8px', fontSize: 14, fontFamily: 'monospace', boxSizing: 'border-box' }}
+                    value={claudeFontSize}
+                    onChange={e => {
+                      const v = Math.max(9, Math.min(32, Number(e.target.value) || 13));
+                      setClaudeFontSize(v);
+                      setClaudeFontSizeState(v);
+                    }}
                   />
                 </div>
               </div>
@@ -3395,6 +3509,8 @@ function App() {
               }}
             />
             <ClaudeChat
+              aiAgent={termSettings.aiAgent}
+              onAgentChange={agent => setTermSettings(s => ({ ...s, aiAgent: agent }))}
               onClose={() => setShowClaudeChat(false)}
               pendingContext={claudeFileContext}
               onContextConsumed={() => setClaudeFileContext(null)}
