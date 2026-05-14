@@ -3041,7 +3041,7 @@ ipcMain.handle('codex:check', async () => {
   }
 });
 
-ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model }: { sessionId: string; prompt: string; requestId?: string; model?: string; approvalPolicy?: 'suggest' | 'auto-edit' | 'full-auto' }) => {
+ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, approvalPolicy }: { sessionId: string; prompt: string; requestId?: string; model?: string; approvalPolicy?: 'suggest' | 'auto-edit' | 'full-auto' }) => {
   try {
     // 같은 sessionId로 실행 중인 Gemini 프로세스 정리
     const prevGemini = geminiProcesses.get(sessionId);
@@ -3066,11 +3066,16 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model }:
     };
 
     const modelFlag = model ? ` -m ${model}` : '';
-    // codex exec 서브커맨드는 --approval-policy 미지원 (인터랙티브 전용 플래그)
+    // suggest → read-only, auto-edit/full-auto → danger-full-access (파일 쓰기 허용)
+    const fullAccess = approvalPolicy === 'auto-edit' || approvalPolicy === 'full-auto';
     const isWin = process.platform === 'win32';
     const shellCmd = isWin
-      ? `chcp 65001 >nul && type "${tmpFile}" | codex exec${modelFlag} --skip-git-repo-check -c "sandbox_permissions=[\"disk-full-read-access\",\"network-full-access\"]"`
-      : `cat "${tmpFile}" | codex exec${modelFlag} --skip-git-repo-check -c 'sandbox_permissions=["disk-full-read-access","network-full-access"]'`;
+      ? fullAccess
+        ? `chcp 65001 >nul && type "${tmpFile}" | codex exec${modelFlag} --skip-git-repo-check --sandbox danger-full-access`
+        : `chcp 65001 >nul && type "${tmpFile}" | codex exec${modelFlag} --skip-git-repo-check -c "sandbox_permissions=[\\"disk-full-read-access\\",\\"network-full-access\\"]"`
+      : fullAccess
+        ? `cat "${tmpFile}" | codex exec${modelFlag} --skip-git-repo-check --sandbox danger-full-access`
+        : `cat "${tmpFile}" | codex exec${modelFlag} --skip-git-repo-check -c 'sandbox_permissions=["disk-full-read-access","network-full-access"]'`;
 
     const cwd = process.env.USERPROFILE || process.env.HOME || os.homedir();
     const proc = spawn(shellCmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd });

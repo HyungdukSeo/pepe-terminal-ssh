@@ -169,8 +169,8 @@
   "codexModelSelect": "Select Codex model",
   "codexApprovalTitle": "File edit / command execution approval policy",
   "codexApproval": {
-    "suggest": "Suggest (confirm all)",
-    "autoEdit": "Auto-edit (auto file edits)",
-    "fullAuto": "Full-auto (approve all)"
+    "suggest": "Suggest (read-only sandbox)",
+    "autoEdit": "Auto-edit (write sandbox)",
+    "fullAuto": "Full-auto (write sandbox)"
   }
 }
