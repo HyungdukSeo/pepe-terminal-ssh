@@ -231,6 +231,7 @@ function App() {
   const [sftpProgress, setSftpProgress] = useState<{ filename: string; transferred: number; total: number; direction: string } | null>(null);
   const [availableShells, setAvailableShells] = useState<{ name: string; path: string; icon?: string }[]>([]);
   const [defaultShell, setDefaultShell] = useState<{ name: string; path: string }>({ name: 'Windows PowerShell', path: 'powershell.exe' });
+  const [shellPrefsLoaded, setShellPrefsLoaded] = useState<boolean>(false);
   const [optDefaultShellPath, setOptDefaultShellPath] = useState('');
   const [showBroadcast, setShowBroadcast] = useState<boolean>(true);
   const showBroadcastLoadedRef = useRef(false);
@@ -248,10 +249,16 @@ function App() {
       // name 으로 shells 목록에서 path 를 찾아 일치시킴 — name/path 불일치 방지
       const matchedShell = shells?.find((s: any) => s.name === name);
       const spath = matchedShell?.path || prefs?.defaultShellPath || shells?.[0]?.path || 'powershell.exe';
+      // name이 shells 목록에 없으면 실제 사용될 shell의 name으로 교정 (탭 이름 ↔ 실제 shell 미스매치 방지)
+      if (!matchedShell) {
+        const resolvedShell = shells?.find((s: any) => s.path === spath) || shells?.[0];
+        if (resolvedShell) name = resolvedShell.name;
+      }
       if (prefs?.defaultShellName && prefs.defaultShellName !== name) {
         try { (window as any).api?.setUIPrefs?.({ defaultShellName: name }); } catch {}
       }
       setDefaultShell({ name, path: spath });
+      setShellPrefsLoaded(true);
       // 초기 탭의 세션명/경로/cwd를 업데이트 + 모든 탭의 레거시 sessionName 마이그레이션
       setTabs(prev => prev.map((t, i) => {
         const update = (node: LayoutNode): LayoutNode => {
@@ -2829,8 +2836,9 @@ function App() {
             }
           }
           return (
-            <div className="workspace-content-row" style={{ display: 'flex', flex: 1, minHeight: 0, position: 'relative' }}>
+            <div style={{ display: 'flex', flex: 1, minHeight: 0, minWidth: 0, position: 'relative' }}>
               {fileTreeNode}
+            <div className="workspace-content-row" style={{ display: 'flex', flex: 1, minHeight: 0, position: 'relative', overflow: 'hidden' }}>
               <div className="workspace-content-col" style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'row', position: 'relative' }}>
                 {/* unpin 상태일 때 세로 트리거 스트립 — 패널별 탭 */}
                 {!terminalPinned && (() => {
@@ -2885,6 +2893,7 @@ function App() {
                   );
                 })()}
                 {/* 터미널 레이아웃 — pinned: 항상 표시 / unpinned: auto-hide 오버레이 */}
+                {/* shellPrefsLoaded 전에 마운트되면 shellPath=undefined 로 PowerShell 폴백되므로 지연 렌더 */}
                 <div
                   className={`terminal-layout-wrap${!terminalPinned ? ' auto-hide' : ''}${!terminalPinned && !terminalVisible ? ' hidden' : ''}`}
                   onMouseLeave={() => {
@@ -2897,7 +2906,7 @@ function App() {
                     if (terminalHideTimer.current) { clearTimeout(terminalHideTimer.current); terminalHideTimer.current = null; }
                   }}
                 >
-                  <Layout root={activeTab.layout}
+                  {shellPrefsLoaded && <Layout root={activeTab.layout}
                     selectedPanelId={selectedPanelId}
                     onSplit={(nodeId, dir) => openSplitSessionPicker(dir, nodeId)}
                     onSplitWithPicker={(nodeId, dir) => openSplitSessionPickerWithPrompt(dir, nodeId)}
@@ -2930,9 +2939,10 @@ function App() {
                     }}
                     onOpenRemoteFile={handleOpenRemoteFile}
                     onAttachToClaude={handleAttachToClaude}
-                  />
+                  />}
                 </div>
               </div>
+            </div>
             </div>
           );
         })()}
