@@ -3416,6 +3416,7 @@ function buildAugmentedPath(): string {
 ipcMain.handle('git:status', async (_e, { mode, termId, cwd }: { mode: 'local' | 'remote'; termId?: string; cwd?: string }) => {
   try {
     if (mode === 'remote' && termId) {
+      const bridge = getSSHBridge();
       if (typeof bridge.execCommand !== 'function') return { ok: false, error: 'ssh exec 미지원' };
       // 원격 cwd 가 있으면 그 디렉토리에서 실행, 없으면 현재 셸 cwd. (cd 실패 시 즉시 NOTREPO)
       const cdPart = cwd ? `cd '${cwd.replace(/'/g, "'\\''")}' && ` : '';

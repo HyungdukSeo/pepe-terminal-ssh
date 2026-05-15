@@ -1,7 +1,6 @@
 // src/components/FilePanel.tsx
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { FixedSizeList as VList, ListChildComponentProps } from 'react-window';
 import { createPortal } from 'react-dom';
 import { ContextMenu } from './ContextMenu';
 import { ChmodDialog } from './ChmodDialog';
@@ -17,8 +16,6 @@ type FileClipboard = {
 let _fileClipboard: FileClipboard | null = null;
 const getFileClipboard = () => _fileClipboard;
 const setFileClipboard = (c: FileClipboard | null) => { _fileClipboard = c; };
-
-const ROW_HEIGHT = 22; // App.css 의 .fe-file-row height 와 동기
 
 export type FileInfo = {
   name: string;
@@ -263,25 +260,8 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
   const [renameValue, setRenameValue] = useState('');
   const [lastClickIdx, setLastClickIdx] = useState(-1);
   const listRef = useRef<HTMLDivElement | null>(null);
-  const vlistRef = useRef<VList | null>(null);
-  const vlistOuterRef = useRef<HTMLDivElement | null>(null);
-  const [listHeight, setListHeight] = useState(400);
   const dragJustEnded = useRef(false);
-  const listRoRef = useRef<ResizeObserver | null>(null);
 
-  // callback ref — 부모 layout 이 지연 마운트되거나 conditional 렌더로 listRef.current 가
-  // 초기엔 null 인 케이스 안전망. element attach 시점마다 observer 재등록.
-  const setListRef = useCallback((el: HTMLDivElement | null) => {
-    listRef.current = el;
-    if (listRoRef.current) { listRoRef.current.disconnect(); listRoRef.current = null; }
-    if (!el) return;
-    const update = () => setListHeight(el.clientHeight || 400);
-    const ro = new ResizeObserver(update);
-    ro.observe(el);
-    listRoRef.current = ro;
-    update();
-  }, []);
-  useEffect(() => () => { listRoRef.current?.disconnect(); }, []);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   // 안정된 callback ref — 매 렌더마다 새 함수가 안 만들어지도록 useCallback. 마운트 즉시 포커스 + 텍스트 선택.
   const renameInputRefCallback = useCallback((el: HTMLInputElement | null) => {

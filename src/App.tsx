@@ -55,7 +55,7 @@ export type { LayoutNode, ContainerNode, LeafNode, Panel, PanelSession } from '.
 
 export type TabId = string;
 export type TabType = 'terminal' | 'fileExplorer' | 'fileEditor' | 'browser' | 'compare' | 'logAnalyzer' | 'vpn' | 'i18nEditor' | 'sqlTool';
-export type Tab = { id: TabId; title: string; layout: LayoutNode; type?: TabType; editor?: { termId: string; remotePath: string; fileName: string }; sqlTool?: { sessionId: string; sessionName: string } };
+export type Tab = { id: TabId; title: string; layout: LayoutNode; type?: TabType; customTitle?: boolean; editor?: { termId: string; remotePath: string; fileName: string }; sqlTool?: { sessionId: string; sessionName: string } };
 
 // 일괄전송 히스토리 (앱 실행 중 유지, 최대 50개)
 const broadcastHistory: string[] = [];
@@ -219,7 +219,7 @@ function App() {
   const [keybindingWarning, setKeybindingWarning] = useState<string | null>(null);
   const [sessionsPathDisplay, setSessionsPathDisplay] = useState('');
   const [contextMenuRegistered, setContextMenuRegistered] = useState(false);
-  const [sftpProgress, setSftpProgress] = useState<{ filename: string; transferred: number; total: number; direction: string } | null>(null);
+  const [, setSftpProgress] = useState<{ filename: string; transferred: number; total: number; direction: string } | null>(null);
   const [availableShells, setAvailableShells] = useState<{ name: string; path: string; icon?: string }[]>([]);
   const [defaultShell, setDefaultShell] = useState<{ name: string; path: string }>({ name: 'Windows PowerShell', path: 'powershell.exe' });
   const [optDefaultShellPath, setOptDefaultShellPath] = useState('');
@@ -2773,7 +2773,7 @@ function App() {
         {activeTab?.type === 'browser' && (
           <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
             <ErrorBoundary label="브라우저">
-              <BrowserPane onTitleChange={(title) => { if (activeTab) renameTab(activeTab.id, `🌐 ${title}`); }} />
+              <BrowserPane initialUrl="https://www.google.com" onTitleChange={(title) => { if (activeTab) renameTab(activeTab.id, `🌐 ${title}`); }} />
             </ErrorBoundary>
           </div>
         )}

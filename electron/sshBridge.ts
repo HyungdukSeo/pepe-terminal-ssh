@@ -36,7 +36,7 @@ interface ClientRecord {
 }
 
 interface BridgeMessage {
-  type: 'data' | 'connected' | 'closed' | 'error' | 'auth-prompt' | 'sftp-progress' | 'sftp-complete' | 'sftp-error' | 'auto-track' | 'x11-log';
+  type: 'data' | 'connected' | 'closed' | 'error' | 'auth-prompt' | 'sftp-progress' | 'sftp-complete' | 'sftp-error' | 'sftp-transfer-start' | 'sftp-file-start' | 'sftp-conflict' | 'auto-track' | 'x11-log';
   panelId: string;
   data?: string;
   error?: string;

@@ -2,7 +2,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 
 export type MenuItem = {
-  label: string;
+  label?: string;
   onClick?: () => void;
   separator?: boolean;
   header?: boolean;
@@ -58,7 +58,7 @@ export const ContextMenu: React.FC<Props> = ({ x, y, items, onClose }) => {
     <div ref={menuRef} className="context-menu" style={{ top: pos.y, left: pos.x }} onClick={e => e.stopPropagation()}>
       {items.map((item, i) => {
         if (item.separator) return <div key={i} className="context-menu-separator" />;
-        if (item.header) return <div key={i} style={{ padding: '4px 12px', fontSize: 10, color: '#888', textTransform: 'uppercase', letterSpacing: 0.5 }}>{item.label}</div>;
+        if (item.header) return <div key={i} style={{ padding: '4px 12px', fontSize: 10, color: '#888', textTransform: 'uppercase', letterSpacing: 0.5 }}>{item.label || ''}</div>;
         const hasSub = !!(item.submenu && item.submenu.length > 0);
         return (
           <div
@@ -79,7 +79,7 @@ export const ContextMenu: React.FC<Props> = ({ x, y, items, onClose }) => {
               onClose();
             }}
           >
-            <span className="context-menu-label-text">{item.label}</span>
+            <span className="context-menu-label-text">{item.label || ''}</span>
             {hasSub && <span className="context-menu-arrow">▶</span>}
             {hasSub && openSub?.idx === i && (
               <ContextMenu

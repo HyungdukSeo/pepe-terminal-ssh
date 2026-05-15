@@ -1,7 +1,6 @@
 // src/components/FileExplorer.tsx
 import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { FixedSizeList as VList, ListChildComponentProps } from 'react-window';
 import { FilePanel, PanelSource } from './FilePanel';
 import { TransferLog } from './TransferLog';
 import type { PanelSession } from '../utils/layoutUtils';

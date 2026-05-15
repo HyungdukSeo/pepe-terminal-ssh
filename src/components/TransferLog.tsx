@@ -165,7 +165,7 @@ export const TransferLog: React.FC<{ onClear?: () => void }> = () => {
           };
           // 그룹 누적 — files 의 transferred 합산
           const files = { ...g.files, [rel]: updFile };
-          let sum = 0; for (const k in files) sum += files[k].transferred;
+          let sum = 0; for (const f of Object.values(files as Record<string, TransferFile>)) sum += f.transferred;
           // 그룹 속도 — 1초 윈도우
           let gSpeed = g.speed || 0;
           if (!g.speedSampleAt || now - g.speedSampleAt >= 500) {
@@ -225,7 +225,7 @@ export const TransferLog: React.FC<{ onClear?: () => void }> = () => {
               endTime: Date.now(),
             };
             const files = { ...g.files, [rel]: updFile };
-            let sum = 0; for (const k in files) sum += files[k].transferred;
+            let sum = 0; for (const f of Object.values(files as Record<string, TransferFile>)) sum += f.transferred;
             return { ...g, files, transferredSize: sum };
           }
           // 디렉토리 완료 — 루트면 그룹 종료
