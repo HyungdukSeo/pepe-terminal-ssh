@@ -2804,7 +2804,7 @@ function buildShellLaunch(shellPath: string): { args: string[]; postSpawnInject?
   // PowerShell (Windows PowerShell 5.1 / pwsh 7+) — [char]27 사용해 호환
   if (lc.includes('powershell') || lc.includes('pwsh')) {
     const psHook = "if (-not $global:__pepePromptOrig) { $global:__pepePromptOrig = $function:prompt }; function global:prompt { [Console]::Write([char]27 + ']7;file:///' + ($PWD.Path -replace '\\\\','/') + [char]27 + '\\'); & $global:__pepePromptOrig }";
-    return { args: ['-NoLogo', '-NoExit', '-Command', psHook] };
+    return { args: ['-NoExit', '-Command', psHook] };
   }
   // cmd.exe — /K 인자는 echo 안 됨. prompt 명령은 출력 없음.
   if (lc.endsWith('cmd.exe') || lc.endsWith('\\cmd') || lc.endsWith('/cmd')) {
