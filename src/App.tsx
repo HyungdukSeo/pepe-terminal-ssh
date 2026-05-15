@@ -2769,42 +2769,42 @@ function App() {
           </div>
         ))}
 
-        {/* 특수 워크스페이스 탭들 — ErrorBoundary 로 격리 (한 컴포넌트 크래시가 전체 앱 죽이지 않도록) */}
-        {activeTab?.type === 'browser' && (
-          <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+        {/* 특수 워크스페이스 탭들 — 탭별 마운트 유지 (재방문 시 입력/로드 상태 보존) */}
+        {tabs.filter(t => t.type === 'browser').map(t => (
+          <div key={t.id} style={{ display: activeTab?.id === t.id ? 'flex' : 'none', flex: 1, minHeight: 0 }}>
             <ErrorBoundary label="브라우저">
-              <BrowserPane initialUrl="https://www.google.com" onTitleChange={(title) => { if (activeTab) renameTab(activeTab.id, `🌐 ${title}`); }} />
+              <BrowserPane initialUrl="https://www.google.com" onTitleChange={(title) => renameTab(t.id, `🌐 ${title}`)} />
             </ErrorBoundary>
           </div>
-        )}
-        {activeTab?.type === 'compare' && (
-          <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+        ))}
+        {tabs.filter(t => t.type === 'compare').map(t => (
+          <div key={t.id} style={{ display: activeTab?.id === t.id ? 'flex' : 'none', flex: 1, minHeight: 0 }}>
             <ErrorBoundary label="파일 비교">
               <CompareWorkspace sessions={tabs.filter(t => t.type !== 'fileExplorer' && t.type !== 'fileEditor' && !t.type?.match(/browser|compare|logAnalyzer|vpn|i18n|sqlTool/)).flatMap(t => collectAllSessions(t.layout)).filter(s => s.sessionId)} />
             </ErrorBoundary>
           </div>
-        )}
-        {activeTab?.type === 'logAnalyzer' && (
-          <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+        ))}
+        {tabs.filter(t => t.type === 'logAnalyzer').map(t => (
+          <div key={t.id} style={{ display: activeTab?.id === t.id ? 'flex' : 'none', flex: 1, minHeight: 0 }}>
             <ErrorBoundary label="로그 분석">
               <LogAnalyzer sessions={tabs.filter(t => t.type !== 'fileExplorer' && t.type !== 'fileEditor' && !t.type?.match(/browser|compare|logAnalyzer|vpn|i18n|sqlTool/)).flatMap(t => collectAllSessions(t.layout)).filter(s => s.sessionId)} />
             </ErrorBoundary>
           </div>
-        )}
-        {activeTab?.type === 'vpn' && (
-          <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+        ))}
+        {tabs.filter(t => t.type === 'vpn').map(t => (
+          <div key={t.id} style={{ display: activeTab?.id === t.id ? 'flex' : 'none', flex: 1, minHeight: 0 }}>
             <ErrorBoundary label="VPN">
               <VpnWorkspace />
             </ErrorBoundary>
           </div>
-        )}
-        {activeTab?.type === 'i18nEditor' && (
-          <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+        ))}
+        {tabs.filter(t => t.type === 'i18nEditor').map(t => (
+          <div key={t.id} style={{ display: activeTab?.id === t.id ? 'flex' : 'none', flex: 1, minHeight: 0 }}>
             <ErrorBoundary label="다국어 편집">
               <TranslationEditor />
             </ErrorBoundary>
           </div>
-        )}
+        ))}
         {/* SQL Tool 탭은 sessionId 별로 마운트 유지 (재방문 시 쿼리/연결 상태 보존) */}
         {tabs.filter(t => t.type === 'sqlTool').map(t => (
           <div key={t.id} style={{ display: activeTab?.id === t.id ? 'flex' : 'none', flex: 1, minHeight: 0 }}>
