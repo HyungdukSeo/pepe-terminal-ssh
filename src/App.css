@@ -3109,7 +3109,8 @@ body.popout-options .session-editor h3:first-child {
 
 .fe-file-list {
   flex: 1;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
   min-height: 0;
   outline: none;
   position: relative;
@@ -4910,6 +4911,7 @@ body.popout-options .session-editor h3:first-child {
   flex-direction: column;
   height: 100%;
   min-height: 0;
+  overflow: hidden;
 }
 .claude-chat-header {
   display: flex;
@@ -4978,6 +4980,7 @@ body.popout-options .session-editor h3:first-child {
   flex: 1;
   overflow-y: auto;
   padding: 10px;
+  position: relative; /* 도구/Plan 승인 overlay 를 messages 영역에 한정 */
   /* font-size 는 .claude-chat-sidebar 에서 --term-font-size 로 상속 */
 }
 .claude-chat-empty {
@@ -5465,22 +5468,68 @@ body.popout-options .session-editor h3:first-child {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* 계획 승인 모달 */
+/* Git 상태 바 — chat input 영역 위에 표시 */
+.claude-chat-git-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  margin-bottom: 4px;
+  background: rgba(60, 90, 130, 0.12);
+  border: 1px solid rgba(90, 130, 180, 0.25);
+  border-radius: 6px;
+  font-size: 12px;
+  color: #cde;
+}
+.claude-chat-git-branch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 500;
+}
+.claude-chat-git-diff {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px;
+}
+.claude-chat-git-pr-btn {
+  margin-left: auto;
+  background: rgba(60, 110, 80, 0.25);
+  color: #9efabc;
+  border: 1px solid rgba(80, 160, 100, 0.4);
+  border-radius: 4px;
+  padding: 2px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.claude-chat-git-pr-btn:hover {
+  background: rgba(80, 140, 100, 0.4);
+}
+
+/* 계획/도구 승인 모달 — claude-chat-messages 영역 안에만 표시 (입력창은 안 가림) */
 .claude-chat-plan-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0,0,0,0.55);
-  z-index: 2000;
+  position: sticky;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 100%;
+  background: rgba(0,0,0,0.45);
+  z-index: 50;
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 12px;
+  box-sizing: border-box;
+  margin: -10px -10px 0;  /* messages padding 보정 */
 }
 .claude-chat-plan-modal {
   background: #12161c;
   border: 1px solid #3a5075;
   border-radius: 8px;
-  width: min(640px, 90vw);
-  max-height: 80vh;
+  width: 100%;
+  max-width: 100%;
+  height: 100%;
+  max-height: calc(100% - 24px);
   display: flex;
   flex-direction: column;
   box-shadow: 0 8px 32px rgba(0,0,0,0.6);

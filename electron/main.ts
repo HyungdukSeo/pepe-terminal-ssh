@@ -1344,7 +1344,8 @@ if ($desk) {
   }
 }
 
-ipcMain.handle('fe:list-dir', async (_e, { mode, termId, dirPath, encoding }: { mode: string; termId?: string; dirPath: string; encoding?: string }) => {
+ipcMain.handle('fe:list-dir', async (_e, { mode, termId, dirPath: dirPathArg, encoding }: { mode: string; termId?: string; dirPath: string; encoding?: string }) => {
+  let dirPath = dirPathArg;
   try {
     const bridge = getSSHBridge();
     if (mode === 'local') {
@@ -1473,6 +1474,12 @@ $items | Sort-Object Order, Name | ConvertTo-Json -Compress`;
         } catch {
           return { files: [] };
         }
+      }
+      // shell:* 경로 (위에서 명시적으로 처리되지 않은 것 — RecycleBinFolder, Downloads, Documents 등)
+      // shell-pidl:<dirPath> 로 라우팅해서 Shell.Application NameSpace 로 열거.
+      if (dirPath.startsWith('shell:') && !dirPath.startsWith('shell-pidl:')) {
+        // shell-pidl 경로로 변환해서 동일 로직 진입 (아래 if 블록과 같은 PowerShell enum)
+        dirPath = 'shell-pidl:' + dirPath;
       }
       // shell-pidl:: PIDL — Shell.Application 으로 enum
       // path 형식: 'shell-pidl:<root>' (단일) 또는 'shell-pidl:<root>||<name1>||<name2>' (체인)
@@ -1942,6 +1949,128 @@ ipcMain.handle('fe:get-file-icon', async (_e, { filePath, size }: { filePath: st
   if (!filePath || typeof filePath !== 'string') return { dataUrl: '' };
   const cacheKey = `${filePath}|${size || 'small'}`;
   if (fileIconCache.has(cacheKey)) return { dataUrl: fileIconCache.get(cacheKey) };
+  // shell:* / shell-pidl:* / ::CLSID 가상 항목 — Shell.Application ParseName 체인 + SHGetFileInfo(SHGFI_PIDL) 로 네이티브 아이콘 추출
+  const isVirtual = /^(shell:|shell-pidl:|::\{)/i.test(filePath);
+  if (isVirtual && process.platform === 'win32') {
+    try {
+      const { execFileSync } = require('child_process');
+      // shell-pidl:<root>||a||b 형식 분해
+      let rootPath: string;
+      let chain: string[] = [];
+      if (filePath.startsWith('shell-pidl:')) {
+        const body = filePath.slice('shell-pidl:'.length);
+        const segs = body.split('||');
+        rootPath = segs[0];
+        chain = segs.slice(1);
+      } else {
+        rootPath = filePath;
+      }
+      const psChain = chain.map(c => `'${c.replace(/'/g, "''")}'`).join(',');
+      const rootArg = rootPath === 'shell:Desktop' ? '0' : `'${rootPath.replace(/'/g, "''")}'`;
+      const psScript = `chcp 65001 > $null
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$ErrorActionPreference = 'SilentlyContinue'
+Add-Type -AssemblyName System.Drawing
+Add-Type -TypeDefinition @"
+using System;
+using System.Drawing;
+using System.Runtime.InteropServices;
+public class ShellIcon {
+  [DllImport("shell32.dll", CharSet=CharSet.Unicode)]
+  public static extern int SHParseDisplayName(string pszName, IntPtr pbc, out IntPtr ppidl, uint sfgaoIn, out uint psfgaoOut);
+  [DllImport("shell32.dll", CharSet=CharSet.Unicode)]
+  public static extern IntPtr SHGetFileInfo(IntPtr pidl, uint dwFileAttributes, ref SHFILEINFO psfi, uint cbFileInfo, uint uFlags);
+  [DllImport("user32.dll")]
+  public static extern bool DestroyIcon(IntPtr hIcon);
+  [DllImport("ole32.dll")]
+  public static extern void CoTaskMemFree(IntPtr ptr);
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+  public struct SHFILEINFO {
+    public IntPtr hIcon;
+    public int iIcon;
+    public uint dwAttributes;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst=260)] public string szDisplayName;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst=80)] public string szTypeName;
+  }
+}
+"@
+# 1) ParseName chain 으로 최종 FolderItem 의 Path 를 얻는다 (체인 없으면 root 자체)
+$shell = New-Object -ComObject Shell.Application
+$resolved = ''
+$ns = $shell.NameSpace(${rootArg})
+if ($ns) {
+  $chainNames = @(${psChain})
+  if ($chainNames.Count -eq 0) {
+    # root 자체 — Self.Path
+    try { $resolved = $ns.Self.Path } catch {}
+  } else {
+    $folder = $ns
+    $finalItem = $null
+    foreach ($name in $chainNames) {
+      if (-not $folder) { break }
+      $child = $folder.ParseName($name)
+      if (-not $child) {
+        foreach ($c in $folder.Items()) { if ($c.Name -eq $name) { $child = $c; break } }
+      }
+      if (-not $child) { break }
+      $finalItem = $child
+      $sub = $null
+      try { $sub = $child.GetFolder } catch {}
+      if (-not $sub -and $child.Path) {
+        try { $sub = $shell.NameSpace($child.Path) } catch { $sub = $null }
+      }
+      $folder = $sub
+    }
+    if ($finalItem) { try { $resolved = $finalItem.Path } catch {} }
+  }
+}
+if (-not $resolved) { $resolved = '${rootPath.replace(/'/g, "''")}' }
+# 2) resolved Path 로 SHParseDisplayName → SHGetFileInfo
+$pidl = [IntPtr]::Zero
+$attr = [uint32]0
+$hr = [ShellIcon]::SHParseDisplayName($resolved, [IntPtr]::Zero, [ref]$pidl, 0, [ref]$attr)
+if ($hr -eq 0 -and $pidl -ne [IntPtr]::Zero) {
+  $info = New-Object ShellIcon+SHFILEINFO
+  $sz = [System.Runtime.InteropServices.Marshal]::SizeOf($info)
+  $flags = 0x100 -bor 0x008  # SHGFI_ICON | SHGFI_PIDL
+  [void][ShellIcon]::SHGetFileInfo($pidl, 0, [ref]$info, $sz, $flags)
+  if ($info.hIcon -ne [IntPtr]::Zero) {
+    try {
+      $icon = [System.Drawing.Icon]::FromHandle($info.hIcon)
+      $bmp = $icon.ToBitmap()
+      $ms = New-Object System.IO.MemoryStream
+      $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+      Write-Output ([Convert]::ToBase64String($ms.ToArray()))
+      $ms.Dispose()
+      $bmp.Dispose()
+      $icon.Dispose()
+    } catch {}
+    [void][ShellIcon]::DestroyIcon($info.hIcon)
+  }
+  [ShellIcon]::CoTaskMemFree($pidl)
+}`;
+      const tmpPs = path.join(os.tmpdir(), `pepe-shellicon-${Date.now()}.ps1`);
+      try {
+        fs.writeFileSync(tmpPs, '﻿' + psScript, { encoding: 'utf8' });
+        const out: string = execFileSync('powershell', [
+          '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', tmpPs,
+        ], { windowsHide: true, timeout: 7000 }).toString('utf-8').trim();
+        try { fs.unlinkSync(tmpPs); } catch {}
+        if (out && out.length > 50) {
+          const dataUrl = `data:image/png;base64,${out}`;
+          if (fileIconCache.size > 500) {
+            const firstKey = fileIconCache.keys().next().value;
+            if (firstKey) fileIconCache.delete(firstKey);
+          }
+          fileIconCache.set(cacheKey, dataUrl);
+          return { dataUrl };
+        }
+      } catch {
+        try { fs.unlinkSync(tmpPs); } catch {}
+      }
+    } catch {}
+    return { dataUrl: '' };
+  }
   try {
     if (!fs.existsSync(filePath)) return { dataUrl: '' };
     let dataUrl = '';
@@ -3282,6 +3411,48 @@ function buildAugmentedPath(): string {
   const sep = isWin ? ';' : ':';
   return [process.env.PATH || '', ...extraPaths].filter(Boolean).join(sep);
 }
+
+// Git 상태 조회 — 로컬 cwd 또는 SSH 세션에서 branch + diff stats 추출
+ipcMain.handle('git:status', async (_e, { mode, termId, cwd }: { mode: 'local' | 'remote'; termId?: string; cwd?: string }) => {
+  try {
+    if (mode === 'remote' && termId) {
+      if (typeof bridge.execCommand !== 'function') return { ok: false, error: 'ssh exec 미지원' };
+      // 원격 cwd 가 있으면 그 디렉토리에서 실행, 없으면 현재 셸 cwd. (cd 실패 시 즉시 NOTREPO)
+      const cdPart = cwd ? `cd '${cwd.replace(/'/g, "'\\''")}' && ` : '';
+      const script = `(${cdPart}git rev-parse --is-inside-work-tree 2>/dev/null && echo "---BR---" && git rev-parse --abbrev-ref HEAD 2>/dev/null && echo "---ST---" && git diff --shortstat HEAD 2>/dev/null) || echo "NOTREPO"`;
+      try {
+        const out: string = await bridge.execCommand(termId, script);
+        if (!out || /NOTREPO/.test(out)) return { ok: false, notRepo: true };
+        const parts = out.split('---BR---');
+        if (parts.length < 2) return { ok: false, notRepo: true };
+        const rest = parts[1].split('---ST---');
+        const branch = (rest[0] || '').trim();
+        const statLine = (rest[1] || '').trim();
+        const insMatch = statLine.match(/(\d+)\s+insertion/);
+        const delMatch = statLine.match(/(\d+)\s+deletion/);
+        return { ok: true, branch, additions: insMatch ? parseInt(insMatch[1], 10) : 0, deletions: delMatch ? parseInt(delMatch[1], 10) : 0 };
+      } catch (e: any) {
+        return { ok: false, error: String(e?.message || e) };
+      }
+    } else {
+      // local
+      const { execFileSync } = require('child_process');
+      const opts: any = { cwd: cwd || process.cwd(), encoding: 'utf-8', windowsHide: true, timeout: 3000 };
+      try {
+        execFileSync('git', ['rev-parse', '--is-inside-work-tree'], opts);
+      } catch { return { ok: false, notRepo: true }; }
+      let branch = '';
+      let stat = '';
+      try { branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], opts).trim(); } catch {}
+      try { stat = execFileSync('git', ['diff', '--shortstat', 'HEAD'], opts).trim(); } catch {}
+      const insMatch = stat.match(/(\d+)\s+insertion/);
+      const delMatch = stat.match(/(\d+)\s+deletion/);
+      return { ok: true, branch, additions: insMatch ? parseInt(insMatch[1], 10) : 0, deletions: delMatch ? parseInt(delMatch[1], 10) : 0 };
+    }
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+});
 
 ipcMain.handle('claude:check', async () => {
   try {

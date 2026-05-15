@@ -688,13 +688,14 @@ function App() {
   // 닫힘 트랜지션 검출용으로 이전 상태를 ref 에 저장.
   const overlayOpenRef = useRef(false);
   useEffect(() => {
-    const anyOpen = !!(showOptions || showManual || infoModal || showQuickConnect || showBroadcast);
+    // showQuickConnect / showBroadcast 는 영구 toolbar 가시성 (focus 안 뺏음) — 제외
+    const anyOpen = !!(showOptions || showManual || infoModal);
     if (overlayOpenRef.current && !anyOpen) {
       // 직전엔 오버레이가 열려있었고, 지금은 다 닫힘 → 터미널 포커스 복원
       restoreTerminalFocus();
     }
     overlayOpenRef.current = anyOpen;
-  }, [showOptions, showManual, infoModal, showQuickConnect, showBroadcast, restoreTerminalFocus]);
+  }, [showOptions, showManual, infoModal, restoreTerminalFocus]);
 
   // 미니탭 우클릭 → '세션 편집' 이벤트 수신
   useEffect(() => {
@@ -810,7 +811,10 @@ function App() {
     });
     // 외부 검색창에서 📌 클릭 → 인라인 모드로 복귀
     const offD = api.onSearchDock?.(() => { setShowSearch(true); });
-    return () => { offQ?.(); offN?.(); offP?.(); offC?.(); offD?.(); };
+    // 터미널 우클릭 메뉴 등에서 디스패치하는 'open-search' 커스텀 이벤트
+    const onOpenSearch = () => setShowSearch(true);
+    window.addEventListener('open-search', onOpenSearch);
+    return () => { offQ?.(); offN?.(); offP?.(); offC?.(); offD?.(); window.removeEventListener('open-search', onOpenSearch); };
   }, []); // listener 한 번만 — tabs/activeTab 은 ref 로 항상 최신 참조
 
   // 워크스페이스 전환 시 전체화면이면 새 워크스페이스의 선택된/첫번째 연결 패널로 fs-visible 전환
@@ -954,30 +958,34 @@ function App() {
     }, 100);
   }, [tabs, activeTab, selectedPanelId]);
 
-  // 실제 포커스 복원 구현 — activeTab/selectedPanelId 가 선언된 후 ref 에 주입
+  // 실제 포커스 복원 구현 — activeTab/selectedPanelId 가 선언된 후 ref 에 주입.
+  // 모달 닫힌 후 브라우저가 body 로 포커스 이동시키는 케이스가 있어 여러 시점에 재시도.
   restoreTermFocusRef.current = () => {
-    setTimeout(() => {
+    const doFocus = () => {
       try {
         if (!activeTab) return;
         const sessions = collectAllSessions(activeTab.layout);
         if (sessions.length === 0) return;
         let targetTermId: string | null = null;
-        // 1) 선택된 (.selected) 패널의 active term
         const selInner = document.querySelector('.layout-leaf-inner.selected') as HTMLElement | null;
         const selLeaf = selInner?.parentElement as HTMLElement | null;
         const selTerm = selLeaf?.getAttribute('data-active-term');
         if (selTerm) targetTermId = selTerm;
-        // 2) fullscreen 모드의 fs-visible
         if (!targetTermId) {
           const fsLeaf = document.querySelector('.layout-leaf.fs-visible') as HTMLElement | null;
           const t = fsLeaf?.getAttribute('data-active-term');
           if (t) targetTermId = t;
         }
-        // 3) 첫 활성 term
         if (!targetTermId) targetTermId = sessions[0].termId;
-        if (targetTermId) focusTerm(targetTermId);
+        if (!targetTermId) return;
+        try {
+          const ae = document.activeElement as HTMLElement | null;
+          if (ae && ae !== document.body) ae.blur();
+        } catch {}
+        focusTerm(targetTermId);
       } catch {}
-    }, 50);
+    };
+    [0, 30, 80, 150, 300].forEach(ms => setTimeout(doFocus, ms));
   };
 
   // 활성 터미널 termId를 가져오는 헬퍼
@@ -2920,13 +2928,19 @@ function App() {
           }}
           onSaveAndConnect={async (s: any) => {
             try { await (window as any).api?.saveSession?.(s); } catch {}
+            const editedTid = editSessionCtx.termId;
             setEditSessionCtx(null);
             // 새 탭으로 연결 (panelId=null → 새 패널/탭 생성)
             setTimeout(() => {
               try { handleConnectSession(s.id, s.name, null, s.theme, s.fontFamily, s.fontSize, s.scrollback); } catch (e) { console.error('[editor saveAndConnect]', e); }
+              if (editedTid) focusTerm(editedTid);
             }, 50);
           }}
-          onCancel={() => setEditSessionCtx(null)}
+          onCancel={() => {
+            const editedTid = editSessionCtx.termId;
+            setEditSessionCtx(null);
+            if (editedTid) setTimeout(() => focusTerm(editedTid), 0);
+          }}
         />
       )}
       {showOptions && (() => {

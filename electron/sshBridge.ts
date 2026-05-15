@@ -737,6 +737,23 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
 
   // ── SFTP ──
 
+  /** SSH 세션에서 일회성 명령 실행 — stdout 반환 (stderr 무시). git status 등 짧은 조회용. */
+  public execCommand(panelId: string, command: string, timeoutMs = 5000): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const rec = this.clients.get(panelId);
+      if (!rec?.conn) return reject(new Error('연결되지 않음'));
+      rec.conn.exec(command, (err: any, stream: any) => {
+        if (err) return reject(err);
+        let out = '';
+        const to = setTimeout(() => { try { stream.close(); } catch {} reject(new Error('timeout')); }, timeoutMs);
+        stream.on('data', (d: Buffer) => { out += d.toString('utf-8'); });
+        stream.stderr?.on('data', () => { /* ignore */ });
+        stream.on('close', () => { clearTimeout(to); resolve(out); });
+        stream.on('error', (e: any) => { clearTimeout(to); reject(e); });
+      });
+    });
+  }
+
   public getSftp(panelId: string): Promise<any> {
     const cached = this.sftpCache.get(panelId);
     if (cached) return Promise.resolve(cached);

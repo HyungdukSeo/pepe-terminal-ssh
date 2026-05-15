@@ -1605,7 +1605,33 @@ function ensureSSHSetup(termId: string) {
   });
 
   sshDataHandlers.set(termId, (p: any) => {
-    try { term.write(p.data); } catch {}
+    try {
+      // 사용자가 스크롤 위로 올렸을 때 새 출력으로 scrollback 증가하면서 viewport 가 따라 움직이지
+      // 않도록 ydisp 를 안정화. write 전후로 끝에서부터의 라인 offset 을 보존.
+      const core = (term as any)._core;
+      const buf = core?.buffer;
+      const wasScrolledUp = buf && buf.ydisp < buf.ybase;
+      const offsetFromEnd = wasScrolledUp ? (buf.lines.length - buf.ydisp) : -1;
+      term.write(p.data);
+      if (wasScrolledUp && offsetFromEnd > 0) {
+        try {
+          const buf2 = core?.buffer;
+          if (buf2 && buf2.lines) {
+            const newYdisp = Math.max(0, Math.min(buf2.ybase, buf2.lines.length - offsetFromEnd));
+            if (buf2.ydisp !== newYdisp) {
+              buf2.ydisp = newYdisp;
+              const vp = (term as any).element?.querySelector?.('.xterm-viewport') as HTMLElement | null;
+              if (vp) {
+                const cellH = core?._renderService?.dimensions?.css?.cell?.height || 17;
+                vp.scrollTop = newYdisp * cellH;
+              }
+              try { core?._onScroll?.fire?.(newYdisp); } catch {}
+              try { core?._renderService?.refreshRows?.(0, (term as any).rows - 1); } catch {}
+            }
+          }
+        } catch {}
+      }
+    } catch {}
   });
 
   sshClosedHandlers.set(termId, () => {
@@ -1809,7 +1835,30 @@ function ensurePtySetup(termId: string) {
         if (sigHideHome || sigClear) { console.log('[PTY-IN] DROPPED (in window) head="' + head + '"'); return; }
         console.log('[PTY-IN] in drop window but no match → passing through');
       }
+      // 스크롤 위로 올린 상태에서 빠른 출력 (tail -F 등) 시 viewport drift 방지
+      const core = (term as any)._core;
+      const bufBefore = core?.buffer;
+      const wasScrolledUp = bufBefore && bufBefore.ydisp < bufBefore.ybase;
+      const offsetFromEnd = wasScrolledUp ? (bufBefore.lines.length - bufBefore.ydisp) : -1;
       term.write(data);
+      if (wasScrolledUp && offsetFromEnd > 0) {
+        try {
+          const buf2 = core?.buffer;
+          if (buf2 && buf2.lines) {
+            const newYdisp = Math.max(0, Math.min(buf2.ybase, buf2.lines.length - offsetFromEnd));
+            if (buf2.ydisp !== newYdisp) {
+              buf2.ydisp = newYdisp;
+              const vp = (term as any).element?.querySelector?.('.xterm-viewport') as HTMLElement | null;
+              if (vp) {
+                const cellH = core?._renderService?.dimensions?.css?.cell?.height || 17;
+                vp.scrollTop = newYdisp * cellH;
+              }
+              try { core?._onScroll?.fire?.(newYdisp); } catch {}
+              try { core?._renderService?.refreshRows?.(0, (term as any).rows - 1); } catch {}
+            }
+          }
+        } catch {}
+      }
     } catch {}
   });
 
@@ -2849,6 +2898,8 @@ export const TerminalPanel: React.FC<Props> = ({
     try { (window as any).api?.pasteModalOpen?.(tid, text); } catch {}
   };
   const [renamingTermId, setRenamingTermId] = useState<string | null>(null);
+  // 수동 더블클릭 감지 — 첫 클릭이 layout 재렌더를 유발해 native dblclick 이 발화 안 하는 케이스 보강
+  const lastClickRef = useRef<{ termId: string; at: number } | null>(null);
   const [renameValue, setRenameValue] = useState('');
   // 미니탭바 우측 패널 컨트롤(분할/플로팅/투명도) 표시 토글 — 기본 숨김
   const [showPanelControls, setShowPanelControls] = useState(false);
@@ -2955,8 +3006,20 @@ export const TerminalPanel: React.FC<Props> = ({
                   }
                   setDropZone(null);
                 }}
-                onClick={e => { e.stopPropagation(); onSwitchSession?.(nodeId, idx); }}
-                onDoubleClick={e => { e.stopPropagation(); onDuplicateSession?.(nodeId, sess.termId); }}
+                onClick={e => {
+                  e.stopPropagation();
+                  // 수동 더블클릭 — 같은 미니탭에서 500ms 내 2번째 클릭이면 복제 실행
+                  // (native onDoubleClick 은 layout 재렌더 시 발화 안 하는 케이스가 있어 수동 감지로 통일)
+                  const now = Date.now();
+                  const prev = lastClickRef.current;
+                  if (prev && prev.termId === sess.termId && now - prev.at < 500) {
+                    lastClickRef.current = null;
+                    onDuplicateSession?.(nodeId, sess.termId);
+                    return;
+                  }
+                  lastClickRef.current = { termId: sess.termId, at: now };
+                  onSwitchSession?.(nodeId, idx);
+                }}
                 onAuxClick={e => { if (e.button === 1) { e.preventDefault(); e.stopPropagation(); window.api?.disconnectSSH?.(sess.termId); onCloseSession?.(nodeId, sess.termId); } }}
                 onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setMiniCtx({ x: e.clientX, y: e.clientY, termId: sess.termId, name: sess.sessionName }); }}
               >
@@ -3306,8 +3369,8 @@ export const TerminalPanel: React.FC<Props> = ({
             { label: t('menu.find'), onClick: () => {
               try { window.dispatchEvent(new CustomEvent('open-search')); } catch {}
             }},
-            { label: t('menu.clearScreen'), onClick: () => clearScreenInTerm(activeTermId) },
-            { label: t('menu.clearScrollbackBuffer'), onClick: () => clearScrollbackInTerm(activeTermId) },
+            { label: t('menu.clearScreen'), onClick: () => { clearScreenInTerm(activeTermId); setTimeout(() => focusTerm(activeTermId), 0); } },
+            { label: t('menu.clearScrollbackBuffer'), onClick: () => { clearScrollbackInTerm(activeTermId); setTimeout(() => focusTerm(activeTermId), 0); } },
             { label: t('menu.changeScrollback'), onClick: () => {
               const cur = getScrollbackForTerm(activeTermId);
               setScrollbackDialog({ value: String(cur) });
@@ -3363,39 +3426,44 @@ export const TerminalPanel: React.FC<Props> = ({
         />
       )}
       {scrollbackDialog && activeTermId && ReactDOM.createPortal(
-        <div className="session-editor-backdrop" onClick={() => setScrollbackDialog(null)}>
-          <div className="session-editor" style={{ width: 320 }} onClick={e => e.stopPropagation()}>
-            <h3>{t('dialogs.scrollbackTitle')}</h3>
-            <div style={{ padding: '8px 0', color: '#aaa', fontSize: 12 }}>{t('dialogs.scrollbackHint')}</div>
-            <input
-              type="number"
-              autoFocus
-              min={1000}
-              max={1000000}
-              step={1000}
-              value={scrollbackDialog.value}
-              onChange={e => setScrollbackDialog({ value: e.target.value })}
-              onKeyDown={e => {
-                if (e.key === 'Enter') {
-                  const n = Math.max(1000, Math.min(1000000, Number(scrollbackDialog.value) || 0));
-                  if (n) applyScrollbackToTerm(activeTermId, n);
-                  setScrollbackDialog(null);
-                } else if (e.key === 'Escape') {
-                  setScrollbackDialog(null);
-                }
-              }}
-              style={{ width: '100%', background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '8px', fontSize: 14, fontFamily: 'monospace', boxSizing: 'border-box' }}
-            />
-            <div className="session-editor-actions" style={{ marginTop: 12 }}>
-              <button className="btn-cancel" onClick={() => setScrollbackDialog(null)}>{t('dialogs.cancel')}</button>
-              <button className="btn-save" onClick={() => {
-                const n = Math.max(1000, Math.min(1000000, Number(scrollbackDialog.value) || 0));
-                if (n) applyScrollbackToTerm(activeTermId, n);
-                setScrollbackDialog(null);
-              }}>{t('dialogs.apply')}</button>
+        (() => {
+          const closeAndFocus = () => { setScrollbackDialog(null); setTimeout(() => focusTerm(activeTermId), 0); };
+          return (
+            <div className="session-editor-backdrop" onClick={closeAndFocus}>
+              <div className="session-editor" style={{ width: 320 }} onClick={e => e.stopPropagation()}>
+                <h3>{t('dialogs.scrollbackTitle')}</h3>
+                <div style={{ padding: '8px 0', color: '#aaa', fontSize: 12 }}>{t('dialogs.scrollbackHint')}</div>
+                <input
+                  type="number"
+                  autoFocus
+                  min={1000}
+                  max={1000000}
+                  step={1000}
+                  value={scrollbackDialog.value}
+                  onChange={e => setScrollbackDialog({ value: e.target.value })}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                      const n = Math.max(1000, Math.min(1000000, Number(scrollbackDialog.value) || 0));
+                      if (n) applyScrollbackToTerm(activeTermId, n);
+                      closeAndFocus();
+                    } else if (e.key === 'Escape') {
+                      closeAndFocus();
+                    }
+                  }}
+                  style={{ width: '100%', background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '8px', fontSize: 14, fontFamily: 'monospace', boxSizing: 'border-box' }}
+                />
+                <div className="session-editor-actions" style={{ marginTop: 12 }}>
+                  <button className="btn-cancel" onClick={closeAndFocus}>{t('dialogs.cancel')}</button>
+                  <button className="btn-save" onClick={() => {
+                    const n = Math.max(1000, Math.min(1000000, Number(scrollbackDialog.value) || 0));
+                    if (n) applyScrollbackToTerm(activeTermId, n);
+                    closeAndFocus();
+                  }}>{t('dialogs.apply')}</button>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>,
+          );
+        })(),
         document.body
       )}
       {fontDialog && ReactDOM.createPortal(

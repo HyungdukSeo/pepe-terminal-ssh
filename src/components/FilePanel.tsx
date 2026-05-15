@@ -139,7 +139,7 @@ function getFileIcon(name: string, isDir: boolean, shellPath?: string): string {
   if (lower === '내 pc' || lower.includes('mycomputer')) return '🖥';
   if (lower === '네트워크' || lower.includes('network')) return '🌐';
   if (lower === '라이브러리' || lower.includes('libraries') || lower.includes('libraryfolder')) return '📚';
-  if (lower === '제어판' || lower.includes('controlpanel')) return '⚙';
+  if (lower === '제어판' || lower.includes('controlpanel') || lower.includes('control panel')) return '⚙';
   if (lower === '홈' || lower === '사용자' || lower === 'users') return '🏠';
   if (lower === '갤러리' || lower === 'gallery') return '🖼';
   if (lower === '다운로드' || lower === 'downloads' || lower.includes('download')) return '⬇';
@@ -175,6 +175,32 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const [editPath, setEditPath] = useState(currentPath);
   const [editingPath, setEditingPath] = useState(false);
+  // shell: 경로의 친화적 라벨 ↔ 실제 경로 매핑 — path bar 표시/편집에 공통 사용
+  const shellLabelMap: Record<string, string> = {
+    'shell:MyComputerFolder': '내 PC',
+    'shell:Desktop': '바탕 화면',
+    'shell:NetworkPlacesFolder': '네트워크',
+    'shell:Downloads': '다운로드',
+    'shell:Personal': '문서',
+    'shell:My Documents': '문서',
+    'shell:My Pictures': '사진',
+    'shell:My Music': '음악',
+    'shell:My Video': '동영상',
+    'shell:RecycleBinFolder': '휴지통',
+    '::{20D04FE0-3AEA-1069-A2D8-08002B30309D}': '내 PC',
+    '::{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}': '네트워크',
+    '::{645FF040-5081-101B-9F08-00AA002F954E}': '휴지통',
+  };
+  const friendlyShellLabel = (p: string): string | null => shellLabelMap[p] || null;
+  // 라벨 → 실제 path. 친화적 라벨을 입력했을 때 shell: 경로로 변환.
+  // 우선순위: shell: 경로 (위 매핑) 가 우선, 그다음 일반 경로 입력은 그대로 navigate.
+  const resolveShellLabel = (label: string): string | null => {
+    const trimmed = label.trim();
+    for (const [shellPath, name] of Object.entries(shellLabelMap)) {
+      if (name === trimmed) return shellPath;
+    }
+    return null;
+  };
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; file?: FileInfo } | null>(null);
   const [renamingFile, setRenamingFile] = useState<string | null>(null);
   const [chmodDialog, setChmodDialog] = useState<{ paths: string[]; initialMode?: number; hasDir: boolean } | null>(null);
@@ -361,8 +387,15 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
     const t = setTimeout(() => {
       const fetchIcons = async () => {
         const paths: string[] = [];
+        const shellPaths: string[] = []; // 가상 shell: 경로 — 개별 요청 (Win32 SHGetFileInfo+PIDL)
         for (const f of files) {
-          if (f.shellPath && (f.shellPath.startsWith('shell-pidl:') || f.shellPath.startsWith('shell:'))) continue;
+          if (f.shellPath && (f.shellPath.startsWith('shell-pidl:') || f.shellPath.startsWith('shell:') || f.shellPath.startsWith('::{'))) {
+            const key = f.shellPath;
+            if (iconRequestedRef.current.has(key)) continue;
+            iconRequestedRef.current.add(key);
+            shellPaths.push(key);
+            continue;
+          }
           const fullPath = f.shellPath && /^([A-Z]:|\\\\)/i.test(f.shellPath)
             ? f.shellPath
             : (currentPath.endsWith(sep) ? currentPath + f.name : currentPath + sep + f.name);
@@ -370,19 +403,38 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
           iconRequestedRef.current.add(fullPath);
           paths.push(fullPath);
         }
-        if (paths.length === 0) return;
-        try {
-          const r: any = await api.feGetFileIconsBatch?.(paths);
-          if (r?.icons) {
+        // 일반 파일 — batch
+        if (paths.length > 0) {
+          try {
+            const r: any = await api.feGetFileIconsBatch?.(paths);
+            if (r?.icons) {
+              setIconCache(prev => {
+                const next = new Map(prev);
+                for (const [p, url] of Object.entries(r.icons)) {
+                  if (url && typeof url === 'string') next.set(p, url);
+                }
+                return next;
+              });
+            }
+          } catch {}
+        }
+        // shell: 가상 폴더 — 개별 호출
+        if (shellPaths.length > 0) {
+          const results: Array<[string, string]> = [];
+          for (const sp of shellPaths) {
+            try {
+              const r: any = await api.feGetFileIcon?.(sp);
+              if (r?.dataUrl) results.push([sp, r.dataUrl]);
+            } catch {}
+          }
+          if (results.length > 0) {
             setIconCache(prev => {
               const next = new Map(prev);
-              for (const [p, url] of Object.entries(r.icons)) {
-                if (url && typeof url === 'string') next.set(p, url);
-              }
+              for (const [p, url] of results) next.set(p, url);
               return next;
             });
           }
-        } catch {}
+        }
       };
       fetchIcons();
     }, 500);
@@ -413,7 +465,7 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
   }, [source.mode, source.termId, encoding]);
 
   useEffect(() => { loadDir(currentPath); }, [currentPath, loadDir, refreshKey]);
-  useEffect(() => { setEditPath(currentPath); }, [currentPath]);
+  useEffect(() => { setEditPath(friendlyShellLabel(currentPath) || currentPath); }, [currentPath]);
 
   const sep = source.mode === 'local' && navigator.platform.startsWith('Win') ? '\\' : '/';
 
@@ -562,7 +614,17 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
 
   const getSortedFiles = useCallback(() => {
     const valid = files.filter(f => f && f.name);
-    const sorted = valid.sort((a, b) => {
+    // dedupe — shell:Desktop 등 aggregator 폴더에서 같은 realPath/.lnk 가 OneDrive Desktop / Public Desktop 등 여러 소스에서 중복 열거됨.
+    // fileKey 기준 첫 항목만 유지 (React duplicate key warning 방지).
+    const seen = new Set<string>();
+    const deduped: typeof valid = [];
+    for (const f of valid) {
+      const k = f.realPath || f.shellPath || f.name;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      deduped.push(f);
+    }
+    const sorted = deduped.sort((a, b) => {
       if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
       let cmp = 0;
       if (sortKey === 'name') cmp = (a.name || '').localeCompare(b.name || '');
@@ -873,25 +935,14 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
         </div>
         <button className="fe-path-btn" onClick={goUp} title={t('parentFolder')}>⬆</button>
         <button className="fe-path-btn" onClick={() => loadDir(currentPath)} title={t('refresh')}>🔄</button>
-        {source.mode === 'local' && drives.length > 0 && (
-          <select
-            className="fe-drive-select"
-            value=""
-            onChange={e => { if (e.target.value) { navigate(e.target.value); e.currentTarget.value = ''; } }}
-            title="드라이브 / 네트워크 드라이브로 바로 이동"
-          >
-            <option value="">💾 드라이브</option>
-            {drives.map(d => <option key={d.path} value={d.path}>{d.label}</option>)}
-          </select>
-        )}
         {editingPath ? (
           <input className="fe-path-input" value={editPath} onChange={e => setEditPath(e.target.value)}
-            onBlur={() => { setEditingPath(false); navigate(editPath); }}
-            onKeyDown={e => { if (e.key === 'Enter') { setEditingPath(false); navigate(editPath); } if (e.key === 'Escape') setEditingPath(false); }}
+            onBlur={() => { setEditingPath(false); const resolved = resolveShellLabel(editPath); navigate(resolved || editPath); }}
+            onKeyDown={e => { if (e.key === 'Enter') { setEditingPath(false); const resolved = resolveShellLabel(editPath); navigate(resolved || editPath); } if (e.key === 'Escape') setEditingPath(false); }}
             autoFocus
           />
         ) : (
-          <div className="fe-path-display" onClick={() => setEditingPath(true)} title={currentPath}>
+          <div className="fe-path-display" onClick={() => { const friendly = friendlyShellLabel(currentPath); setEditPath(friendly || currentPath); setEditingPath(true); }} title={currentPath}>
             {(() => {
               // shell: / shell-pidl: 경로는 친화적으로 표시 — 디바이스/특수 폴더 라벨 + 체인 이름들
               const specialLabel = (p: string): string | null => {
@@ -1153,6 +1204,17 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
             <span className="fe-col-name" style={{ width: colWidths.name }}>
               <span className="fe-file-icon">{(() => {
                 if (source.mode === 'local') {
+                  // 가상 shell:* / shell-pidl:* / ::CLSID 항목은 shellPath 자체를 캐시 키로 사용 (SHGetFileInfo+PIDL)
+                  const isVirtualShell = !!file.shellPath && (
+                    /^shell:/.test(file.shellPath) ||
+                    /^shell-pidl:/.test(file.shellPath) ||
+                    /^::\{/.test(file.shellPath)
+                  );
+                  if (isVirtualShell) {
+                    const shellUrl = iconCache.get(file.shellPath!);
+                    if (shellUrl) return <img src={shellUrl} className="fe-file-icon-img" alt="" draggable={false} />;
+                    return getFileIcon(file.name, file.isDir, file.shellPath);
+                  }
                   const fullPath = file.shellPath && /^([A-Z]:|\\\\)/i.test(file.shellPath)
                     ? file.shellPath
                     : (currentPath.endsWith(sep) ? currentPath + file.name : currentPath + sep + file.name);

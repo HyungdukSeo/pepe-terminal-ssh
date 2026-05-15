@@ -198,6 +198,9 @@ contextBridge.exposeInMainWorld('api', {
   sshAuthResponse: (panelId: string, responses: string[]) =>
     ipcRenderer.invoke('ssh:auth-response', { panelId, responses }),
 
+  // Git 상태 — local cwd 또는 원격 SSH 세션의 git repo
+  gitStatus: (params: { mode: 'local' | 'remote'; termId?: string; cwd?: string }) => ipcRenderer.invoke('git:status', params),
+
   // Claude Code CLI
   claudeCheck: () => ipcRenderer.invoke('claude:check'),
   claudeSend: (sessionId: string, prompt: string, addDirs?: string[], disallowBash?: boolean, sshTermId?: string, resumeSessionId?: string | null, permissionMode?: string, model?: string, perToolApproval?: boolean, requestId?: string, effort?: string) =>
