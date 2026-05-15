@@ -281,6 +281,11 @@ function App() {
           setRemoteTreePinned(prefs.remoteTreePinned);
           if (!prefs.remoteTreePinned) setRemoteTreeVisible(false);
         }
+        if (typeof prefs?.terminalPinned === 'boolean') {
+          setTerminalPinned(prefs.terminalPinned);
+          if (!prefs.terminalPinned) setTerminalVisible(false);
+        }
+        terminalPinnedLoadedRef.current = true;
         remoteTreeWidthLoadedRef.current = true;
         remoteTreePinnedLoadedRef.current = true;
         claudeChatPinnedLoadedRef.current = true;
@@ -532,6 +537,11 @@ function App() {
   const remoteTreeWidthLoadedRef = useRef(false);
   const [remoteTreePinned, setRemoteTreePinned] = useState<boolean>(true);
   const [remoteTreeVisible, setRemoteTreeVisible] = useState<boolean>(true);
+  const [terminalPinned, setTerminalPinned] = useState<boolean>(true);
+  const [terminalVisible, setTerminalVisible] = useState<boolean>(true);
+  const terminalPinnedLoadedRef = useRef(false);
+  const terminalHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const terminalHoverShowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 어느 오버레이가 최상위인지 — hover 중인 쪽이 다른 쪽 위에 오도록
   const [topPanel, setTopPanel] = useState<'session' | 'filetree' | null>(null);
   const remoteTreePinnedLoadedRef = useRef(false);
@@ -564,6 +574,15 @@ function App() {
     try { (window as any).api?.setUIPrefs?.({ remoteTreePinned }); } catch {}
     if (remoteTreePinned) setRemoteTreeVisible(true);
   }, [remoteTreePinned]);
+  useEffect(() => {
+    if (!terminalPinnedLoadedRef.current) return;
+    try { (window as any).api?.setUIPrefs?.({ terminalPinned }); } catch {}
+    if (terminalPinned) setTerminalVisible(true);
+    [50, 200, 500].forEach(ms => setTimeout(() => {
+      window.dispatchEvent(new Event('resize'));
+      refitAllTerms();
+    }, ms));
+  }, [terminalPinned]);
   const [showClaudeChat, setShowClaudeChat] = useState(true);
   const [claudeChatWidth, setClaudeChatWidth] = useState<number>(360);
   const [claudeChatPinned, setClaudeChatPinned] = useState<boolean>(false);
@@ -2641,6 +2660,11 @@ function App() {
           <button className={`tool-btn ${showQuickConnect ? 'active' : ''}`} title={showQuickConnect ? '빠른 연결 바 숨기기' : '빠른 연결 바 표시'} onClick={() => setShowQuickConnect(v => !v)}>⚡</button>
           <button className={`tool-btn ${showClaudeChat ? 'active' : ''}`} title={showClaudeChat ? 'Claude 채팅 숨기기' : 'Claude 채팅 표시'} onClick={() => setShowClaudeChat(v => !v)}>🤖</button>
           <button className={`tool-btn ${showBroadcast ? 'active' : ''}`} title={showBroadcast ? '텍스트 일괄 전송 바 숨기기' : '텍스트 일괄 전송 바 표시'} onClick={() => setShowBroadcast(v => !v)}>📢</button>
+          <button
+            className={`tool-btn btn-pin${terminalPinned ? ' pinned' : ''}`}
+            title={terminalPinned ? '터미널 패널 고정 해제 (세로 탭으로 최소화)' : '터미널 패널 고정'}
+            onClick={() => setTerminalPinned(p => !p)}
+          >📌</button>
           <span className="tool-sep" />
           <button className="tool-btn" title="X 서버 시작 (DISPLAY=:0)" onClick={async () => {
             try {
@@ -2924,58 +2948,130 @@ function App() {
             }
           }
           return (
-            <div className="workspace-content-row" style={{ display: 'flex', flex: 1, minHeight: 0, position: 'relative' }}>
+            <div style={{ display: 'flex', flex: 1, minHeight: 0, minWidth: 0, position: 'relative' }}>
               {fileTreeNode}
-              <div className="workspace-content-col" style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-          <Layout root={activeTab.layout}
-            selectedPanelId={selectedPanelId}
-            onSplit={(nodeId, dir) => openSplitSessionPicker(dir, nodeId)}
-            onSplitWithPicker={(nodeId, dir) => openSplitSessionPickerWithPrompt(dir, nodeId)}
-            onClose={nodeId => closePanel(activeTab.id, nodeId)}
-            onContainerResize={(nodeId, sizes) => {
-              // 컨테이너 노드의 sizes 를 트리에 저장 — 워크스페이스 전환 후 복원
-              updateLayout(activeTab.id, root => {
-                const walk = (node: any): any => {
-                  if (node.id === nodeId && (node.type === 'row' || node.type === 'column')) {
-                    return { ...node, sizes: [...sizes] };
-                  }
-                  if (node.type !== 'leaf' && node.children) {
-                    return { ...node, children: node.children.map(walk) };
-                  }
-                  return node;
-                };
-                return walk(root);
-              });
-            }}
-            floatingPanelId={floatingPanelId}
-            fullscreenTermId={fullscreenTermId}
-            workspaceList={tabs.map(t => ({ id: t.id, title: t.title }))}
-            currentWorkspaceId={activeTab?.id}
-            onMoveSessionToWorkspace={handleMoveSessionToWorkspace}
-            onToggleFloat={nodeId => {
-              setFloatingPanelId(prev => prev === nodeId ? null : nodeId);
-              setTimeout(() => { window.dispatchEvent(new Event('resize')); refitAllTerms(); }, 120);
-            }}
-            onSelectPanel={id => setSelectedPanelId(id)}
-            onMovePanel={movePanel}
-            onSwitchSession={handleSwitchSession}
-            onCloseSession={handleCloseSession}
-            onMoveSession={handleMoveSession}
-            onSplitMoveSession={handleSplitMoveSession}
-            onReorderSession={handleReorderSession}
-            onAddSession={handleAddSession}
-            onRenameSession={handleRenameSession}
-            onConnectDrop={handleConnectDrop}
-            onDuplicateSession={handleDuplicateSession}
-            availableShells={availableShells}
-            treeWidth={remoteTreeWidth}
-            onTreeWidthChange={w => {
-              setRemoteTreeWidth(w);
-              if (remoteTreeWidthLoadedRef.current) { try { (window as any).api?.setUIPrefs?.({ remoteTreeWidth: w }); } catch {} }
-            }}
-            onOpenRemoteFile={handleOpenRemoteFile}
-            onAttachToClaude={handleAttachToClaude}
-          />
+              <div className="workspace-content-row" style={{ display: 'flex', flex: 1, minHeight: 0, position: 'relative', overflow: 'hidden' }}>
+              <div className="workspace-content-col" style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'row', position: 'relative' }}>
+                {!terminalPinned && (() => {
+                  const leaves: { nodeId: string; name: string }[] = [];
+                  const walkLeaves = (node: any) => {
+                    if (node.type === 'leaf') {
+                      const sess = node.panel.sessions[node.panel.activeIdx];
+                      leaves.push({ nodeId: node.id, name: sess?.sessionName || 'Terminal' });
+                    } else if (node.children) {
+                      node.children.forEach(walkLeaves);
+                    }
+                  };
+                  walkLeaves(activeTab.layout);
+                  const openPanel = (nodeId: string) => {
+                    if (!nodeId) return;
+                    if (terminalHideTimer.current) { clearTimeout(terminalHideTimer.current); terminalHideTimer.current = null; }
+                    if (terminalHoverShowTimer.current) { clearTimeout(terminalHoverShowTimer.current); terminalHoverShowTimer.current = null; }
+                    setSelectedPanelId(nodeId);
+                    setTerminalVisible(true);
+                    setTimeout(() => { window.dispatchEvent(new Event('resize')); refitAllTerms(); }, 80);
+                  };
+                  return (
+                    <div className="terminal-sidebar-trigger">
+                      <div
+                        className="terminal-sidebar-trigger-top"
+                        title="터미널 열기"
+                        onClick={() => openPanel(leaves[0]?.nodeId || '')}
+                        onMouseEnter={() => {
+                          if (terminalHideTimer.current) { clearTimeout(terminalHideTimer.current); terminalHideTimer.current = null; }
+                          if (terminalHoverShowTimer.current) clearTimeout(terminalHoverShowTimer.current);
+                          terminalHoverShowTimer.current = setTimeout(() => setTerminalVisible(true), 300);
+                        }}
+                        onMouseLeave={() => {
+                          if (terminalHoverShowTimer.current) { clearTimeout(terminalHoverShowTimer.current); terminalHoverShowTimer.current = null; }
+                        }}
+                      >
+                        <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                          <rect x="1" y="3" width="12" height="9" rx="1.5" />
+                          <line x1="1" y1="6" x2="13" y2="6" />
+                          <line x1="4" y1="3" x2="4" y2="6" />
+                          <line x1="7" y1="3" x2="7" y2="6" />
+                        </svg>
+                      </div>
+                      {leaves.map(leaf => (
+                        <div
+                          key={leaf.nodeId}
+                          className={`terminal-sidebar-trigger-tab${selectedPanelId === leaf.nodeId ? ' active' : ''}`}
+                          title={leaf.name}
+                          onClick={() => openPanel(leaf.nodeId)}
+                        >
+                          <span className="terminal-sidebar-trigger-tab-text">{leaf.name}</span>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+                <div
+                  className={`terminal-layout-wrap${!terminalPinned ? ' auto-hide' : ''}${!terminalPinned && !terminalVisible ? ' hidden' : ''}`}
+                  onMouseLeave={() => {
+                    if (terminalPinned) return;
+                    if (terminalHideTimer.current) clearTimeout(terminalHideTimer.current);
+                    terminalHideTimer.current = setTimeout(() => {
+                      setTerminalVisible(false);
+                      setTimeout(() => { window.dispatchEvent(new Event('resize')); refitAllTerms(); }, 80);
+                    }, 500);
+                  }}
+                  onMouseEnter={() => {
+                    if (terminalPinned) return;
+                    if (terminalHideTimer.current) { clearTimeout(terminalHideTimer.current); terminalHideTimer.current = null; }
+                  }}
+                >
+                  <Layout root={activeTab.layout}
+                    selectedPanelId={selectedPanelId}
+                    onSplit={(nodeId, dir) => openSplitSessionPicker(dir, nodeId)}
+                    onSplitWithPicker={(nodeId, dir) => openSplitSessionPickerWithPrompt(dir, nodeId)}
+                    onClose={nodeId => closePanel(activeTab.id, nodeId)}
+                    onContainerResize={(nodeId, sizes) => {
+                      // 컨테이너 노드의 sizes 를 트리에 저장 — 워크스페이스 전환 후 복원
+                      updateLayout(activeTab.id, root => {
+                        const walk = (node: any): any => {
+                          if (node.id === nodeId && (node.type === 'row' || node.type === 'column')) {
+                            return { ...node, sizes: [...sizes] };
+                          }
+                          if (node.type !== 'leaf' && node.children) {
+                            return { ...node, children: node.children.map(walk) };
+                          }
+                          return node;
+                        };
+                        return walk(root);
+                      });
+                    }}
+                    floatingPanelId={floatingPanelId}
+                    fullscreenTermId={fullscreenTermId}
+                    workspaceList={tabs.map(t => ({ id: t.id, title: t.title }))}
+                    currentWorkspaceId={activeTab?.id}
+                    onMoveSessionToWorkspace={handleMoveSessionToWorkspace}
+                    onToggleFloat={nodeId => {
+                      setFloatingPanelId(prev => prev === nodeId ? null : nodeId);
+                      setTimeout(() => { window.dispatchEvent(new Event('resize')); refitAllTerms(); }, 120);
+                    }}
+                    onSelectPanel={id => setSelectedPanelId(id)}
+                    onMovePanel={movePanel}
+                    onSwitchSession={handleSwitchSession}
+                    onCloseSession={handleCloseSession}
+                    onMoveSession={handleMoveSession}
+                    onSplitMoveSession={handleSplitMoveSession}
+                    onReorderSession={handleReorderSession}
+                    onAddSession={handleAddSession}
+                    onRenameSession={handleRenameSession}
+                    onConnectDrop={handleConnectDrop}
+                    onDuplicateSession={handleDuplicateSession}
+                    availableShells={availableShells}
+                    treeWidth={remoteTreeWidth}
+                    onTreeWidthChange={w => {
+                      setRemoteTreeWidth(w);
+                      if (remoteTreeWidthLoadedRef.current) { try { (window as any).api?.setUIPrefs?.({ remoteTreeWidth: w }); } catch {} }
+                    }}
+                    onOpenRemoteFile={handleOpenRemoteFile}
+                    onAttachToClaude={handleAttachToClaude}
+                  />
+                </div>
+              </div>
               </div>
             </div>
           );
