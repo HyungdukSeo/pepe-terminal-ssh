@@ -11,10 +11,17 @@ import { FileExplorer } from './components/FileExplorer';
 import { ConflictDialogQueue } from './components/ConflictDialog';
 import { FileEditor } from './components/FileEditor';
 import { ClaudeChat } from './components/ClaudeChat';
+import { BrowserPane } from './components/BrowserPane';
+import { CompareWorkspace } from './components/CompareWorkspace';
+import { LogAnalyzer } from './components/LogAnalyzer';
+import { VpnWorkspace } from './components/VpnWorkspace';
+import { TranslationEditor } from './components/TranslationEditor';
+import { SqlToolWorkspace } from './components/SqlToolWorkspace';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { RemoteFileTree } from './components/RemoteFileTree';
 import { QuickConnectBar, QuickConnectResult } from './components/QuickConnectDialog';
 import { StatusBar } from './components/StatusBar';
-import { resetTermConnectState, clearScrollbackInTerm, clearScreenInTerm, clearAllInTerm, applyThemeToAll, applyThemeToTerm, applyFontToTerm, applyFontToAll, getCurrentThemeName, registerTermSession, getTermSessionInfo, getWordSeparator, setWordSeparator, refitAllTerms, applyScrollbackToAll, applyScrollbackToTerm, cloneTermStyle, isTermConnected, isTermConnecting, isTermPty, subscribeConnectedChange, focusTerm, pasteToTerm, getSelectionFromTerm, selectAllInTerm, promptPasswordAndConnect, startInitialConnectWatchdog, getCurrentPwdForTerm, refitTerm, searchInTerm, searchNextInTerm, searchPrevInTerm, clearSearchInTerm, highlightAllMatches, clearHighlights, searchFromTop, getAllTermIds, applyCursorStyleToTerm, markQuickConnectPending, clearQuickConnectPending, writeToTerm } from './components/TerminalPanel';
+import { resetTermConnectState, clearScrollbackInTerm, clearScreenInTerm, clearAllInTerm, applyThemeToAll, applyThemeToTerm, applyFontToTerm, applyFontToAll, getCurrentThemeName, registerTermSession, getTermSessionInfo, getWordSeparator, setWordSeparator, refitAllTerms, applyScrollbackToAll, applyScrollbackToTerm, cloneTermStyle, isTermConnected, isTermConnecting, isTermPty, subscribeConnectedChange, focusTerm, pasteToTerm, getSelectionFromTerm, selectAllInTerm, promptPasswordAndConnect, startInitialConnectWatchdog, getCurrentPwdForTerm, refitTerm, searchInTerm, searchNextInTerm, searchPrevInTerm, clearSearchInTerm, highlightAllMatches, clearHighlights, searchFromTop, getAllTermIds, applyCursorStyleToTerm, markQuickConnectPending, clearQuickConnectPending, writeToTerm, termStore } from './components/TerminalPanel';
 import { marked } from 'marked';
 // @ts-ignore — vite ?raw 로 docs/MANUAL.md 를 번들 문자열로 임베드
 import manualMd from '../docs/MANUAL.md?raw';
@@ -47,8 +54,8 @@ import {
 export type { LayoutNode, ContainerNode, LeafNode, Panel, PanelSession } from './utils/layoutUtils';
 
 export type TabId = string;
-export type TabType = 'terminal' | 'fileExplorer' | 'fileEditor';
-export type Tab = { id: TabId; title: string; layout: LayoutNode; type?: TabType; editor?: { termId: string; remotePath: string; fileName: string } };
+export type TabType = 'terminal' | 'fileExplorer' | 'fileEditor' | 'browser' | 'compare' | 'logAnalyzer' | 'vpn' | 'i18nEditor' | 'sqlTool';
+export type Tab = { id: TabId; title: string; layout: LayoutNode; type?: TabType; editor?: { termId: string; remotePath: string; fileName: string }; sqlTool?: { sessionId: string; sessionName: string } };
 
 // 일괄전송 히스토리 (앱 실행 중 유지, 최대 50개)
 const broadcastHistory: string[] = [];
@@ -373,6 +380,18 @@ function App() {
     if (!remotePickerOpen || !remotePickerSessionId) return;
     let cancelled = false;
     (async () => {
+      // 0) 빠른연결 가상 세션 — id 가 termId 와 동일. 모든 워크스페이스의 termId 매치 시 그대로 사용.
+      for (const t of tabs) {
+        const found = collectAllSessions(t.layout).find(s => s.termId === remotePickerSessionId && isTermConnected(s.termId) && !s.sessionId);
+        if (found) {
+          if (!cancelled) {
+            setRemotePickerConnId(found.termId);
+            const pwd = getCurrentPwdForTerm(found.termId) || '/';
+            setRemotePickerPath(pwd);
+          }
+          return;
+        }
+      }
       // 1) 이미 터미널로 열린 세션이면 그 termId 재사용
       if (activeTab) {
         const open = collectAllSessions(activeTab.layout).find(s => s.sessionId === remotePickerSessionId && isTermConnected(s.termId));
@@ -1280,6 +1299,28 @@ function App() {
     setTabs(prev => prev.map(t => t.id === id ? { ...t, title: name } : t));
   };
 
+  // 특수 워크스페이스 탭 추가 helpers — 빈 layout (사용 안 함) + type 만 의미 있음
+  const addSpecialTab = (type: TabType, title: string) => {
+    const id = `tab-${type}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}` as TabId;
+    const emptyLayout: LayoutNode = { id: `node-${id}`, type: 'leaf', panel: { id: `panel-${id}`, sessions: [], activeIdx: 0 } };
+    setTabs(prev => [...prev, { id, title, layout: emptyLayout, type }]);
+    setActiveTabId(id);
+  };
+  const addBrowserTab = () => addSpecialTab('browser', '🌐 브라우저');
+  const addCompareTab = () => addSpecialTab('compare', '🔍 파일 비교');
+  const addLogAnalyzerTab = () => addSpecialTab('logAnalyzer', '📈 로그 분석');
+  const addVpnTab = () => addSpecialTab('vpn', '🔒 VPN');
+  const addI18nEditorTab = () => addSpecialTab('i18nEditor', '🌍 다국어 편집');
+  const openSqlToolTab = (sessionId: string, sessionName: string) => {
+    // 동일 sessionId 의 SQL Tool 탭이 이미 있으면 그 탭으로 전환
+    const existing = tabs.find(t => t.type === 'sqlTool' && t.sqlTool?.sessionId === sessionId);
+    if (existing) { setActiveTabId(existing.id); return; }
+    const id = `tab-sqltool-${Date.now()}-${Math.random().toString(36).slice(2, 6)}` as TabId;
+    const emptyLayout: LayoutNode = { id: `node-${id}`, type: 'leaf', panel: { id: `panel-${id}`, sessions: [], activeIdx: 0 } };
+    setTabs(prev => [...prev, { id, title: `🗄️ ${sessionName}`, layout: emptyLayout, type: 'sqlTool', sqlTool: { sessionId, sessionName } }]);
+    setActiveTabId(id);
+  };
+
   const closeTab = (id: TabId) => {
     setTabs(prev => { const f = prev.filter(t => t.id !== id); return f.length === 0 ? prev : f; });
     setActiveTabId(prev => {
@@ -1511,7 +1552,61 @@ function App() {
         if (info.sessionId) {
           await (window as any).api?.connectSSH?.(newTermId, info.sessionId);
         } else if (info.quickSession) {
-          await (window as any).api?.quickConnectSSH?.(newTermId, info.quickSession);
+          // 빠른연결 복제 — 자격증명(username/password) 이 quickSession 에 없으면 prompt 모달로 입력 받기.
+          // 원본 quick-connect 의 retry 로직과 동일 패턴.
+          const tryConnect = async (sessInfo: any): Promise<void> => {
+            const r = await (window as any).api?.quickConnectSSH?.(newTermId, sessInfo);
+            if (r === 'need-credentials' || r === 'need-password') {
+              const needUsername = r === 'need-credentials';
+              window.dispatchEvent(new CustomEvent('ssh-password-prompt', {
+                detail: {
+                  termId: newTermId,
+                  sessionId: '',
+                  hostHint: sessInfo.host,
+                  userHint: sessInfo.username,
+                  needUsername,
+                  resolve: (result: any) => {
+                    if (result === null) {
+                      clearQuickConnectPending(newTermId);
+                      writeToTerm(newTermId, '\r\n\x1b[90m✕ 연결 취소됨.\x1b[0m\r\n');
+                      writeToTerm(newTermId, '\x1b[33m▶ 다시 시도하려면: 터미널 클릭 또는 미니탭 우클릭 → 재연결\x1b[0m\r\n');
+                      // 터미널 영역 클릭 1회 → 자격증명 모달 재오픈
+                      setTimeout(() => {
+                        const entry = termStore.get(newTermId);
+                        const el = (entry?.term as any)?.element as HTMLElement | undefined;
+                        if (!el) return;
+                        const onceClick = (ev: MouseEvent) => {
+                          ev.stopPropagation();
+                          el.removeEventListener('mousedown', onceClick, true);
+                          markQuickConnectPending(newTermId);
+                          tryConnect(sessInfo).catch(() => {});
+                        };
+                        el.addEventListener('mousedown', onceClick, true);
+                      }, 100);
+                      return;
+                    }
+                    let nextUsername = sessInfo.username;
+                    let nextPassword = '';
+                    if (typeof result === 'string') nextPassword = result;
+                    else if (result && typeof result === 'object') {
+                      nextUsername = result.username || sessInfo.username;
+                      nextPassword = result.password || '';
+                    }
+                    const next: any = {
+                      ...sessInfo,
+                      username: nextUsername,
+                      name: nextUsername ? `${nextUsername}@${sessInfo.host}` : sessInfo.host,
+                      auth: { type: 'password', password: nextPassword },
+                    };
+                    // 새 termId 의 quickSession 에 자격증명 저장 — 추후 재복제 시 또 재입력 안 함
+                    registerTermSession(newTermId, '', nextUsername ? `${nextUsername}@${sessInfo.host}` : sessInfo.host, sessInfo.host, next);
+                    tryConnect(next).catch(() => {});
+                  },
+                },
+              }));
+            }
+          };
+          tryConnect(info.quickSession).catch(() => {});
         }
         // 런타임에 변경된 인코딩까지 복제
         try {
@@ -1832,9 +1927,24 @@ function App() {
                 needUsername,
                 resolve: (result: any) => {
                   if (result === null) {
-                    // 취소 — pending 해제 + 터미널에 취소 메시지 표시
+                    // 취소 — pending 해제 + 터미널에 취소/재시도 안내 메시지
                     clearQuickConnectPending(tid);
                     writeToTerm(tid, '\r\n\x1b[90m✕ 연결 취소됨.\x1b[0m\r\n');
+                    writeToTerm(tid, '\x1b[33m▶ 다시 시도하려면: 터미널 클릭 또는 미니탭 우클릭 → 재연결\x1b[0m\r\n');
+                    // 터미널 영역 클릭 1회 → 자격증명 모달 재오픈
+                    setTimeout(() => {
+                      const entry = termStore.get(tid);
+                      const el = (entry?.term as any)?.element as HTMLElement | undefined;
+                      if (!el) return;
+                      const onceClick = (ev: MouseEvent) => {
+                        ev.stopPropagation();
+                        el.removeEventListener('mousedown', onceClick, true);
+                        // 재연결 — quickConnectSSH 재호출하면 다시 need-credentials 반환 → 모달 재오픈
+                        markQuickConnectPending(tid);
+                        tryConnect(info).catch(() => {});
+                      };
+                      el.addEventListener('mousedown', onceClick, true);
+                    }, 100);
                     return;
                   }
                   let nextUsername = sessInfo.username;
@@ -1851,6 +1961,8 @@ function App() {
                     name: nextUsername ? `${nextUsername}@${sessInfo.host}` : sessInfo.host,
                     auth: { type: 'password', password: nextPassword },
                   };
+                  // 자격증명을 termSessionMap 에 저장 — 세션 복제 시 재입력 불필요
+                  registerTermSession(tid, '', nextUsername ? `${nextUsername}@${sessInfo.host}` : sessInfo.host, sessInfo.host, next);
                   tryConnect(next).catch(() => {});
                 },
               },
@@ -1962,6 +2074,11 @@ function App() {
           setTabs(prev => [...prev, { id, title: '📁 파일 전송', layout: createInitialLayout(id), type: 'fileExplorer' }]);
           setActiveTabId(id);
         }},
+        { label: '🌐 브라우저 워크스페이스', action: addBrowserTab },
+        { label: '🔍 파일 비교 워크스페이스', action: addCompareTab },
+        { label: '📈 로그 분석 워크스페이스', action: addLogAnalyzerTab },
+        { label: '🔒 VPN 워크스페이스', action: addVpnTab },
+        { label: '🌍 다국어 지원 워크스페이스', action: addI18nEditorTab },
         { separator: true, label: '' },
         { label: showToolbar ? '🧰 도구 모음 바 숨기기' : '🧰 도구 모음 바 표시', action: () => setShowToolbar(v => !v) },
         { label: showQuickConnect ? '⚡ 빠른 연결 바 숨기기' : '⚡ 빠른 연결 바 표시', action: () => setShowQuickConnect(v => !v) },
@@ -2373,6 +2490,7 @@ function App() {
           }
         }}
         onDisconnect={panelId => handleDisconnectSession(panelId)}
+        onOpenSqlTool={(sessionId, sessionName) => openSqlToolTab(sessionId, sessionName)}
         targetPanelId={selectedPanelId}
         onFileTransfer={async (sessionId, sessionName) => {
           // 파일 전송 탭이 없으면 생성
@@ -2413,7 +2531,13 @@ function App() {
       <div className="app-main">
         <div className="tab-bar-row">
           <MenuBar menus={menuDefs} />
-          <TabBar tabs={tabs} activeTabId={activeTabId} onChange={setActiveTabId} onAddTab={addTab} onCloseTab={closeTab} onRenameTab={renameTab}
+          <TabBar tabs={tabs} activeTabId={activeTabId} onChange={setActiveTabId} onAddTab={addTab}
+          onAddBrowserTab={addBrowserTab}
+          onAddCompareTab={addCompareTab}
+          onAddLogAnalyzerTab={addLogAnalyzerTab}
+          onAddVpnTab={addVpnTab}
+          onAddI18nEditorTab={addI18nEditorTab}
+          onCloseTab={closeTab} onRenameTab={renameTab}
           onReorderTabs={(fromId, toId) => {
             setTabs(prev => {
               const from = prev.findIndex(t => t.id === fromId);
@@ -2622,7 +2746,10 @@ function App() {
         {tabs.some(t => t.type === 'fileExplorer') && (
           <div style={{ display: activeTab?.type === 'fileExplorer' ? 'flex' : 'none', flex: 1, minHeight: 0 }}>
             <FileExplorer sessions={
-              tabs.filter(t => t.type !== 'fileExplorer').flatMap(t => collectAllSessions(t.layout)).filter(s => s.sessionId)
+              tabs.filter(t => t.type !== 'fileExplorer')
+                .flatMap(t => collectAllSessions(t.layout))
+                // 저장된 세션(sessionId) OR 빠른연결(quickSession) 모두 포함
+                .filter(s => s.sessionId || getTermSessionInfo(s.termId)?.quickSession)
             } />
           </div>
         )}
@@ -2642,7 +2769,52 @@ function App() {
           </div>
         ))}
 
-        {activeTab && activeTab.type !== 'fileExplorer' && activeTab.type !== 'fileEditor' && (() => {
+        {/* 특수 워크스페이스 탭들 — ErrorBoundary 로 격리 (한 컴포넌트 크래시가 전체 앱 죽이지 않도록) */}
+        {activeTab?.type === 'browser' && (
+          <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+            <ErrorBoundary label="브라우저">
+              <BrowserPane onTitleChange={(title) => { if (activeTab) renameTab(activeTab.id, `🌐 ${title}`); }} />
+            </ErrorBoundary>
+          </div>
+        )}
+        {activeTab?.type === 'compare' && (
+          <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+            <ErrorBoundary label="파일 비교">
+              <CompareWorkspace sessions={tabs.filter(t => t.type !== 'fileExplorer' && t.type !== 'fileEditor' && !t.type?.match(/browser|compare|logAnalyzer|vpn|i18n|sqlTool/)).flatMap(t => collectAllSessions(t.layout)).filter(s => s.sessionId)} />
+            </ErrorBoundary>
+          </div>
+        )}
+        {activeTab?.type === 'logAnalyzer' && (
+          <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+            <ErrorBoundary label="로그 분석">
+              <LogAnalyzer sessions={tabs.filter(t => t.type !== 'fileExplorer' && t.type !== 'fileEditor' && !t.type?.match(/browser|compare|logAnalyzer|vpn|i18n|sqlTool/)).flatMap(t => collectAllSessions(t.layout)).filter(s => s.sessionId)} />
+            </ErrorBoundary>
+          </div>
+        )}
+        {activeTab?.type === 'vpn' && (
+          <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+            <ErrorBoundary label="VPN">
+              <VpnWorkspace />
+            </ErrorBoundary>
+          </div>
+        )}
+        {activeTab?.type === 'i18nEditor' && (
+          <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+            <ErrorBoundary label="다국어 편집">
+              <TranslationEditor />
+            </ErrorBoundary>
+          </div>
+        )}
+        {/* SQL Tool 탭은 sessionId 별로 마운트 유지 (재방문 시 쿼리/연결 상태 보존) */}
+        {tabs.filter(t => t.type === 'sqlTool').map(t => (
+          <div key={t.id} style={{ display: activeTab?.id === t.id ? 'flex' : 'none', flex: 1, minHeight: 0 }}>
+            <ErrorBoundary label={`SQL Tool — ${t.sqlTool!.sessionName}`}>
+              <SqlToolWorkspace sessionId={t.sqlTool!.sessionId} sessionName={t.sqlTool!.sessionName} />
+            </ErrorBoundary>
+          </div>
+        ))}
+
+        {activeTab && activeTab.type !== 'fileExplorer' && activeTab.type !== 'fileEditor' && activeTab.type !== 'browser' && activeTab.type !== 'compare' && activeTab.type !== 'logAnalyzer' && activeTab.type !== 'vpn' && activeTab.type !== 'i18nEditor' && activeTab.type !== 'sqlTool' && (() => {
           // 워크스페이스 레벨 파일 트리 — 선택된 패널의 활성 세션이 SSH 연결이면 표시
           let fileTreeNode: React.ReactNode = null;
           if (selectedPanelId) {
@@ -3475,9 +3647,28 @@ function App() {
             {(() => {
               // 연결된 sessionId 맵 — 모든 워크스페이스의 모든 세션 검사
               const connectedSet = new Set<string>();
+              // 빠른연결로 접속한 세션들 — 가상 세션으로 picker dropdown 에 합류 (id 는 termId 그대로 사용)
+              const quickConnectSessions: Array<{ id: string; name: string; host: string; port?: number; username?: string; auth?: any; folderId?: string; __quick?: boolean; __termId?: string }> = [];
               for (const t of tabs) {
                 for (const s of collectAllSessions(t.layout)) {
-                  if (s.sessionId && isTermConnected(s.termId)) connectedSet.add(s.sessionId);
+                  if (!isTermConnected(s.termId)) continue;
+                  if (s.sessionId) {
+                    connectedSet.add(s.sessionId);
+                  } else {
+                    const info = getTermSessionInfo(s.termId);
+                    const q = info?.quickSession;
+                    if (q) {
+                      quickConnectSessions.push({
+                        id: s.termId, // termId 를 id 로 — 일반 sessionId 와 구분되도록 그대로 사용
+                        name: s.sessionName || q.host || '빠른연결',
+                        host: q.host || info?.host || '',
+                        port: q.port,
+                        username: q.username,
+                        __quick: true,
+                        __termId: s.termId,
+                      });
+                    }
+                  }
                 }
               }
               // 폴더 트리 (간단 평면화) — 각 세션을 "폴더경로/세션명" 으로 정렬
@@ -3489,19 +3680,24 @@ function App() {
                 return parent ? `${parent}/${f.name}` : f.name;
               };
               // 연결된 세션이 위로 — 같은 그룹 내에서는 폴더 경로 + 이름으로 정렬
-              const sortFn = (a: typeof remotePickerSessions[number], b: typeof remotePickerSessions[number]) => {
+              const sortFn = (a: any, b: any) => {
                 const fa = folderPath(a.folderId);
                 const fb = folderPath(b.folderId);
                 return fa.localeCompare(fb) || a.name.localeCompare(b.name);
               };
-              const connected = remotePickerSessions.filter(s => connectedSet.has(s.id)).sort(sortFn);
+              const connected = [
+                ...remotePickerSessions.filter(s => connectedSet.has(s.id)),
+                ...quickConnectSessions,
+              ].sort(sortFn);
               const disconnected = remotePickerSessions.filter(s => !connectedSet.has(s.id)).sort(sortFn);
-              const renderOption = (s: typeof remotePickerSessions[number]) => {
+              const renderOption = (s: any) => {
                 const fp = folderPath(s.folderId);
-                const mark = connectedSet.has(s.id) ? '🟢' : '⚪';
+                const isQuick = !!s.__quick;
+                const mark = (isQuick || connectedSet.has(s.id)) ? '🟢' : '⚪';
+                const suffix = isQuick ? ' (빠른연결)' : '';
                 return (
                   <option key={s.id} value={s.id}>
-                    {mark} {s.name}{fp ? ` [${fp}]` : ''} ({s.host})
+                    {mark} {s.name}{fp ? ` [${fp}]` : ''} ({s.host}){suffix}
                   </option>
                 );
               };

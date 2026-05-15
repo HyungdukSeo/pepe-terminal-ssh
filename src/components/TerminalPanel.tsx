@@ -1677,8 +1677,9 @@ function ensureSSHSetup(termId: string) {
           promptPasswordAndConnect(termId, info.sessionId, cols, rows);
         }, 200);
       } else if (info?.quickSession) {
-        // 빠른연결 — 같은 이벤트 디스패치 메커니즘으로 모달 재호출
+        // 빠른연결 — 인증 실패 후엔 즉시 모달 재표시 (id/pwd 둘 다, 이전 username 은 hint 로 pre-fill)
         setTimeout(() => {
+          const prevUsername = info.quickSession.username || '';
           const tryQuickConnect = (sessInfo: any): void => {
             quickConnectPending.add(termId);
             (window as any).api?.quickConnectSSH?.(termId, sessInfo).then((r: string) => {
@@ -1689,19 +1690,34 @@ function ensureSSHSetup(termId: string) {
                     termId,
                     sessionId: '',
                     hostHint: sessInfo.host,
-                    userHint: sessInfo.username,
+                    userHint: sessInfo.username || prevUsername,
                     needUsername,
                     resolve: (result: any) => {
                       if (result === null) {
                         quickConnectPending.delete(termId);
-                        try { term.write(`\r\n\x1b[90m${tt('output.connectionCancelled')}\x1b[0m\r\n`); } catch {}
+                        try {
+                          term.write(`\r\n\x1b[90m${tt('output.connectionCancelled')}\x1b[0m\r\n`);
+                          term.write('\x1b[33m▶ 다시 시도하려면: 터미널 클릭 또는 미니탭 우클릭 → 재연결\x1b[0m\r\n');
+                        } catch {}
+                        // 터미널 영역 클릭 1회 → 자격증명 모달 재오픈
+                        setTimeout(() => {
+                          const entry = termStore.get(termId);
+                          const el = (entry?.term as any)?.element as HTMLElement | undefined;
+                          if (!el) return;
+                          const onceClick = (ev: MouseEvent) => {
+                            ev.stopPropagation();
+                            el.removeEventListener('mousedown', onceClick, true);
+                            tryQuickConnect(sessInfo);
+                          };
+                          el.addEventListener('mousedown', onceClick, true);
+                        }, 100);
                         return;
                       }
-                      let nextUsername = sessInfo.username;
+                      let nextUsername = sessInfo.username || prevUsername;
                       let nextPassword = '';
                       if (typeof result === 'string') nextPassword = result;
                       else if (result && typeof result === 'object') {
-                        nextUsername = result.username || sessInfo.username;
+                        nextUsername = result.username || sessInfo.username || prevUsername;
                         nextPassword = result.password || '';
                       }
                       const next = {
@@ -1717,7 +1733,11 @@ function ensureSSHSetup(termId: string) {
               }
             }).catch(() => {});
           };
-          tryQuickConnect(info.quickSession);
+          // 인증 실패 후엔 id+pwd 모두 다시 받기 — username 비워서 'need-credentials' 강제 진입.
+          // userHint 는 위 dispatch 에서 prevUsername 으로 채움.
+          const cleared = { ...info.quickSession, username: '', auth: { type: 'password', password: '' } };
+          registerTermSession(termId, '', info.sessionName || info.host || '', info.host || '', cleared);
+          tryQuickConnect(cleared);
         }, 200);
       }
       return;
@@ -3304,7 +3324,46 @@ export const TerminalPanel: React.FC<Props> = ({
                   await window.api?.connectSSH?.(tid, info.sessionId, cols, rows);
                 } else if (info.quickSession) {
                   quickConnectPending.add(tid);
-                  await (window as any).api?.quickConnectSSH?.(tid, info.quickSession, cols, rows);
+                  // 빠른연결 재시도 — 자격증명 부족하면 prompt 모달로 입력 받기 (취소 후 재연결 케이스 지원)
+                  const tryConnect = async (sessInfo: any): Promise<void> => {
+                    const r = await (window as any).api?.quickConnectSSH?.(tid, sessInfo, cols, rows);
+                    if (r === 'need-credentials' || r === 'need-password') {
+                      const needUsername = r === 'need-credentials';
+                      window.dispatchEvent(new CustomEvent('ssh-password-prompt', {
+                        detail: {
+                          termId: tid,
+                          sessionId: '',
+                          hostHint: sessInfo.host,
+                          userHint: sessInfo.username,
+                          needUsername,
+                          resolve: (result: any) => {
+                            if (result === null) {
+                              quickConnectPending.delete(tid);
+                              sshConnecting.delete(tid);
+                              return;
+                            }
+                            let nextUsername = sessInfo.username;
+                            let nextPassword = '';
+                            if (typeof result === 'string') nextPassword = result;
+                            else if (result && typeof result === 'object') {
+                              nextUsername = result.username || sessInfo.username;
+                              nextPassword = result.password || '';
+                            }
+                            const next: any = {
+                              ...sessInfo,
+                              username: nextUsername,
+                              name: nextUsername ? `${nextUsername}@${sessInfo.host}` : sessInfo.host,
+                              auth: { type: 'password', password: nextPassword },
+                            };
+                            // 새 자격증명을 termSessionMap 에 저장
+                            registerTermSession(tid, '', nextUsername ? `${nextUsername}@${sessInfo.host}` : sessInfo.host, sessInfo.host, next);
+                            tryConnect(next).catch(() => {});
+                          },
+                        },
+                      }));
+                    }
+                  };
+                  tryConnect(info.quickSession).catch(() => {});
                 }
               } catch {}
             }},
