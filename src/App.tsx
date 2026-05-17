@@ -2793,37 +2793,37 @@ function App() {
           </div>
         ))}
 
-        {/* 특수 워크스페이스 탭들 — 탭별 마운트 유지 (재방문 시 입력/로드 상태 보존) */}
+        {/* 특수 워크스페이스 탭들 — 마운트 유지 + ErrorBoundary 격리 */}
         {tabs.filter(t => t.type === 'browser').map(t => (
-          <div key={t.id} style={{ display: activeTab?.id === t.id ? 'flex' : 'none', flex: 1, minHeight: 0 }}>
+          <div key={t.id} style={{ flex: 1, minHeight: 0, display: activeTab?.id === t.id ? 'flex' : 'none' }}>
             <ErrorBoundary label="브라우저">
               <BrowserPane initialUrl="https://www.google.com" onTitleChange={(title) => renameTab(t.id, `🌐 ${title}`)} />
             </ErrorBoundary>
           </div>
         ))}
         {tabs.filter(t => t.type === 'compare').map(t => (
-          <div key={t.id} style={{ display: activeTab?.id === t.id ? 'flex' : 'none', flex: 1, minHeight: 0 }}>
+          <div key={t.id} style={{ flex: 1, minHeight: 0, display: activeTab?.id === t.id ? 'flex' : 'none' }}>
             <ErrorBoundary label="파일 비교">
               <CompareWorkspace sessions={tabs.filter(t => t.type !== 'fileExplorer' && t.type !== 'fileEditor' && !t.type?.match(/browser|compare|logAnalyzer|vpn|i18n|sqlTool/)).flatMap(t => collectAllSessions(t.layout)).filter(s => s.sessionId)} />
             </ErrorBoundary>
           </div>
         ))}
         {tabs.filter(t => t.type === 'logAnalyzer').map(t => (
-          <div key={t.id} style={{ display: activeTab?.id === t.id ? 'flex' : 'none', flex: 1, minHeight: 0 }}>
+          <div key={t.id} style={{ flex: 1, minHeight: 0, display: activeTab?.id === t.id ? 'flex' : 'none' }}>
             <ErrorBoundary label="로그 분석">
               <LogAnalyzer sessions={tabs.filter(t => t.type !== 'fileExplorer' && t.type !== 'fileEditor' && !t.type?.match(/browser|compare|logAnalyzer|vpn|i18n|sqlTool/)).flatMap(t => collectAllSessions(t.layout)).filter(s => s.sessionId)} />
             </ErrorBoundary>
           </div>
         ))}
         {tabs.filter(t => t.type === 'vpn').map(t => (
-          <div key={t.id} style={{ display: activeTab?.id === t.id ? 'flex' : 'none', flex: 1, minHeight: 0 }}>
+          <div key={t.id} style={{ flex: 1, minHeight: 0, display: activeTab?.id === t.id ? 'flex' : 'none' }}>
             <ErrorBoundary label="VPN">
               <VpnWorkspace />
             </ErrorBoundary>
           </div>
         ))}
         {tabs.filter(t => t.type === 'i18nEditor').map(t => (
-          <div key={t.id} style={{ display: activeTab?.id === t.id ? 'flex' : 'none', flex: 1, minHeight: 0 }}>
+          <div key={t.id} style={{ flex: 1, minHeight: 0, display: activeTab?.id === t.id ? 'flex' : 'none' }}>
             <ErrorBoundary label="다국어 편집">
               <TranslationEditor />
             </ErrorBoundary>
