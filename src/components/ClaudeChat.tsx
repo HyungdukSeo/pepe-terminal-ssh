@@ -1729,12 +1729,17 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       { id: 'effort-high',   section: 'Effort', label: tt('palette.effortHigh'),   run: () => setEffort('high') },
       { id: 'effort-max',    section: 'Effort', label: tt('palette.effortMax'),    run: () => setEffort('max') },
     ] : []),
-    // Permission — Claude 전용
+    // Permission — Claude 전용 / Codex 는 Approval Policy
     ...(currentAgent === 'claude' ? [
       { id: 'perm-default', section: 'Permission', label: tt('perm.default'),      run: () => setPermissionMode('default') },
       { id: 'perm-accept',  section: 'Permission', label: tt('perm.acceptEdits'),  run: () => setPermissionMode('acceptEdits') },
       { id: 'perm-plan',    section: 'Permission', label: tt('perm.plan'),         run: () => setPermissionMode('plan') },
-    ] : []),
+    ] : currentAgent === 'codex' ? CODEX_APPROVAL_ITEMS.map(item => ({
+      id: `codex-approval-${item.value}`,
+      section: 'Permission',
+      label: item.label,
+      run: () => setCodexApprovalPolicy(item.value),
+    })) : []),
     // Slash Commands — 공통
     ...commandPresets.map(p => ({
       id: `slash-${p.label}`,
