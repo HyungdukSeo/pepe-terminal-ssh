@@ -1692,6 +1692,16 @@ ipcMain.handle('compare:write', async (_e, { mode, termId, filePath, content }: 
 });
 
 // 파일 읽기 — 텍스트 diff 용. 로컬은 fs, 원격은 SFTP. 텍스트로 디코드 (utf-8 기본).
+// UTF-8 디코딩 후 대체 문자(U+FFFD)가 있으면 CP949(EUC-KR 상위집합)로 재시도
+function decodeFileBuffer(buf: Buffer): { text: string; encoding: string } {
+  const utf8 = buf.toString('utf-8');
+  if (!utf8.includes('�')) return { text: utf8, encoding: 'UTF-8' };
+  try {
+    const iconv = require('iconv-lite');
+    if (iconv.encodingExists('cp949')) return { text: iconv.decode(buf, 'cp949'), encoding: 'CP949' };
+  } catch {}
+  return { text: utf8, encoding: 'UTF-8' };
+}
 ipcMain.handle('compare:read', async (_e, { mode, termId, filePath, maxBytes }: { mode: string; termId?: string; filePath: string; maxBytes?: number }) => {
   const cap = maxBytes || 5 * 1024 * 1024; // 기본 5MB
   try {
@@ -1699,13 +1709,15 @@ ipcMain.handle('compare:read', async (_e, { mode, termId, filePath, maxBytes }: 
       const stat = await fs.promises.stat(filePath);
       if (stat.size > cap) return { error: t('error.fileTooLargeCap', { mb: (stat.size / 1024 / 1024).toFixed(1), cap: (cap / 1024 / 1024).toFixed(0) }), size: stat.size };
       const buf = await fs.promises.readFile(filePath);
-      return { content: buf.toString('utf-8'), size: stat.size };
+      const { text, encoding } = decodeFileBuffer(buf);
+      return { content: text, encoding, size: stat.size };
     } else {
       if (!termId) return { error: t('error.noConnectionId') };
       const bridge = getSSHBridge();
       const buf = await bridge.handleSFTPReadFile(termId, filePath);
       if (buf.length > cap) return { error: t('error.fileTooLarge', { mb: (buf.length / 1024 / 1024).toFixed(1) }), size: buf.length };
-      return { content: buf.toString('utf-8'), size: buf.length };
+      const { text, encoding } = decodeFileBuffer(buf);
+      return { content: text, encoding, size: buf.length };
     }
   } catch (err: any) {
     return { error: String(err?.message || err) };

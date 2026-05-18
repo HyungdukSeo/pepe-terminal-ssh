@@ -36,6 +36,7 @@ type Props = {
 };
 
 const ROW_H = 22;
+const LIST_HEADER_H = 26;
 
 function statusColor(s: DiffStatus): string {
   switch (s) {
@@ -71,9 +72,6 @@ function formatSize(n: number | undefined): string {
 
 export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
   const { t } = useTranslation('compare');
-  // 양쪽 소스 + 경로 — UI 입력
-  const [leftSrc, setLeftSrc] = useState<Source>({ mode: 'local', label: t('local'), basePath: '' });
-  const [rightSrc, setRightSrc] = useState<Source>({ mode: 'local', label: t('local'), basePath: '' });
 
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState('');
@@ -81,6 +79,10 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
   const [truncated, setTruncated] = useState(false);
   const [hideSame, setHideSame] = useState(true);
   const [hideUnpaired, setHideUnpaired] = useState(false); // 한쪽만 있는 항목 숨김
+  const [filterText, setFilterText] = useState('');
+  const [filterStatus, setFilterStatus] = useState<'' | DiffStatus>('');
+  const [sortBy, setSortBy] = useState<'path' | 'status' | 'leftSize' | 'rightSize'>('path');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
 
   const [selectedRel, setSelectedRel] = useState<string | null>(null);
   const [leftContent, setLeftContent] = useState<string>('');
@@ -90,15 +92,99 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
   const [contentErr, setContentErr] = useState<string>('');
   const [contentLoading, setContentLoading] = useState(false);
   const [savingMsg, setSavingMsg] = useState<string>('');
+  const [sameNote, setSameNote]   = useState<string>(''); // 크기 달라도 내용 동일 안내
+  const [leftEol,  setLeftEol]    = useState('');
+  const [rightEol, setRightEol]   = useState('');
+  const [leftEnc,  setLeftEnc]    = useState('');
+  const [rightEnc, setRightEnc]   = useState('');
   // 선택된 파일의 양쪽 절대경로 (저장용)
   const [leftFilePath, setLeftFilePath] = useState<string>('');
   const [rightFilePath, setRightFilePath] = useState<string>('');
 
   // 위/아래 영역 비율 — 사용자가 드래그로 조절
   const [topPct, setTopPct] = useState(50);
-  // 디렉토리 picker — 어느 쪽 소스의 경로를 선택 중인지
+  // 비교 모드: dir=디렉토리 vs 디렉토리, file=파일 vs 파일
+  const [compareMode, setCompareMode] = useState<'dir' | 'file'>('dir');
+  // 양쪽 소스 + 경로 — 디렉토리 모드 / 파일 모드 별도 관리
+  const [leftDirSrc,   setLeftDirSrc]  = useState<Source>({ mode: 'local', label: t('local'), basePath: '' });
+  const [rightDirSrc,  setRightDirSrc] = useState<Source>({ mode: 'local', label: t('local'), basePath: '' });
+  const [leftFileSrc,  setLeftFileSrc] = useState<Source>({ mode: 'local', label: t('local'), basePath: '' });
+  const [rightFileSrc, setRightFileSrc]= useState<Source>({ mode: 'local', label: t('local'), basePath: '' });
+  // 현재 모드에 따른 활성 소스 (읽기 전용 — 쓰기는 updateSrc 사용)
+  const leftSrc  = compareMode === 'dir' ? leftDirSrc  : leftFileSrc;
+  const rightSrc = compareMode === 'dir' ? rightDirSrc : rightFileSrc;
+  // 디렉토리/파일 picker — 어느 쪽 소스의 경로를 선택 중인지
   const [pickerSide, setPickerSide] = useState<Side | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const [rootH, setRootH] = useState(0);
+  useEffect(() => {
+    if (!rootRef.current) return;
+    const el = rootRef.current;
+    const ro = new ResizeObserver(() => setRootH(el.clientHeight));
+    ro.observe(el);
+    setRootH(el.clientHeight);
+    return () => ro.disconnect();
+  }, []);
+
+  // 탭 전환 시 각 모드의 content 상태를 보존하기 위한 스냅샷 ref
+  type ModeSnap = {
+    selectedRel: string | null;
+    leftContent: string; rightContent: string;
+    leftOriginal: string; rightOriginal: string;
+    leftFilePath: string; rightFilePath: string;
+    contentErr: string; savingMsg: string; sameNote: string;
+    leftEol: string; rightEol: string; leftEnc: string; rightEnc: string;
+    rows: DiffRow[]; truncated: boolean;
+  };
+  const dirSnapRef  = useRef<ModeSnap | null>(null);
+  const fileSnapRef = useRef<ModeSnap | null>(null);
+
+  // 파일 비교용 picker (단일 파일 선택)
+  const renderFilePicker = (side: Side, src: Source) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+      <span style={{ fontSize: 12, color: '#bbb', width: 42, flexShrink: 0 }}>{side === 'left' ? t('source') : t('target')}</span>
+      <select
+        value={src.mode === 'remote' ? (src.termId || '') : 'local'}
+        onChange={e => {
+          const v = e.target.value;
+          if (v === 'local') updateSrc(side, { mode: 'local', termId: undefined, sessionId: undefined, label: t('local') });
+          else {
+            const opt = sourceOptions.find(o => o.termId === v);
+            if (opt) updateSrc(side, { mode: 'remote', termId: opt.termId, sessionId: opt.sessionId, label: opt.label });
+          }
+        }}
+        style={{ width: 130, minWidth: 80, flexShrink: 1, fontSize: 12 }}
+      >
+        <option value="local">{t('local')}</option>
+        {sourceOptions.filter(o => o.mode === 'remote').map(o => (
+          <option key={o.termId} value={o.termId}>{o.label}</option>
+        ))}
+      </select>
+      <input
+        type="text"
+        value={src.basePath}
+        placeholder={src.mode === 'local' ? t('filePathPlaceholderLocal', '파일 경로...') : t('filePathPlaceholderRemote', '원격 파일 경로...')}
+        onChange={e => updateSrc(side, { basePath: e.target.value })}
+        onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') startFileCompare(); }}
+        style={{ flex: 1, minWidth: 0, fontSize: 12, padding: '3px 6px' }}
+      />
+      <button
+        onClick={async () => {
+          if (src.mode === 'local') {
+            try {
+              const r = await api.pickFiles?.(false);
+              if (r?.paths?.[0]) updateSrc(side, { basePath: r.paths[0] });
+            } catch {}
+          } else {
+            if (!src.termId) { setScanError(side === 'left' ? t('sourceNoSession') : t('targetNoSession')); return; }
+            setPickerSide(side);
+          }
+        }}
+        title={t('filePicker', '파일 선택')}
+        style={{ padding: '3px 8px', fontSize: 12, flexShrink: 0 }}
+      >📄</button>
+    </div>
+  );
 
   // 가용 소스 목록 (드롭다운) — 연결된 세션(termId 있음) 만 SFTP 비교 가능. lazy 는 일단 제외.
   const sourceOptions = useMemo<Source[]>(() => {
@@ -110,16 +196,39 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
     return opts;
   }, [sessions.map(s => s.termId).join(',')]);
 
-  const filteredRows = useMemo(() => rows.filter(r => {
-    if (hideSame && r.status === 'same') return false;
-    if (hideUnpaired && (r.status === 'left-only' || r.status === 'right-only')) return false;
-    return true;
-  }), [rows, hideSame, hideUnpaired]);
+  const filteredRows = useMemo(() => {
+    const statusOrder: Record<DiffStatus, number> = { changed: 0, 'left-only': 1, 'right-only': 2, same: 3 };
+    const arr = rows.filter(r => {
+      if (hideSame && r.status === 'same') return false;
+      if (hideUnpaired && (r.status === 'left-only' || r.status === 'right-only')) return false;
+      if (filterStatus && r.status !== filterStatus) return false;
+      if (filterText && !r.relPath.toLowerCase().includes(filterText.toLowerCase())) return false;
+      return true;
+    });
+    arr.sort((a, b) => {
+      let cmp = 0;
+      if      (sortBy === 'path')      cmp = a.relPath.localeCompare(b.relPath);
+      else if (sortBy === 'status')    cmp = (statusOrder[a.status] ?? 0) - (statusOrder[b.status] ?? 0);
+      else if (sortBy === 'leftSize')  cmp = (a.leftSize  ?? -1) - (b.leftSize  ?? -1);
+      else if (sortBy === 'rightSize') cmp = (a.rightSize ?? -1) - (b.rightSize ?? -1);
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+    return arr;
+  }, [rows, hideSame, hideUnpaired, filterStatus, filterText, sortBy, sortDir]);
+
+  const toggleSort = useCallback((col: 'path' | 'status' | 'leftSize' | 'rightSize') => {
+    setSortBy(prev => {
+      if (prev === col) { setSortDir(d => d === 'asc' ? 'desc' : 'asc'); return col; }
+      setSortDir('asc'); return col;
+    });
+  }, []);
 
   const startCompare = useCallback(async () => {
     setScanError('');
     setRows([]);
     setSelectedRel(null);
+    setFilterText('');
+    setFilterStatus('');
     setLeftContent(''); setRightContent('');
     if (!leftSrc.basePath || !rightSrc.basePath) { setScanError(t('enterBothPaths')); return; }
     if (leftSrc.mode === 'remote' && !leftSrc.termId) { setScanError(t('sourceNoSession')); return; }
@@ -172,9 +281,24 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
     }
   }, [leftSrc, rightSrc]);
 
+  const detectEol = (raw: string): string => {
+    if (!raw) return '';
+    const hasCRLF = raw.includes('\r\n');
+    const hasCR   = /\r(?!\n)/.test(raw);
+    const hasLF   = /(?<!\r)\n/.test(raw);
+    const kinds   = [hasCRLF, hasCR, hasLF].filter(Boolean).length;
+    if (kinds > 1) return 'Mixed';
+    if (hasCRLF) return 'Windows (CRLF)';
+    if (hasCR)   return 'Classic Mac (CR)';
+    return 'Unix (LF)';
+  };
+
   const loadDiff = useCallback(async (row: DiffRow) => {
     setContentErr('');
     setSavingMsg('');
+    setSameNote('');
+    setLeftEol(''); setRightEol('');
+    setLeftEnc(''); setRightEnc('');
     setLeftContent('');
     setRightContent('');
     setLeftOriginal('');
@@ -193,14 +317,63 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
       if (row.status !== 'right-only') tasks.push(api.compareRead?.(leftSrc.mode, joinL, leftSrc.termId)); else tasks.push(Promise.resolve({ content: '' }));
       if (row.status !== 'left-only') tasks.push(api.compareRead?.(rightSrc.mode, joinR, rightSrc.termId)); else tasks.push(Promise.resolve({ content: '' }));
       const [l, r] = await Promise.all(tasks);
-      // EOL 정규화 — Mac 전용 (로컬 LF vs SFTP CRLF mismatch 회피).
-      // Windows 에서는 양쪽 모두 CRLF 라 정규화 시 오히려 의도와 다를 수 있어 원본 유지.
-      const isMac = (typeof navigator !== 'undefined') && /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || '');
-      const normEol = (s: string) => isMac ? s.replace(/\r\n?/g, '\n') : s;
+      // EOL 정규화 — 플랫폼 무관하게 CRLF/CR → LF 통일
+      // (크기 기반 휴리스틱에서 개행 차이로 오탐하는 경우 방지)
+      const normEol = (s: string) => s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      let leftC = '', rightC = '', leftErr = false, rightErr = false;
+      if (l?.error) { setContentErr(t('sourceReadFail', { error: l.error })); leftErr = true; }
+      else {
+        setLeftEol(detectEol(l.content ?? '')); setLeftEnc(l.encoding || 'UTF-8');
+        leftC = normEol(l.content ?? ''); setLeftContent(leftC); setLeftOriginal(leftC);
+      }
+      if (r?.error) { setContentErr((prev) => prev ? prev + ' / ' + t('targetReadFail', { error: r.error }) : t('targetReadFail', { error: r.error })); rightErr = true; }
+      else {
+        setRightEol(detectEol(r.content ?? '')); setRightEnc(r.encoding || 'UTF-8');
+        rightC = normEol(r.content ?? ''); setRightContent(rightC); setRightOriginal(rightC);
+      }
+      // 크기 휴리스틱 오탐 안내 — 내용이 동일할 때 (카운트는 변경하지 않음)
+      if (!leftErr && !rightErr && leftC === rightC && row.status === 'changed') {
+        setSameNote('내용이 동일합니다 (개행 방식만 다름)');
+      }
+    } catch (err: any) {
+      setContentErr(String(err?.message || err));
+    } finally {
+      setContentLoading(false);
+    }
+  }, [leftSrc, rightSrc]);
+
+  // 파일 vs 파일 직접 비교 — walk 없이 양쪽 파일 내용 로드
+  const startFileCompare = useCallback(async () => {
+    setScanError('');
+    setContentErr('');
+    setSameNote('');
+    setLeftEol(''); setRightEol('');
+    setLeftEnc(''); setRightEnc('');
+    setLeftContent(''); setRightContent('');
+    setLeftOriginal(''); setRightOriginal('');
+    if (!leftSrc.basePath || !rightSrc.basePath) { setScanError(t('enterBothPaths')); return; }
+    if (leftSrc.mode === 'remote' && !leftSrc.termId) { setScanError(t('sourceNoSession')); return; }
+    if (rightSrc.mode === 'remote' && !rightSrc.termId) { setScanError(t('targetNoSession')); return; }
+    setContentLoading(true);
+    setLeftFilePath(leftSrc.basePath);
+    setRightFilePath(rightSrc.basePath);
+    setSelectedRel('__file__');
+    try {
+      const [l, r] = await Promise.all([
+        api.compareRead?.(leftSrc.mode, leftSrc.basePath, leftSrc.termId),
+        api.compareRead?.(rightSrc.mode, rightSrc.basePath, rightSrc.termId),
+      ]);
+      const normEol = (s: string) => s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
       if (l?.error) setContentErr(t('sourceReadFail', { error: l.error }));
-      else { const c = normEol(l?.content ?? ''); setLeftContent(c); setLeftOriginal(c); }
-      if (r?.error) setContentErr((prev) => prev ? prev + ' / ' + t('targetReadFail', { error: r.error }) : t('targetReadFail', { error: r.error }));
-      else { const c = normEol(r?.content ?? ''); setRightContent(c); setRightOriginal(c); }
+      else {
+        setLeftEol(detectEol(l.content ?? '')); setLeftEnc(l.encoding || 'UTF-8');
+        const c = normEol(l.content ?? ''); setLeftContent(c); setLeftOriginal(c);
+      }
+      if (r?.error) setContentErr(p => p ? p + ' / ' + t('targetReadFail', { error: r.error }) : t('targetReadFail', { error: r.error }));
+      else {
+        setRightEol(detectEol(r.content ?? '')); setRightEnc(r.encoding || 'UTF-8');
+        const c = normEol(r.content ?? ''); setRightContent(c); setRightOriginal(c);
+      }
     } catch (err: any) {
       setContentErr(String(err?.message || err));
     } finally {
@@ -391,9 +564,14 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
 
   // top/bottom resize drag
   const onResizeStart = (e: React.MouseEvent) => {
+    e.preventDefault();
     const startY = e.clientY;
     const rect = rootRef.current?.getBoundingClientRect();
     const startPct = topPct;
+    const prevSelect = document.body.style.userSelect;
+    const prevCursor = document.body.style.cursor;
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'row-resize';
     const onMove = (ev: MouseEvent) => {
       if (!rect) return;
       const dy = ev.clientY - startY;
@@ -401,6 +579,8 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
       setTopPct(Math.max(15, Math.min(85, startPct + dPct)));
     };
     const onUp = () => {
+      document.body.style.userSelect = prevSelect;
+      document.body.style.cursor = prevCursor;
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
@@ -410,13 +590,18 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
 
   // 소스 변경 시 basePath 보존
   const updateSrc = (side: Side, patch: Partial<Source>) => {
-    if (side === 'left') setLeftSrc(s => ({ ...s, ...patch }));
-    else setRightSrc(s => ({ ...s, ...patch }));
+    if (compareMode === 'dir') {
+      if (side === 'left') setLeftDirSrc(s => ({ ...s, ...patch }));
+      else                 setRightDirSrc(s => ({ ...s, ...patch }));
+    } else {
+      if (side === 'left') setLeftFileSrc(s => ({ ...s, ...patch }));
+      else                 setRightFileSrc(s => ({ ...s, ...patch }));
+    }
   };
 
   const renderSourcePicker = (side: Side, src: Source) => (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%' }}>
-      <span style={{ fontSize: 12, color: '#bbb', width: 50, flexShrink: 0 }}>{side === 'left' ? t('source') : t('target')}</span>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+      <span style={{ fontSize: 12, color: '#bbb', width: 42, flexShrink: 0 }}>{side === 'left' ? t('source') : t('target')}</span>
       <select
         value={src.mode === 'remote' ? (src.termId || '') : 'local'}
         onChange={e => {
@@ -427,7 +612,7 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
             if (opt) updateSrc(side, { mode: 'remote', termId: opt.termId, sessionId: opt.sessionId, label: opt.label });
           }
         }}
-        style={{ width: 180, fontSize: 12 }}
+        style={{ width: 130, minWidth: 80, flexShrink: 1, fontSize: 12 }}
       >
         <option value="local">{t('local')}</option>
         {sourceOptions.filter(o => o.mode === 'remote').map(o => (
@@ -487,31 +672,108 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
     return { c, l, r, s };
   }, [rows]);
 
+  const [diffExpanded, setDiffExpanded] = useState(false);
+
+  // 목록 컨테이너 높이 — 항목이 있으면 topPct% 와 실제 항목 높이 중 작은 쪽 (픽셀)
+  const listContainerH = useMemo(() => {
+    if (compareMode !== 'dir' || filteredRows.length === 0 || rootH === 0) return null;
+    const byPct     = Math.round(rootH * topPct / 100);
+    const byContent = filteredRows.length * ROW_H + LIST_HEADER_H;
+    return Math.min(byPct, byContent);
+  }, [compareMode, filteredRows.length, rootH, topPct]);
+
   return (
-    <div ref={rootRef} style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, background: '#1a1a1a' }}>
+    <div ref={rootRef} style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, minWidth: 0, overflow: 'hidden', background: '#1a1a1a' }}>
       {/* 헤더: 양쪽 소스 + 비교 버튼 */}
-      <div style={{ padding: '8px 10px', background: '#222', borderBottom: '1px solid #333', display: 'flex', flexDirection: 'column', gap: 6 }}>
-        {renderSourcePicker('left', leftSrc)}
-        {renderSourcePicker('right', rightSrc)}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <button className="primary" onClick={startCompare} disabled={scanning} style={{ padding: '4px 14px' }}>
-            {scanning ? t('comparing') : t('compare')}
-          </button>
-          <button onClick={() => {
-            // 소스 ↔ 타겟 스위치 — 서버/세션/경로 통째로 교환
-            setLeftSrc(rightSrc);
-            setRightSrc(leftSrc);
-            setRows([]);
-            setSelectedRel(null);
-          }} title={t('switchTitle')} style={{ padding: '4px 10px' }}>{t('switch')}</button>
-          <label style={{ fontSize: 12, color: '#bbb', display: 'flex', alignItems: 'center', gap: 4 }}>
-            <input type="checkbox" checked={hideSame} onChange={e => setHideSame(e.target.checked)} />
-            {t('hideSame')}
-          </label>
-          <label style={{ fontSize: 12, color: '#bbb', display: 'flex', alignItems: 'center', gap: 4 }} title={t('hideUnpairedTitle')}>
-            <input type="checkbox" checked={hideUnpaired} onChange={e => setHideUnpaired(e.target.checked)} />
-            {t('hideUnpaired')}
-          </label>
+      <div style={{ padding: '8px 10px', background: '#222', borderBottom: '1px solid #333', display: diffExpanded ? 'none' : 'flex', flexDirection: 'column', gap: 6, minWidth: 0, overflow: 'hidden' }}>
+        {/* 모드 탭 */}
+        <div style={{ display: 'flex', gap: 0, alignSelf: 'flex-start' }}>
+          {(['dir', 'file'] as const).map((m, i) => (
+            <button key={m} onClick={() => {
+              if (compareMode === m) return;
+              // 현재 모드 상태 스냅샷 저장
+              const snap: ModeSnap = {
+                selectedRel, leftContent, rightContent, leftOriginal, rightOriginal,
+                leftFilePath, rightFilePath, contentErr, savingMsg, sameNote,
+                leftEol, rightEol, leftEnc, rightEnc, rows, truncated,
+              };
+              if (compareMode === 'dir') dirSnapRef.current = snap;
+              else fileSnapRef.current = snap;
+              // 새 모드 상태 복원 (없으면 초기화)
+              const restore = m === 'dir' ? dirSnapRef.current : fileSnapRef.current;
+              setCompareMode(m);
+              setScanError('');
+              if (restore) {
+                setSelectedRel(restore.selectedRel);
+                setLeftContent(restore.leftContent);   setRightContent(restore.rightContent);
+                setLeftOriginal(restore.leftOriginal); setRightOriginal(restore.rightOriginal);
+                setLeftFilePath(restore.leftFilePath); setRightFilePath(restore.rightFilePath);
+                setContentErr(restore.contentErr);     setSavingMsg(restore.savingMsg);  setSameNote(restore.sameNote);
+                setLeftEol(restore.leftEol);           setRightEol(restore.rightEol);
+                setLeftEnc(restore.leftEnc);           setRightEnc(restore.rightEnc);
+                setRows(restore.rows);                 setTruncated(restore.truncated);
+              } else {
+                setSelectedRel(null);
+                setLeftContent(''); setRightContent('');
+                setLeftOriginal(''); setRightOriginal('');
+                setLeftFilePath(''); setRightFilePath('');
+                setContentErr(''); setSavingMsg(''); setSameNote('');
+                setLeftEol(''); setRightEol('');
+                setLeftEnc(''); setRightEnc('');
+                setRows([]); setTruncated(false);
+              }
+            }} style={{
+              padding: '3px 12px', fontSize: 12, cursor: 'pointer',
+              borderRadius: i === 0 ? '4px 0 0 4px' : '0 4px 4px 0',
+              background: compareMode === m ? '#4a7a9b' : '#2a2a2a',
+              color: compareMode === m ? '#fff' : '#888',
+              border: '1px solid #444', borderLeft: i === 0 ? undefined : 'none',
+            }}>
+              {m === 'dir' ? `📁 ${t('dirMode', '디렉토리')}` : `📄 ${t('fileMode', '파일')}`}
+            </button>
+          ))}
+        </div>
+        {compareMode === 'dir' ? (
+          <>
+            {renderSourcePicker('left', leftSrc)}
+            {renderSourcePicker('right', rightSrc)}
+          </>
+        ) : (
+          <>
+            {renderFilePicker('left', leftSrc)}
+            {renderFilePicker('right', rightSrc)}
+          </>
+        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minWidth: 0 }}>
+          {compareMode === 'dir' ? (
+            <>
+              <button className="primary" onClick={startCompare} disabled={scanning} style={{ padding: '4px 14px' }}>
+                {scanning ? t('comparing') : t('compare')}
+              </button>
+              <button onClick={() => {
+                setLeftDirSrc(rightDirSrc); setRightDirSrc(leftDirSrc);
+                setRows([]); setSelectedRel(null);
+              }} title={t('switchTitle')} style={{ padding: '4px 10px' }}>{t('switch')}</button>
+              <label style={{ fontSize: 12, color: '#bbb', display: 'flex', alignItems: 'center', gap: 4 }}>
+                <input type="checkbox" checked={hideSame} onChange={e => setHideSame(e.target.checked)} />
+                {t('hideSame')}
+              </label>
+              <label style={{ fontSize: 12, color: '#bbb', display: 'flex', alignItems: 'center', gap: 4 }} title={t('hideUnpairedTitle')}>
+                <input type="checkbox" checked={hideUnpaired} onChange={e => setHideUnpaired(e.target.checked)} />
+                {t('hideUnpaired')}
+              </label>
+            </>
+          ) : (
+            <>
+              <button className="primary" onClick={startFileCompare} disabled={contentLoading} style={{ padding: '4px 14px' }}>
+                {contentLoading ? t('loading') : t('compare')}
+              </button>
+              <button onClick={() => {
+                setLeftFileSrc(rightFileSrc); setRightFileSrc(leftFileSrc);
+                setSelectedRel(null); setLeftContent(''); setRightContent('');
+              }} title={t('switchTitle')} style={{ padding: '4px 10px' }}>{t('switch')}</button>
+            </>
+          )}
           {rows.length > 0 && (
             <span style={{ fontSize: 11, color: '#888' }}>
               {t('countChanged')} <span style={{ color: statusColor('changed') }}>{counts.c}</span> ·
@@ -525,14 +787,95 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
         </div>
       </div>
 
-      {/* 상단: 비교 결과 트리 (가상화) */}
-      <div ref={setListWrapRef} style={{ height: `${topPct}%`, minHeight: 100, overflow: 'hidden', background: '#161616', position: 'relative' }}>
+      {/* 상단: 비교 결과 트리 (가상화) — 디렉토리 모드만 표시 */}
+      {!diffExpanded && compareMode === 'file' && <div style={{ height: 4, background: '#333', flexShrink: 0 }} />}
+      <div ref={setListWrapRef} style={{
+        height:    diffExpanded || compareMode === 'file' ? 0 : listContainerH !== null ? listContainerH : `${topPct}%`,
+        minHeight: diffExpanded || compareMode === 'file' ? 0 : listContainerH !== null ? 0 : 100,
+        overflow: 'hidden', background: '#161616', position: 'relative',
+      }}>
         {rows.length === 0 ? (
           <div style={{ color: '#666', fontSize: 12, padding: 16, textAlign: 'center' }}>
             {t('enterBothHint')}
           </div>
         ) : (
-          <VList height={listHeight} width="100%" itemCount={filteredRows.length} itemSize={ROW_H} overscanCount={12}>
+          <>
+          {/* 목록 헤더 — 정렬 + 필터 */}
+          <div style={{
+            display: 'flex', alignItems: 'center', height: LIST_HEADER_H,
+            padding: '0 10px', background: '#1c1c1c', borderBottom: '1px solid #2d2d2d',
+            fontSize: 11, color: '#888', flexShrink: 0, userSelect: 'none', boxSizing: 'border-box',
+          }}>
+            <span style={{ width: 70, display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
+              <span
+                onClick={() => toggleSort('status')}
+                style={{ cursor: 'pointer', opacity: sortBy === 'status' ? 1 : 0.4 }}
+                title="상태로 정렬"
+              >{sortBy === 'status' ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}</span>
+              <select
+                value={filterStatus}
+                onChange={e => setFilterStatus(e.target.value as '' | DiffStatus)}
+                style={{
+                  flex: 1, minWidth: 0, fontSize: 10, padding: '1px 2px',
+                  background: filterStatus ? '#2a1e1e' : '#252525',
+                  border: `1px solid ${filterStatus ? '#7a3a3a' : '#333'}`,
+                  borderRadius: 3,
+                  color: filterStatus ? statusColor(filterStatus) : '#888',
+                  outline: 'none', cursor: 'pointer',
+                }}
+              >
+                <option value="">상태</option>
+                <option value="changed">변경됨</option>
+                <option value="left-only">소스만</option>
+                <option value="right-only">타겟만</option>
+                <option value="same">동일</option>
+              </select>
+            </span>
+            <span style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
+              <span
+                onClick={() => toggleSort('path')}
+                style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0 }}
+                title="경로로 정렬"
+              >
+                경로
+                <span style={{ opacity: sortBy === 'path' ? 1 : 0.3 }}>{sortBy === 'path' ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}</span>
+              </span>
+              <input
+                type="text"
+                value={filterText}
+                onChange={e => setFilterText(e.target.value)}
+                onKeyDown={e => e.stopPropagation()}
+                placeholder="필터..."
+                style={{
+                  flex: 1, minWidth: 0, fontSize: 11, padding: '1px 5px',
+                  background: filterText ? '#1e2a1e' : '#252525',
+                  border: `1px solid ${filterText ? '#3a5a3a' : '#333'}`,
+                  borderRadius: 3, color: '#ccc', outline: 'none',
+                }}
+              />
+              {filterText && (
+                <button onClick={() => setFilterText('')} style={{ padding: '0 4px', fontSize: 11, background: 'transparent', border: 'none', color: '#888', cursor: 'pointer', flexShrink: 0 }}>✕</button>
+              )}
+            </span>
+            <span
+              onClick={() => toggleSort('leftSize')}
+              style={{ width: 60, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 3, flexShrink: 0 }}
+              title="소스 크기로 정렬"
+            >
+              <span style={{ opacity: sortBy === 'leftSize' ? 1 : 0.3 }}>{sortBy === 'leftSize' ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}</span>
+              소스
+            </span>
+            <span style={{ width: 20, textAlign: 'center', flexShrink: 0 }}>·</span>
+            <span
+              onClick={() => toggleSort('rightSize')}
+              style={{ width: 60, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 3, flexShrink: 0 }}
+              title="타겟 크기로 정렬"
+            >
+              <span style={{ opacity: sortBy === 'rightSize' ? 1 : 0.3 }}>{sortBy === 'rightSize' ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}</span>
+              타겟
+            </span>
+          </div>
+          <VList height={Math.max(0, (listContainerH !== null ? listContainerH : listHeight) - LIST_HEADER_H)} width="100%" itemCount={filteredRows.length} itemSize={ROW_H} overscanCount={12}>
             {({ index, style }: ListChildComponentProps) => {
               const row = filteredRows[index];
               if (!row) return null;
@@ -568,21 +911,24 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
               );
             }}
           </VList>
+          </>
         )}
       </div>
 
-      {/* 리사이저 */}
-      <div
-        onMouseDown={onResizeStart}
-        style={{ height: 4, cursor: 'row-resize', background: '#333', flexShrink: 0 }}
-        title={t('resizerTooltip')}
-      />
+      {/* 리사이저 — 디렉토리 모드만 */}
+      {!diffExpanded && compareMode === 'dir' && (
+        <div
+          onMouseDown={onResizeStart}
+          style={{ height: 4, cursor: 'row-resize', background: '#333', flexShrink: 0 }}
+          title={t('resizerTooltip')}
+        />
+      )}
 
       {/* 하단: Monaco DiffEditor — 양쪽 편집 가능 + 적용/저장 툴바 */}
       <div style={{ flex: 1, minHeight: 100, position: 'relative', background: '#1e1e1e', display: 'flex', flexDirection: 'column' }}>
         {!selectedRel ? (
           <div style={{ color: '#666', fontSize: 12, padding: 16, textAlign: 'center' }}>
-            {t('selectFileHint')}
+            {compareMode === 'file' ? t('fileCompareHint', '양쪽 파일 경로를 입력하고 비교 버튼을 누르세요') : t('selectFileHint')}
           </div>
         ) : contentLoading ? (
           <div style={{ color: '#888', fontSize: 12, padding: 16, textAlign: 'center' }}>{t('loading')}</div>
@@ -590,9 +936,9 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
           <div style={{ color: '#e36b6b', fontSize: 12, padding: 16 }}>{contentErr}</div>
         ) : (
           <>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '4px 8px', background: '#222', borderBottom: '1px solid #333', fontSize: 11 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '4px 8px', background: '#222', borderBottom: '1px solid #333', fontSize: 11, minWidth: 0, overflow: 'hidden' }}>
               {/* 1행: 경로 + 저장 + 전체 적용 */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', minWidth: 0 }}>
                 <span style={{ color: leftDirty ? '#d8b556' : '#888', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={leftFilePath}>
                   {leftDirty && '● '}{t('sourceLabelLine', { path: leftFilePath || t('noPath') })}
                 </span>
@@ -603,6 +949,24 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
                 <span style={{ color: rightDirty ? '#d8b556' : '#888', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'right' }} title={rightFilePath}>
                   {t('targetLabelLine', { path: rightFilePath || t('noPath') })}{rightDirty && ' ●'}
                 </span>
+                <button
+                  onClick={() => setDiffExpanded(v => !v)}
+                  title={diffExpanded ? '축소' : '전체 화면으로 확대'}
+                  style={{ padding: '2px 6px', lineHeight: 1, flexShrink: 0, background: diffExpanded ? '#2a3a2a' : undefined, border: diffExpanded ? '1px solid #3a5a3a' : undefined, color: diffExpanded ? '#7fcf6e' : '#aaa', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                >
+                  {diffExpanded ? (
+                    <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                      {/* 뒤 사각형 — 앞 사각형에 가려진 우상단 모서리 제외한 L자 경로 */}
+                      <path d="M4 4 L1 4 L1 12 L9 12 L9 9"/>
+                      {/* 앞 사각형 — 전체 */}
+                      <rect x="4" y="1" width="8" height="8"/>
+                    </svg>
+                  ) : (
+                    <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M1 5V1h4M8 1h4v4M12 8v4H8M5 12H1V8"/>
+                    </svg>
+                  )}
+                </button>
               </div>
               {/* 2행: hunk 단위 양방향 적용 */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -613,7 +977,23 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
                 <button onClick={() => applyCurrentHunk('left-to-right')} title={t('applyRightTitle', { combo: formatKeyComboForOS(getKeybinding('diffApplyRight')) })} style={{ padding: '2px 8px', fontSize: 11 }}>{t('applyToTarget')}</button>
                 <span style={{ flex: 1 }} />
               </div>
+              {/* 3행: EOL / 인코딩 뱃지 */}
+              {(leftEol || leftEnc || rightEol || rightEnc) && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4, paddingTop: 2 }}>
+                  <span style={{ flex: 1, display: 'flex', gap: 4 }}>
+                    {leftEol && <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 3, background: '#2a3a4a', color: '#8bbcda', border: '1px solid #3a5a7a', letterSpacing: '0.02em' }}>{leftEol}</span>}
+                    {leftEnc && <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 3, background: '#2a3a2a', color: '#8dcc8d', border: '1px solid #3a5a3a', letterSpacing: '0.02em' }}>{leftEnc}</span>}
+                  </span>
+                  <span style={{ flex: 1, display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                    {rightEnc && <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 3, background: '#2a3a2a', color: '#8dcc8d', border: '1px solid #3a5a3a', letterSpacing: '0.02em' }}>{rightEnc}</span>}
+                    {rightEol && <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 3, background: '#2a3a4a', color: '#8bbcda', border: '1px solid #3a5a7a', letterSpacing: '0.02em' }}>{rightEol}</span>}
+                  </span>
+                </div>
+              )}
             </div>
+            {sameNote && (
+              <div style={{ padding: '3px 10px', fontSize: 11, color: '#a0c4ff', background: '#1a2a3a', borderBottom: '1px solid #333' }}>ℹ {sameNote}</div>
+            )}
             {savingMsg && (
               <div style={{ padding: '3px 10px', fontSize: 11, color: savingMsg.startsWith('✕') ? '#e36b6b' : '#7fcf6e', background: '#1a1a1a', borderBottom: '1px solid #333' }}>{savingMsg}</div>
             )}
@@ -659,7 +1039,7 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
 
       {pickerSide && (
         <RemotePathPicker
-          mode="folder"
+          mode={compareMode === 'file' ? 'file' : 'folder'}
           source={pickerSide === 'left' ? leftSrc.mode : rightSrc.mode}
           termId={pickerSide === 'left' ? leftSrc.termId : rightSrc.termId}
           sourceLabel={pickerSide === 'left' ? leftSrc.label : rightSrc.label}
