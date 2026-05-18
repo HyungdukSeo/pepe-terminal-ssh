@@ -1657,7 +1657,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   ];
 
   // 명령 팔레트 전체 액션 (섹션별)
-  type PaletteAction = { id: string; section: string; label: string; desc?: string; shortcut?: string; run: () => void };
+  type PaletteAction = { id: string; section: string; label: string; desc?: string; shortcut?: string; icon?: React.ReactNode; run: () => void };
 
   // 에이전트별 Model 섹션
   const paletteModelActions: PaletteAction[] = currentAgent === 'codex'
@@ -1738,6 +1738,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       id: `codex-approval-${item.value}`,
       section: 'Permission',
       label: item.label,
+      icon: <CodexApprovalIcon value={item.value} />,
       run: () => setCodexApprovalPolicy(item.value),
     })) : []),
     // Slash Commands — 공통
@@ -2505,7 +2506,10 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                           onMouseEnter={() => setCommandHighlight(idx)}
                           onClick={() => runPaletteAction(a)}
                         >
-                          <span className="claude-chat-cmd-label">{a.label}</span>
+                          <span className="claude-chat-cmd-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            {a.icon && <span style={{ display: 'inline-flex', alignItems: 'center', flexShrink: 0 }}>{a.icon}</span>}
+                            {a.label}
+                          </span>
                           {a.desc && <span className="claude-chat-cmd-desc">{a.desc}</span>}
                         </div>
                       );
