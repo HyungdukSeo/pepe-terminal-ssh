@@ -1,5 +1,6 @@
 // src/components/ClaudeChat.tsx
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { marked } from 'marked';
 import mermaid from 'mermaid';
@@ -31,9 +32,10 @@ const CODEX_APPROVAL_ITEMS: Array<{ value: CodexApprovalPolicy; label: string }>
 ];
 
 function CodexApprovalIcon({ value }: { value: CodexApprovalPolicy }) {
+  const color = value === 'suggest' ? '#4f8bd6' : value === 'auto-edit' ? '#7aa95a' : '#d08b45';
   if (value === 'suggest') {
     return (
-      <svg className="codex-approval-icon" viewBox="0 0 20 20" aria-hidden="true">
+      <svg className="codex-approval-icon" viewBox="0 0 20 20" aria-hidden="true" style={{ stroke: color }}>
         <path d="M7.6 9.3V4.2a1.05 1.05 0 0 1 2.1 0v4.65" />
         <path d="M9.7 8.85V3.35a1.05 1.05 0 0 1 2.1 0v5.5" />
         <path d="M11.8 8.95V4.55a1.03 1.03 0 0 1 2.05 0v5" />
@@ -42,7 +44,7 @@ function CodexApprovalIcon({ value }: { value: CodexApprovalPolicy }) {
     );
   }
   return (
-    <svg className="codex-approval-icon" viewBox="0 0 20 20" aria-hidden="true">
+    <svg className="codex-approval-icon" viewBox="0 0 20 20" aria-hidden="true" style={{ stroke: color }}>
       <path d="M10 2.7 15.2 4.6v4.15c0 3.42-2.05 6.02-5.2 8.25-3.15-2.23-5.2-4.83-5.2-8.25V4.6L10 2.7Z" />
       {value === 'auto-edit' ? (
         <>
@@ -226,7 +228,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     setPermissionMode(saved?.permissionMode ?? 'default');
     setPerToolApproval(saved?.perToolApproval ?? true);
     setGeminiYolo(saved?.geminiYolo ?? true);
-    setCodexApprovalPolicy(saved?.codexApprovalPolicy ?? 'full-auto');
+    setCodexApprovalPolicy(saved?.codexApprovalPolicy ?? 'suggest');
   }, [aiAgent]); // eslint-disable-line react-hooks/exhaustive-deps
   const { t: tt } = useTranslation('claudeChat');
   // 사용자가 선택한 활성 SSH 세션 (드롭다운). 처음엔 defaultSshSession.
@@ -440,6 +442,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const [chatHistory, setChatHistory] = useState<ChatHistoryEntry[]>([]);
   const [activeHistoryId, setActiveHistoryId] = useState<string | null>(null);
   const [showHistoryPanel, setShowHistoryPanel] = useState(false);
+  const [deleteHistoryConfirm, setDeleteHistoryConfirm] = useState<{ id: string; title: string } | null>(null);
   // 메시지 우클릭 컨텍스트 메뉴
   const [msgCtxMenu, setMsgCtxMenu] = useState<{ x: number; y: number; msgId: string; content: string } | null>(null);
   useEffect(() => {
@@ -506,7 +509,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   // Gemini: --yolo 온/오프 (기본 true)
   const [geminiYolo, setGeminiYolo] = useState<boolean>(true);
   // Codex: approval policy
-  const [codexApprovalPolicy, setCodexApprovalPolicy] = useState<CodexApprovalPolicy>('full-auto');
+  const [codexApprovalPolicy, setCodexApprovalPolicy] = useState<CodexApprovalPolicy>('suggest');
   const [codexApprovalMenuOpen, setCodexApprovalMenuOpen] = useState(false);
   // 에이전트별 설정 메모리 (탭 전환 시 복원)
   type AgentSettings = { model: string; effort: string; permissionMode: 'bypassPermissions' | 'acceptEdits' | 'plan' | 'default'; perToolApproval: boolean; geminiYolo: boolean; codexApprovalPolicy: CodexApprovalPolicy };
@@ -563,7 +566,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     setPermissionMode(saved?.permissionMode ?? 'default');
     setPerToolApproval(saved?.perToolApproval ?? true);
     setGeminiYolo(saved?.geminiYolo ?? true);
-    setCodexApprovalPolicy(saved?.codexApprovalPolicy ?? 'full-auto');
+    setCodexApprovalPolicy(saved?.codexApprovalPolicy ?? 'suggest');
     onAgentChange?.(a);
   };
   const [commandMenuOpen, setCommandMenuOpen] = useState(false);
@@ -2078,7 +2081,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               }}>✎</button>
               <button title={tt('deleteTitle')} onClick={e => {
                 e.stopPropagation();
-                if (confirm(tt('confirmDeleteHistory', { title: h.title }))) deleteHistory(h.id);
+                setDeleteHistoryConfirm({ id: h.id, title: h.title || tt('noTitle') });
               }}>×</button>
             </div>
           </div>
@@ -2763,6 +2766,35 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           </div>
         );
       })()}
+      {/* 대화 이력 삭제 확인 모달 */}
+      {deleteHistoryConfirm && createPortal(
+        <div className="rn-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setDeleteHistoryConfirm(null); }}>
+          <div className="rn-dialog" onMouseDown={e => e.stopPropagation()}>
+            <div className="rn-title">삭제 확인</div>
+            <div className="rn-body" style={{ maxWidth: 480 }}>
+              <div style={{ fontSize: 12, lineHeight: '1.5em' }}>
+                <b>1개</b> 대화를 삭제하시겠습니까?
+              </div>
+              <div style={{ fontSize: 11, color: '#aaa', marginTop: 6, wordBreak: 'break-all' }}>
+                {deleteHistoryConfirm.title}
+              </div>
+            </div>
+            <div className="rn-actions">
+              <button
+                className="rn-btn rn-btn-primary"
+                ref={el => { if (el) setTimeout(() => el.focus(), 0); }}
+                onClick={() => { deleteHistory(deleteHistoryConfirm.id); setDeleteHistoryConfirm(null); }}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') { e.preventDefault(); deleteHistory(deleteHistoryConfirm.id); setDeleteHistoryConfirm(null); }
+                  else if (e.key === 'Escape') { e.preventDefault(); setDeleteHistoryConfirm(null); }
+                }}
+              >삭제</button>
+              <button className="rn-btn" onClick={() => setDeleteHistoryConfirm(null)}>취소</button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
     </div>
   );
 };
