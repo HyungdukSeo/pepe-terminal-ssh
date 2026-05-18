@@ -1658,13 +1658,32 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
 
   // 명령 팔레트 전체 액션 (섹션별)
   type PaletteAction = { id: string; section: string; label: string; desc?: string; shortcut?: string; run: () => void };
-  const paletteActions: PaletteAction[] = [
-    // Context
-    { id: 'attach-file', section: 'Context', label: 'Attach file...', desc: tt('palette.attachFileDesc'), run: () => fileUploadRef.current?.click() },
-    { id: 'attach-folder', section: 'Context', label: 'Attach folder...', desc: tt('palette.attachFolderDesc'), run: () => folderUploadRef.current?.click() },
-    { id: 'clear', section: 'Context', label: 'Clear conversation', desc: tt('palette.clearDesc'), run: () => clear() },
-    // Model — Anthropic /v1/models 결과로 동적 생성, 없으면 fallback
-    ...(availableModels.length > 0
+
+  // 에이전트별 Model 섹션
+  const paletteModelActions: PaletteAction[] = currentAgent === 'codex'
+    ? [
+        { id: 'model-gpt55',    section: 'Model', label: 'Model: GPT-5.5',        desc: '🚀',  run: () => setModel('gpt-5.5') },
+        { id: 'model-gpt54',    section: 'Model', label: 'Model: GPT-5.4',        desc: '🔵',  run: () => setModel('gpt-5.4') },
+        { id: 'model-gpt54m',   section: 'Model', label: 'Model: GPT-5.4 Mini',   desc: '⚡',  run: () => setModel('gpt-5.4-mini') },
+        { id: 'model-gpt53c',   section: 'Model', label: 'Model: GPT-5.3 Codex',  desc: '🧠',  run: () => setModel('gpt-5.3-codex') },
+        { id: 'model-gpt52',    section: 'Model', label: 'Model: GPT-5.2',        desc: '🟣',  run: () => setModel('gpt-5.2') },
+        { id: 'model-codexmini',section: 'Model', label: 'Model: Codex Mini',     desc: '🧠',  run: () => setModel('codex-mini-latest') },
+        { id: 'model-o4mini',   section: 'Model', label: 'Model: o4-mini',        desc: '⚡',  run: () => setModel('o4-mini') },
+        { id: 'model-o3',       section: 'Model', label: 'Model: o3',             desc: '🔵',  run: () => setModel('o3') },
+      ]
+    : currentAgent === 'gemini'
+    ? [
+        { id: 'model-g31pro',   section: 'Model', label: 'Model: Gemini 3.1 Pro',            desc: '✨', run: () => setModel('gemini-3.1-pro') },
+        { id: 'model-g31prev',  section: 'Model', label: 'Model: Gemini 3.1 Pro Preview',     desc: '✨', run: () => setModel('gemini-3.1-pro-preview') },
+        { id: 'model-g31fl',    section: 'Model', label: 'Model: Gemini 3.1 Flash Lite',      desc: '⚡', run: () => setModel('gemini-3.1-flash-lite-preview') },
+        { id: 'model-g3pro',    section: 'Model', label: 'Model: Gemini 3 Pro',               desc: '✨', run: () => setModel('gemini-3-pro') },
+        { id: 'model-g3fl',     section: 'Model', label: 'Model: Gemini 3 Flash',             desc: '⚡', run: () => setModel('gemini-3-flash-preview') },
+        { id: 'model-g25pro',   section: 'Model', label: 'Model: Gemini 2.5 Pro',             desc: '🔵', run: () => setModel('gemini-2.5-pro') },
+        { id: 'model-g25fl',    section: 'Model', label: 'Model: Gemini 2.5 Flash',           desc: '⚡', run: () => setModel('gemini-2.5-flash') },
+        { id: 'model-g25fll',   section: 'Model', label: 'Model: Gemini 2.5 Flash Lite',      desc: '⚡', run: () => setModel('gemini-2.5-flash-lite') },
+      ]
+    // Claude — Anthropic /v1/models 결과로 동적 생성, 없으면 fallback
+    : availableModels.length > 0
       ? (() => {
           const tier = (id: string) => /opus/i.test(id) ? 0 : /sonnet/i.test(id) ? 1 : /haiku/i.test(id) ? 2 : 3;
           const sorted = [...availableModels].sort((a, b) => {
@@ -1677,7 +1696,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             const shortAlias = /opus-4-7/i.test(m.id) ? 'opus' : /sonnet-4-6/i.test(m.id) ? 'sonnet' : /haiku-4-5/i.test(m.id) ? 'haiku' : m.id;
             if (has1M) {
               acts.push({ id: `model-${m.id}-200k`, section: 'Model', label: `Model: ${m.display_name}`, desc: '200k context', run: () => setModel(shortAlias) });
-              acts.push({ id: `model-${m.id}-1m`, section: 'Model', label: `Model: ${m.display_name} 1M`, desc: '1M context', run: () => setModel(`${shortAlias}[1m]`) });
+              acts.push({ id: `model-${m.id}-1m`,   section: 'Model', label: `Model: ${m.display_name} 1M`, desc: '1M context', run: () => setModel(`${shortAlias}[1m]`) });
             } else {
               acts.push({ id: `model-${m.id}`, section: 'Model', label: `Model: ${m.display_name}`, run: () => setModel(shortAlias) });
             }
@@ -1685,22 +1704,33 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           return acts;
         })()
       : [
-          { id: 'model-opus', section: 'Model', label: 'Model: Opus 4.7', run: () => setModel('opus') },
-          { id: 'model-opus-1m', section: 'Model', label: 'Model: Opus 4.7 1M', run: () => setModel('opus[1m]') },
-          { id: 'model-sonnet', section: 'Model', label: 'Model: Sonnet 4.6', run: () => setModel('sonnet') },
-          { id: 'model-haiku', section: 'Model', label: 'Model: Haiku 4.5', run: () => setModel('haiku') },
-          { id: 'model-opus-legacy', section: 'Model', label: 'Model: Opus 4.6 레거시', run: () => setModel('claude-opus-4-6') },
-        ]),
-    // Effort
-    { id: 'effort-low', section: 'Effort', label: tt('palette.effortLow'), run: () => setEffort('low') },
-    { id: 'effort-medium', section: 'Effort', label: tt('palette.effortMedium'), run: () => setEffort('medium') },
-    { id: 'effort-high', section: 'Effort', label: tt('palette.effortHigh'), run: () => setEffort('high') },
-    { id: 'effort-max', section: 'Effort', label: tt('palette.effortMax'), run: () => setEffort('max') },
-    // Permission (모드 3종으로 정리 — bypass 제거됨)
-    { id: 'perm-default', section: 'Permission', label: tt('perm.default'), run: () => setPermissionMode('default') },
-    { id: 'perm-accept', section: 'Permission', label: tt('perm.acceptEdits'), run: () => setPermissionMode('acceptEdits') },
-    { id: 'perm-plan', section: 'Permission', label: tt('perm.plan'), run: () => setPermissionMode('plan') },
-    // Slash Commands (프롬프트 삽입)
+          { id: 'model-opus',       section: 'Model', label: 'Model: Opus 4.7',      run: () => setModel('opus') },
+          { id: 'model-opus-1m',    section: 'Model', label: 'Model: Opus 4.7 1M',   run: () => setModel('opus[1m]') },
+          { id: 'model-sonnet',     section: 'Model', label: 'Model: Sonnet 4.6',    run: () => setModel('sonnet') },
+          { id: 'model-haiku',      section: 'Model', label: 'Model: Haiku 4.5',     run: () => setModel('haiku') },
+        ];
+
+  const paletteActions: PaletteAction[] = [
+    // Context — 공통
+    { id: 'attach-file',   section: 'Context', label: 'Attach file...',       desc: tt('palette.attachFileDesc'),   run: () => fileUploadRef.current?.click() },
+    { id: 'attach-folder', section: 'Context', label: 'Attach folder...',     desc: tt('palette.attachFolderDesc'), run: () => folderUploadRef.current?.click() },
+    { id: 'clear',         section: 'Context', label: 'Clear conversation',   desc: tt('palette.clearDesc'),        run: () => clear() },
+    // Model — 에이전트별
+    ...paletteModelActions,
+    // Effort — Claude / Codex 만 사용
+    ...(currentAgent !== 'gemini' ? [
+      { id: 'effort-low',    section: 'Effort', label: tt('palette.effortLow'),    run: () => setEffort('low') },
+      { id: 'effort-medium', section: 'Effort', label: tt('palette.effortMedium'), run: () => setEffort('medium') },
+      { id: 'effort-high',   section: 'Effort', label: tt('palette.effortHigh'),   run: () => setEffort('high') },
+      { id: 'effort-max',    section: 'Effort', label: tt('palette.effortMax'),    run: () => setEffort('max') },
+    ] : []),
+    // Permission — Claude 전용
+    ...(currentAgent === 'claude' ? [
+      { id: 'perm-default', section: 'Permission', label: tt('perm.default'),      run: () => setPermissionMode('default') },
+      { id: 'perm-accept',  section: 'Permission', label: tt('perm.acceptEdits'),  run: () => setPermissionMode('acceptEdits') },
+      { id: 'perm-plan',    section: 'Permission', label: tt('perm.plan'),         run: () => setPermissionMode('plan') },
+    ] : []),
+    // Slash Commands — 공통
     ...commandPresets.map(p => ({
       id: `slash-${p.label}`,
       section: 'Slash Commands',
