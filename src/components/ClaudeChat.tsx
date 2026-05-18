@@ -1717,8 +1717,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     { id: 'clear',         section: 'Context', label: 'Clear conversation',   desc: tt('palette.clearDesc'),        run: () => clear() },
     // Model — 에이전트별
     ...paletteModelActions,
-    // Effort — Claude / Codex 만 사용
-    ...(currentAgent !== 'gemini' ? [
+    // Effort — Claude 전용 (Codex·Gemini 는 각자 툴바 컨트롤 사용)
+    ...(currentAgent === 'claude' ? [
       { id: 'effort-low',    section: 'Effort', label: tt('palette.effortLow'),    run: () => setEffort('low') },
       { id: 'effort-medium', section: 'Effort', label: tt('palette.effortMedium'), run: () => setEffort('medium') },
       { id: 'effort-high',   section: 'Effort', label: tt('palette.effortHigh'),   run: () => setEffort('high') },
