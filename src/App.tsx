@@ -200,7 +200,7 @@ function App() {
   const [termSettings, setTermSettings] = useState<TerminalSettings>(getTerminalSettings);
   const isOptionsPopout = false; // popout 비활성 — localStorage 격리로 데이터 유실 위험
   const [showOptions, setShowOptions] = useState(false);
-  const [editSessionCtx, setEditSessionCtx] = useState<{ session: any; termId: string } | null>(null);
+  const [editSessionCtx, setEditSessionCtx] = useState<{ session: any; termId: string; isQuick?: boolean } | null>(null);
   const [editSessionFolders, setEditSessionFolders] = useState<any[]>([]);
   const [optFontFamily, setOptFontFamily] = useState(() => localStorage.getItem('terminalFontFamily') || '');
   const [optFontSize, setOptFontSize] = useState(() => Number(localStorage.getItem('terminalFontSize')) || 14);
@@ -739,11 +739,29 @@ function App() {
   useEffect(() => {
     const handler = async (e: Event) => {
       const detail = (e as CustomEvent).detail;
-      if (!detail?.sessionId) return;
+      if (!detail?.sessionId && !detail?.quickSession) return;
       try {
         const data = await (window as any).api?.listSessions?.();
         const all = data?.sessions ?? data ?? [];
         const flds = data?.folders ?? [];
+        if (detail.quickSession) {
+          const q = detail.quickSession;
+          setEditSessionCtx({
+            session: {
+              id: `quick-${detail.termId || Date.now()}`,
+              name: q.name || detail.sessionName || q.host || 'Quick Connect',
+              host: q.host || '',
+              port: q.port || 22,
+              username: q.username || '',
+              auth: q.auth || { type: 'password', password: '' },
+              encoding: q.encoding || 'utf-8',
+            },
+            termId: detail.termId,
+            isQuick: true,
+          });
+          setEditSessionFolders(flds);
+          return;
+        }
         const sess = all.find((x: any) => x.id === detail.sessionId);
         if (sess) {
           setEditSessionCtx({ session: sess, termId: detail.termId });
@@ -763,6 +781,23 @@ function App() {
       if (typeof s.scrollback === 'number') applyScrollbackToTerm(termId, s.scrollback);
       applyCursorStyleToTerm(termId, s.cursorStyle || 'block', !!s.cursorBlink);
     } catch (e) { console.error('[applySessionToTerm]', e); }
+  };
+
+  const applySavedSessionToTerm = (s: any, termId: string) => {
+    registerTermSession(termId, s.id, s.name, s.host ?? '');
+    setTabs(prev => prev.map(tab => ({
+      ...tab,
+      layout: (function walk(node: LayoutNode): LayoutNode {
+        if (node.type === 'leaf') {
+          const sessions = node.panel.sessions.map(sess =>
+            sess.termId === termId ? { ...sess, sessionId: s.id, sessionName: s.name } : sess
+          );
+          return { ...node, panel: { ...node.panel, sessions } };
+        }
+        return { ...node, children: node.children.map(walk) };
+      })(tab.layout),
+    })));
+    applySessionToTerm(s, termId);
   };
 
   // 외부 검색 창 IPC — listener 는 한 번만 등록, 최신 tabs/activeTab 은 ref 로 참조
@@ -2664,7 +2699,33 @@ function App() {
             className={`tool-btn btn-pin${terminalPinned ? ' pinned' : ''}`}
             title={terminalPinned ? '터미널 패널 고정 해제 (세로 탭으로 최소화)' : '터미널 패널 고정'}
             onClick={() => setTerminalPinned(p => !p)}
-          >📌</button>
+          >
+            {terminalPinned ? (
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" strokeLinecap="round" strokeLinejoin="round">
+                {/* 눕혀진 터미널 */}
+                <rect x="0.7" y="5.5" width="12.6" height="7.8" rx="1.5" fill="#1e2d3d" stroke="#4a7a9b" strokeWidth="1"/>
+                <line x1="0.7" y1="7.5" x2="13.3" y2="7.5" stroke="#4a7a9b" strokeWidth="0.8"/>
+                <polyline points="2,11.5 3.2,10.5 2,9.5" stroke="#4ade80" strokeWidth="1.3"/>
+                <line x1="3.7" y1="10.5" x2="6.5" y2="10.5" stroke="#4ade80" strokeWidth="1.3"/>
+                {/* 박힌 압정 (빨간색) */}
+                <circle cx="10" cy="2" r="1.8" fill="#f87171" stroke="#dc2626" strokeWidth="0.8"/>
+                <line x1="10" y1="3.8" x2="10" y2="8.5" stroke="#ef4444" strokeWidth="1.4"/>
+                <polygon points="10,10.2 9.1,8.2 10.9,8.2" fill="#ef4444"/>
+              </svg>
+            ) : (
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" strokeLinecap="round" strokeLinejoin="round">
+                {/* 눕혀진 터미널 (점선 = 숨겨질 수 있음) */}
+                <rect x="0.7" y="5.5" width="12.6" height="7.8" rx="1.5" fill="#1e2d3d" stroke="#4a7a9b" strokeWidth="1" strokeDasharray="2.5 1.5"/>
+                <line x1="0.7" y1="7.5" x2="13.3" y2="7.5" stroke="#4a7a9b" strokeWidth="0.8" strokeDasharray="2.5 1.5"/>
+                <polyline points="2,11.5 3.2,10.5 2,9.5" stroke="#4ade80" strokeWidth="1.3" opacity="0.4"/>
+                <line x1="3.7" y1="10.5" x2="6.5" y2="10.5" stroke="#4ade80" strokeWidth="1.3" opacity="0.4"/>
+                {/* 빠진 압정 — 눕혀져 있음 (회색) */}
+                <circle cx="12" cy="1.8" r="1.5" fill="#94a3b8" stroke="#64748b" strokeWidth="0.7"/>
+                <line x1="10.6" y1="2.6" x2="6.5" y2="5.5" stroke="#94a3b8" strokeWidth="1.3"/>
+                <polygon points="5.8,6 6.2,4.6 7.5,5.1" fill="#94a3b8"/>
+              </svg>
+            )}
+          </button>
           <span className="tool-sep" />
           <button className="tool-btn" title="X 서버 시작 (DISPLAY=:0)" onClick={async () => {
             try {
@@ -2849,8 +2910,9 @@ function App() {
             };
             const leaf = findLeaf(activeTab.layout, selectedPanelId);
             const sess = leaf?.panel?.sessions[leaf.panel.activeIdx];
+            const sessInfo = sess ? getTermSessionInfo(sess.termId) : null;
             // SSH 연결된 세션 또는 로컬 PTY 활성 세션이면 파일트리 표시
-            if (sess && ((sess.sessionId && isTermConnected(sess.termId)) || isTermPty(sess.termId))) {
+            if (sess && (((sess.sessionId || sessInfo?.quickSession) && isTermConnected(sess.termId)) || isTermPty(sess.termId))) {
               const onClickTrigger = () => {
                 if (remoteTreePinned) return;
                 if (remoteTreeHideTimer.current) { clearTimeout(remoteTreeHideTimer.current); remoteTreeHideTimer.current = null; }
@@ -3177,6 +3239,13 @@ function App() {
           session={editSessionCtx.session}
           folders={editSessionFolders}
           onSave={async (s: any) => {
+            if (editSessionCtx.isQuick) {
+              try { await (window as any).api?.saveSession?.(s); } catch {}
+              applySavedSessionToTerm(s, editSessionCtx.termId);
+              setEditSessionCtx({ session: s, termId: editSessionCtx.termId });
+              try { window.dispatchEvent(new Event('sessions-reload')); } catch {}
+              return;
+            }
             // 변경 전 세션 — X11 forwarding 등 재접속 필요 설정 비교
             const prev = editSessionCtx.session as any;
             try { await (window as any).api?.saveSession?.(s); } catch {}
@@ -3195,6 +3264,26 @@ function App() {
             }
           }}
           onSaveAndConnect={async (s: any) => {
+            if (editSessionCtx.isQuick) {
+              const editedTid = editSessionCtx.termId;
+              try { await (window as any).api?.saveSession?.(s); } catch {}
+              applySavedSessionToTerm(s, editedTid);
+              try { window.dispatchEvent(new Event('sessions-reload')); } catch {}
+              setEditSessionCtx(null);
+              setTimeout(async () => {
+                try {
+                  window.api?.disconnectSSH?.(editedTid);
+                  await new Promise(res => setTimeout(res, 250));
+                  resetTermConnectState(editedTid);
+                  const entry = termStore.get(editedTid);
+                  const cols = entry ? (entry.term as any).cols : 80;
+                  const rows = entry ? (entry.term as any).rows : 24;
+                  await (window as any).api?.connectSSH?.(editedTid, s.id, cols, rows);
+                  focusTerm(editedTid);
+                } catch {}
+              }, 50);
+              return;
+            }
             try { await (window as any).api?.saveSession?.(s); } catch {}
             const editedTid = editSessionCtx.termId;
             setEditSessionCtx(null);

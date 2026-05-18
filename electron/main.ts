@@ -3303,13 +3303,24 @@ ipcMain.handle('rec:start', async (_e, { panelId, sessionName }: { panelId: stri
     return { ok: false, reason: 'open-failed', message: String(err?.message || err) };
   }
 });
+// ANSI escape / control sequence stripper — 녹화 파일이 화면과 동일한 plain text 로 보이도록.
+// CSI (\x1b[...), OSC (\x1b]...\x07 or \x1b\\), 단일 ESC 시퀀스, 기타 제어문자 (carriage return 제외) 제거.
+function stripAnsi(s: string): string {
+  if (!s) return s;
+  return s
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '') // OSC
+    .replace(/\x1b[@-Z\\-_]/g, '')                       // single-char ESC seq
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')             // CSI
+    .replace(/\x1b\([AB012]/g, '');                      // charset designator
+}
 ipcMain.on('rec:append', (_e, { panelId, data, kind }: { panelId: string; data: string; kind?: 'out' | 'in' | 'mark' }) => {
   const rec = recordingStreams.get(panelId);
   if (!rec) return;
   try {
-    if (kind === 'in') rec.stream.write(`\x1b[7m<<<${data}>>>\x1b[27m`);
-    else if (kind === 'mark') rec.stream.write(`\r\n--- ${data} ---\r\n`);
-    else rec.stream.write(data);
+    // 입력은 별도 기록 안 함 — 셸이 echo 한 문자가 'out' 으로 이미 들어옴 (중복/마커 노이즈 방지)
+    if (kind === 'in') return;
+    if (kind === 'mark') rec.stream.write(`\r\n--- ${stripAnsi(data)} ---\r\n`);
+    else rec.stream.write(stripAnsi(data));
   } catch {}
 });
 ipcMain.handle('rec:stop', async (_e, { panelId }: { panelId: string }) => {
@@ -4182,7 +4193,7 @@ ipcMain.handle('codex:check', async () => {
   }
 });
 
-ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, approvalPolicy }: { sessionId: string; prompt: string; requestId?: string; model?: string; approvalPolicy?: 'suggest' | 'auto-edit' | 'full-auto' }) => {
+ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, approvalPolicy, effort }: { sessionId: string; prompt: string; requestId?: string; model?: string; approvalPolicy?: 'suggest' | 'auto-edit' | 'full-auto'; effort?: string }) => {
   try {
     // 같은 sessionId로 실행 중인 Gemini 프로세스 정리
     const prevGemini = geminiProcesses.get(sessionId);
@@ -4207,16 +4218,20 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
     };
 
     const modelFlag = model ? ` -m ${model}` : '';
+    const codexEffort = effort === 'max' ? 'xhigh' : effort;
+    const effortFlag = codexEffort && ['low', 'medium', 'high', 'xhigh'].includes(codexEffort)
+      ? ` -c "model_reasoning_effort=\\"${codexEffort}\\""`
+      : '';
     // suggest → read-only, auto-edit/full-auto → danger-full-access (파일 쓰기 허용)
     const fullAccess = approvalPolicy === 'auto-edit' || approvalPolicy === 'full-auto';
     const isWin = process.platform === 'win32';
     const cwd = process.env.USERPROFILE || process.env.HOME || os.homedir();
     const macInnerCmd = fullAccess
-      ? `cat "${tmpFile}" | codex exec${modelFlag} --skip-git-repo-check --sandbox danger-full-access`
-      : `cat "${tmpFile}" | codex exec${modelFlag} --skip-git-repo-check -c 'sandbox_permissions=["disk-full-read-access","network-full-access"]'`;
+      ? `cat "${tmpFile}" | codex exec${modelFlag}${effortFlag} --skip-git-repo-check --sandbox danger-full-access`
+      : `cat "${tmpFile}" | codex exec${modelFlag}${effortFlag} --skip-git-repo-check -c 'sandbox_permissions=["disk-full-read-access","network-full-access"]'`;
     const winCmd = fullAccess
-      ? `chcp 65001 >nul && type "${tmpFile}" | codex exec${modelFlag} --skip-git-repo-check --sandbox danger-full-access`
-      : `chcp 65001 >nul && type "${tmpFile}" | codex exec${modelFlag} --skip-git-repo-check -c "sandbox_permissions=[\\"disk-full-read-access\\",\\"network-full-access\\"]"`;
+      ? `chcp 65001 >nul && type "${tmpFile}" | codex exec${modelFlag}${effortFlag} --skip-git-repo-check --sandbox danger-full-access`
+      : `chcp 65001 >nul && type "${tmpFile}" | codex exec${modelFlag}${effortFlag} --skip-git-repo-check -c "sandbox_permissions=[\\"disk-full-read-access\\",\\"network-full-access\\"]"`;
     const shellCmd = isWin ? winCmd : macInnerCmd;
     const proc = spawn(shellCmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd });
     codexProcesses.set(procKey, proc);

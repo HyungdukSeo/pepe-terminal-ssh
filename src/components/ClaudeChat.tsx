@@ -22,6 +22,43 @@ mermaid.initialize({
 // Mermaid 다이어그램 키워드 — 이 패턴으로 시작하면 mermaid 블록으로 간주
 const MERMAID_START_RE = /^(graph\s+(TB|TD|BT|RL|LR)|flowchart\s+(TB|TD|BT|RL|LR)|sequenceDiagram|classDiagram|stateDiagram(-v2)?|erDiagram|gantt|pie|journey|gitGraph|mindmap|timeline|quadrantChart)\b/;
 
+type CodexApprovalPolicy = 'suggest' | 'auto-edit' | 'full-auto';
+
+const CODEX_APPROVAL_ITEMS: Array<{ value: CodexApprovalPolicy; label: string }> = [
+  { value: 'suggest', label: '\uAD8C\uD55C \uC694\uCCAD' },
+  { value: 'auto-edit', label: '\uC790\uB3D9 \uAC80\uD1A0' },
+  { value: 'full-auto', label: '\uC804\uCCB4 \uAD8C\uD55C' },
+];
+
+function CodexApprovalIcon({ value }: { value: CodexApprovalPolicy }) {
+  if (value === 'suggest') {
+    return (
+      <svg className="codex-approval-icon" viewBox="0 0 20 20" aria-hidden="true">
+        <path d="M7.6 9.3V4.2a1.05 1.05 0 0 1 2.1 0v4.65" />
+        <path d="M9.7 8.85V3.35a1.05 1.05 0 0 1 2.1 0v5.5" />
+        <path d="M11.8 8.95V4.55a1.03 1.03 0 0 1 2.05 0v5" />
+        <path d="M13.85 9.75V6.6a1 1 0 0 1 2 0v4.6c0 2.45-1.72 4.25-4.12 4.25h-1.18c-1.22 0-2.33-.54-3.1-1.45l-2.82-3.34a1.12 1.12 0 0 1 .02-1.52 1.13 1.13 0 0 1 1.58.02l1.37 1.32" />
+      </svg>
+    );
+  }
+  return (
+    <svg className="codex-approval-icon" viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M10 2.7 15.2 4.6v4.15c0 3.42-2.05 6.02-5.2 8.25-3.15-2.23-5.2-4.83-5.2-8.25V4.6L10 2.7Z" />
+      {value === 'auto-edit' ? (
+        <>
+          <path d="M7.3 8.1 9.05 10 7.3 11.9" />
+          <path d="M10.25 12.05h2.55" />
+        </>
+      ) : (
+        <>
+          <path d="M10 6.75v4.15" />
+          <path d="M10 13.25h.01" />
+        </>
+      )}
+    </svg>
+  );
+}
+
 // fence 없는 mermaid 블록을 ```mermaid 로 감싸기
 function autoFenceMermaid(md: string): string {
   const lines = md.split('\n');
@@ -426,6 +463,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const activeRequestIdRef = useRef<string | null>(null);
   // requestId → historyId 매핑. 비활성 대화의 stream 도 해당 history 항목에 계속 반영하기 위함.
   const requestToHistoryRef = useRef<Map<string, string>>(new Map());
+  const requestToAgentRef = useRef<Map<string, AgentType>>(new Map());
   // activeHistoryId 의 ref 미러 — stream listener 가 stale closure 없이 즉시 현재값 사용
   const activeHistoryIdRef = useRef<string | null>(null);
   // 메시지/툴 호출 순서 카운터 — 둘을 발생 순서대로 인터리브 렌더링
@@ -468,9 +506,10 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   // Gemini: --yolo 온/오프 (기본 true)
   const [geminiYolo, setGeminiYolo] = useState<boolean>(true);
   // Codex: approval policy
-  const [codexApprovalPolicy, setCodexApprovalPolicy] = useState<'suggest' | 'auto-edit' | 'full-auto'>('full-auto');
+  const [codexApprovalPolicy, setCodexApprovalPolicy] = useState<CodexApprovalPolicy>('full-auto');
+  const [codexApprovalMenuOpen, setCodexApprovalMenuOpen] = useState(false);
   // 에이전트별 설정 메모리 (탭 전환 시 복원)
-  type AgentSettings = { model: string; effort: string; permissionMode: 'bypassPermissions' | 'acceptEdits' | 'plan' | 'default'; perToolApproval: boolean; geminiYolo: boolean; codexApprovalPolicy: 'suggest' | 'auto-edit' | 'full-auto' };
+  type AgentSettings = { model: string; effort: string; permissionMode: 'bypassPermissions' | 'acceptEdits' | 'plan' | 'default'; perToolApproval: boolean; geminiYolo: boolean; codexApprovalPolicy: CodexApprovalPolicy };
   const agentSettingsMemory = useRef<Partial<Record<AgentType, AgentSettings>>>({});
   // 동적 모델 목록 (Anthropic /v1/models)
   type AnthropicModel = { id: string; display_name: string; max_input_tokens?: number; capabilities?: any };
@@ -505,7 +544,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     }
   }, [permissionMode]);
   // 모델 선택 — 에이전트별 기본 모델
-  const defaultModelFor = (a: AgentType) => a === 'gemini' ? 'gemini-2.5-flash' : a === 'codex' ? 'o3' : 'opus';
+  const defaultModelFor = (a: AgentType) => a === 'gemini' ? 'gemini-2.5-flash' : a === 'codex' ? 'gpt-5.5' : 'opus';
   const [model, setModelRaw] = useState<string>(defaultModelFor(aiAgent));
   const saveCurrentAgentSettings = () => {
     agentSettingsMemory.current[currentAgentRef.current] = {
@@ -561,7 +600,15 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   }, []);
   const currentAsstIdRef = useRef<string | null>(null);
 
-  // setActiveHistoryId wrapper — ref 도 즉시 동기화 (stream listener race 방지)
+  const scrollChatToBottom = useCallback((delay = 0) => {
+    const run = () => {
+      if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    };
+    if (delay > 0) setTimeout(run, delay);
+    else requestAnimationFrame(run);
+  }, []);
+
+  // setActiveHistoryId wrapper – ref 도 즉시 동기화 (stream listener race 방지)
   const setActiveHist = useCallback((id: string | null) => {
     activeHistoryIdRef.current = id;
     setActiveHistoryId(id);
@@ -617,6 +664,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       // requestId → historyId 매핑으로 어느 대화에 속하는 이벤트인지 판별
       const targetHistoryId = reqId ? requestToHistoryRef.current.get(reqId) : null;
       if (!targetHistoryId) return; // 추적 불가 이벤트 무시
+      const streamAgent = (reqId ? requestToAgentRef.current.get(reqId) : null) || currentAgentRef.current;
       const msg = p.message;
       const isActive = targetHistoryId === activeHistoryIdRef.current;
       // 비활성 대화의 stream — chatHistory 만 직접 갱신 (사용자가 돌아왔을 때 메시지 + streaming 상태 보존)
@@ -636,7 +684,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             if (texts) {
               const ex = newMsgs.find(m => m.id === msgId);
               newMsgs = ex ? newMsgs.map(m => m.id === msgId ? { ...m, content: texts } : m)
-                           : [...newMsgs, { role: 'assistant', content: texts, id: msgId, seq: nextSeq() }];
+                           : [...newMsgs, { role: 'assistant', content: texts, id: msgId, seq: nextSeq(), agent: streamAgent }];
             }
             for (const t of toolUses) {
               if (newTimeline.find(x => x.id === t.id)) continue;
@@ -673,7 +721,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           } else if (msg.type === 'result' || msg.type === 'done') {
             newStreaming = false;
           } else if (msg.type === 'error') {
-            newMsgs = [...newMsgs, { role: 'assistant', content: `❌ ${msg.text}`, id: `err-${Date.now()}`, seq: nextSeq() }];
+            newMsgs = [...newMsgs, { role: 'assistant', content: `❌ ${msg.text}`, id: `err-${Date.now()}`, seq: nextSeq(), agent: streamAgent }];
             newStreaming = false;
           }
           if (msg.type === 'result' || msg.type === 'done') {
@@ -684,7 +732,10 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           return { ...h, messages: newMsgs, toolTimeline: newTimeline, usage: newUsage, streaming: newStreaming, pendingRequestId: done ? null : h.pendingRequestId, claudeSessionId: newSessId, updatedAt: Date.now() };
         }));
         if (msg.type === 'result' || msg.type === 'done' || msg.type === 'error') {
-          if (reqId) requestToHistoryRef.current.delete(reqId);
+          if (reqId) {
+            requestToHistoryRef.current.delete(reqId);
+            requestToAgentRef.current.delete(reqId);
+          }
         }
         return;
       }
@@ -745,7 +796,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               return prev.map(m => m.id === msgId ? { ...m, content: texts } : m);
             }
             currentAsstIdRef.current = msgId;
-            return [...prev, { role: 'assistant', content: texts, id: msgId, seq: nextSeq(), agent: currentAgentRef.current }];
+            return [...prev, { role: 'assistant', content: texts, id: msgId, seq: nextSeq(), agent: streamAgent }];
           });
         } else if (thinkings.length > 0 && toolUses.length === 0) {
           setActivity(tt('thinking'));
@@ -778,17 +829,23 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         setActivity('');
         currentAsstIdRef.current = null;
         activeRequestIdRef.current = null;
-        if (reqId) requestToHistoryRef.current.delete(reqId);
+        if (reqId) {
+          requestToHistoryRef.current.delete(reqId);
+          requestToAgentRef.current.delete(reqId);
+        }
         // history 의 streaming/pendingRequestId 정리
         const aid = activeHistoryIdRef.current;
         if (aid) {
           setChatHistory(hList => hList.map(h => h.id === aid ? { ...h, streaming: false, pendingRequestId: null } : h));
         }
       } else if (msg.type === 'error') {
-        setMessages(prev => [...prev, { role: 'assistant', content: `❌ ${msg.text}`, id: `err-${Date.now()}`, seq: nextSeq(), agent: currentAgentRef.current }]);
+        setMessages(prev => [...prev, { role: 'assistant', content: `❌ ${msg.text}`, id: `err-${Date.now()}`, seq: nextSeq(), agent: streamAgent }]);
         setStreaming(false);
         activeRequestIdRef.current = null;
-        if (reqId) requestToHistoryRef.current.delete(reqId);
+        if (reqId) {
+          requestToHistoryRef.current.delete(reqId);
+          requestToAgentRef.current.delete(reqId);
+        }
         const aid = activeHistoryIdRef.current;
         if (aid) {
           setChatHistory(hList => hList.map(h => h.id === aid ? { ...h, streaming: false, pendingRequestId: null } : h));
@@ -799,7 +856,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           if (asstId) return prev.map(m => m.id === asstId ? { ...m, content: m.content + msg.text } : m);
           const newId = `asst-${Date.now()}`;
           currentAsstIdRef.current = newId;
-          return [...prev, { role: 'assistant', content: msg.text, id: newId, seq: nextSeq(), agent: currentAgentRef.current }];
+          return [...prev, { role: 'assistant', content: msg.text, id: newId, seq: nextSeq(), agent: streamAgent }];
         });
       }
     });
@@ -832,14 +889,16 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   useEffect(() => {
     if (installed && messages.length > 0) {
       // mount 직후엔 scrollHeight 가 계산 안 됐을 수 있어 약간의 지연 + 비-smooth 스크롤
-      requestAnimationFrame(() => {
-        if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-      });
-      setTimeout(() => {
-        if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-      }, 50);
+      scrollChatToBottom();
+      scrollChatToBottom(50);
     }
-  }, [installed]);
+  }, [installed, scrollChatToBottom]);
+
+  useEffect(() => {
+    if (!activeHistoryId || messages.length === 0) return;
+    scrollChatToBottom();
+    scrollChatToBottom(80);
+  }, [activeHistoryId, messages.length, scrollChatToBottom]);
 
   // Mermaid 다이어그램 렌더링 — messages 변경 / pendingPlan 시 미렌더 mermaid 코드블록을 SVG 로 변환
   useEffect(() => {
@@ -849,7 +908,12 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     document.querySelectorAll<HTMLElement>('.claude-chat-plan-body').forEach(el => roots.push(el));
     const codeBlocks: HTMLElement[] = [];
     for (const r of roots) {
-      r.querySelectorAll<HTMLElement>('code.language-mermaid:not([data-mermaid-rendered])').forEach(el => codeBlocks.push(el));
+      r.querySelectorAll<HTMLElement>('pre > code:not([data-mermaid-rendered])').forEach(el => {
+        const source = (el.textContent || '').trim();
+        if (el.classList.contains('language-mermaid') || MERMAID_START_RE.test(source)) {
+          codeBlocks.push(el);
+        }
+      });
     }
     if (codeBlocks.length === 0) return;
     // body 직속 stale mermaid element 청소 (이전 렌더 실패가 남긴 것)
@@ -1038,7 +1102,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         }
       }
     })();
-  }, [messages, toolTimeline, pendingPlan]);
+  }, [messages, toolTimeline, pendingPlan, currentAgent, activeHistoryId, installed]);
 
   // 메시지/세션ID 변경 시 활성 이력 항목에 동기화
   // 단, 활성 이력이 막 전환되었을 때(loadHistory 직후) 의 첫 실행은 스킵 — 그렇지 않으면
@@ -1202,7 +1266,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
 
     // 0.7) 포크/리로드된 대화 — 이전 메시지가 있으면 컨텍스트로 inject.
     // Claude: --resume 없이 새 세션이면 주입. Gemini/Codex: 항상 주입 (세션 개념 없음).
-    if ((currentAgentRef.current !== 'claude' || !claudeSessionIdRef.current) && messages.length > 0) {
+    if (messages.length > 0) {
       // 메시지와 툴 호출을 seq 순으로 인터리브
       type TItem = { seq: number; kind: 'msg'; m: Message } | { seq: number; kind: 'tool'; t: ToolTimelineItem };
       const items: TItem[] = [
@@ -1295,6 +1359,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     }
     // requestId → historyId 매핑 등록 (활성 전환 후에도 stream 이 정확한 history 에 도달하도록)
     requestToHistoryRef.current.set(requestId, targetHid);
+    requestToAgentRef.current.set(requestId, currentAgentRef.current);
     setMessages(prev => [...prev, userMsg]);
     setInput('');
     setStreaming(true);
@@ -1312,7 +1377,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       if (currentAgentRef.current === 'gemini') {
         await (window as any).api?.geminiSend?.(sessionId, prompt, requestId, model, geminiYolo);
       } else if (currentAgentRef.current === 'codex') {
-        await (window as any).api?.codexSend?.(sessionId, prompt, requestId, model, codexApprovalPolicy);
+        await (window as any).api?.codexSend?.(sessionId, prompt, requestId, model, codexApprovalPolicy, effort);
       } else {
         const disallowBash = !!sshTermId;
         const resumeSessionId = claudeSessionIdRef.current;
@@ -1369,16 +1434,20 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const stop = () => {
     // 명시적 중단 — 활성 대화의 프로세스만 죽임
     const reqId = activeRequestIdRef.current;
+    const reqAgent = (reqId ? requestToAgentRef.current.get(reqId) : null) || currentAgentRef.current;
     try {
-      if (currentAgentRef.current === 'gemini') {
+      if (reqAgent === 'gemini') {
         (window as any).api?.geminiStop?.(sessionId, reqId || undefined);
-      } else if (currentAgentRef.current === 'codex') {
+      } else if (reqAgent === 'codex') {
         (window as any).api?.codexStop?.(sessionId, reqId || undefined);
       } else {
         (window as any).api?.claudeStop?.(sessionId, reqId || undefined);
       }
     } catch {}
-    if (reqId) requestToHistoryRef.current.delete(reqId);
+    if (reqId) {
+      requestToHistoryRef.current.delete(reqId);
+      requestToAgentRef.current.delete(reqId);
+    }
     activeRequestIdRef.current = null;
     setStreaming(false);
     setActivity('');
@@ -1443,16 +1512,18 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     // 삭제 대상 history 의 진행 중 프로세스 종료 + 매핑 정리
     for (const [reqId, hid] of Array.from(requestToHistoryRef.current.entries())) {
       if (hid === id) {
+        const reqAgent = requestToAgentRef.current.get(reqId) || currentAgentRef.current;
         try {
-          if (currentAgent === 'gemini') {
+          if (reqAgent === 'gemini') {
             (window as any).api?.geminiStop?.(sessionId, reqId);
-          } else if (currentAgent === 'codex') {
+          } else if (reqAgent === 'codex') {
             (window as any).api?.codexStop?.(sessionId, reqId);
           } else {
             (window as any).api?.claudeStop?.(sessionId, reqId);
           }
         } catch {}
         requestToHistoryRef.current.delete(reqId);
+        requestToAgentRef.current.delete(reqId);
       }
     }
     setChatHistory(h => h.filter(x => x.id !== id));
@@ -1486,11 +1557,12 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     if (streaming) {
       pendingApprovalSendRef.current = text;
       const reqId = activeRequestIdRef.current;
+      const reqAgent = (reqId ? requestToAgentRef.current.get(reqId) : null) || currentAgentRef.current;
       if (reqId) {
         try {
-          if (currentAgent === 'gemini') {
+          if (reqAgent === 'gemini') {
             (window as any).api?.geminiStop?.(sessionId, reqId);
-          } else if (currentAgent === 'codex') {
+          } else if (reqAgent === 'codex') {
             (window as any).api?.codexStop?.(sessionId, reqId);
           } else {
             (window as any).api?.claudeStop?.(sessionId, reqId);
@@ -1656,6 +1728,13 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const runPaletteAction = (a: PaletteAction) => {
     a.run();
     setCommandMenuOpen(false);
+  };
+
+  const selectedCodexApproval = CODEX_APPROVAL_ITEMS.find(item => item.value === codexApprovalPolicy) || CODEX_APPROVAL_ITEMS[2];
+  const setCodexApproval = (next: CodexApprovalPolicy) => {
+    setCodexApprovalPolicy(next);
+    setPerToolApproval(next === 'suggest');
+    setCodexApprovalMenuOpen(false);
   };
 
   if (installed === null) {
@@ -2435,15 +2514,65 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               </select>
               <select
                 className="claude-chat-perm-select"
-                style={{ marginLeft: 'auto' }}
-                value={codexApprovalPolicy}
-                onChange={e => setCodexApprovalPolicy(e.target.value as 'suggest' | 'auto-edit' | 'full-auto')}
-                title={tt('codexApprovalTitle')}
+                value={effort}
+                onChange={e => setEffort(e.target.value)}
+                title="추론 강도"
               >
-                <option value="suggest">{tt('codexApproval.suggest')}</option>
-                <option value="auto-edit">{tt('codexApproval.autoEdit')}</option>
-                <option value="full-auto">{tt('codexApproval.fullAuto')}</option>
+                <option value="low">낮음</option>
+                <option value="medium">중간</option>
+                <option value="high">높음</option>
+                <option value="max">매우 높음</option>
               </select>
+              <label className="claude-chat-tool-approval-label" title="도구 실행마다 승인 요청">
+                <input
+                  type="checkbox"
+                  checked={codexApprovalPolicy === 'suggest'}
+                  onChange={e => {
+                    setCodexApproval(e.target.checked ? 'suggest' : 'full-auto');
+                  }}
+                />
+                툴별 승인
+              </label>
+              <div
+                className="codex-approval-menu-wrap"
+                onBlur={e => {
+                  if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                    setCodexApprovalMenuOpen(false);
+                  }
+                }}
+              >
+                <button
+                  type="button"
+                  className={`codex-approval-menu-btn ${codexApprovalPolicy}`}
+                  onClick={() => setCodexApprovalMenuOpen(open => !open)}
+                  title={tt('codexApprovalTitle')}
+                  aria-haspopup="listbox"
+                  aria-expanded={codexApprovalMenuOpen}
+                >
+                  <CodexApprovalIcon value={selectedCodexApproval.value} />
+                  <span>{selectedCodexApproval.label}</span>
+                  <span className="codex-approval-caret">▾</span>
+                </button>
+                {codexApprovalMenuOpen && (
+                  <div className="codex-approval-menu" role="listbox">
+                    {CODEX_APPROVAL_ITEMS.map(item => (
+                      <button
+                        key={item.value}
+                        type="button"
+                        className={`codex-approval-menu-item ${item.value === codexApprovalPolicy ? 'active' : ''}`}
+                        onMouseDown={e => e.preventDefault()}
+                        onClick={() => setCodexApproval(item.value)}
+                        role="option"
+                        aria-selected={item.value === codexApprovalPolicy}
+                      >
+                        <CodexApprovalIcon value={item.value} />
+                        <span>{item.label}</span>
+                        {item.value === codexApprovalPolicy && <span className="codex-approval-check">✓</span>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </>
           ) : (
             <>

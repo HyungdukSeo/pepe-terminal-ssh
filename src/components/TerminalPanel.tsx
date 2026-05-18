@@ -3295,9 +3295,9 @@ export const TerminalPanel: React.FC<Props> = ({
             { label: t('menu.renameTab'), onClick: () => { setRenamingTermId(miniCtx.termId); setRenameValue(miniCtx.name); } },
             { label: t('menu.editSession'), onClick: () => {
               const info = termSessionMap.get(miniCtx.termId);
-              if (info?.sessionId) {
+              if (info?.sessionId || info?.quickSession) {
                 // 전역 이벤트로 App.tsx 가 SessionEditor 모달 띄우도록
-                window.dispatchEvent(new CustomEvent('open-session-editor', { detail: { sessionId: info.sessionId, termId: miniCtx.termId } }));
+                window.dispatchEvent(new CustomEvent('open-session-editor', { detail: { sessionId: info.sessionId, quickSession: info.quickSession, sessionName: info.sessionName, termId: miniCtx.termId } }));
               }
             } },
             { label: t('menu.duplicateSession'), onClick: () => { onDuplicateSession?.(nodeId, miniCtx.termId); } },
@@ -3451,8 +3451,8 @@ export const TerminalPanel: React.FC<Props> = ({
             }},
             { label: t('menu.editSessionDots'), onClick: () => {
               const info = termSessionMap.get(activeTermId);
-              if (info?.sessionId) {
-                window.dispatchEvent(new CustomEvent('open-session-editor', { detail: { sessionId: info.sessionId, termId: activeTermId } }));
+              if (info?.sessionId || info?.quickSession) {
+                window.dispatchEvent(new CustomEvent('open-session-editor', { detail: { sessionId: info.sessionId, quickSession: info.quickSession, sessionName: info.sessionName, termId: activeTermId } }));
               }
             }},
           ]}

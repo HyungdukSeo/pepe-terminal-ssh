@@ -1912,6 +1912,7 @@ body.popout-options .session-editor h3:first-child {
   max-height: 80px;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;  /* vertical 모드에서 ellipsis 동작하려면 nowrap 필요 */
 }
 
 /* ── Terminal layout wrap ── */
@@ -4875,6 +4876,107 @@ body.popout-options .session-editor h3:first-child {
   padding: 3px 4px;
   font-size: 11px;
   max-width: 160px;
+}
+.claude-chat-perm-select.codex-approval-select {
+  font-weight: 600;
+  min-width: 96px;
+}
+.claude-chat-perm-select.codex-approval-select.suggest {
+  background: #10243f;
+  border-color: #4f8bd6;
+  color: #d9ecff;
+}
+.claude-chat-perm-select.codex-approval-select.auto-edit {
+  background: #1f2a17;
+  border-color: #7aa95a;
+  color: #e2f5d4;
+}
+.claude-chat-perm-select.codex-approval-select.full-auto {
+  background: #352014;
+  border-color: #d08b45;
+  color: #ffe0bd;
+}
+.codex-approval-menu-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.codex-approval-menu-btn {
+  height: 25px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: #0a1825;
+  color: #d8e7ff;
+  border: 1px solid #3a5075;
+  border-radius: 4px;
+  padding: 3px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.codex-approval-menu-btn.suggest {
+  background: #10243f;
+  border-color: #4f8bd6;
+  color: #d9ecff;
+}
+.codex-approval-menu-btn.auto-edit {
+  background: #1f2a17;
+  border-color: #7aa95a;
+  color: #e2f5d4;
+}
+.codex-approval-menu-btn.full-auto {
+  background: #352014;
+  border-color: #d08b45;
+  color: #ffe0bd;
+}
+.codex-approval-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.45;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.codex-approval-caret {
+  margin-left: 2px;
+  font-size: 10px;
+  opacity: 0.85;
+}
+.codex-approval-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 4px);
+  z-index: 1200;
+  min-width: 116px;
+  padding: 4px;
+  background: #0f1724;
+  border: 1px solid #354764;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.codex-approval-menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #d8e7ff;
+  padding: 5px 7px;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.codex-approval-menu-item:hover,
+.codex-approval-menu-item.active {
+  background: #22344f;
+}
+.codex-approval-check {
+  margin-left: auto;
+  color: #9fd0ff;
 }
 .claude-chat-tool-approval-label {
   display: inline-flex;
