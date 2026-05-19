@@ -33,10 +33,40 @@ contextBridge.exposeInMainWorld('api', {
   feGetFileIconsBatch: (filePaths: string[]) => ipcRenderer.invoke('fe:get-file-icons-batch', { filePaths }),
   feGetIconsByExt: (exts: string[], isDir?: boolean) => ipcRenderer.invoke('fe:get-icons-by-ext', { exts, isDir }),
   feGetHome: () => ipcRenderer.invoke('fe:get-home'),
-  feTransfer: (src: any, dst: any, filename: string) => ipcRenderer.invoke('fe:transfer', { src, dst, filename }),
+  feTransfer: (src: any, dst: any, filename: string, workspaceId?: string) => ipcRenderer.invoke('fe:transfer', { src, dst, filename, workspaceId }),
+  onFeTransferDone: (cb: (p: any) => void) => {
+    const handler = (_: any, p: any) => cb(p);
+    ipcRenderer.on('fe:transfer-done', handler);
+    return () => ipcRenderer.removeListener('fe:transfer-done', handler);
+  },
+  onFeDeleteDone: (cb: (p: any) => void) => {
+    const handler = (_: any, p: any) => cb(p);
+    ipcRenderer.on('fe:delete-done', handler);
+    return () => ipcRenderer.removeListener('fe:delete-done', handler);
+  },
+  onSFTPDirList: (cb: (p: any) => void) => {
+    const handler = (_: any, p: any) => cb(p);
+    ipcRenderer.on('sftp:dir-list', handler);
+    return () => ipcRenderer.removeListener('sftp:dir-list', handler);
+  },
+  onSFTPDeleteStart: (cb: (p: any) => void) => {
+    const handler = (_: any, p: any) => cb(p);
+    ipcRenderer.on('sftp:delete-start', handler);
+    return () => ipcRenderer.removeListener('sftp:delete-start', handler);
+  },
+  onSFTPDeleteProgress: (cb: (p: any) => void) => {
+    const handler = (_: any, p: any) => cb(p);
+    ipcRenderer.on('sftp:delete-progress', handler);
+    return () => ipcRenderer.removeListener('sftp:delete-progress', handler);
+  },
+  onSFTPDeleteComplete: (cb: (p: any) => void) => {
+    const handler = (_: any, p: any) => cb(p);
+    ipcRenderer.on('sftp:delete-complete', handler);
+    return () => ipcRenderer.removeListener('sftp:delete-complete', handler);
+  },
   feMkdir: (mode: string, dirPath: string, termId?: string) => ipcRenderer.invoke('fe:mkdir', { mode, termId, dirPath }),
   feCreateFile: (mode: string, filePath: string, termId?: string) => ipcRenderer.invoke('fe:create-file', { mode, termId, filePath }),
-  feDelete: (mode: string, filePath: string, termId?: string) => ipcRenderer.invoke('fe:delete', { mode, termId, filePath }),
+  feDelete: (mode: string, filePath: string, termId?: string, workspaceId?: string) => ipcRenderer.invoke('fe:delete', { mode, termId, filePath, workspaceId }),
   feRename: (mode: string, oldPath: string, newPath: string, termId?: string) => ipcRenderer.invoke('fe:rename', { mode, termId, oldPath, newPath }),
   feHomeDir: (mode: string, termId?: string) => ipcRenderer.invoke('fe:home-dir', { mode, termId }),
   feSftpConnect: (connId: string, host: string, port: number, username: string, auth?: any, jumpOpts?: { host: string; user?: string; port?: number; password?: string }) => ipcRenderer.invoke('fe:sftp-connect', { connId, host, port, username, auth, jumpOpts }),
@@ -73,6 +103,11 @@ contextBridge.exposeInMainWorld('api', {
     const handler = (_: any, p: any) => cb(p);
     ipcRenderer.on('sftp:file-start', handler);
     return () => ipcRenderer.removeListener('sftp:file-start', handler);
+  },
+  onSFTPBatch: (cb: (batch: Array<{ channel: string; payload: any }>) => void) => {
+    const handler = (_: any, batch: any) => cb(batch);
+    ipcRenderer.on('sftp:batch', handler);
+    return () => ipcRenderer.removeListener('sftp:batch', handler);
   },
   onSFTPError: (cb: (p: any) => void) => {
     const handler = (_: any, p: any) => cb(p);

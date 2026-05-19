@@ -181,6 +181,24 @@ app.whenReady().then(() => {
   createWindow();
   installX11DisplayHook();
 
+  // ── SFTP 고빈도 이벤트 배치 버퍼 ──────────────────────────────────────────
+  // file-start / dir-list / complete / progress 를 setImmediate 로 묶어
+  // webContents.send 호출 횟수를 최소화 → 터미널 I/O 이벤트 우선 처리 보장.
+  // (setImmediate 는 Node 이벤트루프 "check" 단계 실행 — I/O poll 이후이므로
+  //  SSH 소켓 수신 데이터가 먼저 처리된 뒤 IPC 전송이 일어남)
+  const sftpBatchBuf: Array<{ channel: string; payload: any }> = [];
+  let sftpBatchScheduled = false;
+  function flushSftpBatch() {
+    sftpBatchScheduled = false;
+    if (!sftpBatchBuf.length || !mainWindow) return;
+    const batch = sftpBatchBuf.splice(0);
+    mainWindow.webContents.send('sftp:batch', batch);
+  }
+  function queueSftpEvent(channel: string, payload: any) {
+    sftpBatchBuf.push({ channel, payload });
+    if (!sftpBatchScheduled) { sftpBatchScheduled = true; setImmediate(flushSftpBatch); }
+  }
+
   const bridge = getSSHBridge();
   bridge.onMessage((msg) => {
     if (!mainWindow) return;
@@ -207,21 +225,30 @@ app.whenReady().then(() => {
         mainWindow.webContents.send('ssh:auth-prompt', { panelId: msg.panelId, prompts: msg.prompts });
         break;
       case 'sftp-progress':
-        mainWindow.webContents.send('sftp:progress', { panelId: msg.panelId, data: msg.data });
+        // progress 는 고빈도 — 배치로 묶어 전송
+        queueSftpEvent('sftp:progress', { panelId: msg.panelId, data: msg.data });
         break;
       case 'sftp-complete':
-        mainWindow.webContents.send('sftp:complete', { panelId: msg.panelId, data: msg.data });
+        // complete 는 고빈도 — 배치로 묶어 전송
+        queueSftpEvent('sftp:complete', { panelId: msg.panelId, data: msg.data });
         break;
       case 'sftp-error':
         mainWindow.webContents.send('sftp:error', { panelId: msg.panelId, error: msg.error, data: (msg as any).data });
         break;
       case 'sftp-transfer-start':
+        // 전송 시작은 즉시 — UI 에 즉각 표시
         mainWindow.webContents.send('sftp:transfer-start', { panelId: msg.panelId, data: msg.data });
         break;
       case 'sftp-file-start':
-        mainWindow.webContents.send('sftp:file-start', { panelId: msg.panelId, data: msg.data });
+        // file-start 는 고빈도 — 배치로 묶어 전송
+        queueSftpEvent('sftp:file-start', { panelId: msg.panelId, data: msg.data });
+        break;
+      case 'sftp-dir-list':
+        // dir-list 는 고빈도 — 배치로 묶어 전송
+        queueSftpEvent('sftp:dir-list', { panelId: msg.panelId, data: msg.data });
         break;
       case 'sftp-conflict':
+        // conflict 는 즉시 — 사용자 응답 대기
         mainWindow.webContents.send('sftp:conflict', { panelId: msg.panelId, data: msg.data });
         break;
       case 'auto-track':
@@ -230,6 +257,16 @@ app.whenReady().then(() => {
       case 'x11-log':
         // x11 관련 로그를 renderer 콘솔로 — DevTools 에서 확인
         mainWindow.webContents.executeJavaScript(`console.log('[X11]', ${JSON.stringify(msg.data)})`).catch(() => {});
+        break;
+      case 'sftp-delete-start':
+        mainWindow.webContents.send('sftp:delete-start', { panelId: msg.panelId, data: msg.data });
+        break;
+      case 'sftp-delete-progress':
+        // delete-progress 고빈도 — 배치로 묶어 전송
+        queueSftpEvent('sftp:delete-progress', { panelId: msg.panelId, data: msg.data });
+        break;
+      case 'sftp-delete-complete':
+        mainWindow.webContents.send('sftp:delete-complete', { panelId: msg.panelId, data: msg.data });
         break;
     }
   });
@@ -2332,12 +2369,15 @@ ipcMain.handle('fe:get-home', () => {
   return require('os').homedir();
 });
 
-ipcMain.handle('fe:transfer', async (_e, { src, dst, filename }: any) => {
-  try {
-    const bridge = getSSHBridge();
-    await bridge.handleTransfer(src, dst, filename);
-    return { success: true };
-  } catch (err: any) { return { success: false, error: String(err) }; }
+// 파일 전송 — 백그라운드 실행하여 IPC 채널 즉시 해제 (progress 이벤트 실시간 수신 가능)
+let _feTransferSeq = 0;
+ipcMain.handle('fe:transfer', (_e, { src, dst, filename, workspaceId }: any) => {
+  const seq = ++_feTransferSeq;
+  const bridge = getSSHBridge();
+  bridge.handleTransfer(src, dst, filename, undefined, workspaceId)
+    .then(() => mainWindow?.webContents.send('fe:transfer-done', { seq, success: true }))
+    .catch((err: any) => mainWindow?.webContents.send('fe:transfer-done', { seq, success: false, error: String(err) }));
+  return { seq }; // 즉시 반환 — 완료는 fe:transfer-done 이벤트로 수신
 });
 
 ipcMain.handle('fe:resolve-conflict', (_e, { requestId, decision }: any) => {
@@ -2425,13 +2465,13 @@ ipcMain.handle('fe:create-file', async (_e, { mode, termId, filePath }: any) => 
   } catch (err: any) { return { success: false, error: String(err?.message || err) }; }
 });
 
-ipcMain.handle('fe:delete', async (_e, { mode, termId, filePath }: any) => {
-  try {
-    const bridge = getSSHBridge();
-    if (mode === 'local') await bridge.handleLocalDelete(filePath);
-    else await bridge.handleSFTPDelete(termId, filePath);
-    return { success: true };
-  } catch (err: any) { return { success: false, error: String(err) }; }
+ipcMain.handle('fe:delete', (_e, { mode, termId, filePath, workspaceId }: any) => {
+  const deleteId = `del-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const bridge = getSSHBridge();
+  bridge.handleDeleteWithProgress(deleteId, mode, termId, filePath, workspaceId)
+    .then(() => mainWindow?.webContents.send('fe:delete-done', { deleteId, success: true }))
+    .catch((err: any) => mainWindow?.webContents.send('fe:delete-done', { deleteId, success: false, error: String(err) }));
+  return { deleteId };
 });
 
 ipcMain.handle('fe:rename', async (_e, { mode, termId, oldPath, newPath }: any) => {

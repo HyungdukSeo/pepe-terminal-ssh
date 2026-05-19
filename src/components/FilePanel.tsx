@@ -56,6 +56,7 @@ type Props = {
   onDisconnect?: () => void;
   panelId: string;
   refreshKey?: number;
+  workspaceId?: string;
 };
 
 const api = (window as any).api || {};
@@ -163,7 +164,7 @@ function getFileIcon(name: string, isDir: boolean, shellPath?: string): string {
   return '📁';
 }
 
-export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, selectedFiles, onSelectionChange, currentPath, onPathChange, onFileDrop, onDisconnect, panelId, refreshKey }) => {
+export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, selectedFiles, onSelectionChange, currentPath, onPathChange, onFileDrop, onDisconnect, panelId, refreshKey, workspaceId }) => {
   const { t } = useTranslation('fileExplorer');
   const [files, setFiles] = useState<FileInfo[]>([]);
   const [loading, setLoading] = useState(false);
@@ -638,17 +639,32 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
     setDeleteConfirm(null);
     try {
       const keyMap = new Map(files.map(f => [fileKey(f), f]));
+      const pendingDeleteIds = new Set<string>();
       for (const k of targets) {
         const info = keyMap.get(k);
         const name = info?.name || k;
         const filePath = info?.realPath
           ? info.realPath
           : (currentPath.endsWith(sep) ? currentPath + name : currentPath + sep + name);
-        await api.feDelete?.(source.mode, filePath, source.termId);
+        const result = await api.feDelete?.(source.mode, filePath, source.termId, workspaceId);
+        if (result?.deleteId) pendingDeleteIds.add(result.deleteId);
       }
       onSelectionChange(new Set());
+      // 모든 삭제 완료 후 목록 갱신
+      if (pendingDeleteIds.size > 0) {
+        await new Promise<void>(resolve => {
+          let remaining = pendingDeleteIds.size;
+          const unsub = api.onFeDeleteDone?.((p: any) => {
+            if (pendingDeleteIds.has(p.deleteId)) {
+              remaining--;
+              if (remaining <= 0) { unsub?.(); resolve(); }
+            }
+          });
+          if (!unsub) resolve();
+        });
+      }
       loadDir(currentPath);
-    } catch {}
+    } catch { loadDir(currentPath); }
   };
 
   const handleCopyToClipboard = (key: string) => {
@@ -1239,6 +1255,7 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
                     doRename(file.name, v);
                   }}
                   onClick={e => e.stopPropagation()}
+                  onDoubleClick={e => e.stopPropagation()}
                   onMouseDown={e => e.stopPropagation()}
                 />
               ) : (

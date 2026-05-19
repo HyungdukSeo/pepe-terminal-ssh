@@ -14,6 +14,8 @@ type Props = {
 };
 
 export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
+  // 이 FileExplorer 인스턴스의 고유 ID — 전송 이벤트 필터링에 사용
+  const workspaceIdRef = React.useRef(`fe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
   const { t } = useTranslation('fileExplorer');
   const localLabel = t('local');
   const [sources, setSources] = useState<PanelSource[]>([{ mode: 'local', label: localLabel }]);
@@ -410,6 +412,19 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
     setSftpHost(''); setSftpPort(22); setSftpUser(''); setSftpPass('');
   };
 
+  // feTransfer는 즉시 반환 + fe:transfer-done 이벤트로 완료 통보 → IPC 채널 해제로 progress 이벤트 실시간 수신
+  const doTransfer = (src: any, dst: any, name: string): Promise<{ success: boolean; error?: string }> =>
+    new Promise(resolve => {
+      api.feTransfer?.(src, dst, name, workspaceIdRef.current).then((result: any) => {
+        const seq: number = result?.seq;
+        if (seq == null) { resolve({ success: result?.success ?? true }); return; }
+        const unsub = api.onFeTransferDone?.((p: any) => {
+          if (p.seq === seq) { unsub?.(); resolve(p); }
+        });
+        if (!unsub) resolve({ success: true });
+      }).catch((err: any) => resolve({ success: false, error: String(err) }));
+    });
+
   const transferFiles = async (direction: 'left-to-right' | 'right-to-left') => {
     const srcSource = direction === 'left-to-right' ? leftSource : rightSource;
     const dstSource = direction === 'left-to-right' ? rightSource : leftSource;
@@ -425,18 +440,12 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
     for (const name of selected) {
       const srcFull = srcPath.endsWith(srcSep) ? srcPath + name : srcPath + srcSep + name;
       const dstFull = dstPath.endsWith(dstSep) ? dstPath + name : dstPath + dstSep + name;
-      try {
-        const result = await api.feTransfer?.(
-          { mode: srcSource.mode, termId: srcSource.termId, path: srcFull },
-          { mode: dstSource.mode, termId: dstSource.termId, path: dstFull },
-          name,
-        );
-        if (result && !result.success) {
-          alert(t('transferFail', { name, err: result.error }));
-        }
-      } catch (err: any) {
-        alert(t('transferFail', { name, err }));
-      }
+      const result = await doTransfer(
+        { mode: srcSource.mode, termId: srcSource.termId, path: srcFull },
+        { mode: dstSource.mode, termId: dstSource.termId, path: dstFull },
+        name,
+      );
+      if (!result.success) alert(t('transferFail', { name, err: result.error }));
     }
 
     setTransferring(false);
@@ -453,15 +462,12 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
     for (const name of fileNames) {
       const srcFull = (srcPath || '').endsWith(srcSep) ? (srcPath || '') + name : (srcPath || '') + srcSep + name;
       const dstFull = dstPath.endsWith(dstSep) ? dstPath + name : dstPath + dstSep + name;
-      try {
-        await api.feTransfer?.(
-          { mode: srcMode, termId: srcTermId, path: srcFull },
-          { mode: dstSource.mode, termId: dstSource.termId, path: dstFull },
-          name,
-        );
-      } catch (err: any) {
-        alert(t('transferFail', { name, err }));
-      }
+      const result = await doTransfer(
+        { mode: srcMode, termId: srcTermId, path: srcFull },
+        { mode: dstSource.mode, termId: dstSource.termId, path: dstFull },
+        name,
+      );
+      if (!result.success) alert(t('transferFail', { name, err: result.error }));
     }
     setTransferring(false);
     setRefreshKey(k => k + 1);
@@ -496,6 +502,7 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
             currentPath={leftPath} onPathChange={setLeftPath}
             onFileDrop={(files, srcMode, srcTermId, srcPath) => handleFileDrop('left', files, srcMode, srcTermId, srcPath)}
             onDisconnect={() => handleDisconnect(leftSource)}
+            workspaceId={workspaceIdRef.current}
           />
         </div>
         <div className="fe-transfer-btns">
@@ -509,12 +516,13 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
             currentPath={rightPath} onPathChange={setRightPath}
             onFileDrop={(files, srcMode, srcTermId, srcPath) => handleFileDrop('right', files, srcMode, srcTermId, srcPath)}
             onDisconnect={() => handleDisconnect(rightSource)}
+            workspaceId={workspaceIdRef.current}
           />
         </div>
       </div>
       <div className="fe-transfers-resize" onMouseDown={onResizeStart} />
       <div className="fe-transfers" style={{ height: transfersHeight }}>
-        <TransferLog />
+        <TransferLog workspaceId={workspaceIdRef.current} />
       </div>
       {credPrompt && (
         <div className="session-editor-backdrop" onClick={() => setCredPrompt(null)}>

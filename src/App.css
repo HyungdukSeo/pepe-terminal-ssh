@@ -3441,9 +3441,12 @@ body.popout-options .session-editor h3:first-child {
     70px                    /* 남은 시간 */
     70px;                   /* 경과 시간 */
   align-items: center;
-  padding: 2px 6px;
+  height: 26px;             /* virtual scroll ROW_H 와 일치 — 가상화 핵심 */
+  padding: 0 6px;
   border-bottom: 1px solid #1d1f22;
   white-space: nowrap;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 .tl-row-group {
   background: rgba(43, 107, 155, 0.06);
@@ -3476,6 +3479,38 @@ body.popout-options .session-editor h3:first-child {
 }
 .tl-row-file.error {
   color: #f6a5a5;
+}
+.tl-row-subdir {
+  color: #9ab8d0;
+  font-style: italic;
+}
+.tl-row-subdir.done {
+  color: #607080;
+}
+.tl-row-delete {
+  background: rgba(180, 60, 60, 0.06);
+}
+.tl-row-delete.done {
+  background: rgba(80, 80, 80, 0.06);
+}
+.tl-row-delete.error {
+  background: rgba(200, 60, 60, 0.12);
+}
+.tl-bar-delete {
+  background: #c0392b !important;
+}
+.tl-row-delete.done .tl-bar-delete {
+  background: #666 !important;
+}
+.tl-delete-current {
+  font-size: 10px;
+  color: #a07070;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 120px;
+  display: inline-block;
+  vertical-align: middle;
 }
 .tl-col {
   padding: 0 4px;
