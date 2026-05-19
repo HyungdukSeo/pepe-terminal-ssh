@@ -51,6 +51,7 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
   const [credPrompt, setCredPrompt] = useState<{ sess: any; side: 'left' | 'right'; jumpOpts: any } | null>(null);
   const [credUser, setCredUser] = useState('');
   const [credPass, setCredPass] = useState('');
+  const [credShowPass, setCredShowPass] = useState(false);
   const [credConnecting, setCredConnecting] = useState(false);
   const credUserInputRef = useRef<HTMLInputElement>(null);
   const credModalRef = useRef<HTMLDivElement>(null);
@@ -283,6 +284,7 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
       setCredPrompt({ sess, side, jumpOpts });
       setCredUser(sess.username || '');
       setCredPass('');
+      setCredShowPass(false);
     };
     if (!hasCredential) {
       openCred();
@@ -530,14 +532,25 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
                 value={credUser}
                 onChange={e => setCredUser(e.target.value)}
               />
-              <input
-                className="cred-modal-input"
-                type="password"
-                placeholder="password"
-                value={credPass}
-                onChange={e => setCredPass(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') handleCredSubmit(); }}
-              />
+              <div className="cred-modal-pass-wrap">
+                <input
+                  className="cred-modal-input"
+                  type={credShowPass ? 'text' : 'password'}
+                  placeholder="password"
+                  value={credPass}
+                  onChange={e => setCredPass(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') handleCredSubmit(); }}
+                />
+                <button
+                  type="button"
+                  className="cred-modal-eye-btn"
+                  tabIndex={-1}
+                  onClick={() => setCredShowPass(v => !v)}
+                  title={credShowPass ? '숨기기' : '보이기'}
+                >
+                  {credShowPass ? '🙈' : '👁'}
+                </button>
+              </div>
             </div>
             <div className="cred-modal-actions">
               <button className="btn-cancel" onClick={() => setCredPrompt(null)}>{t('cancel')}</button>

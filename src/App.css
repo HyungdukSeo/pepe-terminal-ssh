@@ -6218,6 +6218,31 @@ body.popout-options .session-editor h3:first-child {
 }
 .cred-modal-input::placeholder { color: #555570; }
 .cred-modal-input:focus { border-color: #4a7ad8; }
+.cred-modal-pass-wrap {
+  position: relative;
+  display: block;
+  line-height: 0;
+}
+.cred-modal-pass-wrap .cred-modal-input {
+  display: block;
+  padding-right: 34px;
+}
+.cred-modal-eye-btn {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  background: transparent;
+  border: none;
+  color: #6060a0;
+  font-size: 15px;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+.cred-modal-eye-btn:hover { color: #a0a0d0; }
 .cred-modal-actions {
   display: flex;
   justify-content: flex-end;
@@ -6225,3 +6250,30 @@ body.popout-options .session-editor h3:first-child {
   padding: 10px 16px 14px;
   border-top: 1px solid #2a2a40;
 }
+
+/* ask-pwd 비밀번호 표시/숨기기 */
+.ask-pwd-pass-wrap {
+  position: relative;
+  display: block;
+  line-height: 0;
+}
+.ask-pwd-pass-wrap .save-pwd-input {
+  display: block;
+  padding-right: 34px;
+}
+.ask-pwd-eye-btn {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  background: transparent;
+  border: none;
+  color: #6060a0;
+  font-size: 15px;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+.ask-pwd-eye-btn:hover { color: #a0a0d0; }

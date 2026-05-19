@@ -410,7 +410,9 @@ function App() {
   const [remotePickerCredPrompt, setRemotePickerCredPrompt] = useState<{ sess: any; jumpOpts: any } | null>(null);
   const [remotePickerCredUser, setRemotePickerCredUser] = useState('');
   const [remotePickerCredPass, setRemotePickerCredPass] = useState('');
+  const [remotePickerCredShowPass, setRemotePickerCredShowPass] = useState(false);
   const [remotePickerCredConnecting, setRemotePickerCredConnecting] = useState(false);
+  const [askPwdShowPass, setAskPwdShowPass] = useState<Record<string, boolean>>({});
   const remotePickerCredUserRef = useRef<HTMLInputElement>(null);
   const remotePickerCredModalRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -488,6 +490,7 @@ function App() {
         setRemotePickerCredPrompt({ sess, jumpOpts });
         setRemotePickerCredUser(sess.username || '');
         setRemotePickerCredPass('');
+        setRemotePickerCredShowPass(false);
       };
       if (!hasCredential) {
         if (!cancelled) openRemoteCred();
@@ -4111,14 +4114,25 @@ function App() {
                 value={remotePickerCredUser}
                 onChange={e => setRemotePickerCredUser(e.target.value)}
               />
-              <input
-                className="cred-modal-input"
-                type="password"
-                placeholder="password"
-                value={remotePickerCredPass}
-                onChange={e => setRemotePickerCredPass(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') handleRemotePickerCredSubmit(); }}
-              />
+              <div className="cred-modal-pass-wrap">
+                <input
+                  className="cred-modal-input"
+                  type={remotePickerCredShowPass ? 'text' : 'password'}
+                  placeholder="password"
+                  value={remotePickerCredPass}
+                  onChange={e => setRemotePickerCredPass(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') handleRemotePickerCredSubmit(); }}
+                />
+                <button
+                  type="button"
+                  className="cred-modal-eye-btn"
+                  tabIndex={-1}
+                  onClick={() => setRemotePickerCredShowPass(v => !v)}
+                  title={remotePickerCredShowPass ? '숨기기' : '보이기'}
+                >
+                  {remotePickerCredShowPass ? '🙈' : '👁'}
+                </button>
+              </div>
             </div>
             <div className="cred-modal-actions">
               <button className="btn-cancel" onClick={() => setRemotePickerCredPrompt(null)}>취소</button>
@@ -4337,7 +4351,8 @@ function App() {
                     if (e.key === 'Enter') {
                       e.preventDefault();
                       // 다음 입력란(비밀번호)로 포커스 이동
-                      const next = (e.currentTarget.parentElement?.querySelector('input[type="password"]') as HTMLInputElement | null);
+                      const card = e.currentTarget.closest('.ask-pwd-card');
+                      const next = card?.querySelector<HTMLInputElement>('.ask-pwd-pass-wrap input');
                       next?.focus();
                     } else if (e.key === 'Escape') { e.preventDefault(); closeAskPwd(item.termId, null); }
                   }}
@@ -4345,18 +4360,29 @@ function App() {
                   style={{ letterSpacing: 'normal' }}
                 />
               )}
-              <input
-                type="password"
-                className="save-pwd-input ask-pwd-input"
-                autoFocus={!item.needUsername}
-                value={item.input}
-                onChange={e => updateAskPwdInput(item.termId, e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter') { e.preventDefault(); closeAskPwd(item.termId, item.input); }
-                  else if (e.key === 'Escape') { e.preventDefault(); closeAskPwd(item.termId, null); }
-                }}
-                placeholder="••••••••"
-              />
+              <div className="ask-pwd-pass-wrap">
+                <input
+                  type={askPwdShowPass[item.termId] ? 'text' : 'password'}
+                  className="save-pwd-input ask-pwd-input"
+                  autoFocus={!item.needUsername}
+                  value={item.input}
+                  onChange={e => updateAskPwdInput(item.termId, e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') { e.preventDefault(); closeAskPwd(item.termId, item.input); }
+                    else if (e.key === 'Escape') { e.preventDefault(); closeAskPwd(item.termId, null); }
+                  }}
+                  placeholder="••••••••"
+                />
+                <button
+                  type="button"
+                  className="ask-pwd-eye-btn"
+                  tabIndex={-1}
+                  onClick={() => setAskPwdShowPass(m => ({ ...m, [item.termId]: !m[item.termId] }))}
+                  title={askPwdShowPass[item.termId] ? '숨기기' : '보이기'}
+                >
+                  {askPwdShowPass[item.termId] ? '🙈' : '👁'}
+                </button>
+              </div>
               <div className="ask-pwd-actions">
                 <button onClick={() => closeAskPwd(item.termId, null)}>취소</button>
                 <button className="primary" onClick={() => closeAskPwd(item.termId, item.input)}>연결</button>
