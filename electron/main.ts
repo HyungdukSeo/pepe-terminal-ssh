@@ -2940,16 +2940,20 @@ function ensurePtyHelperExecutable() {
 // 셸 별 OSC 7 cwd hook 을 spawn 인자로 주입 — 사용자에게 echo 되지 않음.
 // zsh 의 경우 임시 ZDOTDIR 를 만들어 두고, 호출 측에서 env.ZDOTDIR 로 주입해야 함 (zdotdir 필드 반환).
 // WSL 등 인자로 주입 불가한 케이스는 postSpawnInject 로 첫 프롬프트 후 stdin 주입.
-function buildShellLaunch(shellPath: string): { args: string[]; postSpawnInject?: string; zdotdir?: string } {
+function buildShellLaunch(shellPath: string): { args: string[]; postSpawnInject?: string; zdotdir?: string; promptEnv?: string } {
   const lc = shellPath.toLowerCase();
   // PowerShell (Windows PowerShell 5.1 / pwsh 7+) — [char]27 사용해 호환
+  // -Command 는 배너를 자동 억제하므로, 배너를 직접 Write-Host 로 출력 + OSC 7 hook 을 silently 설치.
+  // 이 방식은 stdin 주입이 없어서 에코가 전혀 발생하지 않음.
   if (lc.includes('powershell') || lc.includes('pwsh')) {
+    const banner = "if ($PSVersionTable.PSEdition -eq 'Desktop') { Write-Host 'Windows PowerShell'; Write-Host 'Copyright (C) Microsoft Corporation. All rights reserved.'; Write-Host ''; if ((Get-UICulture).Name -like 'ko*') { Write-Host '새로운 기능 및 개선 사항에 대 한 최신 PowerShell을 설치 하세요! https://aka.ms/PSWindows' } else { Write-Host 'Try the new cross-platform PowerShell https://aka.ms/pscore6' }; Write-Host '' } else { Write-Host ('PowerShell ' + $PSVersionTable.PSVersion); Write-Host '' }";
     const psHook = "if (-not $global:__pepePromptOrig) { $global:__pepePromptOrig = $function:prompt }; function global:prompt { [Console]::Write([char]27 + ']7;file:///' + ($PWD.Path -replace '\\\\','/') + [char]27 + '\\'); & $global:__pepePromptOrig }";
-    return { args: ['-NoExit', '-Command', psHook] };
+    return { args: ['-NoExit', '-Command', `${banner}; ${psHook}`] };
   }
-  // cmd.exe — /K 인자는 echo 안 됨. prompt 명령은 출력 없음.
+  // cmd.exe — PROMPT 환경변수로 프롬프트 형식 설정. /K prompt 명령 방식은 명령 실행 후
+  // 빈 줄(\r\n)이 생기므로 사용 안 함. 환경변수는 호출 측 spawnEnv 에서 직접 주입.
   if (lc.endsWith('cmd.exe') || lc.endsWith('\\cmd') || lc.endsWith('/cmd')) {
-    return { args: ['/K', 'prompt $E]7;file:///$P$E\\$P$G'] };
+    return { args: [], promptEnv: '$E]7;file:///$P$E\\$P$G' };
   }
   // wsl.exe 진입은 인자로 inner shell init 주입 불가 → 첫 프롬프트 후 stdin 주입 fallback.
   if (lc.endsWith('wsl.exe') || lc.endsWith('\\wsl') || lc.endsWith('/wsl')) {
@@ -3022,6 +3026,8 @@ ipcMain.handle('pty:spawn', (_e, { panelId, shell: shellPath, cols, rows, cwd }:
   if (!spawnEnv.HOME && process.env.USERPROFILE) spawnEnv.HOME = process.env.USERPROFILE;
   // zsh 는 임시 ZDOTDIR 를 환경변수로 주입해야 OSC 7 hook 적용됨
   if (launch.zdotdir) spawnEnv.ZDOTDIR = launch.zdotdir;
+  // cmd.exe: PROMPT 환경변수로 OSC 7 프롬프트 형식 설정 (/K prompt 명령 없이)
+  if (launch.promptEnv) spawnEnv.PROMPT = launch.promptEnv;
   const spawnCwd = cwd || spawnEnv.HOME || process.env.HOME || process.env.USERPROFILE || (isWin ? 'C:\\' : '/');
   console.log('[pty:spawn]', { panelId, sh, args: launch.args, cwd: spawnCwd, hasShellEnv: !!process.env.SHELL });
   const trySpawn = (shellPath: string, shellArgs: string[]): pty.IPty | Error => {

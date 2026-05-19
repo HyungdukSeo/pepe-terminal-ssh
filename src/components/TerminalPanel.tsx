@@ -2923,6 +2923,18 @@ export const TerminalPanel: React.FC<Props> = ({
   const [renameValue, setRenameValue] = useState('');
   // 미니탭바 우측 패널 컨트롤(분할/플로팅/투명도) 표시 토글 — 기본 숨김
   const [showPanelControls, setShowPanelControls] = useState(false);
+  const panelControlsWrapRef = useRef<HTMLDivElement>(null);
+  // 바깥 클릭 시 패널 컨트롤 팝업 닫기
+  useEffect(() => {
+    if (!showPanelControls) return;
+    const handler = (e: MouseEvent) => {
+      if (panelControlsWrapRef.current && !panelControlsWrapRef.current.contains(e.target as Node)) {
+        setShowPanelControls(false);
+      }
+    };
+    document.addEventListener('mousedown', handler, true);
+    return () => document.removeEventListener('mousedown', handler, true);
+  }, [showPanelControls]);
   // 활성 미니탭의 PWD 자동추적 상태 (main 에서 hook 설치/제거 시 자동 갱신)
   const [autoTrackOn, setAutoTrackOn] = useState<boolean>(getTermAutoTrack(activeTermId || ''));
   useEffect(() => {
@@ -3095,7 +3107,7 @@ export const TerminalPanel: React.FC<Props> = ({
           </span>
         )}
 
-        <div className="panel-controls-wrap">
+        <div className="panel-controls-wrap" ref={panelControlsWrapRef}>
         <button
           className={`panel-controls-toggle ${showPanelControls ? 'open' : ''}`}
           onClick={e => { e.stopPropagation(); setShowPanelControls(v => !v); }}

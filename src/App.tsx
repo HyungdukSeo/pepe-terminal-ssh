@@ -83,21 +83,10 @@ function App() {
     setSelectedPanelByTab(prev => ({ ...prev, [activeTabId]: id }));
   }, [activeTabId]);
 
-  // 파일 전송 탭에 넘겨줄 마지막 활성 SSH termId — fileExplorer 탭이 아닐 때만 갱신
-  const [lastActiveTermId, setLastActiveTermId] = useState<string | null>(null);
-  useEffect(() => {
-    if (!activeTab || activeTab.type === 'fileExplorer') return;
-    const findLeaf = (node: any, id: string | null): any => {
-      if (!id) return null;
-      if (node.type === 'leaf') return node.id === id ? node : null;
-      for (const c of node.children || []) { const r = findLeaf(c, id); if (r) return r; }
-      return null;
-    };
-    const leaf = selectedPanelId ? findLeaf(activeTab.layout, selectedPanelId) : null;
-    if (!leaf?.panel) return;
-    const tid = leaf.panel.sessions?.[leaf.panel.activeIdx ?? 0]?.termId;
-    if (tid && isTermConnected(tid)) setLastActiveTermId(tid);
-  }, [selectedPanelId, activeTabId]);
+  // 파일 전송 탭 생성 시 현재 활성 termId 를 즉시 읽는 헬퍼 (getActiveTermId 는 아래 정의)
+  // — getActiveTermId 는 activeTab(tabs state) + selectedPanelId + panel.activeIdx 를 참조하므로
+  //   미니탭 전환 직후에도 최신 값을 반환한다. useEffect 기반 state 를 쓰면 미니탭 전환 시
+  //   selectedPanelId 가 불변이어서 effect 가 재실행되지 않는 문제가 있었음.
 
   // 앱 구동 시 + 탭 전환 시 해당 탭의 패널 자동 선택 (선택된 패널이 현재 탭에 없을 때)
   useEffect(() => {
@@ -1946,7 +1935,7 @@ function App() {
     if (info.protocol === 'sftp' || activeTab.type === 'fileExplorer') {
       // 새 파일 전송 탭 생성
       const id = `tab-fe-${Date.now()}`;
-      const feTab = { id, title: '📁 파일 전송', layout: createInitialLayout(id), type: 'fileExplorer' as TabType, initialTermId: lastActiveTermId ?? undefined };
+      const feTab = { id, title: '📁 파일 전송', layout: createInitialLayout(id), type: 'fileExplorer' as TabType, initialTermId: getActiveTermId() ?? undefined };
       setTabs(prev => [...prev, feTab]);
       setActiveTabId(feTab.id);
       // FileExplorer 마운트 후 이벤트가 처리되도록 약간 지연
@@ -2138,7 +2127,7 @@ function App() {
       items: [
         { label: '📁 파일 전송', action: () => {
           const id = `tab-fe-${Date.now()}`;
-          setTabs(prev => [...prev, { id, title: '📁 파일 전송', layout: createInitialLayout(id), type: 'fileExplorer', initialTermId: lastActiveTermId ?? undefined }]);
+          setTabs(prev => [...prev, { id, title: '📁 파일 전송', layout: createInitialLayout(id), type: 'fileExplorer', initialTermId: getActiveTermId() ?? undefined }]);
           setActiveTabId(id);
         }},
         { label: '🌐 브라우저 워크스페이스', action: addBrowserTab },
@@ -2562,7 +2551,7 @@ function App() {
         onFileTransfer={async (sessionId, sessionName) => {
           // 항상 새 파일 전송 탭 생성
           const id = `tab-fe-${Date.now()}`;
-          const feTab = { id, title: '📁 파일 전송', layout: createInitialLayout(id), type: 'fileExplorer' as TabType, initialTermId: lastActiveTermId ?? undefined };
+          const feTab = { id, title: '📁 파일 전송', layout: createInitialLayout(id), type: 'fileExplorer' as TabType, initialTermId: getActiveTermId() ?? undefined };
           setTabs(prev => [...prev, feTab]);
           setActiveTabId(feTab.id);
           // SFTP 연결 — 점프 타겟 설정돼 있으면 ProxyJump 로 내부 서버까지 직결
@@ -2698,7 +2687,7 @@ function App() {
               >⋮⋮</span>
               <button className="tool-btn" title="파일 전송" onClick={() => {
             const id = `tab-fe-${Date.now()}`;
-            setTabs(prev => [...prev, { id, title: '📁 파일 전송', layout: createInitialLayout(id), type: 'fileExplorer' }]);
+            setTabs(prev => [...prev, { id, title: '📁 파일 전송', layout: createInitialLayout(id), type: 'fileExplorer', initialTermId: getActiveTermId() ?? undefined }]);
             setActiveTabId(id);
           }}>📁</button>
           <span className="tool-sep" />
