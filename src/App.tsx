@@ -2843,19 +2843,19 @@ function App() {
           />
         )}
 
-        {/* FileExplorer는 탭이 존재하면 항상 마운트 유지 (경로 상태 보존). 비활성 시 CSS로 숨김 */}
-        {tabs.some(t => t.type === 'fileExplorer') && (
-          <div style={{ display: activeTab?.type === 'fileExplorer' ? 'flex' : 'none', flex: 1, minHeight: 0 }}>
+        {/* FileExplorer — 탭마다 독립 인스턴스, 비활성 시 CSS 숨김 */}
+        {tabs.filter(t => t.type === 'fileExplorer').map(t => (
+          <div key={t.id} style={{ display: activeTab?.id === t.id ? 'flex' : 'none', flex: 1, minHeight: 0 }}>
             <FileExplorer
               sessions={
-                tabs.filter(t => t.type !== 'fileExplorer')
-                  .flatMap(t => collectAllSessions(t.layout))
+                tabs.filter(x => x.type !== 'fileExplorer')
+                  .flatMap(x => collectAllSessions(x.layout))
                   .filter(s => s.sessionId || getTermSessionInfo(s.termId)?.quickSession)
               }
               activeTermId={lastActiveTermId}
             />
           </div>
-        )}
+        ))}
 
         {/* FileEditor 탭들 - 마운트 유지 */}
         {tabs.filter(t => t.type === 'fileEditor' && t.editor).map(t => (
