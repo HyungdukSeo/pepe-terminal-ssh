@@ -6169,6 +6169,7 @@ body.popout-options .session-editor h3:first-child {
   box-shadow: 0 12px 40px rgba(0,0,0,0.6);
   overflow: hidden;
   color: #e0e0f0;
+  outline: none;
 }
 .cred-modal-header {
   display: flex;

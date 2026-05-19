@@ -378,11 +378,17 @@ function App() {
   const [remotePickerCredPass, setRemotePickerCredPass] = useState('');
   const [remotePickerCredConnecting, setRemotePickerCredConnecting] = useState(false);
   const remotePickerCredUserRef = useRef<HTMLInputElement>(null);
+  const remotePickerCredModalRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (remotePickerCredPrompt) {
-      // setTermFocusBlocked(true)는 openRemoteCred()에서 이미 동기 실행됨
-      const timer = setTimeout(() => { remotePickerCredUserRef.current?.focus(); }, 30);
-      return () => clearTimeout(timer);
+      remotePickerCredModalRef.current?.focus();
+      const timers = [0, 50, 150].map(ms =>
+        setTimeout(() => {
+          const el = remotePickerCredUserRef.current;
+          if (el && document.activeElement !== el) el.focus();
+        }, ms)
+      );
+      return () => timers.forEach(clearTimeout);
     } else {
       setTermFocusBlocked(false);
     }
@@ -4051,7 +4057,7 @@ function App() {
 
       {remotePickerCredPrompt && (
         <div className="session-editor-backdrop" style={{ zIndex: 10100 }} onClick={() => setRemotePickerCredPrompt(null)}>
-          <div className="cred-modal" onClick={e => e.stopPropagation()}>
+          <div className="cred-modal" ref={remotePickerCredModalRef} tabIndex={-1} onClick={e => e.stopPropagation()} style={{ outline: 'none' }}>
             <div className="cred-modal-header">
               <span className="cred-modal-title">🔒 자격증명 입력</span>
               <button className="cred-modal-close" onClick={() => setRemotePickerCredPrompt(null)}>✕</button>

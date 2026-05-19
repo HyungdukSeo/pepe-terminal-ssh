@@ -53,12 +53,20 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
   const [credPass, setCredPass] = useState('');
   const [credConnecting, setCredConnecting] = useState(false);
   const credUserInputRef = useRef<HTMLInputElement>(null);
+  const credModalRef = useRef<HTMLDivElement>(null);
   // 다이얼로그 열림 시 입력창 강제 포커스 / 닫힘 시 차단 해제
   useEffect(() => {
     if (credPrompt) {
-      // setTermFocusBlocked(true)는 setCredPrompt 호출 시점에 이미 동기 실행됨
-      const timer = setTimeout(() => { credUserInputRef.current?.focus(); }, 30);
-      return () => clearTimeout(timer);
+      // 1) 모달 컨테이너를 즉시 포커스 → xterm 포커스 즉시 탈취
+      credModalRef.current?.focus();
+      // 2) 다음 프레임 + 추가 딜레이로 input 에 전달 (렌더 완료 보장)
+      const timers = [0, 50, 150].map(ms =>
+        setTimeout(() => {
+          const el = credUserInputRef.current;
+          if (el && document.activeElement !== el) el.focus();
+        }, ms)
+      );
+      return () => timers.forEach(clearTimeout);
     } else {
       setTermFocusBlocked(false);
     }
@@ -500,7 +508,7 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
       </div>
       {credPrompt && (
         <div className="session-editor-backdrop" onClick={() => setCredPrompt(null)}>
-          <div className="cred-modal" onClick={e => e.stopPropagation()}>
+          <div className="cred-modal" ref={credModalRef} tabIndex={-1} onClick={e => e.stopPropagation()} style={{ outline: 'none' }}>
             <div className="cred-modal-header">
               <span className="cred-modal-title">🔒 {t('credModalTitle')}</span>
               <button className="cred-modal-close" onClick={() => setCredPrompt(null)}>✕</button>
