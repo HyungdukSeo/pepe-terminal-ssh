@@ -55,7 +55,7 @@ export type { LayoutNode, ContainerNode, LeafNode, Panel, PanelSession } from '.
 
 export type TabId = string;
 export type TabType = 'terminal' | 'fileExplorer' | 'fileEditor' | 'browser' | 'compare' | 'logAnalyzer' | 'vpn' | 'i18nEditor' | 'sqlTool';
-export type Tab = { id: TabId; title: string; layout: LayoutNode; type?: TabType; customTitle?: boolean; editor?: { termId: string; remotePath: string; fileName: string }; sqlTool?: { sessionId: string; sessionName: string } };
+export type Tab = { id: TabId; title: string; layout: LayoutNode; type?: TabType; customTitle?: boolean; editor?: { termId: string; remotePath: string; fileName: string }; sqlTool?: { sessionId: string; sessionName: string }; initialTermId?: string };
 
 // 일괄전송 히스토리 (앱 실행 중 유지, 최대 50개)
 const broadcastHistory: string[] = [];
@@ -1944,13 +1944,10 @@ function App() {
     if (!activeTab) return;
     // SFTP 프로토콜이거나 파일 전송 워크스페이스가 활성이면 SFTP 직접 연결로 처리
     if (info.protocol === 'sftp' || activeTab.type === 'fileExplorer') {
-      // 파일 전송 워크스페이스가 없으면 생성하고 전환
-      let feTab = tabs.find(t => t.type === 'fileExplorer');
-      if (!feTab) {
-        const id = `tab-fe-${Date.now()}`;
-        feTab = { id, title: '📁 파일 전송', layout: createInitialLayout(id), type: 'fileExplorer' };
-        setTabs(prev => [...prev, feTab!]);
-      }
+      // 새 파일 전송 탭 생성
+      const id = `tab-fe-${Date.now()}`;
+      const feTab = { id, title: '📁 파일 전송', layout: createInitialLayout(id), type: 'fileExplorer' as TabType, initialTermId: lastActiveTermId ?? undefined };
+      setTabs(prev => [...prev, feTab]);
       setActiveTabId(feTab.id);
       // FileExplorer 마운트 후 이벤트가 처리되도록 약간 지연
       setTimeout(() => {
@@ -2141,7 +2138,7 @@ function App() {
       items: [
         { label: '📁 파일 전송', action: () => {
           const id = `tab-fe-${Date.now()}`;
-          setTabs(prev => [...prev, { id, title: '📁 파일 전송', layout: createInitialLayout(id), type: 'fileExplorer' }]);
+          setTabs(prev => [...prev, { id, title: '📁 파일 전송', layout: createInitialLayout(id), type: 'fileExplorer', initialTermId: lastActiveTermId ?? undefined }]);
           setActiveTabId(id);
         }},
         { label: '🌐 브라우저 워크스페이스', action: addBrowserTab },
@@ -2563,13 +2560,10 @@ function App() {
         onOpenSqlTool={(sessionId, sessionName) => openSqlToolTab(sessionId, sessionName)}
         targetPanelId={selectedPanelId}
         onFileTransfer={async (sessionId, sessionName) => {
-          // 파일 전송 탭이 없으면 생성
-          let feTab = tabs.find(t => t.type === 'fileExplorer');
-          if (!feTab) {
-            const id = `tab-fe-${Date.now()}`;
-            feTab = { id, title: '📁 파일 전송', layout: createInitialLayout(id), type: 'fileExplorer' };
-            setTabs(prev => [...prev, feTab!]);
-          }
+          // 항상 새 파일 전송 탭 생성
+          const id = `tab-fe-${Date.now()}`;
+          const feTab = { id, title: '📁 파일 전송', layout: createInitialLayout(id), type: 'fileExplorer' as TabType, initialTermId: lastActiveTermId ?? undefined };
+          setTabs(prev => [...prev, feTab]);
           setActiveTabId(feTab.id);
           // SFTP 연결 — 점프 타겟 설정돼 있으면 ProxyJump 로 내부 서버까지 직결
           try {
@@ -2852,7 +2846,7 @@ function App() {
                   .flatMap(x => collectAllSessions(x.layout))
                   .filter(s => s.sessionId || getTermSessionInfo(s.termId)?.quickSession)
               }
-              activeTermId={lastActiveTermId}
+              initialTermId={t.initialTermId}
             />
           </div>
         ))}
