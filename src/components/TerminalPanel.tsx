@@ -413,6 +413,12 @@ export function clearQuickConnectPending(termId: string) {
 // 각 패널이 따로 토글 상태 가져서 불편 → 전체 앱 단위 단일 값으로 변경).
 let globalTreeVisible = true;
 const treeVisibleChangeListeners: Set<() => void> = new Set();
+
+// 자격증명 입력 모달 등 오버레이가 열려있을 때 터미널 자동 포커스 억제 플래그
+let termFocusBlocked = false;
+export function setTermFocusBlocked(v: boolean) { termFocusBlocked = v; }
+/** term.focus() 래퍼 — 모달 오픈 중이면 무시 */
+function safeTermFocus(term: any) { if (!termFocusBlocked) { try { term.focus(); } catch {} } }
 export function isTreeVisibleForTerm(_termId: string): boolean {
   return globalTreeVisible;
 }
@@ -1904,7 +1910,7 @@ export function selectAllInTerm(termId: string) {
     _skipAutoCopyOnSelect = true;
     const entry = termStore.get(termId);
     if (entry) {
-      try { entry.term.focus(); } catch {}
+      safeTermFocus(entry.term);
       entry.term.selectAll();
       try { (entry.term as any).refresh?.(0, (entry.term as any).rows - 1); } catch {}
       selectAllActive.add(termId);
@@ -2371,11 +2377,11 @@ export function focusTerm(termId: string) {
   const entry = termStore.get(termId);
   if (!entry) return;
   try {
-    entry.term.focus();
+    safeTermFocus(entry.term);
     // xterm 내부 textarea를 직접 포커스 (더 확실)
     const el = (entry.term as any).element as HTMLElement | undefined;
     const textarea = el?.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null;
-    if (textarea) textarea.focus();
+    if (textarea && !termFocusBlocked) textarea.focus();
     // 포커스 받을 때 fit + resize 한 번 — vi 등 풀스크린 앱이 잘못된 사이즈로 떴던 케이스 보정
     const termEl = (entry.term as any).element as HTMLElement | undefined;
     if (termEl && termEl.offsetWidth > 0) {
@@ -2571,7 +2577,7 @@ export const TerminalPanel: React.FC<Props> = ({
 
       const cols = (term as any).cols || 80;
       const rows = (term as any).rows || 24;
-      try { term.focus(); } catch {}
+      safeTermFocus(term);
 
       if (activeSession && activeSession.sessionId && !sshConnecting.has(activeTermId) && !globalConnected.has(activeTermId) && !reconnectState.has(activeTermId) && !reconnectUserCancelled.has(activeTermId)) {
         // 같은 termId에 PTY가 실행 중이면 종료 (Local Shell → SSH 전환)
@@ -2673,7 +2679,7 @@ export const TerminalPanel: React.FC<Props> = ({
       onSelectRef.current?.(nodeId);
     };
     const onClick = () => {
-      if (activeTermId) { try { getOrCreateTerm(activeTermId).term.focus(); } catch {} }
+      if (activeTermId) { safeTermFocus(getOrCreateTerm(activeTermId).term); }
       onSelectRef.current?.(nodeId);
     };
     el.addEventListener('mousedown', onMouseDown);
@@ -2884,7 +2890,7 @@ export const TerminalPanel: React.FC<Props> = ({
     const timers = hasPrevResize
       ? [setTimeout(doFit, 600)]
       : [100, 300, 700, 1200].map(ms => setTimeout(doFit, ms));
-    setTimeout(() => { try { getOrCreateTerm(activeTermId).term.focus(); } catch {} }, 100);
+    setTimeout(() => { safeTermFocus(getOrCreateTerm(activeTermId).term); }, 100);
 
     return () => {
       ro.disconnect();

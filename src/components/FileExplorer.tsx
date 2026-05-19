@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { FilePanel, PanelSource } from './FilePanel';
 import { TransferLog } from './TransferLog';
+import { setTermFocusBlocked } from './TerminalPanel';
 import type { PanelSession } from '../utils/layoutUtils';
 
 const api = (window as any).api || {};
@@ -52,11 +53,15 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
   const [credPass, setCredPass] = useState('');
   const [credConnecting, setCredConnecting] = useState(false);
   const credUserInputRef = useRef<HTMLInputElement>(null);
-  // 다이얼로그가 열릴 때 터미널이 포커스를 가져가기 전에 강제 포커스
+  // 다이얼로그 열림/닫힘 시 터미널 자동 포커스 차단 + 입력창 강제 포커스
   useEffect(() => {
-    if (!credPrompt) return;
-    const timer = setTimeout(() => { credUserInputRef.current?.focus(); }, 50);
-    return () => clearTimeout(timer);
+    if (credPrompt) {
+      setTermFocusBlocked(true);
+      const timer = setTimeout(() => { credUserInputRef.current?.focus(); }, 30);
+      return () => clearTimeout(timer);
+    } else {
+      setTermFocusBlocked(false);
+    }
   }, [credPrompt]);
 
   useEffect(() => {
