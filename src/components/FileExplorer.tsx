@@ -1,5 +1,5 @@
 // src/components/FileExplorer.tsx
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { FilePanel, PanelSource } from './FilePanel';
 import { TransferLog } from './TransferLog';
@@ -54,13 +54,17 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
   const [credConnecting, setCredConnecting] = useState(false);
   const credUserInputRef = useRef<HTMLInputElement>(null);
   const credModalRef = useRef<HTMLDivElement>(null);
-  // 모달 열림 시: focus trap — 모달 바깥으로 포커스가 이동하면 즉시 input 으로 복귀
-  useEffect(() => {
+  // useLayoutEffect — DOM 커밋 직후(브라우저 페인트 이전)에 실행되어
+  // 어떤 포스트-렌더 포커스 이벤트보다 먼저 input 을 확보
+  useLayoutEffect(() => {
     if (!credPrompt) {
       setTermFocusBlocked(false);
       return;
     }
-    // capture 단계에서 focusin 을 가로채 모달 외부 포커스를 차단
+    // DOM 커밋 직후 즉시 포커스
+    credUserInputRef.current?.focus();
+
+    // 추가 보강: focusin capture 로 모달 외부 포커스를 input 으로 리다이렉트
     const trap = (e: FocusEvent) => {
       const modal = credModalRef.current;
       const input = credUserInputRef.current;
@@ -71,8 +75,6 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
       }
     };
     document.addEventListener('focusin', trap, true);
-    // 초기 포커스
-    credUserInputRef.current?.focus();
     return () => {
       document.removeEventListener('focusin', trap, true);
     };

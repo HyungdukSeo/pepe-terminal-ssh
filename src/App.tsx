@@ -1,5 +1,5 @@
 // src/App.tsx
-import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import { useState, useCallback, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import './App.css';
 import { TabBar } from './components/TabBar';
@@ -379,11 +379,12 @@ function App() {
   const [remotePickerCredConnecting, setRemotePickerCredConnecting] = useState(false);
   const remotePickerCredUserRef = useRef<HTMLInputElement>(null);
   const remotePickerCredModalRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!remotePickerCredPrompt) {
       setTermFocusBlocked(false);
       return;
     }
+    remotePickerCredUserRef.current?.focus();
     const trap = (e: FocusEvent) => {
       const modal = remotePickerCredModalRef.current;
       const input = remotePickerCredUserRef.current;
@@ -394,7 +395,6 @@ function App() {
       }
     };
     document.addEventListener('focusin', trap, true);
-    remotePickerCredUserRef.current?.focus();
     return () => {
       document.removeEventListener('focusin', trap, true);
     };
