@@ -74,6 +74,8 @@
   "close": "닫기",
   "remotePickerAddSelected": "선택 항목 추가 ({{count}}개)",
   "credPromptTitle": "🔑 인증 정보 입력 — {{name}}",
+  "credModalTitle": "자격증명 입력",
+  "credModalConnectTo": "에 연결",
   "sftpDirectTitle": "🔌 SFTP 직접 연결",
   "host": "호스트",
   "port": "포트",

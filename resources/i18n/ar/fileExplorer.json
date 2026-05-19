@@ -55,6 +55,8 @@
   "transferToLeft": "النقل إلى اليسار",
   "transferFail": "فشل النقل: {{name}}\n{{err}}",
   "credPromptTitle": "🔑 أدخل بيانات الاعتماد — {{name}}",
+  "credModalTitle": "أدخل بيانات الاعتماد",
+  "credModalConnectTo": "الاتصال بـ",
   "sftpDirectTitle": "🔌 اتصال SFTP مباشر",
   "host": "المضيف",
   "port": "المنفذ",

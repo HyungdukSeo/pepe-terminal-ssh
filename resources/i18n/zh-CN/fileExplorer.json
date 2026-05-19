@@ -55,6 +55,8 @@
   "transferToLeft": "传输到左侧",
   "transferFail": "传输失败:{{name}}\n{{err}}",
   "credPromptTitle": "🔑 输入凭据 — {{name}}",
+  "credModalTitle": "输入凭据",
+  "credModalConnectTo": "连接到",
   "sftpDirectTitle": "🔌 SFTP 直连",
   "host": "主机",
   "port": "端口",

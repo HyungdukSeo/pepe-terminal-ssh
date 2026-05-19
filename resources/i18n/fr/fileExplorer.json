@@ -55,6 +55,8 @@
   "transferToLeft": "Transférer à gauche",
   "transferFail": "Échec du transfert : {{name}}\n{{err}}",
   "credPromptTitle": "🔑 Saisir les identifiants — {{name}}",
+  "credModalTitle": "Saisir les identifiants",
+  "credModalConnectTo": "— connexion à",
   "sftpDirectTitle": "🔌 Connexion directe SFTP",
   "host": "Hôte",
   "port": "Port",

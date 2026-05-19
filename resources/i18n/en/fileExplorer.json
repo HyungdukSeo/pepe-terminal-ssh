@@ -74,6 +74,8 @@
   "close": "Close",
   "remotePickerAddSelected": "Add selected ({{count}})",
   "credPromptTitle": "🔑 Enter credentials — {{name}}",
+  "credModalTitle": "Enter credentials",
+  "credModalConnectTo": "— connect to",
   "sftpDirectTitle": "🔌 SFTP direct connect",
   "host": "Host",
   "port": "Port",

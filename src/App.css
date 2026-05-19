@@ -6159,3 +6159,68 @@ body.popout-options .session-editor h3:first-child {
   color: #888aa0;
   text-align: center;
 }
+
+/* ── 파일 전송 자격증명 입력 모달 ─────────────────────────────── */
+.cred-modal {
+  width: 340px;
+  background: #1e1e2e;
+  border: 1px solid #2e2e45;
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.6);
+  overflow: hidden;
+  color: #e0e0f0;
+}
+.cred-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px 10px;
+}
+.cred-modal-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e8e8f8;
+}
+.cred-modal-close {
+  background: none;
+  border: none;
+  color: #888;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  line-height: 1;
+}
+.cred-modal-close:hover { background: rgba(255,255,255,0.08); color: #ccc; }
+.cred-modal-host {
+  padding: 0 16px 12px;
+  font-size: 12px;
+  color: #9090b0;
+}
+.cred-modal-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 16px 14px;
+}
+.cred-modal-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: #13131f;
+  border: 1px solid #3a3a5a;
+  border-radius: 6px;
+  color: #e0e0f0;
+  font-size: 13px;
+  padding: 9px 12px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.cred-modal-input::placeholder { color: #555570; }
+.cred-modal-input:focus { border-color: #4a7ad8; }
+.cred-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 16px 14px;
+  border-top: 1px solid #2a2a40;
+}

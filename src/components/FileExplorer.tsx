@@ -489,18 +489,30 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
       </div>
       {credPrompt && (
         <div className="session-editor-backdrop" onClick={() => setCredPrompt(null)}>
-          <div className="session-editor" onClick={e => e.stopPropagation()} style={{ width: 400 }}>
-            <h3>{t('credPromptTitle', { name: credPrompt.sess.name })}</h3>
-            <p style={{ margin: '0 0 12px', fontSize: '0.85em', opacity: 0.7 }}>{credPrompt.sess.host}:{credPrompt.sess.port || 22}</p>
-            <div className="session-editor-grid">
-              <label>{t('user')}</label>
-              <input value={credUser} onChange={e => setCredUser(e.target.value)} autoFocus />
-              <label>{t('password')}</label>
-              <input type="password" value={credPass} onChange={e => setCredPass(e.target.value)}
+          <div className="cred-modal" onClick={e => e.stopPropagation()}>
+            <div className="cred-modal-header">
+              <span className="cred-modal-title">🔒 {t('credModalTitle')}</span>
+              <button className="cred-modal-close" onClick={() => setCredPrompt(null)}>✕</button>
+            </div>
+            <div className="cred-modal-host">{credPrompt.sess.host} {t('credModalConnectTo')}</div>
+            <div className="cred-modal-fields">
+              <input
+                className="cred-modal-input"
+                placeholder="username"
+                value={credUser}
+                onChange={e => setCredUser(e.target.value)}
+                autoFocus
+              />
+              <input
+                className="cred-modal-input"
+                type="password"
+                placeholder="password"
+                value={credPass}
+                onChange={e => setCredPass(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter') handleCredSubmit(); }}
               />
             </div>
-            <div className="session-editor-actions">
+            <div className="cred-modal-actions">
               <button className="btn-cancel" onClick={() => setCredPrompt(null)}>{t('cancel')}</button>
               <button className="btn-save" onClick={handleCredSubmit} disabled={credConnecting}>
                 {credConnecting ? t('connecting') : t('connect')}
