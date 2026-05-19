@@ -83,6 +83,22 @@ function App() {
     setSelectedPanelByTab(prev => ({ ...prev, [activeTabId]: id }));
   }, [activeTabId]);
 
+  // 파일 전송 탭에 넘겨줄 마지막 활성 SSH termId — fileExplorer 탭이 아닐 때만 갱신
+  const [lastActiveTermId, setLastActiveTermId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!activeTab || activeTab.type === 'fileExplorer') return;
+    const findLeaf = (node: any, id: string | null): any => {
+      if (!id) return null;
+      if (node.type === 'leaf') return node.id === id ? node : null;
+      for (const c of node.children || []) { const r = findLeaf(c, id); if (r) return r; }
+      return null;
+    };
+    const leaf = selectedPanelId ? findLeaf(activeTab.layout, selectedPanelId) : null;
+    if (!leaf?.panel) return;
+    const tid = leaf.panel.activeTermId || leaf.panel.sessions?.[0]?.termId;
+    if (tid && isTermConnected(tid)) setLastActiveTermId(tid);
+  }, [selectedPanelId, activeTabId]);
+
   // 앱 구동 시 + 탭 전환 시 해당 탭의 패널 자동 선택 (선택된 패널이 현재 탭에 없을 때)
   useEffect(() => {
     const curTab = tabs.find(t => t.id === activeTabId);
@@ -2830,12 +2846,14 @@ function App() {
         {/* FileExplorer는 탭이 존재하면 항상 마운트 유지 (경로 상태 보존). 비활성 시 CSS로 숨김 */}
         {tabs.some(t => t.type === 'fileExplorer') && (
           <div style={{ display: activeTab?.type === 'fileExplorer' ? 'flex' : 'none', flex: 1, minHeight: 0 }}>
-            <FileExplorer sessions={
-              tabs.filter(t => t.type !== 'fileExplorer')
-                .flatMap(t => collectAllSessions(t.layout))
-                // 저장된 세션(sessionId) OR 빠른연결(quickSession) 모두 포함
-                .filter(s => s.sessionId || getTermSessionInfo(s.termId)?.quickSession)
-            } />
+            <FileExplorer
+              sessions={
+                tabs.filter(t => t.type !== 'fileExplorer')
+                  .flatMap(t => collectAllSessions(t.layout))
+                  .filter(s => s.sessionId || getTermSessionInfo(s.termId)?.quickSession)
+              }
+              activeTermId={lastActiveTermId}
+            />
           </div>
         )}
 

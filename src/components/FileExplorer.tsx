@@ -9,9 +9,10 @@ const api = (window as any).api || {};
 
 type Props = {
   sessions: PanelSession[];
+  activeTermId?: string | null;
 };
 
-export const FileExplorer: React.FC<Props> = ({ sessions }) => {
+export const FileExplorer: React.FC<Props> = ({ sessions, activeTermId }) => {
   const { t } = useTranslation('fileExplorer');
   const localLabel = t('local');
   const [sources, setSources] = useState<PanelSource[]>([{ mode: 'local', label: localLabel }]);
@@ -27,6 +28,8 @@ export const FileExplorer: React.FC<Props> = ({ sessions }) => {
   const [initDone, setInitDone] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const rightSourceSetRef = React.useRef(false);
+  // 자동 선택된 termId 추적 — 사용자가 직접 바꾸지 않은 경우에만 재자동 선택 허용
+  const autoSelectedTermIdRef = React.useRef<string | null>(null);
   const [showSftpConnect, setShowSftpConnect] = useState<'left' | 'right' | null>(null);
   const [selectedSide, setSelectedSide] = useState<'left' | 'right'>('left');
   const [sftpHost, setSftpHost] = useState('');
@@ -192,10 +195,12 @@ export const FileExplorer: React.FC<Props> = ({ sessions }) => {
     }
     newSources.push({ mode: 'sftp-connect' as any, label: t('sftpDirectOption') });
     setSources(newSources);
-    // 최초 1회만: 원격 소스가 있고 rightSource가 로컬이면 첫 원격을 오른쪽 기본으로
+    // 최초 1회만: 원격 소스가 있고 rightSource가 로컬이면 오른쪽 기본으로 설정
+    // activeTermId 가 있으면 해당 세션 우선, 없으면 첫 번째 세션
     if (initDone && sessions.length > 0 && rightSource.mode === 'local' && !rightSourceSetRef.current) {
       rightSourceSetRef.current = true;
-      const first = sessions[0];
+      const first = (activeTermId ? sessions.find(s => s.termId === activeTermId) : null) || sessions[0];
+      if (activeTermId && first.termId === activeTermId) autoSelectedTermIdRef.current = activeTermId;
       const newSrc: PanelSource = { mode: 'remote', termId: first.termId, label: `🌐 ${first.sessionName}` };
       setRightSource(newSrc);
       // SSH 연결 완료 대기 후 홈 디렉토리 가져오기 (최대 10초)
@@ -213,6 +218,22 @@ export const FileExplorer: React.FC<Props> = ({ sessions }) => {
     }
   }, [sessKey, initDone, sessionFolderMap, allSessionsList]);
 
+  // activeTermId 변경 시 오른쪽 패널 자동 선택
+  // (오른쪽이 로컬이거나 이전에 자동 선택된 세션인 경우에만 반영 — 사용자 수동 변경은 유지)
+  useEffect(() => {
+    if (!activeTermId || !initDone) return;
+    const src = sources.find(s => s.mode === 'remote' && s.termId === activeTermId);
+    if (!src) return;
+    if (rightSource.mode === 'local' || rightSource.termId === autoSelectedTermIdRef.current) {
+      autoSelectedTermIdRef.current = activeTermId;
+      setRightSource(src);
+      getHomeWithRetryRef.current?.('remote', activeTermId).then(p => setRightPath(p));
+    }
+  }, [activeTermId, initDone, sources]);
+
+  // getHomeWithRetry 를 effect 에서 참조하기 위한 ref
+  const getHomeWithRetryRef = React.useRef<((mode: string, termId?: string) => Promise<string>) | null>(null);
+
   const sep = (source: PanelSource) => source.mode === 'local' && navigator.platform.startsWith('Win') ? '\\' : '/';
 
   const getHomeWithRetry = async (mode: string, termId?: string): Promise<string> => {
@@ -226,6 +247,7 @@ export const FileExplorer: React.FC<Props> = ({ sessions }) => {
     }
     return mode === 'local' ? 'C:\\' : '/';
   };
+  getHomeWithRetryRef.current = getHomeWithRetry;
 
   // lazy-remote 소스를 실제 연결된 remote 소스로 변환. 실패 시 null 반환.
   const realizeLazyRemote = async (src: PanelSource): Promise<PanelSource | null> => {
