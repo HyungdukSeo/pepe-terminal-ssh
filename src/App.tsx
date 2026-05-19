@@ -380,7 +380,7 @@ function App() {
   const remotePickerCredUserRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (remotePickerCredPrompt) {
-      setTermFocusBlocked(true);
+      // setTermFocusBlocked(true)는 openRemoteCred()에서 이미 동기 실행됨
       const timer = setTimeout(() => { remotePickerCredUserRef.current?.focus(); }, 30);
       return () => clearTimeout(timer);
     } else {
@@ -437,12 +437,14 @@ function App() {
         : undefined;
       // 비밀번호 미저장 세션 → 자격증명 다이얼로그 먼저 표시
       const hasCredential = sess.auth?.type === 'key' || (sess.auth?.type === 'password' && sess.auth?.password);
+      const openRemoteCred = () => {
+        setTermFocusBlocked(true); // 렌더 전에 동기 차단
+        setRemotePickerCredPrompt({ sess, jumpOpts });
+        setRemotePickerCredUser(sess.username || '');
+        setRemotePickerCredPass('');
+      };
       if (!hasCredential) {
-        if (!cancelled) {
-          setRemotePickerCredPrompt({ sess, jumpOpts });
-          setRemotePickerCredUser(sess.username || '');
-          setRemotePickerCredPass('');
-        }
+        if (!cancelled) openRemoteCred();
         return;
       }
       setRemotePickerConnecting(true);
@@ -451,11 +453,7 @@ function App() {
         const r: any = await (window as any).api?.feSftpConnect?.(connId, sess.host, sess.port || 22, sess.username, sess.auth, jumpOpts);
         if (cancelled) return;
         if (!r?.success) {
-          // 연결 실패 → 자격증명 다이얼로그로 재시도 기회 제공
-          setRemotePickerCredPrompt({ sess, jumpOpts });
-          setRemotePickerCredUser(sess.username || '');
-          setRemotePickerCredPass('');
-          setRemotePickerConnecting(false);
+          if (!cancelled) { openRemoteCred(); setRemotePickerConnecting(false); }
           return;
         }
         setRemotePickerTempConns(prev => [...prev, connId]);
@@ -466,11 +464,7 @@ function App() {
           if (!cancelled) setRemotePickerPath(homePath || '/');
         } catch { if (!cancelled) setRemotePickerPath('/'); }
       } catch {
-        if (!cancelled) {
-          setRemotePickerCredPrompt({ sess, jumpOpts });
-          setRemotePickerCredUser(sess.username || '');
-          setRemotePickerCredPass('');
-        }
+        if (!cancelled) openRemoteCred();
       }
       if (!cancelled) setRemotePickerConnecting(false);
     })();

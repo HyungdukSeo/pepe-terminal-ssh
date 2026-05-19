@@ -53,10 +53,10 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
   const [credPass, setCredPass] = useState('');
   const [credConnecting, setCredConnecting] = useState(false);
   const credUserInputRef = useRef<HTMLInputElement>(null);
-  // 다이얼로그 열림/닫힘 시 터미널 자동 포커스 차단 + 입력창 강제 포커스
+  // 다이얼로그 열림 시 입력창 강제 포커스 / 닫힘 시 차단 해제
   useEffect(() => {
     if (credPrompt) {
-      setTermFocusBlocked(true);
+      // setTermFocusBlocked(true)는 setCredPrompt 호출 시점에 이미 동기 실행됨
       const timer = setTimeout(() => { credUserInputRef.current?.focus(); }, 30);
       return () => clearTimeout(timer);
     } else {
@@ -262,25 +262,24 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
       : undefined;
     // 비밀번호가 없는 세션은 바로 자격증명 다이얼로그 표시
     const hasCredential = sess.auth?.type === 'key' || (sess.auth?.type === 'password' && sess.auth?.password);
-    if (!hasCredential) {
+    const openCred = () => {
+      setTermFocusBlocked(true); // 렌더 전에 동기 차단 — useEffect 보다 먼저 실행됨
       setCredPrompt({ sess, side, jumpOpts });
       setCredUser(sess.username || '');
       setCredPass('');
+    };
+    if (!hasCredential) {
+      openCred();
       return null;
     }
     try {
       const r: any = await api?.feSftpConnect?.(connId, sess.host, sess.port || 22, sess.username, sess.auth, jumpOpts);
       if (!r?.success) {
-        // 연결 실패 → 자격증명 다이얼로그로 재시도 기회 제공
-        setCredPrompt({ sess, side, jumpOpts });
-        setCredUser(sess.username || '');
-        setCredPass('');
+        openCred();
         return null;
       }
     } catch {
-      setCredPrompt({ sess, side, jumpOpts });
-      setCredUser(sess.username || '');
-      setCredPass('');
+      openCred();
       return null;
     }
     setLazyConns(prev => [...prev, connId]);
