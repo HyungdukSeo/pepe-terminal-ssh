@@ -380,18 +380,24 @@ function App() {
   const remotePickerCredUserRef = useRef<HTMLInputElement>(null);
   const remotePickerCredModalRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (remotePickerCredPrompt) {
-      remotePickerCredModalRef.current?.focus();
-      const timers = [0, 50, 150].map(ms =>
-        setTimeout(() => {
-          const el = remotePickerCredUserRef.current;
-          if (el && document.activeElement !== el) el.focus();
-        }, ms)
-      );
-      return () => timers.forEach(clearTimeout);
-    } else {
+    if (!remotePickerCredPrompt) {
       setTermFocusBlocked(false);
+      return;
     }
+    const trap = (e: FocusEvent) => {
+      const modal = remotePickerCredModalRef.current;
+      const input = remotePickerCredUserRef.current;
+      if (!modal || !input) return;
+      if (!modal.contains(e.target as Node)) {
+        e.stopImmediatePropagation();
+        input.focus();
+      }
+    };
+    document.addEventListener('focusin', trap, true);
+    remotePickerCredUserRef.current?.focus();
+    return () => {
+      document.removeEventListener('focusin', trap, true);
+    };
   }, [remotePickerCredPrompt]);
 
   // picker 가 열릴 때 전체 세션/폴더 로드

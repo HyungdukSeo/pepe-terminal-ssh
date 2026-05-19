@@ -54,22 +54,28 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
   const [credConnecting, setCredConnecting] = useState(false);
   const credUserInputRef = useRef<HTMLInputElement>(null);
   const credModalRef = useRef<HTMLDivElement>(null);
-  // 다이얼로그 열림 시 입력창 강제 포커스 / 닫힘 시 차단 해제
+  // 모달 열림 시: focus trap — 모달 바깥으로 포커스가 이동하면 즉시 input 으로 복귀
   useEffect(() => {
-    if (credPrompt) {
-      // 1) 모달 컨테이너를 즉시 포커스 → xterm 포커스 즉시 탈취
-      credModalRef.current?.focus();
-      // 2) 다음 프레임 + 추가 딜레이로 input 에 전달 (렌더 완료 보장)
-      const timers = [0, 50, 150].map(ms =>
-        setTimeout(() => {
-          const el = credUserInputRef.current;
-          if (el && document.activeElement !== el) el.focus();
-        }, ms)
-      );
-      return () => timers.forEach(clearTimeout);
-    } else {
+    if (!credPrompt) {
       setTermFocusBlocked(false);
+      return;
     }
+    // capture 단계에서 focusin 을 가로채 모달 외부 포커스를 차단
+    const trap = (e: FocusEvent) => {
+      const modal = credModalRef.current;
+      const input = credUserInputRef.current;
+      if (!modal || !input) return;
+      if (!modal.contains(e.target as Node)) {
+        e.stopImmediatePropagation();
+        input.focus();
+      }
+    };
+    document.addEventListener('focusin', trap, true);
+    // 초기 포커스
+    credUserInputRef.current?.focus();
+    return () => {
+      document.removeEventListener('focusin', trap, true);
+    };
   }, [credPrompt]);
 
   useEffect(() => {
