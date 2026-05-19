@@ -159,6 +159,40 @@ function App() {
     setTimeout(() => cancelAnimationFrame(rafId), 200);
     return () => cancelAnimationFrame(rafId);
   }, [askPwdPrompts.length, selectedPanelId, activeTabId, layoutSignature]);
+
+  // askPwdPrompts 열림/닫힘 시 터미널 포커스 차단 + 입력창 강제 포커스
+  useEffect(() => {
+    if (askPwdPrompts.length === 0) {
+      setTermFocusBlocked(false);
+      return;
+    }
+    setTermFocusBlocked(true);
+
+    const focusInput = () => {
+      const input = document.querySelector<HTMLElement>('.ask-pwd-card .ask-pwd-input');
+      if (input && document.activeElement !== input) input.focus();
+    };
+
+    // 포커스 트랩: 모달 외부로 포커스 이동 시 첫 번째 ask-pwd-input 으로 리다이렉트
+    const trap = (e: FocusEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      if (!target.closest('.ask-pwd-card')) {
+        e.stopImmediatePropagation();
+        focusInput();
+      }
+    };
+    document.addEventListener('focusin', trap, true);
+
+    // 포털이 DOM에 마운트되기까지 약간 기다린 후 포커스
+    // (createPortal 은 렌더 후 다음 tick 에 DOM 반영)
+    const timers = [0, 50, 100].map(ms => setTimeout(focusInput, ms));
+
+    return () => {
+      document.removeEventListener('focusin', trap, true);
+      timers.forEach(clearTimeout);
+    };
+  }, [askPwdPrompts.length]);
   useEffect(() => {
     const onFresh = (e: any) => {
       const d = e?.detail || {};
