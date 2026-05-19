@@ -372,6 +372,11 @@ function App() {
   const [remotePickerFolders, setRemotePickerFolders] = useState<any[]>([]); // 폴더 맵
   // picker 가 새로 만든 임시 SFTP 연결 connId 들 — 모달 닫힐 때 일괄 해제
   const [remotePickerTempConns, setRemotePickerTempConns] = useState<string[]>([]);
+  // 자격증명 입력 다이얼로그 — 비밀번호 미저장 세션 연결 실패 시 표시
+  const [remotePickerCredPrompt, setRemotePickerCredPrompt] = useState<{ sess: any; jumpOpts: any } | null>(null);
+  const [remotePickerCredUser, setRemotePickerCredUser] = useState('');
+  const [remotePickerCredPass, setRemotePickerCredPass] = useState('');
+  const [remotePickerCredConnecting, setRemotePickerCredConnecting] = useState(false);
 
   // picker 가 열릴 때 전체 세션/폴더 로드
   useEffect(() => {
@@ -417,16 +422,29 @@ function App() {
       // 2) 아니면 백그라운드 SFTP 연결 시도
       const sess = remotePickerSessions.find(s => s.id === remotePickerSessionId);
       if (!sess) return;
+      const jumpOpts = sess.jumpTargetHost?.trim()
+        ? { host: sess.jumpTargetHost.trim(), user: sess.jumpTargetUser || 'root', port: Number(sess.jumpTargetPort) || 22, password: sess.jumpTargetPassword || undefined }
+        : undefined;
+      // 비밀번호 미저장 세션 → 자격증명 다이얼로그 먼저 표시
+      const hasCredential = sess.auth?.type === 'key' || (sess.auth?.type === 'password' && sess.auth?.password);
+      if (!hasCredential) {
+        if (!cancelled) {
+          setRemotePickerCredPrompt({ sess, jumpOpts });
+          setRemotePickerCredUser(sess.username || '');
+          setRemotePickerCredPass('');
+        }
+        return;
+      }
       setRemotePickerConnecting(true);
       try {
         const connId = `bcast-pick-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const jumpOpts = sess.jumpTargetHost?.trim()
-          ? { host: sess.jumpTargetHost.trim(), user: sess.jumpTargetUser || 'root', port: Number(sess.jumpTargetPort) || 22, password: sess.jumpTargetPassword || undefined }
-          : undefined;
         const r: any = await (window as any).api?.feSftpConnect?.(connId, sess.host, sess.port || 22, sess.username, sess.auth, jumpOpts);
         if (cancelled) return;
         if (!r?.success) {
-          alert(`연결 실패 (${sess.name}): ${r?.error || '알 수 없는 오류'}`);
+          // 연결 실패 → 자격증명 다이얼로그로 재시도 기회 제공
+          setRemotePickerCredPrompt({ sess, jumpOpts });
+          setRemotePickerCredUser(sess.username || '');
+          setRemotePickerCredPass('');
           setRemotePickerConnecting(false);
           return;
         }
@@ -437,8 +455,12 @@ function App() {
           const homePath = typeof home === 'string' ? home : (home?.path || '/');
           if (!cancelled) setRemotePickerPath(homePath || '/');
         } catch { if (!cancelled) setRemotePickerPath('/'); }
-      } catch (err: any) {
-        if (!cancelled) alert(`연결 실패: ${err?.message || err}`);
+      } catch {
+        if (!cancelled) {
+          setRemotePickerCredPrompt({ sess, jumpOpts });
+          setRemotePickerCredUser(sess.username || '');
+          setRemotePickerCredPass('');
+        }
       }
       if (!cancelled) setRemotePickerConnecting(false);
     })();
@@ -471,6 +493,33 @@ function App() {
     }
     setRemotePickerTempConns([]);
   }, [remotePickerOpen]);
+
+  // 자격증명 다이얼로그 확인 — 입력된 id/비밀번호로 SFTP 연결 재시도
+  const handleRemotePickerCredSubmit = async () => {
+    if (!remotePickerCredPrompt) return;
+    const { sess, jumpOpts } = remotePickerCredPrompt;
+    setRemotePickerCredConnecting(true);
+    const connId = `bcast-pick-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    try {
+      const r: any = await (window as any).api?.feSftpConnect?.(connId, sess.host, sess.port || 22, remotePickerCredUser, { type: 'password', password: remotePickerCredPass }, jumpOpts);
+      if (!r?.success) {
+        alert(`연결 실패 (${sess.name}): ${r?.error || '알 수 없는 오류'}`);
+        setRemotePickerCredConnecting(false);
+        return;
+      }
+      setRemotePickerTempConns(prev => [...prev, connId]);
+      setRemotePickerConnId(connId);
+      try {
+        const home: any = await (window as any).api?.feHomeDir?.('remote', connId);
+        const homePath = typeof home === 'string' ? home : (home?.path || '/');
+        setRemotePickerPath(homePath || '/');
+      } catch { setRemotePickerPath('/'); }
+      setRemotePickerCredPrompt(null);
+    } catch (err: any) {
+      alert(`연결 실패 (${sess.name}): ${err?.message || err}`);
+    }
+    setRemotePickerCredConnecting(false);
+  };
   const [broadcastHistoryIdx, setBroadcastHistoryIdx] = useState(-1);
   // 히스토리 드롭다운에서 방향키로 이동한 항목이 보이게 스크롤 따라오기
   useEffect(() => {
@@ -3991,6 +4040,41 @@ function App() {
                   setRemotePickerSelected(new Set());
                 }}
               >선택 항목 추가 ({remotePickerSelected.size}개)</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {remotePickerCredPrompt && (
+        <div className="session-editor-backdrop" style={{ zIndex: 10100 }} onClick={() => setRemotePickerCredPrompt(null)}>
+          <div className="cred-modal" onClick={e => e.stopPropagation()}>
+            <div className="cred-modal-header">
+              <span className="cred-modal-title">🔒 자격증명 입력</span>
+              <button className="cred-modal-close" onClick={() => setRemotePickerCredPrompt(null)}>✕</button>
+            </div>
+            <div className="cred-modal-host">{remotePickerCredPrompt.sess.host} 에 연결</div>
+            <div className="cred-modal-fields">
+              <input
+                className="cred-modal-input"
+                placeholder="username"
+                value={remotePickerCredUser}
+                onChange={e => setRemotePickerCredUser(e.target.value)}
+                autoFocus
+              />
+              <input
+                className="cred-modal-input"
+                type="password"
+                placeholder="password"
+                value={remotePickerCredPass}
+                onChange={e => setRemotePickerCredPass(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleRemotePickerCredSubmit(); }}
+              />
+            </div>
+            <div className="cred-modal-actions">
+              <button className="btn-cancel" onClick={() => setRemotePickerCredPrompt(null)}>취소</button>
+              <button className="btn-save" onClick={handleRemotePickerCredSubmit} disabled={remotePickerCredConnecting}>
+                {remotePickerCredConnecting ? '연결 중...' : '연결'}
+              </button>
             </div>
           </div>
         </div>
