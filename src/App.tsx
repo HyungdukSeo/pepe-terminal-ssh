@@ -95,7 +95,7 @@ function App() {
     };
     const leaf = selectedPanelId ? findLeaf(activeTab.layout, selectedPanelId) : null;
     if (!leaf?.panel) return;
-    const tid = leaf.panel.activeTermId || leaf.panel.sessions?.[0]?.termId;
+    const tid = leaf.panel.sessions?.[leaf.panel.activeIdx ?? 0]?.termId;
     if (tid && isTermConnected(tid)) setLastActiveTermId(tid);
   }, [selectedPanelId, activeTabId]);
 
