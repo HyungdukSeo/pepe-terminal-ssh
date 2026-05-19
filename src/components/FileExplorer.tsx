@@ -46,6 +46,11 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
   const [allSessionsList, setAllSessionsList] = useState<any[]>([]);
   // lazy 연결로 생성된 SFTP 임시 connId — FileExplorer unmount 시 정리
   const [lazyConns, setLazyConns] = useState<string[]>([]);
+  // 자격증명 입력 프롬프트 — 비밀번호 미저장 세션 연결 실패 시 표시
+  const [credPrompt, setCredPrompt] = useState<{ sess: any; side: 'left' | 'right'; jumpOpts: any } | null>(null);
+  const [credUser, setCredUser] = useState('');
+  const [credPass, setCredPass] = useState('');
+  const [credConnecting, setCredConnecting] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -234,7 +239,8 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
   getHomeWithRetryRef.current = getHomeWithRetry;
 
   // lazy-remote 소스를 실제 연결된 remote 소스로 변환. 실패 시 null 반환.
-  const realizeLazyRemote = async (src: PanelSource): Promise<PanelSource | null> => {
+  // 연결 실패(인증 오류 등) → 자격증명 입력 다이얼로그 표시.
+  const realizeLazyRemote = async (src: PanelSource, side: 'left' | 'right'): Promise<PanelSource | null> => {
     if (src.mode !== 'lazy-remote' || !src.sessionId) return null;
     const sess = allSessionsList.find(s => s.id === src.sessionId);
     if (!sess) { alert(t('remoteSessionMissing')); return null; }
@@ -242,14 +248,27 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
     const jumpOpts = sess.jumpTargetHost?.trim()
       ? { host: sess.jumpTargetHost.trim(), user: sess.jumpTargetUser || 'root', port: Number(sess.jumpTargetPort) || 22, password: sess.jumpTargetPassword || undefined }
       : undefined;
+    // 비밀번호가 없는 세션은 바로 자격증명 다이얼로그 표시
+    const hasCredential = sess.auth?.type === 'key' || (sess.auth?.type === 'password' && sess.auth?.password);
+    if (!hasCredential) {
+      setCredPrompt({ sess, side, jumpOpts });
+      setCredUser(sess.username || '');
+      setCredPass('');
+      return null;
+    }
     try {
       const r: any = await api?.feSftpConnect?.(connId, sess.host, sess.port || 22, sess.username, sess.auth, jumpOpts);
       if (!r?.success) {
-        alert(t('connectFailNamed', { name: sess.name, err: r?.error || t('unknownError') }));
+        // 연결 실패 → 자격증명 다이얼로그로 재시도 기회 제공
+        setCredPrompt({ sess, side, jumpOpts });
+        setCredUser(sess.username || '');
+        setCredPass('');
         return null;
       }
-    } catch (err: any) {
-      alert(t('connectFailNamed', { name: sess.name, err: err?.message || err }));
+    } catch {
+      setCredPrompt({ sess, side, jumpOpts });
+      setCredUser(sess.username || '');
+      setCredPass('');
       return null;
     }
     setLazyConns(prev => [...prev, connId]);
@@ -268,10 +287,48 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
     return newSrc;
   };
 
+  // 자격증명 다이얼로그 확인 — 입력된 id/비밀번호로 연결 재시도
+  const handleCredSubmit = async () => {
+    if (!credPrompt) return;
+    const { sess, side, jumpOpts } = credPrompt;
+    setCredConnecting(true);
+    const newConnId = `fe-lazy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    try {
+      const r: any = await api?.feSftpConnect?.(newConnId, sess.host, sess.port || 22, credUser, { type: 'password', password: credPass }, jumpOpts);
+      if (!r?.success) {
+        alert(t('connectFailNamed', { name: sess.name, err: r?.error || t('unknownError') }));
+        setCredConnecting(false);
+        return;
+      }
+      setLazyConns(prev => [...prev, newConnId]);
+      const folder = sessionFolderMap[sess.id];
+      const label = folder ? `🟢 ${sess.name}  [${folder}]` : `🟢 ${sess.name}`;
+      const newSrc: PanelSource = { mode: 'remote', termId: newConnId, sessionId: sess.id, label };
+      setSources(prev => {
+        const filtered = prev.filter(s => !(s.mode === 'lazy-remote' && s.sessionId === sess.id));
+        const idx = filtered.findIndex(s => (s.mode as any) === 'sftp-connect');
+        const arr = [...filtered];
+        if (idx >= 0) arr.splice(idx, 0, newSrc); else arr.push(newSrc);
+        return arr;
+      });
+      if (side === 'left') {
+        setLeftSource(newSrc);
+        setLeftPath(await getHomeWithRetry('remote', newSrc.termId));
+      } else {
+        setRightSource(newSrc);
+        setRightPath(await getHomeWithRetry('remote', newSrc.termId));
+      }
+      setCredPrompt(null);
+    } catch (err: any) {
+      alert(t('connectFailNamed', { name: sess.name, err: err?.message || err }));
+    }
+    setCredConnecting(false);
+  };
+
   const handleLeftSourceChange = async (src: PanelSource) => {
     if (src.mode === 'sftp-connect' as any) { setShowSftpConnect('left'); return; }
     if (src.mode === 'lazy-remote') {
-      const real = await realizeLazyRemote(src);
+      const real = await realizeLazyRemote(src, 'left');
       if (!real) return;
       setLeftSource(real);
       setLeftPath(await getHomeWithRetry('remote', real.termId));
@@ -284,7 +341,7 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
   const handleRightSourceChange = async (src: PanelSource) => {
     if (src.mode === 'sftp-connect' as any) { setShowSftpConnect('right'); return; }
     if (src.mode === 'lazy-remote') {
-      const real = await realizeLazyRemote(src);
+      const real = await realizeLazyRemote(src, 'right');
       if (!real) return;
       setRightSource(real);
       setRightPath(await getHomeWithRetry('remote', real.termId));
@@ -430,6 +487,28 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
       <div className="fe-transfers" style={{ height: transfersHeight }}>
         <TransferLog />
       </div>
+      {credPrompt && (
+        <div className="session-editor-backdrop" onClick={() => setCredPrompt(null)}>
+          <div className="session-editor" onClick={e => e.stopPropagation()} style={{ width: 400 }}>
+            <h3>{t('credPromptTitle', { name: credPrompt.sess.name })}</h3>
+            <p style={{ margin: '0 0 12px', fontSize: '0.85em', opacity: 0.7 }}>{credPrompt.sess.host}:{credPrompt.sess.port || 22}</p>
+            <div className="session-editor-grid">
+              <label>{t('user')}</label>
+              <input value={credUser} onChange={e => setCredUser(e.target.value)} autoFocus />
+              <label>{t('password')}</label>
+              <input type="password" value={credPass} onChange={e => setCredPass(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleCredSubmit(); }}
+              />
+            </div>
+            <div className="session-editor-actions">
+              <button className="btn-cancel" onClick={() => setCredPrompt(null)}>{t('cancel')}</button>
+              <button className="btn-save" onClick={handleCredSubmit} disabled={credConnecting}>
+                {credConnecting ? t('connecting') : t('connect')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {showSftpConnect && (
         <div className="session-editor-backdrop" onClick={() => setShowSftpConnect(null)}>
           <div className="session-editor" onClick={e => e.stopPropagation()} style={{ width: 400 }}>

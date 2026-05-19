@@ -73,6 +73,7 @@
   "remotePickerLegend": "🟢 연결된 세션 / ⚪ 미연결 (선택 시 자동 연결). 클릭: 선택 / 더블클릭: 폴더 진입. {{count}}개 선택됨",
   "close": "닫기",
   "remotePickerAddSelected": "선택 항목 추가 ({{count}}개)",
+  "credPromptTitle": "🔑 인증 정보 입력 — {{name}}",
   "sftpDirectTitle": "🔌 SFTP 직접 연결",
   "host": "호스트",
   "port": "포트",

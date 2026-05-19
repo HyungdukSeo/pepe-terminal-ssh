@@ -73,6 +73,7 @@
   "remotePickerLegend": "🟢 connected / ⚪ disconnected (auto-connect on select). Click: select / Double-click: enter folder. {{count}} selected",
   "close": "Close",
   "remotePickerAddSelected": "Add selected ({{count}})",
+  "credPromptTitle": "🔑 Enter credentials — {{name}}",
   "sftpDirectTitle": "🔌 SFTP direct connect",
   "host": "Host",
   "port": "Port",
