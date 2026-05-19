@@ -1,5 +1,5 @@
 // src/components/FileExplorer.tsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { FilePanel, PanelSource } from './FilePanel';
 import { TransferLog } from './TransferLog';
@@ -51,6 +51,13 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
   const [credUser, setCredUser] = useState('');
   const [credPass, setCredPass] = useState('');
   const [credConnecting, setCredConnecting] = useState(false);
+  const credUserInputRef = useRef<HTMLInputElement>(null);
+  // 다이얼로그가 열릴 때 터미널이 포커스를 가져가기 전에 강제 포커스
+  useEffect(() => {
+    if (!credPrompt) return;
+    const timer = setTimeout(() => { credUserInputRef.current?.focus(); }, 50);
+    return () => clearTimeout(timer);
+  }, [credPrompt]);
 
   useEffect(() => {
     let cancelled = false;
@@ -497,11 +504,11 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
             <div className="cred-modal-host">{credPrompt.sess.host} {t('credModalConnectTo')}</div>
             <div className="cred-modal-fields">
               <input
+                ref={credUserInputRef}
                 className="cred-modal-input"
                 placeholder="username"
                 value={credUser}
                 onChange={e => setCredUser(e.target.value)}
-                autoFocus
               />
               <input
                 className="cred-modal-input"

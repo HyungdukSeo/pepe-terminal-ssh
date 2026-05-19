@@ -377,6 +377,12 @@ function App() {
   const [remotePickerCredUser, setRemotePickerCredUser] = useState('');
   const [remotePickerCredPass, setRemotePickerCredPass] = useState('');
   const [remotePickerCredConnecting, setRemotePickerCredConnecting] = useState(false);
+  const remotePickerCredUserRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!remotePickerCredPrompt) return;
+    const timer = setTimeout(() => { remotePickerCredUserRef.current?.focus(); }, 50);
+    return () => clearTimeout(timer);
+  }, [remotePickerCredPrompt]);
 
   // picker 가 열릴 때 전체 세션/폴더 로드
   useEffect(() => {
@@ -4055,11 +4061,11 @@ function App() {
             <div className="cred-modal-host">{remotePickerCredPrompt.sess.host} 에 연결</div>
             <div className="cred-modal-fields">
               <input
+                ref={remotePickerCredUserRef}
                 className="cred-modal-input"
                 placeholder="username"
                 value={remotePickerCredUser}
                 onChange={e => setRemotePickerCredUser(e.target.value)}
-                autoFocus
               />
               <input
                 className="cred-modal-input"
