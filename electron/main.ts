@@ -4262,6 +4262,9 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
     const path = require('path');
     const fs = require('fs');
 
+    console.log('[codex] spawn start, prompt length:', prompt.length);
+    console.log('[codex] model:', model || 'default', '| effort:', effort || 'default', '| approval:', approvalPolicy || 'suggest');
+
     const tmpFile = path.join(os.tmpdir(), `codex-prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`);
     fs.writeFileSync(tmpFile, prompt, 'utf-8');
 
@@ -4291,6 +4294,8 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
       ? `chcp 65001 >nul && type "${tmpFile}" | codex exec${modelFlag}${effortFlag} --skip-git-repo-check --sandbox danger-full-access`
       : `chcp 65001 >nul && type "${tmpFile}" | codex exec${modelFlag}${effortFlag} --skip-git-repo-check -c "sandbox_permissions=[\\"disk-full-read-access\\",\\"network-full-access\\"]"`;
     const shellCmd = isWin ? winCmd : macInnerCmd;
+    console.log('[codex] shell cmd:', shellCmd);
+    console.log('[codex] PATH has npm:', augmentedPath.toLowerCase().includes('npm'));
     const proc = spawn(shellCmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd });
     codexProcesses.set(procKey, proc);
 
@@ -4309,6 +4314,7 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
       for (const rawLine of lines) {
         const line = stripAnsi(rawLine);
         if (!line.trim()) continue;
+        console.log('[codex] stdout line:', line.slice(0, 200));
         // ERROR: {json} → parse 후 error 타입으로 전달
         if (line.trimStart().startsWith('ERROR:')) {
           try {
@@ -4330,11 +4336,17 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
     let codexStderrBuf = '';
     const CODEX_STDERR_ERR = /^(error|Error|failed|invalid|quota|unauthorized|rate.limit|\d{3}\s)/i;
     const CODEX_META_RE = /^(Reading prompt from stdin|OpenAI Codex v|-----+|workdir:|model:|provider:|approval:|sandbox:|reasoning effort:|reasoning summaries:|session id:|tokens used|user$|codex$)/m;
-    proc.stderr.on('data', (data: Buffer) => { codexStderrBuf += data.toString(); });
+    proc.stderr.on('data', (data: Buffer) => {
+      const s = data.toString();
+      console.log('[codex] stderr:', s.slice(0, 300));
+      codexStderrBuf += s;
+    });
     proc.on('error', (err: any) => {
+      console.log('[codex] spawn error:', err);
       mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: String(err) } });
     });
     proc.on('close', (code: number) => {
+      console.log('[codex] close, code:', code);
       // 남은 stdout 버퍼 플러시
       if (stdoutBuf.trim()) {
         if (stdoutBuf.trimStart().startsWith('ERROR:')) {
@@ -4363,6 +4375,7 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
     });
     return { success: true };
   } catch (err: any) {
+    console.log('[codex] exception:', err);
     return { success: false, error: String(err) };
   }
 });
