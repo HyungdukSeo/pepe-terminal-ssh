@@ -4265,9 +4265,6 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
     console.log('[codex] spawn start, prompt length:', prompt.length);
     console.log('[codex] model:', model || 'default', '| effort:', effort || 'default', '| approval:', approvalPolicy || 'suggest');
 
-    const tmpFile = path.join(os.tmpdir(), `codex-prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`);
-    fs.writeFileSync(tmpFile, prompt, 'utf-8');
-
     const augmentedPath = buildAugmentedPath();
     const spawnEnv = {
       ...process.env,
@@ -4280,41 +4277,42 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
 
     const modelFlag = model ? ` -m ${model}` : '';
     const codexEffort = effort === 'max' ? 'xhigh' : effort;
-    // Unix(bash): -c "model_reasoning_effort=\"medium\""
-    const effortFlag = codexEffort && ['low', 'medium', 'high', 'xhigh'].includes(codexEffort)
-      ? ` -c "model_reasoning_effort=\\"${codexEffort}\\""`
-      : '';
-    // suggest → read-only, auto-edit/full-auto → danger-full-access (파일 쓰기 허용)
     const fullAccess = approvalPolicy === 'auto-edit' || approvalPolicy === 'full-auto';
     const isWin = process.platform === 'win32';
     const cwd = process.env.USERPROFILE || process.env.HOME || os.homedir();
-    const macInnerCmd = fullAccess
-      ? `cat "${tmpFile}" | codex exec${modelFlag}${effortFlag} --skip-git-repo-check --sandbox danger-full-access`
-      : `cat "${tmpFile}" | codex exec${modelFlag}${effortFlag} --skip-git-repo-check -c 'sandbox_permissions=["disk-full-read-access","network-full-access"]'`;
-    // Windows: cmd.exe + < stdin 리다이렉트 방식
-    // PowerShell 파이프($content | codex)는 문자열 변환 시 인코딩 깨짐 → < 리다이렉트는 파일 바이트 그대로 전달
-    // cmd.exe 따옴표 규칙: "" → " (CommandLineToArgvW), chcp 65001 → 자식 프로세스 UTF-8 코드페이지
+
+    // ── 핵심: Node.js가 proc.stdin에 직접 UTF-8로 write (Claude와 동일 방식)
+    // shell을 거치면 stdin/stdout 모두 코드페이지 변환 → 한글 깨짐
+    // stdio: ['pipe', ...] + proc.stdin.write(prompt, 'utf-8') 로 인코딩 완전 제어
     let shellCmd: string;
-    const ps1File: string | null = null; // 더 이상 ps1 파일 불필요
     if (isWin) {
-      // effortFlag cmd 버전: cmd.exe에서 "" 이 " 로 전달됨 (CommandLineToArgvW)
+      // cmd.exe "" 이스케이프 (CommandLineToArgvW: "" → ")
       const effortFlagCmd = codexEffort && ['low', 'medium', 'high', 'xhigh'].includes(codexEffort)
         ? ` -c "model_reasoning_effort=""${codexEffort}"""`
         : '';
       const winSandbox = fullAccess
         ? `--sandbox danger-full-access`
         : `-c "sandbox_permissions=[""disk-full-read-access"",""network-full-access""]"`;
-      // < 리다이렉트: 파일 바이트를 codex stdin으로 직접 전달 (인코딩 변환 없음)
-      shellCmd = `chcp 65001 >nul && codex exec${modelFlag}${effortFlagCmd} --skip-git-repo-check ${winSandbox} < "${tmpFile}"`;
+      shellCmd = `chcp 65001 >nul && codex exec${modelFlag}${effortFlagCmd} --skip-git-repo-check ${winSandbox}`;
     } else {
-      shellCmd = macInnerCmd;
+      const effortFlag = codexEffort && ['low', 'medium', 'high', 'xhigh'].includes(codexEffort)
+        ? ` -c "model_reasoning_effort=\\"${codexEffort}\\""`
+        : '';
+      const macSandbox = fullAccess
+        ? `--sandbox danger-full-access`
+        : `-c 'sandbox_permissions=["disk-full-read-access","network-full-access"]'`;
+      shellCmd = `codex exec${modelFlag}${effortFlag} --skip-git-repo-check ${macSandbox}`;
     }
     console.log('[codex] shell cmd:', shellCmd);
     console.log('[codex] PATH has npm:', augmentedPath.toLowerCase().includes('npm'));
-    const proc = spawn(shellCmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd });
+    // stdio: ['pipe',...] — stdin을 Node.js가 직접 write하므로 tmpFile 불필요
+    const proc = spawn(shellCmd, { shell: true, stdio: ['pipe', 'pipe', 'pipe'], env: spawnEnv, cwd });
     codexProcesses.set(procKey, proc);
 
-    const cleanupTmp = () => { try { fs.unlinkSync(tmpFile); } catch {} };
+    // 프롬프트를 UTF-8로 직접 stdin에 write (인코딩 변환 없음)
+    try { proc.stdin.write(prompt, 'utf-8'); proc.stdin.end(); } catch {}
+
+    const cleanupTmp = () => {}; // tmpFile 미사용
 
     let stdoutBuf = '';
     let stdoutHadContent = false;
