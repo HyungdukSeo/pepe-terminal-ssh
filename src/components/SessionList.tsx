@@ -115,7 +115,12 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
   useEffect(() => {
     if (!pinnedLoadedRef.current) return;
     try { (window as any).api?.setUIPrefs?.({ sidebarPinned: pinned }); } catch {}
-    if (pinned) setVisible(true);
+    if (pinned) {
+      setVisible(true);
+    } else {
+      // 고정 해제 즉시 숨김 (클릭 없이도 바로 사라짐)
+      setVisible(false);
+    }
   }, [pinned]);
 
   // 컨텍스트 메뉴 외부 클릭 시 닫기
