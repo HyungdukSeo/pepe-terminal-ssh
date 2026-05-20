@@ -961,7 +961,12 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         const source = codeEl.textContent || '';
         const id = `mermaid-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 6)}`;
         try {
-          const { svg } = await mermaid.render(id, source);
+          const { svg } = await Promise.race([
+            mermaid.render(id, source),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('mermaid render timeout (8s)')), 8000)
+            ),
+          ]);
           const wrap = document.createElement('div');
           wrap.className = 'claude-chat-mermaid';
           wrap.setAttribute('data-mermaid-rendered', '1');

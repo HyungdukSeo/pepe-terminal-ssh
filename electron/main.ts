@@ -4290,25 +4290,42 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
     const macInnerCmd = fullAccess
       ? `cat "${tmpFile}" | codex exec${modelFlag}${effortFlag} --skip-git-repo-check --sandbox danger-full-access`
       : `cat "${tmpFile}" | codex exec${modelFlag}${effortFlag} --skip-git-repo-check -c 'sandbox_permissions=["disk-full-read-access","network-full-access"]'`;
-    const winCmd = fullAccess
-      ? `chcp 65001 >nul && type "${tmpFile}" | codex exec${modelFlag}${effortFlag} --skip-git-repo-check --sandbox danger-full-access`
-      : `chcp 65001 >nul && type "${tmpFile}" | codex exec${modelFlag}${effortFlag} --skip-git-repo-check -c "sandbox_permissions=[\\"disk-full-read-access\\",\\"network-full-access\\"]"`;
-    const shellCmd = isWin ? winCmd : macInnerCmd;
+    // Windows: .ps1 임시 파일로 UTF-8 파이프 (chcp+type 방식은 한글 깨짐)
+    let shellCmd: string;
+    let ps1File: string | null = null;
+    if (isWin) {
+      ps1File = path.join(os.tmpdir(), `codex-run-${Date.now()}.ps1`);
+      const winSandbox = fullAccess
+        ? `--sandbox danger-full-access`
+        : `-c 'sandbox_permissions=["disk-full-read-access","network-full-access"]'`;
+      const ps1 = [
+        `[Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8`,
+        `$content = [System.IO.File]::ReadAllText('${tmpFile.replace(/\\/g, '\\\\').replace(/'/g, "''")}', [System.Text.Encoding]::UTF8)`,
+        `$content | & codex exec${modelFlag}${effortFlag} --skip-git-repo-check ${winSandbox}`,
+      ].join('\r\n');
+      fs.writeFileSync(ps1File, ps1, 'utf-8');
+      shellCmd = `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${ps1File}"`;
+    } else {
+      shellCmd = macInnerCmd;
+    }
     console.log('[codex] shell cmd:', shellCmd);
     console.log('[codex] PATH has npm:', augmentedPath.toLowerCase().includes('npm'));
     const proc = spawn(shellCmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd });
     codexProcesses.set(procKey, proc);
 
-    const cleanupTmp = () => { try { fs.unlinkSync(tmpFile); } catch {} };
+    const cleanupTmp = () => {
+      try { fs.unlinkSync(tmpFile); } catch {}
+      if (ps1File) { try { fs.unlinkSync(ps1File); } catch {} }
+    };
 
     let stdoutBuf = '';
     let stdoutHadContent = false;
-    proc.stdout.setEncoding('utf-8');
+    // setEncoding 대신 Buffer로 받아 명시적 UTF-8 디코딩 (Windows 인코딩 깨짐 방지)
     // Codex stdout: 실제 응답 + ERROR: JSON 에러 라인
     // stderr 는 stdin echo + 메타데이터이므로 stdout 만 처리
     const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*[mGKHF]/g, '').replace(/\r/g, '');
-    proc.stdout.on('data', (data: string) => {
-      stdoutBuf += data;
+    proc.stdout.on('data', (data: Buffer | string) => {
+      stdoutBuf += Buffer.isBuffer(data) ? data.toString('utf-8') : data;
       const lines = stdoutBuf.split('\n');
       stdoutBuf = lines.pop() || '';
       for (const rawLine of lines) {
@@ -4336,8 +4353,8 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
     let codexStderrBuf = '';
     const CODEX_STDERR_ERR = /^(error|Error|failed|invalid|quota|unauthorized|rate.limit|\d{3}\s)/i;
     const CODEX_META_RE = /^(Reading prompt from stdin|OpenAI Codex v|-----+|workdir:|model:|provider:|approval:|sandbox:|reasoning effort:|reasoning summaries:|session id:|tokens used|user$|codex$)/m;
-    proc.stderr.on('data', (data: Buffer) => {
-      const s = data.toString();
+    proc.stderr.on('data', (data: Buffer | string) => {
+      const s = Buffer.isBuffer(data) ? data.toString('utf-8') : data;
       console.log('[codex] stderr:', s.slice(0, 300));
       codexStderrBuf += s;
     });
