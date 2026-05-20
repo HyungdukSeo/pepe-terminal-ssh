@@ -4265,6 +4265,9 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
     console.log('[codex] spawn start, prompt length:', prompt.length);
     console.log('[codex] model:', model || 'default', '| effort:', effort || 'default', '| approval:', approvalPolicy || 'suggest');
 
+    const tmpFile = path.join(os.tmpdir(), `codex-prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`);
+    fs.writeFileSync(tmpFile, prompt, 'utf-8');
+
     const augmentedPath = buildAugmentedPath();
     const spawnEnv = {
       ...process.env,
@@ -4280,82 +4283,44 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
     const isWin = process.platform === 'win32';
     const cwd = process.env.USERPROFILE || process.env.HOME || os.homedir();
 
-    // ── Windows: codex.exe 직접 spawn (shell/cmd.exe 계층 완전 제거)
-    // codex.js → codex.exe (stdio:inherit) → cmd.exe 경유 시 CP949 인코딩 변환 발생
-    // codex.exe를 직접 spawn + stdio:pipe → Rust가 ReadFile로 raw UTF-8 바이트 수신
-    const findCodexExe = (): string | null => {
-      try {
-        const { execSync } = require('child_process');
-        const codexCmdLine = execSync('where codex.cmd', { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }) as string;
-        const codexCmdPath = codexCmdLine.split('\n')[0].trim();
-        const npmDir = path.dirname(codexCmdPath);
-        const codexPkgDir = path.join(npmDir, 'node_modules', '@openai', 'codex');
-        const archName = process.arch === 'x64' ? 'x64' : 'arm64';
-        const triple = process.arch === 'x64' ? 'x86_64-pc-windows-msvc' : 'aarch64-pc-windows-msvc';
-        const candidates = [
-          path.join(codexPkgDir, 'node_modules', `@openai`, `codex-win32-${archName}`, 'vendor', triple, 'codex', 'codex.exe'),
-          path.join(codexPkgDir, 'vendor', triple, 'codex', 'codex.exe'),
-        ];
-        for (const p of candidates) { if (fs.existsSync(p)) { return p; } }
-      } catch {}
-      return null;
-    };
-
-    // 인수 배열 빌드 (shell 없이 exe에 직접 전달 — 따옴표/이스케이프 필요없음)
-    const buildCodexArgs = (): string[] => {
-      const args = ['exec'];
-      if (model) { args.push('-m', model); }
-      if (codexEffort && ['low', 'medium', 'high', 'xhigh'].includes(codexEffort)) {
-        args.push('-c', `model_reasoning_effort="${codexEffort}"`);
-      }
-      args.push('--skip-git-repo-check');
-      if (fullAccess) {
-        args.push('--sandbox', 'danger-full-access');
-      } else {
-        args.push('-c', 'sandbox_permissions=["disk-full-read-access","network-full-access"]');
-      }
-      return args;
-    };
+    const modelFlag = model ? ` -m ${model}` : '';
+    // effort: 값이 단순 영문(low/medium/high/xhigh)이므로 cmd.exe 에서 따옴표 불필요
+    const effortFlag = codexEffort && ['low', 'medium', 'high', 'xhigh'].includes(codexEffort)
+      ? ` -c model_reasoning_effort=${codexEffort}`
+      : '';
 
     let proc: any;
-    const codexExePath = isWin ? findCodexExe() : null;
 
-    if (isWin && codexExePath) {
-      // ✅ 직접 spawn: cmd/node 계층 없음, stdin pipe → Rust ReadFile → UTF-8
-      const args = buildCodexArgs();
-      console.log('[codex] direct exe:', codexExePath);
-      console.log('[codex] args:', args.join(' '));
-      proc = spawn(codexExePath, args, { shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: spawnEnv, cwd });
+    if (isWin) {
+      // v2.1.0 검증된 방식: chcp 65001 + type 파일 파이프 → codex exec (shell:true)
+      // cmd.exe 에서 chcp 65001 설정 후 type이 UTF-8 파일 바이트를 그대로 pipe
+      // → codex.js(stdio:inherit) → codex.exe 까지 UTF-8 코드페이지 유지
+      const sandbox = fullAccess
+        ? `--sandbox danger-full-access`
+        : `-c "sandbox_permissions=[\\"disk-full-read-access\\",\\"network-full-access\\"]"`;
+      const shellCmd = `chcp 65001 >nul && type "${tmpFile}" | codex exec${modelFlag}${effortFlag} --skip-git-repo-check ${sandbox}`;
+      console.log('[codex] shell cmd (win):', shellCmd);
+      proc = spawn(shellCmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd });
     } else {
-      // Mac/Linux or fallback
-      const effortFlag = codexEffort && ['low', 'medium', 'high', 'xhigh'].includes(codexEffort)
-        ? ` -c "model_reasoning_effort=\\"${codexEffort}\\""`
-        : '';
-      const macSandbox = fullAccess
+      // Mac/Linux
+      const sandbox = fullAccess
         ? `--sandbox danger-full-access`
         : `-c 'sandbox_permissions=["disk-full-read-access","network-full-access"]'`;
-      const shellCmd = isWin
-        ? `chcp 65001 >nul && codex exec -m ${model || 'gpt-5.5'}${effortFlag} --skip-git-repo-check ${macSandbox}`
-        : `codex exec${model ? ` -m ${model}` : ''}${effortFlag} --skip-git-repo-check ${macSandbox}`;
-      console.log('[codex] shell cmd:', shellCmd);
-      proc = spawn(shellCmd, { shell: true, stdio: ['pipe', 'pipe', 'pipe'], env: spawnEnv, cwd });
+      const shellCmd = `cat "${tmpFile}" | codex exec${modelFlag}${effortFlag} --skip-git-repo-check ${sandbox}`;
+      console.log('[codex] shell cmd (unix):', shellCmd);
+      proc = spawn(shellCmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd });
     }
     console.log('[codex] PATH has npm:', augmentedPath.toLowerCase().includes('npm'));
     codexProcesses.set(procKey, proc);
 
-    // 프롬프트를 UTF-8로 직접 stdin에 write
-    try { proc.stdin.write(Buffer.from(prompt, 'utf-8')); proc.stdin.end(); } catch {}
-
-    const cleanupTmp = () => {}; // tmpFile 미사용
+    const cleanupTmp = () => { try { fs.unlinkSync(tmpFile); } catch {} };
 
     let stdoutBuf = '';
     let stdoutHadContent = false;
-    // setEncoding 대신 Buffer로 받아 명시적 UTF-8 디코딩 (Windows 인코딩 깨짐 방지)
-    // Codex stdout: 실제 응답 + ERROR: JSON 에러 라인
-    // stderr 는 stdin echo + 메타데이터이므로 stdout 만 처리
     const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*[mGKHF]/g, '').replace(/\r/g, '');
-    proc.stdout.on('data', (data: Buffer | string) => {
-      stdoutBuf += Buffer.isBuffer(data) ? data.toString('utf-8') : data;
+    proc.stdout.setEncoding('utf-8');
+    proc.stdout.on('data', (data: string) => {
+      stdoutBuf += data;
       const lines = stdoutBuf.split('\n');
       stdoutBuf = lines.pop() || '';
       for (const rawLine of lines) {
@@ -4378,8 +4343,7 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
         mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'text', text: line + '\n' } });
       }
     });
-    // Codex stderr = stdin echo + 세션 메타데이터 → 완전 무시
-    // (실제 에러는 stdout 의 ERROR: JSON 으로 전달됨)
+    // Codex stderr = stdin echo + 세션 메타데이터
     let codexStderrBuf = '';
     const CODEX_STDERR_ERR = /^(error|Error|failed|invalid|quota|unauthorized|rate.limit|\d{3}\s)/i;
     const CODEX_META_RE = /^(Reading prompt from stdin|OpenAI Codex v|-----+|workdir:|model:|provider:|approval:|sandbox:|reasoning effort:|reasoning summaries:|session id:|tokens used|user$|codex$)/m;
@@ -4396,16 +4360,17 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
       console.log('[codex] close, code:', code);
       // 남은 stdout 버퍼 플러시
       if (stdoutBuf.trim()) {
-        if (stdoutBuf.trimStart().startsWith('ERROR:')) {
+        const flushed = stripAnsi(stdoutBuf);
+        if (flushed.trimStart().startsWith('ERROR:')) {
           try {
-            const obj = JSON.parse(stdoutBuf.trimStart().slice(6).trim());
-            mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: obj?.error?.message || stdoutBuf } });
+            const obj = JSON.parse(flushed.trimStart().slice(6).trim());
+            mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: obj?.error?.message || flushed } });
           } catch {
-            mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: stdoutBuf } });
+            mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: flushed } });
           }
         } else {
           stdoutHadContent = true;
-          mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'text', text: stdoutBuf } });
+          mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'text', text: flushed } });
         }
       }
       // stderr: stdout 에 아무 내용도 없을 때만 명백한 에러 라인 표시
