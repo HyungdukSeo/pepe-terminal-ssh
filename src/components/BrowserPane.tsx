@@ -12,7 +12,9 @@ type Props = {
 export const BrowserPane: React.FC<Props> = ({ initialUrl, onTitleChange }) => {
   const { t } = useTranslation('browser');
   const webviewRef = useRef<any>(null);
-  const [url, setUrl] = useState(initialUrl);
+  // src 는 초기 1회만 설정. 이후 네비게이션은 webview 내부에서 처리되며,
+  // src 를 state 로 묶어 갱신하면 리다이렉트마다 webview 가 reload 되어 무한 새로고침이 발생함.
+  const initialSrcRef = useRef(initialUrl);
   const [editUrl, setEditUrl] = useState(initialUrl);
   const [canBack, setCanBack] = useState(false);
   const [canFwd, setCanFwd] = useState(false);
@@ -23,7 +25,7 @@ export const BrowserPane: React.FC<Props> = ({ initialUrl, onTitleChange }) => {
     const wv: any = webviewRef.current;
     if (!wv) return;
     const onNav = () => {
-      try { setUrl(wv.getURL()); setEditUrl(wv.getURL()); } catch {}
+      try { setEditUrl(wv.getURL()); } catch {}
       try { setCanBack(wv.canGoBack()); setCanFwd(wv.canGoForward()); } catch {}
     };
     const onStart = () => setLoading(true);
@@ -127,7 +129,7 @@ export const BrowserPane: React.FC<Props> = ({ initialUrl, onTitleChange }) => {
       {/* @ts-ignore — webview 는 React 표준 element 가 아니지만 Electron 환경에서 동작 */}
       <webview
         ref={webviewRef as any}
-        src={url}
+        src={initialSrcRef.current}
         style={{ flex: 1, width: '100%', display: 'flex' } as any}
         allowpopups={'true' as any}
       />
