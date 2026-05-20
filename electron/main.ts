@@ -4265,8 +4265,25 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
     console.log('[codex] spawn start, prompt length:', prompt.length);
     console.log('[codex] model:', model || 'default', '| effort:', effort || 'default', '| approval:', approvalPolicy || 'suggest');
 
+    const isWin = process.platform === 'win32';
     const tmpFile = path.join(os.tmpdir(), `codex-prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`);
-    fs.writeFileSync(tmpFile, prompt, 'utf-8');
+    // Windows: codex.exe(Rust)가 stdin을 MultiByteToWideChar(CP_ACP)로 읽는 것으로 확인됨
+    // CP_ACP = 한국어 Windows = CP949 → UTF-8 바이트를 CP949로 오해석 → 한글 깨짐
+    // → 프롬프트를 CP949(시스템 ACP)로 인코딩해서 쓰면 codex.exe가 올바르게 디코딩
+    // iconv-lite는 이미 node_modules에 존재 (marked 의존성)
+    if (isWin) {
+      try {
+        const iconv = require('iconv-lite');
+        const cp949Bytes: Buffer = iconv.encode(prompt, 'CP949');
+        fs.writeFileSync(tmpFile, cp949Bytes);
+        console.log('[codex] prompt encoded as CP949, bytes:', cp949Bytes.length);
+      } catch {
+        fs.writeFileSync(tmpFile, prompt, 'utf-8');
+        console.log('[codex] iconv-lite unavailable, fallback UTF-8');
+      }
+    } else {
+      fs.writeFileSync(tmpFile, prompt, 'utf-8');
+    }
 
     const augmentedPath = buildAugmentedPath();
     const spawnEnv = {
@@ -4280,7 +4297,6 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
 
     const codexEffort = effort === 'max' ? 'xhigh' : effort;
     const fullAccess = approvalPolicy === 'auto-edit' || approvalPolicy === 'full-auto';
-    const isWin = process.platform === 'win32';
     const cwd = process.env.USERPROFILE || process.env.HOME || os.homedir();
 
     const modelFlag = model ? ` -m ${model}` : '';

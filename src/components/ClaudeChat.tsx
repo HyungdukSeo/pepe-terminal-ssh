@@ -940,8 +940,14 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     document.querySelectorAll<HTMLElement>('.claude-chat-plan-body').forEach(el => roots.push(el));
     const codeBlocks: HTMLElement[] = [];
     for (const r of roots) {
-      r.querySelectorAll<HTMLElement>('pre > code:not([data-mermaid-rendered])').forEach(el => {
+      // :not([data-mermaid-rendered="1"]) — 성공 렌더된 것만 skip
+      // error로 마크된 것도 내용이 바뀌었으면(스트리밍 완료 후) 재시도 허용
+      r.querySelectorAll<HTMLElement>('pre > code').forEach(el => {
+        const rendered = el.getAttribute('data-mermaid-rendered');
+        if (rendered === '1') return; // 성공 렌더 → skip
         const source = (el.textContent || '').trim();
+        // error 마크됐지만 내용이 달라지면 재시도 (스트리밍 중 partial → 완성)
+        if (rendered === 'error' && el.getAttribute('data-mermaid-src') === source) return;
         if (el.classList.contains('language-mermaid') || MERMAID_START_RE.test(source)) {
           codeBlocks.push(el);
         }
@@ -958,8 +964,21 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       for (let i = 0; i < codeBlocks.length; i++) {
         const codeEl = codeBlocks[i];
         const pre = codeEl.parentElement; // <pre>
-        const source = codeEl.textContent || '';
+        const source = (codeEl.textContent || '').trim();
         const id = `mermaid-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 6)}`;
+        // 인코딩 깨짐 감지: Korean Compatibility Jamo(U+3130-U+318F)는 diagram에
+        // 거의 등장하지 않으며 이 범위 문자가 있으면 mermaid parser가 무한루프에 빠짐
+        if (/[㄰-㆏]/.test(source)) {
+          codeEl.setAttribute('data-mermaid-rendered', 'error');
+          codeEl.setAttribute('data-mermaid-src', source);
+          const errDiv = document.createElement('div');
+          errDiv.className = 'claude-chat-mermaid-error';
+          errDiv.textContent = '⚠ 다이어그램 인코딩 오류 (Codex 한글 인코딩 문제)';
+          if (pre && pre.parentElement) pre.parentElement.insertBefore(errDiv, pre);
+          continue;
+        }
+        // 처리 시작 전 src 기록 (에러 시 재시도 방지)
+        codeEl.setAttribute('data-mermaid-src', source);
         try {
           const { svg } = await Promise.race([
             mermaid.render(id, source),
