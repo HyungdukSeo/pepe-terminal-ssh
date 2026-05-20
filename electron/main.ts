@@ -4301,20 +4301,23 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
     proc.stdout.setEncoding('utf-8');
     // Codex stdout: 실제 응답 + ERROR: JSON 에러 라인
     // stderr 는 stdin echo + 메타데이터이므로 stdout 만 처리
+    const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*[mGKHF]/g, '').replace(/\r/g, '');
     proc.stdout.on('data', (data: string) => {
       stdoutBuf += data;
       const lines = stdoutBuf.split('\n');
       stdoutBuf = lines.pop() || '';
-      for (const line of lines) {
+      for (const rawLine of lines) {
+        const line = stripAnsi(rawLine);
         if (!line.trim()) continue;
         // ERROR: {json} → parse 후 error 타입으로 전달
         if (line.trimStart().startsWith('ERROR:')) {
           try {
-            const obj = JSON.parse(line.trimStart().slice(6).trim());
-            const errMsg = obj?.error?.message || line;
+            const jsonStr = line.trimStart().slice('ERROR:'.length).trim();
+            const obj = JSON.parse(jsonStr);
+            const errMsg = obj?.error?.message || obj?.message || jsonStr;
             mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: errMsg } });
           } catch {
-            mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: line } });
+            mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: line.trimStart().slice('ERROR:'.length).trim() || line } });
           }
           continue;
         }
