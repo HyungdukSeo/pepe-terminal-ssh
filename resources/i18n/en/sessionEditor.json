@@ -1,9 +1,9 @@
 {
-  "title": "Edit session",
+  "title": "세션 편집",
   "loading": "Loading...",
   "notFound": "Session not found",
   "newSession": "New session",
-  "header": "Session Editor",
+  "header": "세션 편집",
   "dragMove": "Drag to move",
   "tabs": {
     "general": "General",
