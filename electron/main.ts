@@ -3952,6 +3952,124 @@ ipcMain.handle('claude:probe-usage-tui', async () => {
   });
 });
 
+// Codex CLI 를 PTY 로 띄워 /status 출력 캡처 → 토큰/컨텍스트 사용량 파싱.
+// Gemini /stats 와 거의 동일한 패턴.
+function probeCliTui(opts: {
+  binCandidate: string;        // 'codex' | 'gemini'
+  command: string;             // '/status' | '/stats model'
+  readyMarker: RegExp;         // 프롬프트 입력 가능 신호 (대략 "▶" 등 — 시간 기반으로 대체)
+  doneMarker: RegExp;          // 출력이 끝났음을 나타내는 패턴
+  panelStartMarker: RegExp;    // 결과 패널 시작 마커 (자동완성/에코 노이즈 절단용)
+  startupDelayMs: number;      // CLI 부팅 대기
+  maxMs: number;
+}) {
+  return new Promise((resolve) => {
+    let proc: any = null;
+    let buf = '';
+    let resolved = false;
+    let cmdStartLen = 0;
+    const finish = (result: any) => {
+      if (resolved) return;
+      resolved = true;
+      try { proc?.write?.('\x03'); } catch {}
+      try { proc?.write?.('/quit\r'); } catch {}
+      setTimeout(() => { try { proc?.kill?.(); } catch {} }, 300);
+      resolve(result);
+    };
+    try {
+      const isWin = process.platform === 'win32';
+      let bin = opts.binCandidate;
+      let args: string[] = [];
+      // Windows: node-pty 는 .cmd/.bat/.ps1 같은 비-PE 래퍼를 직접 못 띄움 → 항상 cmd.exe 로 감싸기
+      if (isWin) {
+        args = ['/d', '/s', '/c', opts.binCandidate];
+        bin = process.env.ComSpec || 'cmd.exe';
+      }
+      proc = pty.spawn(bin, args, {
+        name: 'xterm-256color',
+        cols: 220,
+        rows: 60,
+        cwd: process.env.USERPROFILE || process.env.HOME || process.cwd(),
+        env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' } as any,
+      });
+    } catch (e: any) {
+      return resolve({ success: false, error: `PTY spawn 실패 (${opts.binCandidate}): ` + (e?.message || e) });
+    }
+    const captureAndFinish = () => {
+      // 먼저 ANSI/제어문자 제거
+      const stripped = buf
+        .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
+        .replace(/\x1b\][^\x07]*\x07/g, '')
+        .replace(/\x1b[()][AB012]/g, '')
+        .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
+      // 패널 시작 마커 이후만 잘라냄 (자동완성/에코/banner 노이즈 제거).
+      // 같은 마커가 여러 번 등장하면 가장 마지막 출현 위치 기준 (최신 패널).
+      let after = stripped;
+      const matches = [...stripped.matchAll(new RegExp(opts.panelStartMarker, 'gi'))];
+      if (matches.length > 0) {
+        const last = matches[matches.length - 1];
+        after = stripped.slice(last.index);
+      } else if (cmdStartLen > 0) {
+        after = stripped.slice(Math.min(cmdStartLen, stripped.length));
+      }
+      finish({ success: true, raw: after, length: buf.length });
+    };
+    proc.onData((d: string) => {
+      buf += d;
+      if (cmdStartLen > 0 && opts.doneMarker.test(buf.slice(cmdStartLen))) {
+        setTimeout(captureAndFinish, 500);
+      }
+    });
+    proc.onExit(() => {});
+    // CLI 부팅 대기 후 명령어 입력
+    setTimeout(() => {
+      try { proc.write(' '); } catch {}
+      setTimeout(() => { try { proc.write('\b'); } catch {} }, 100);
+      setTimeout(() => {
+        cmdStartLen = buf.length;
+        const cmd = opts.command;
+        let i = 0;
+        const typer = () => {
+          if (i < cmd.length) {
+            try { proc.write(cmd[i]); } catch {}
+            i++;
+            setTimeout(typer, 40);
+          } else {
+            setTimeout(() => { try { proc.write('\r'); } catch {} }, 300);
+          }
+        };
+        typer();
+      }, 250);
+    }, opts.startupDelayMs);
+    setTimeout(captureAndFinish, opts.maxMs - 2000);
+    setTimeout(() => finish({ success: false, error: 'timeout', raw: buf }), opts.maxMs);
+  });
+}
+
+ipcMain.handle('codex:probe-status', async () => {
+  return probeCliTui({
+    binCandidate: 'codex',
+    command: '/status',
+    readyMarker: /./,
+    doneMarker: /Weekly\s*limit|5h\s*limit|Collaboration\s*mode/i,
+    panelStartMarker: /OpenAI\s*Codex\s*\(v[\d.]+\)/i,
+    startupDelayMs: 4000,
+    maxMs: 15000,
+  });
+});
+
+ipcMain.handle('gemini:probe-stats', async () => {
+  return probeCliTui({
+    binCandidate: 'gemini',
+    command: '/stats model',
+    readyMarker: /./,
+    doneMarker: /Stats\s*For\s*Nerds|Usage\s*limit|Roles|Total\s*Tokens|No\s*API\s*calls/i,
+    panelStartMarker: /Stats\s*For\s*Nerds|Session\s*Stats|No\s*API\s*calls/i,
+    startupDelayMs: 5000,
+    maxMs: 18000,
+  });
+});
+
 // ~/.claude/projects 의 모든 세션 jsonl 을 스캔해 usage 합산 (전체 누적 사용량)
 ipcMain.handle('claude:probe-usage', async () => {
   const fs = require('fs');
