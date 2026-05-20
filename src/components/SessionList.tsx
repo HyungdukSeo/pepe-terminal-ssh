@@ -1,5 +1,6 @@
 // src/components/SessionList.tsx
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
+import { flushSync } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { SessionEditor } from './SessionEditor';
 
@@ -566,7 +567,7 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
       <div
         ref={containerRef}
         className={`session-sidebar-inner ${!pinned ? 'auto-hide' : ''} ${!pinned && !visible ? 'hidden' : ''}`}
-        style={{ width }}
+        style={{ width, display: (!pinned && !visible) ? 'none' : undefined }}
         onMouseLeave={handleMouseLeaveSidebar}
         onMouseEnter={handleMouseEnterSidebar}
       >
@@ -576,19 +577,11 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
             className={`btn-pin ${pinned ? 'pinned' : ''}`}
             onClick={() => {
               const next = !pinned;
-              setPinned(next);
-              if (!next) {
-                setVisible(false);
-                // React 상태 배치 전에 DOM을 직접 즉시 숨김
-                if (containerRef.current) {
-                  containerRef.current.classList.add('auto-hide', 'hidden');
-                }
-              } else {
-                // 다시 고정 시 인라인 조작 제거
-                if (containerRef.current) {
-                  containerRef.current.classList.remove('auto-hide', 'hidden');
-                }
-              }
+              // flushSync: 상태 업데이트를 즉시 동기적으로 DOM에 반영
+              flushSync(() => {
+                setPinned(next);
+                setVisible(next); // 고정 해제 → false(즉시 숨김), 고정 → true
+              });
             }}
             title={pinned ? t('unpinTooltip') : t('pinTooltip')}
           >
