@@ -4298,70 +4298,32 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
 
     let stdoutBuf = '';
     proc.stdout.setEncoding('utf-8');
-    // codex exec 은 stdin 프롬프트를 stdout 으로 에코하는 경우가 있음
-    // 프롬프트 구분자 이전 내용 + ERROR JSON 라인은 필터링
-    let promptEchoDone = false;
-    const PROMPT_END_MARKER = '--- 사용자 요청 ---';
+    // Codex stdout → 줄 단위로 즉시 전달 (Gemini 방식과 동일)
     proc.stdout.on('data', (data: string) => {
       stdoutBuf += data;
-      // 프롬프트 에코가 끝나는 마커를 찾으면 그 이후부터만 전달
-      if (!promptEchoDone) {
-        const markerIdx = stdoutBuf.indexOf(PROMPT_END_MARKER);
-        if (markerIdx !== -1) {
-          // 마커 이후 첫 줄바꿈부터 실제 응답
-          const afterMarker = stdoutBuf.indexOf('\n', markerIdx);
-          stdoutBuf = afterMarker !== -1 ? stdoutBuf.slice(afterMarker + 1) : '';
-          promptEchoDone = true;
-        } else if (stdoutBuf.length > prompt.length + 200) {
-          // 마커 못 찾고 버퍼가 프롬프트보다 충분히 크면 에코 없는 것으로 간주
-          promptEchoDone = true;
-        } else {
-          return; // 아직 에코 중
-        }
-      }
       const lines = stdoutBuf.split('\n');
       stdoutBuf = lines.pop() || '';
       for (const line of lines) {
         if (!line.trim()) continue;
-        // ERROR JSON 라인 → error 메시지로 변환
-        if (line.startsWith('ERROR:')) {
-          try {
-            const obj = JSON.parse(line.slice(6).trim());
-            const msg = obj?.error?.message || line;
-            mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: msg } });
-          } catch {
-            mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: line } });
-          }
-          continue;
-        }
         mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'text', text: line + '\n' } });
       }
     });
-    // Codex stderr = 세션 헤더 + 대화 에코 (메타데이터) → 항상 버퍼링 후 에러 시에만 표시
+    // Codex stderr = 세션 헤더(메타데이터) 버퍼링 → 에러 시 표시, 정상 종료면 무시
+    const CODEX_META = /^(Reading prompt from stdin|OpenAI Codex v|--------+|workdir:|model:|provider:|approval:|sandbox:|reasoning effort:|reasoning summaries:|session id:|tokens used|user$|codex$|\s*$)/m;
     let codexStderrBuf = '';
     proc.stderr.on('data', (data: Buffer) => { codexStderrBuf += data.toString(); });
     proc.on('error', (err: any) => {
       mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: String(err) } });
     });
     proc.on('close', (code: number) => {
+      // 남은 stdout 버퍼 플러시
       if (stdoutBuf.trim()) {
-        // 남은 버퍼도 ERROR 체크
-        if (stdoutBuf.trimStart().startsWith('ERROR:')) {
-          try {
-            const obj = JSON.parse(stdoutBuf.trimStart().slice(6).trim());
-            mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: obj?.error?.message || stdoutBuf } });
-          } catch {
-            mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: stdoutBuf } });
-          }
-        } else {
-          mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'text', text: stdoutBuf } });
-        }
+        mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'text', text: stdoutBuf } });
       }
-      // stdout이 비어있고 에러 종료면 stderr에서 실제 에러 메시지 추출
-      if (code !== 0 && codexStderrBuf.trim()) {
-        const CODEX_META = /^(Reading prompt from stdin|OpenAI Codex v|--------+|workdir:|model:|provider:|approval:|sandbox:|reasoning effort:|reasoning summaries:|session id:|tokens used|user$|codex$)/m;
+      // stderr 에러 표시: 비정상 종료 또는 stdout 이 비어있을 때 실제 에러 라인만
+      if (codexStderrBuf.trim()) {
         const errLines = codexStderrBuf.split('\n').filter(l => l.trim() && !CODEX_META.test(l));
-        if (errLines.length) {
+        if (errLines.length && (code !== 0 || !stdoutBuf.trim())) {
           mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: errLines.join('\n') } });
         }
       }

@@ -576,7 +576,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     }
   }, [permissionMode]);
   // 모델 선택 — 에이전트별 기본 모델
-  const defaultModelFor = (a: AgentType) => a === 'gemini' ? 'gemini-2.5-flash' : a === 'codex' ? 'gpt-5.5' : 'opus';
+  const defaultModelFor = (a: AgentType) => a === 'gemini' ? 'gemini-2.5-flash' : a === 'codex' ? 'codex-mini-latest' : 'opus';
   const [model, setModelRaw] = useState<string>(defaultModelFor(aiAgent));
   const saveCurrentAgentSettings = () => {
     agentSettingsMemory.current[currentAgentRef.current] = {
