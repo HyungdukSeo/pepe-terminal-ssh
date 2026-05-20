@@ -574,7 +574,11 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
           <div className="session-toolbar-title">{t('toolbarTitle')}</div>
           <button
             className={`btn-pin ${pinned ? 'pinned' : ''}`}
-            onClick={() => setPinned(p => !p)}
+            onClick={() => {
+              const next = !pinned;
+              setPinned(next);
+              if (!next) setVisible(false); // 고정 해제 즉시 숨김
+            }}
             title={pinned ? t('unpinTooltip') : t('pinTooltip')}
           >
             📌
