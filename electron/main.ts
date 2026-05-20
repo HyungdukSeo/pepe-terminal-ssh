@@ -4284,10 +4284,6 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
     const effortFlag = codexEffort && ['low', 'medium', 'high', 'xhigh'].includes(codexEffort)
       ? ` -c "model_reasoning_effort=\\"${codexEffort}\\""`
       : '';
-    // Windows(ps1): single-quote 사용 — PowerShell에서 \" 이 \로 전달되는 버그 방지
-    const effortFlagPs1 = codexEffort && ['low', 'medium', 'high', 'xhigh'].includes(codexEffort)
-      ? ` -c 'model_reasoning_effort="${codexEffort}"'`
-      : '';
     // suggest → read-only, auto-edit/full-auto → danger-full-access (파일 쓰기 허용)
     const fullAccess = approvalPolicy === 'auto-edit' || approvalPolicy === 'full-auto';
     const isWin = process.platform === 'win32';
@@ -4295,26 +4291,21 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
     const macInnerCmd = fullAccess
       ? `cat "${tmpFile}" | codex exec${modelFlag}${effortFlag} --skip-git-repo-check --sandbox danger-full-access`
       : `cat "${tmpFile}" | codex exec${modelFlag}${effortFlag} --skip-git-repo-check -c 'sandbox_permissions=["disk-full-read-access","network-full-access"]'`;
-    // Windows: .ps1 임시 파일로 UTF-8 파이프 (chcp+type 방식은 한글 깨짐)
+    // Windows: cmd.exe + < stdin 리다이렉트 방식
+    // PowerShell 파이프($content | codex)는 문자열 변환 시 인코딩 깨짐 → < 리다이렉트는 파일 바이트 그대로 전달
+    // cmd.exe 따옴표 규칙: "" → " (CommandLineToArgvW), chcp 65001 → 자식 프로세스 UTF-8 코드페이지
     let shellCmd: string;
-    let ps1File: string | null = null;
+    const ps1File: string | null = null; // 더 이상 ps1 파일 불필요
     if (isWin) {
-      ps1File = path.join(os.tmpdir(), `codex-run-${Date.now()}.ps1`);
+      // effortFlag cmd 버전: cmd.exe에서 "" 이 " 로 전달됨 (CommandLineToArgvW)
+      const effortFlagCmd = codexEffort && ['low', 'medium', 'high', 'xhigh'].includes(codexEffort)
+        ? ` -c "model_reasoning_effort=""${codexEffort}"""`
+        : '';
       const winSandbox = fullAccess
         ? `--sandbox danger-full-access`
-        : `-c 'sandbox_permissions=["disk-full-read-access","network-full-access"]'`;
-      const ps1 = [
-        // (1) 콘솔 코드페이지 → UTF-8 (네이티브 exe stdout 인코딩도 영향받음)
-        `chcp 65001 | Out-Null`,
-        // (2) .NET 입출력 인코딩 + PowerShell 파이프 인코딩 모두 UTF-8
-        `[Console]::InputEncoding = [Console]::OutputEncoding = $OutputEncoding = [System.Text.Encoding]::UTF8`,
-        // (3) 프롬프트 파일을 UTF-8로 읽기
-        `$content = [System.IO.File]::ReadAllText('${tmpFile.replace(/\\/g, '\\\\').replace(/'/g, "''")}', [System.Text.Encoding]::UTF8)`,
-        // (4) codex 실행 (UTF-8 파이프)
-        `$content | & codex exec${modelFlag}${effortFlagPs1} --skip-git-repo-check ${winSandbox}`,
-      ].join('\r\n');
-      fs.writeFileSync(ps1File, ps1, 'utf-8');
-      shellCmd = `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${ps1File}"`;
+        : `-c "sandbox_permissions=[""disk-full-read-access"",""network-full-access""]"`;
+      // < 리다이렉트: 파일 바이트를 codex stdin으로 직접 전달 (인코딩 변환 없음)
+      shellCmd = `chcp 65001 >nul && codex exec${modelFlag}${effortFlagCmd} --skip-git-repo-check ${winSandbox} < "${tmpFile}"`;
     } else {
       shellCmd = macInnerCmd;
     }
@@ -4323,10 +4314,7 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
     const proc = spawn(shellCmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd });
     codexProcesses.set(procKey, proc);
 
-    const cleanupTmp = () => {
-      try { fs.unlinkSync(tmpFile); } catch {}
-      if (ps1File) { try { fs.unlinkSync(ps1File); } catch {} }
-    };
+    const cleanupTmp = () => { try { fs.unlinkSync(tmpFile); } catch {} };
 
     let stdoutBuf = '';
     let stdoutHadContent = false;
