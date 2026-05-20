@@ -252,11 +252,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     saveCurrentAgentSettings();
     const saved = agentSettingsMemory.current[aiAgent];
     setCurrentAgent(aiAgent);
-    const invalidCodexModels2 = ['gpt-5.5', 'gpt-5.3-codex', 'codex-mini-latest'];
-    const savedM = saved?.model;
-    const resolvedM = (aiAgent === 'codex' && savedM && invalidCodexModels2.includes(savedM))
-      ? defaultModelFor(aiAgent) : (savedM ?? defaultModelFor(aiAgent));
-    setModelRaw(resolvedM);
+    setModelRaw(saved?.model ?? defaultModelFor(aiAgent));
     setEffort(saved?.effort ?? 'medium');
     setPermissionMode(saved?.permissionMode ?? 'default');
     setPerToolApproval(saved?.perToolApproval ?? true);
@@ -594,13 +590,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     saveCurrentAgentSettings();
     const saved = agentSettingsMemory.current[a];
     setCurrentAgent(a);
-    // 구버전 저장값(gpt-5.5, codex-mini-latest) 은 호환 문제로 기본값으로 리셋
-    const savedModel = saved?.model;
-    const invalidCodexModels = ['gpt-5.5', 'gpt-5.3-codex', 'codex-mini-latest'];
-    const resolvedModel = (a === 'codex' && savedModel && invalidCodexModels.includes(savedModel))
-      ? defaultModelFor(a)
-      : (savedModel ?? defaultModelFor(a));
-    setModelRaw(resolvedModel);
+    setModelRaw(saved?.model ?? defaultModelFor(a));
     setEffort(saved?.effort ?? 'medium');
     setPermissionMode(saved?.permissionMode ?? 'default');
     setPerToolApproval(saved?.perToolApproval ?? true);
@@ -1706,9 +1696,12 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         { id: 'model-o3mini',   section: 'Model', label: 'Model: o3-mini',        desc: '⚡',  run: () => setModel('o3-mini') },
         { id: 'model-gpt4o',    section: 'Model', label: 'Model: GPT-4o',         desc: '🟢',  run: () => setModel('gpt-4o') },
         { id: 'model-gpt4om',   section: 'Model', label: 'Model: GPT-4o Mini',    desc: '⚡',  run: () => setModel('gpt-4o-mini') },
-        { id: 'model-codexmini',section: 'Model', label: 'Model: Codex Mini (API키 전용)', desc: '🧠', run: () => setModel('codex-mini-latest') },
-        { id: 'model-o4mini',   section: 'Model', label: 'Model: o4-mini',        desc: '⚡',  run: () => setModel('o4-mini') },
-        { id: 'model-o3',       section: 'Model', label: 'Model: o3',             desc: '🔵',  run: () => setModel('o3') },
+        { id: 'model-codexmini',section: 'Model', label: 'Model: Codex Mini',     desc: '🧠',  run: () => setModel('codex-mini-latest') },
+        { id: 'model-gpt55',    section: 'Model', label: 'Model: GPT-5.5',        desc: '🚀',  run: () => setModel('gpt-5.5') },
+        { id: 'model-gpt54',    section: 'Model', label: 'Model: GPT-5.4',        desc: '🔵',  run: () => setModel('gpt-5.4') },
+        { id: 'model-gpt54m',   section: 'Model', label: 'Model: GPT-5.4 Mini',   desc: '⚡',  run: () => setModel('gpt-5.4-mini') },
+        { id: 'model-gpt53c',   section: 'Model', label: 'Model: GPT-5.3 Codex',  desc: '🧠',  run: () => setModel('gpt-5.3-codex') },
+        { id: 'model-gpt52',    section: 'Model', label: 'Model: GPT-5.2',        desc: '🟣',  run: () => setModel('gpt-5.2') },
       ]
     : currentAgent === 'gemini'
     ? [
@@ -2594,7 +2587,12 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                 <option value="o3-mini">⚡ o3-mini</option>
                 <option value="gpt-4o">🟢 GPT-4o</option>
                 <option value="gpt-4o-mini">⚡ GPT-4o Mini</option>
-                <option value="codex-mini-latest">🧠 Codex Mini (API키 전용)</option>
+                <option value="codex-mini-latest">🧠 Codex Mini</option>
+                <option value="gpt-5.5">🚀 GPT-5.5</option>
+                <option value="gpt-5.4">🔵 GPT-5.4</option>
+                <option value="gpt-5.4-mini">⚡ GPT-5.4 Mini</option>
+                <option value="gpt-5.3-codex">🧠 GPT-5.3 Codex</option>
+                <option value="gpt-5.2">🟣 GPT-5.2</option>
               </select>
               <select
                 className="claude-chat-perm-select"
