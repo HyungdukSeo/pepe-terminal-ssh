@@ -252,7 +252,11 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     saveCurrentAgentSettings();
     const saved = agentSettingsMemory.current[aiAgent];
     setCurrentAgent(aiAgent);
-    setModelRaw(saved?.model ?? defaultModelFor(aiAgent));
+    const invalidCodexModels2 = ['gpt-5.5', 'gpt-5.3-codex', 'codex-mini-latest'];
+    const savedM = saved?.model;
+    const resolvedM = (aiAgent === 'codex' && savedM && invalidCodexModels2.includes(savedM))
+      ? defaultModelFor(aiAgent) : (savedM ?? defaultModelFor(aiAgent));
+    setModelRaw(resolvedM);
     setEffort(saved?.effort ?? 'medium');
     setPermissionMode(saved?.permissionMode ?? 'default');
     setPerToolApproval(saved?.perToolApproval ?? true);
@@ -576,7 +580,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     }
   }, [permissionMode]);
   // 모델 선택 — 에이전트별 기본 모델
-  const defaultModelFor = (a: AgentType) => a === 'gemini' ? 'gemini-2.5-flash' : a === 'codex' ? 'codex-mini-latest' : 'opus';
+  const defaultModelFor = (a: AgentType) => a === 'gemini' ? 'gemini-2.5-flash' : a === 'codex' ? 'o4-mini' : 'opus';
   const [model, setModelRaw] = useState<string>(defaultModelFor(aiAgent));
   const saveCurrentAgentSettings = () => {
     agentSettingsMemory.current[currentAgentRef.current] = {
@@ -590,7 +594,13 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     saveCurrentAgentSettings();
     const saved = agentSettingsMemory.current[a];
     setCurrentAgent(a);
-    setModelRaw(saved?.model ?? defaultModelFor(a));
+    // 구버전 저장값(gpt-5.5, codex-mini-latest) 은 호환 문제로 기본값으로 리셋
+    const savedModel = saved?.model;
+    const invalidCodexModels = ['gpt-5.5', 'gpt-5.3-codex', 'codex-mini-latest'];
+    const resolvedModel = (a === 'codex' && savedModel && invalidCodexModels.includes(savedModel))
+      ? defaultModelFor(a)
+      : (savedModel ?? defaultModelFor(a));
+    setModelRaw(resolvedModel);
     setEffort(saved?.effort ?? 'medium');
     setPermissionMode(saved?.permissionMode ?? 'default');
     setPerToolApproval(saved?.perToolApproval ?? true);
@@ -1691,12 +1701,12 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   // 에이전트별 Model 섹션
   const paletteModelActions: PaletteAction[] = currentAgent === 'codex'
     ? [
-        { id: 'model-gpt55',    section: 'Model', label: 'Model: GPT-5.5',        desc: '🚀',  run: () => setModel('gpt-5.5') },
-        { id: 'model-gpt54',    section: 'Model', label: 'Model: GPT-5.4',        desc: '🔵',  run: () => setModel('gpt-5.4') },
-        { id: 'model-gpt54m',   section: 'Model', label: 'Model: GPT-5.4 Mini',   desc: '⚡',  run: () => setModel('gpt-5.4-mini') },
-        { id: 'model-gpt53c',   section: 'Model', label: 'Model: GPT-5.3 Codex',  desc: '🧠',  run: () => setModel('gpt-5.3-codex') },
-        { id: 'model-gpt52',    section: 'Model', label: 'Model: GPT-5.2',        desc: '🟣',  run: () => setModel('gpt-5.2') },
-        { id: 'model-codexmini',section: 'Model', label: 'Model: Codex Mini',     desc: '🧠',  run: () => setModel('codex-mini-latest') },
+        { id: 'model-o4mini',   section: 'Model', label: 'Model: o4-mini (기본)',  desc: '⚡',  run: () => setModel('o4-mini') },
+        { id: 'model-o3',       section: 'Model', label: 'Model: o3',             desc: '🔵',  run: () => setModel('o3') },
+        { id: 'model-o3mini',   section: 'Model', label: 'Model: o3-mini',        desc: '⚡',  run: () => setModel('o3-mini') },
+        { id: 'model-gpt4o',    section: 'Model', label: 'Model: GPT-4o',         desc: '🟢',  run: () => setModel('gpt-4o') },
+        { id: 'model-gpt4om',   section: 'Model', label: 'Model: GPT-4o Mini',    desc: '⚡',  run: () => setModel('gpt-4o-mini') },
+        { id: 'model-codexmini',section: 'Model', label: 'Model: Codex Mini (API키 전용)', desc: '🧠', run: () => setModel('codex-mini-latest') },
         { id: 'model-o4mini',   section: 'Model', label: 'Model: o4-mini',        desc: '⚡',  run: () => setModel('o4-mini') },
         { id: 'model-o3',       section: 'Model', label: 'Model: o3',             desc: '🔵',  run: () => setModel('o3') },
       ]
@@ -2579,14 +2589,12 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                 onChange={e => setModel(e.target.value)}
                 title={tt('codexModelSelect')}
               >
-                <option value="gpt-5.5">🚀 GPT-5.5</option>
-                <option value="gpt-5.4">🔵 GPT-5.4</option>
-                <option value="gpt-5.4-mini">⚡ GPT-5.4 Mini</option>
-                <option value="gpt-5.3-codex">🧠 GPT-5.3 Codex</option>
-                <option value="gpt-5.2">🟣 GPT-5.2</option>
-                <option value="codex-mini-latest">🧠 Codex Mini</option>
-                <option value="o4-mini">⚡ o4-mini</option>
+                <option value="o4-mini">⚡ o4-mini (기본)</option>
                 <option value="o3">🔵 o3</option>
+                <option value="o3-mini">⚡ o3-mini</option>
+                <option value="gpt-4o">🟢 GPT-4o</option>
+                <option value="gpt-4o-mini">⚡ GPT-4o Mini</option>
+                <option value="codex-mini-latest">🧠 Codex Mini (API키 전용)</option>
               </select>
               <select
                 className="claude-chat-perm-select"

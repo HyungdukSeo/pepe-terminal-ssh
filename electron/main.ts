@@ -4297,20 +4297,36 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
     const cleanupTmp = () => { try { fs.unlinkSync(tmpFile); } catch {} };
 
     let stdoutBuf = '';
+    let stdoutHadContent = false;
     proc.stdout.setEncoding('utf-8');
-    // Codex stdout → 줄 단위로 즉시 전달 (Gemini 방식과 동일)
+    // Codex stdout: 실제 응답 + ERROR: JSON 에러 라인
+    // stderr 는 stdin echo + 메타데이터이므로 stdout 만 처리
     proc.stdout.on('data', (data: string) => {
       stdoutBuf += data;
       const lines = stdoutBuf.split('\n');
       stdoutBuf = lines.pop() || '';
       for (const line of lines) {
         if (!line.trim()) continue;
+        // ERROR: {json} → parse 후 error 타입으로 전달
+        if (line.trimStart().startsWith('ERROR:')) {
+          try {
+            const obj = JSON.parse(line.trimStart().slice(6).trim());
+            const errMsg = obj?.error?.message || line;
+            mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: errMsg } });
+          } catch {
+            mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: line } });
+          }
+          continue;
+        }
+        stdoutHadContent = true;
         mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'text', text: line + '\n' } });
       }
     });
-    // Codex stderr = 세션 헤더(메타데이터) 버퍼링 → 에러 시 표시, 정상 종료면 무시
-    const CODEX_META = /^(Reading prompt from stdin|OpenAI Codex v|--------+|workdir:|model:|provider:|approval:|sandbox:|reasoning effort:|reasoning summaries:|session id:|tokens used|user$|codex$|\s*$)/m;
+    // Codex stderr = stdin echo + 세션 메타데이터 → 완전 무시
+    // (실제 에러는 stdout 의 ERROR: JSON 으로 전달됨)
     let codexStderrBuf = '';
+    const CODEX_STDERR_ERR = /^(error|Error|failed|invalid|quota|unauthorized|rate.limit|\d{3}\s)/i;
+    const CODEX_META_RE = /^(Reading prompt from stdin|OpenAI Codex v|-----+|workdir:|model:|provider:|approval:|sandbox:|reasoning effort:|reasoning summaries:|session id:|tokens used|user$|codex$)/m;
     proc.stderr.on('data', (data: Buffer) => { codexStderrBuf += data.toString(); });
     proc.on('error', (err: any) => {
       mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: String(err) } });
@@ -4318,12 +4334,23 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
     proc.on('close', (code: number) => {
       // 남은 stdout 버퍼 플러시
       if (stdoutBuf.trim()) {
-        mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'text', text: stdoutBuf } });
+        if (stdoutBuf.trimStart().startsWith('ERROR:')) {
+          try {
+            const obj = JSON.parse(stdoutBuf.trimStart().slice(6).trim());
+            mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: obj?.error?.message || stdoutBuf } });
+          } catch {
+            mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: stdoutBuf } });
+          }
+        } else {
+          stdoutHadContent = true;
+          mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'text', text: stdoutBuf } });
+        }
       }
-      // stderr 에러 표시: 비정상 종료 또는 stdout 이 비어있을 때 실제 에러 라인만
-      if (codexStderrBuf.trim()) {
-        const errLines = codexStderrBuf.split('\n').filter(l => l.trim() && !CODEX_META.test(l));
-        if (errLines.length && (code !== 0 || !stdoutBuf.trim())) {
+      // stderr: stdout 에 아무 내용도 없을 때만 명백한 에러 라인 표시
+      if (!stdoutHadContent && code !== 0 && codexStderrBuf.trim()) {
+        const errLines = codexStderrBuf.split('\n')
+          .filter(l => l.trim() && !CODEX_META_RE.test(l) && CODEX_STDERR_ERR.test(l));
+        if (errLines.length) {
           mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: errLines.join('\n') } });
         }
       }
