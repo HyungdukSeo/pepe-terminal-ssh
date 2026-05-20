@@ -333,6 +333,163 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const [usageProbe, setUsageProbe] = useState<string | null>(null);
   const [usageProbeLoading, setUsageProbeLoading] = useState(false);
   const [usageProbeExpanded, setUsageProbeExpanded] = useState(false);
+  // Codex /status / Gemini /stats 파싱 결과
+  type CodexUsage = {
+    modelName?: string;
+    directory?: string;
+    permissions?: string;
+    agentsMd?: string;
+    account?: string;
+    collaboration?: string;
+    sessionId?: string;
+    fiveHourPct?: string;
+    fiveHourReset?: string;
+    weeklyPct?: string;
+    weeklyReset?: string;
+  };
+  type GeminiModelStat = {
+    modelName: string;
+    requests?: string;
+    errors?: string;
+    avgLatency?: string;
+    totalTokens?: string;
+    inputTokens?: string;
+    thoughts?: string;
+    outputTokens?: string;
+    cacheReads?: string;
+  };
+  type GeminiUsage = {
+    authMethod?: string;
+    tier?: string;
+    dailyUsedPct?: string;
+    dailyResetIn?: string;
+    usageLimit?: string;
+    models?: GeminiModelStat[];
+    empty?: boolean; // No API calls in session
+  };
+  const [codexUsage, setCodexUsage] = useState<CodexUsage | null>(null);
+  const [geminiUsage, setGeminiUsage] = useState<GeminiUsage | null>(null);
+  const [cliProbeLoading, setCliProbeLoading] = useState(false);
+  const probeCodexStatus = async () => {
+    setCliProbeLoading(true);
+    setUsageProbeLoading(true);
+    setUsageProbe('Codex CLI 시작 중... (/status 송신 대기, 약 10초)');
+    try {
+      const r = await (window as { api?: { codexProbeStatus?: () => Promise<{ success?: boolean; raw?: string; error?: string }> } }).api?.codexProbeStatus?.();
+      if (r?.success && r.raw) {
+        const raw: string = r.raw;
+        // 박스 문자 제거. 진행률 바 [██░░] 같은 패턴도 제거.
+        const cleaned = raw
+          .replace(/\[[█▓▒░ ]+\]/g, '')
+          .replace(/[│┃║┊┆╎├─━┯┴┐┌┘└┤▓░▒█▏▎▍▌▋▊▉◐◑●○✔]+/g, ' ')
+          .replace(/\s+/g, ' ');
+        const labels = '(?=Model:|Directory:|Permissions:|Agents\\.md:|Account:|Collaboration\\s*mode:|Session:|5h\\s*limit:|Weekly\\s*limit:|$)';
+        const grab = (label: string) => {
+          const re = new RegExp(`${label}\\s*[:：]?\\s*(.+?)\\s*${labels}`, 'i');
+          const m = cleaned.match(re);
+          return m ? m[1].trim() : undefined;
+        };
+        const parsed: CodexUsage = {
+          modelName: grab('Model'),
+          directory: grab('Directory'),
+          permissions: grab('Permissions'),
+          agentsMd: grab('Agents\\.md'),
+          account: grab('Account'),
+          collaboration: grab('Collaboration\\s*mode'),
+          sessionId: grab('Session'),
+        };
+        const fh = cleaned.match(/5h\s*limit\s*[:：]?\s*(\d+)\s*%\s*left(?:\s*\(?\s*resets?\s+([^)]+?)\)?)?(?=\s*Weekly|$)/i);
+        if (fh) { parsed.fiveHourPct = fh[1] + '%'; if (fh[2]) parsed.fiveHourReset = fh[2].trim(); }
+        const wk = cleaned.match(/Weekly\s*limit\s*[:：]?\s*(\d+)\s*%\s*left(?:\s*\(?\s*resets?\s+([^)]+?)\)?)?$/i);
+        if (wk) { parsed.weeklyPct = wk[1] + '%'; if (wk[2]) parsed.weeklyReset = wk[2].trim(); }
+        const hasData = Object.values(parsed).some(v => v);
+        setCodexUsage(hasData ? parsed : parsed); // 데이터 없어도 객체 세팅 (UI 가 0 표시)
+        setUsageProbe(`📊 Codex /status\n─────────────────────\n${hasData ? Object.entries(parsed).filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join('\n') : '(파싱 실패 — raw 참고)'}\n\n──── RAW (마지막 4000자) ────\n${raw.slice(-4000)}`);
+      } else {
+        setUsageProbe(`❌ ${r?.error || '실패'}\n${(r?.raw || '').slice(-1000)}`);
+      }
+    } catch (e) {
+      setUsageProbe(`❌ ${(e as Error)?.message || e}`);
+    }
+    setUsageProbeLoading(false);
+    setCliProbeLoading(false);
+  };
+  const probeGeminiStats = async () => {
+    setCliProbeLoading(true);
+    setUsageProbeLoading(true);
+    setUsageProbe('Gemini CLI 시작 중... (/stats 송신 대기, 약 10초)');
+    try {
+      const r = await (window as { api?: { geminiProbeStats?: () => Promise<{ success?: boolean; raw?: string; error?: string }> } }).api?.geminiProbeStats?.();
+      if (r?.success && r.raw) {
+        const raw: string = r.raw;
+        const cleaned = raw.replace(/[│┃║┊┆╎├─━┯┴┐┌┘└┤▓░▒█▏▎▍▌▋▊▉◐◑●○✔»↳]+/g, ' ').replace(/\s+/g, ' ');
+        // "No API calls have been made in this session." → empty 플래그
+        const isEmpty = /No\s*API\s*calls\s*have\s*been\s*made/i.test(cleaned);
+        const grab = (re: RegExp) => { const m = cleaned.match(re); return m ? m[1].trim() : undefined; };
+        const parsed: GeminiUsage = {
+          authMethod: grab(/Auth\s*Method\s*[:：]?\s*(.+?)\s+(?=Tier\s*[:：])/i),
+          tier: grab(/Tier\s*[:：]?\s*(.+?)\s+(?=\d+\s*%\s*used|Usage\s*limit|Metric)/i),
+          dailyUsedPct: grab(/(\d+\s*%)\s*used\s*\(Limit\s*resets/i),
+          dailyResetIn: grab(/Limit\s*resets\s*in\s*([^)]+)\)/i),
+          usageLimit: grab(/Usage\s*limit\s*[:：]?\s*([\d,]+)/i),
+          empty: isEmpty,
+        };
+        // 모델별 stats — "Metric  <m1>  <m2>" 헤더 후 라인별 값. 단순화: 모델명 토큰(gemini-...)만 추출 후 각 모델당 행 추출은 어려우니, "Metric" 이후 텍스트에서 모델 이름 후보 모음 → 각 라벨별 마지막 N개 숫자를 모델 수만큼 잘라서 배치.
+        const models: GeminiModelStat[] = [];
+        const metricSection = cleaned.match(/Metric\s+(.+?)(?:Roles|$)/i);
+        if (metricSection) {
+          const sec = metricSection[1];
+          // 모델 이름은 "gemini-..." 패턴
+          const headerMatch = sec.match(/^((?:\s*gemini-[a-z0-9.-]+)+)/i);
+          if (headerMatch) {
+            const names = headerMatch[1].trim().split(/\s+/);
+            const grabRow = (label: string): string[] => {
+              const re = new RegExp(`${label}\\s+((?:[\\d,.]+(?:\\s*\\([\\d.]+%\\))?(?:s|ms)?\\s+){${names.length - 1}}[\\d,.]+(?:\\s*\\([\\d.]+%\\))?(?:s|ms)?)`, 'i');
+              const m = sec.match(re);
+              if (!m) return [];
+              return m[1].trim().split(/\s+(?=[\d-])/);
+            };
+            const reqs = grabRow('Requests');
+            const errs = grabRow('Errors');
+            const lat = grabRow('Avg\\s*Latency');
+            const tot = grabRow('Total');
+            const inp = grabRow('Input');
+            const tho = grabRow('Thoughts');
+            const out = grabRow('Output');
+            for (let i = 0; i < names.length; i++) {
+              models.push({
+                modelName: names[i],
+                requests: reqs[i],
+                errors: errs[i],
+                avgLatency: lat[i],
+                totalTokens: tot[i],
+                inputTokens: inp[i],
+                thoughts: tho[i],
+                outputTokens: out[i],
+              });
+            }
+          }
+        }
+        if (models.length) parsed.models = models;
+        setGeminiUsage(parsed);
+        setUsageProbe(`📊 Gemini /stats model\n─────────────────────\n${isEmpty ? '(이번 세션에 API 호출 없음 — 0 으로 표시)' : ''}\n${Object.entries(parsed).filter(([k, v]) => v && k !== 'models').map(([k, v]) => `${k}: ${v}`).join('\n')}\n${models.length ? '\nModels:\n' + models.map(m => `  ${m.modelName}: req=${m.requests || 0} tot=${m.totalTokens || 0} in=${m.inputTokens || 0} out=${m.outputTokens || 0}`).join('\n') : ''}\n\n──── RAW (마지막 4000자) ────\n${raw.slice(-4000)}`);
+      } else {
+        setUsageProbe(`❌ ${r?.error || '실패'}\n${(r?.raw || '').slice(-1000)}`);
+      }
+    } catch (e) {
+      setUsageProbe(`❌ ${(e as Error)?.message || e}`);
+    }
+    setUsageProbeLoading(false);
+    setCliProbeLoading(false);
+  };
+  // 패널 열 때 codex/gemini probe 자동 1회
+  useEffect(() => {
+    if (!showUsagePanel) return;
+    if (cliProbeLoading) return;
+    if (currentAgent === 'codex' && !codexUsage) { probeCodexStatus(); }
+    else if (currentAgent === 'gemini' && !geminiUsage) { probeGeminiStats(); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showUsagePanel, currentAgent]);
   // 마운트 시 ~/.claude/settings.json 읽어 model 자동 설정
   useEffect(() => {
     (async () => {
@@ -1763,8 +1920,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           onMouseEnter={showUsage}
           onMouseLeave={hideUsageDelayed}
         >
-          {/* 컨텍스트 분해 — 마지막 turn 시점의 누적 컨텍스트 구성 */}
-          {(() => {
+          {/* 컨텍스트 분해 — Claude 만 토큰 단위 breakdown 가능 */}
+          {currentAgent === 'claude' && (() => {
             // 사용자가 선택한 모델 기준으로 max 결정
             const is1M = /\[1m\]/i.test(model) || /1m/i.test(usage.model);
             const maxCtx = is1M ? 1_000_000 : 200_000;
@@ -1799,7 +1956,74 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               </>
             );
           })()}
-          {subLimits && (
+          {/* Codex /status 슬롯 — probe 전이라도 모든 필드 라벨 표시. 값 없으면 0 표시 */}
+          {currentAgent === 'codex' && (() => {
+            const u = codexUsage || {};
+            const Row = ({ label, val, zero = '0' }: { label: string; val?: string; zero?: string }) => (
+              <div className="claude-chat-usage-row">
+                <span className="claude-chat-usage-label">{label}</span>
+                <span className="claude-chat-usage-val" style={!val ? { opacity: 0.5 } : undefined}>{val || zero}</span>
+              </div>
+            );
+            return (
+              <>
+                <div className="claude-chat-usage-row" style={{ color: '#9cc' }}>
+                  <span className="claude-chat-usage-label">━ Codex /status</span>
+                  <span className="claude-chat-usage-val">{cliProbeLoading ? '조회 중...' : (codexUsage ? '✓' : '미조회')}</span>
+                </div>
+                <Row label="Model" val={u.modelName || model} zero="—" />
+                <Row label="Directory" val={u.directory} zero="—" />
+                <Row label="Permissions" val={u.permissions} zero="—" />
+                <Row label="Agents.md" val={u.agentsMd} zero="<none>" />
+                <Row label="Account" val={u.account} zero="—" />
+                <Row label="Collaboration mode" val={u.collaboration} zero="Default" />
+                <Row label="Session" val={u.sessionId} zero="—" />
+                <Row label="5h limit" val={u.fiveHourPct ? `${u.fiveHourPct} left${u.fiveHourReset ? ` (resets ${u.fiveHourReset})` : ''}` : undefined} zero="0% used" />
+                <Row label="Weekly limit" val={u.weeklyPct ? `${u.weeklyPct} left${u.weeklyReset ? ` (resets ${u.weeklyReset})` : ''}` : undefined} zero="0% used" />
+              </>
+            );
+          })()}
+          {/* Gemini /stats model 슬롯 — 값 없으면 0 표시 */}
+          {currentAgent === 'gemini' && (() => {
+            const u = geminiUsage || {};
+            const isEmpty = u.empty;
+            const Row = ({ label, val, zero = '0' }: { label: string; val?: string; zero?: string }) => (
+              <div className="claude-chat-usage-row">
+                <span className="claude-chat-usage-label">{label}</span>
+                <span className="claude-chat-usage-val" style={!val ? { opacity: 0.5 } : undefined}>{val || zero}</span>
+              </div>
+            );
+            return (
+              <>
+                <div className="claude-chat-usage-row" style={{ color: '#9cc' }}>
+                  <span className="claude-chat-usage-label">━ Gemini /stats model</span>
+                  <span className="claude-chat-usage-val">{cliProbeLoading ? '조회 중...' : (geminiUsage ? (isEmpty ? 'no calls' : '✓') : '미조회')}</span>
+                </div>
+                <Row label="Auth Method" val={u.authMethod} zero="—" />
+                <Row label="Tier" val={u.tier} zero="—" />
+                <Row label="Daily used" val={u.dailyUsedPct ? `${u.dailyUsedPct}${u.dailyResetIn ? ` (resets in ${u.dailyResetIn})` : ''}` : undefined} zero="0%" />
+                <Row label="Usage limit" val={u.usageLimit} />
+                <div className="claude-chat-usage-row" style={{ color: '#aac', fontSize: 11, marginTop: 4 }}>
+                  <span className="claude-chat-usage-label">Per-model</span>
+                </div>
+                {(u.models && u.models.length > 0 ? u.models : [{ modelName: model } as GeminiModelStat]).map((m, idx) => (
+                  <React.Fragment key={idx}>
+                    <div className="claude-chat-usage-row" style={{ color: '#cce', fontSize: 11 }}>
+                      <span className="claude-chat-usage-label">▸ {m.modelName}</span>
+                    </div>
+                    <Row label="  Requests" val={m.requests} />
+                    <Row label="  Errors" val={m.errors} zero="0 (0.0%)" />
+                    <Row label="  Avg Latency" val={m.avgLatency} zero="0s" />
+                    <Row label="  Total tokens" val={m.totalTokens} />
+                    <Row label="  ↳ Input" val={m.inputTokens} />
+                    <Row label="  ↳ Thoughts" val={m.thoughts} />
+                    <Row label="  ↳ Output" val={m.outputTokens} />
+                  </React.Fragment>
+                ))}
+              </>
+            );
+          })()}
+          {currentAgent === 'claude' && subLimits && (
             <>
               <div className="claude-chat-usage-divider" />
               <div className="claude-chat-usage-row" style={{ color: '#9cc' }}>
@@ -1833,6 +2057,37 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             </>
           )}
           <div className="claude-chat-usage-divider" />
+          {currentAgent === 'codex' && (
+            <div className="claude-chat-usage-row">
+              <button
+                className="claude-chat-usage-probe-btn"
+                disabled={usageProbeLoading}
+                title="Codex CLI 를 띄워 /status 출력을 캡처합니다 (수 초 소요)"
+                onClick={() => { setCodexUsage(null); probeCodexStatus(); }}
+              >{usageProbeLoading ? '실행 중...' : 'Codex /status 가져오기'}</button>
+              <a
+                href="#"
+                style={{ marginLeft: 8, fontSize: 11, color: '#88aaff' }}
+                onClick={e => { e.preventDefault(); window.open('https://chatgpt.com/codex/settings/usage', '_blank'); }}
+              >계정 사용량 페이지 ↗</a>
+            </div>
+          )}
+          {currentAgent === 'gemini' && (
+            <div className="claude-chat-usage-row">
+              <button
+                className="claude-chat-usage-probe-btn"
+                disabled={usageProbeLoading}
+                title="Gemini CLI 를 띄워 /stats model 출력을 캡처합니다 (수 초 소요)"
+                onClick={() => { setGeminiUsage(null); probeGeminiStats(); }}
+              >{usageProbeLoading ? '실행 중...' : 'Gemini /stats model 가져오기'}</button>
+              <a
+                href="#"
+                style={{ marginLeft: 8, fontSize: 11, color: '#88aaff' }}
+                onClick={e => { e.preventDefault(); window.open('https://aistudio.google.com/app/plan', '_blank'); }}
+              >AI Studio 사용량 ↗</a>
+            </div>
+          )}
+          {currentAgent === 'claude' && (
           <div className="claude-chat-usage-row">
             <button
               className="claude-chat-usage-probe-btn"
@@ -1942,6 +2197,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               title={tt('tuiQuotaTitle')}
             >{usageProbeLoading ? tt('tuiLoadingShort') : tt('tuiQuotaBtn')}</button>)}
           </div>
+          )}
           {usageProbe && (
             <>
               <button
@@ -2538,14 +2794,61 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           >
             <span className="claude-chat-usage-trigger" title={tt('usageTriggerTitle')}>
               {(() => {
+                if (currentAgent === 'gemini') {
+                  const label = model
+                    .replace(/^gemini-/, 'Gemini ')
+                    .replace(/-pro(-preview)?$/i, ' Pro')
+                    .replace(/-flash-lite(-preview)?$/i, ' Flash Lite')
+                    .replace(/-flash(-preview)?$/i, ' Flash');
+                  return `📊 ${label}`;
+                }
+                if (currentAgent === 'codex') {
+                  return `📊 ${model}`;
+                }
                 const label = model === 'opus[1m]' ? 'Opus 4.7 1M' : model === 'opus' ? 'Opus 4.7' : model === 'sonnet[1m]' ? 'Sonnet 4.6 1M' : model === 'sonnet' ? 'Sonnet 4.6' : model === 'haiku' ? 'Haiku 4.5' : model === 'opusplan' ? 'Opus Plan' : model;
                 return `📊 ${label}`;
               })()}
             </span>
             {showUsageTooltip && !showUsagePanel && (() => {
+              const fmt = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+              // Gemini/Codex: CLI 스트리밍은 JSON 사용량을 안 주지만, /status·/stats 로 프로브 가능
+              if (currentAgent === 'gemini') {
+                const totalAcrossModels = (geminiUsage?.models || []).reduce((acc, m) => acc + parseInt((m.totalTokens || '0').replace(/,/g, ''), 10), 0);
+                return (
+                  <div className="claude-chat-usage-tooltip">
+                    <div><b>Gemini</b> {model}</div>
+                    {geminiUsage ? (
+                      <>
+                        {geminiUsage.tier && <div><b>Tier</b> {geminiUsage.tier}</div>}
+                        {geminiUsage.dailyUsedPct && <div><b>Daily</b> {geminiUsage.dailyUsedPct} used{geminiUsage.dailyResetIn ? ` (resets in ${geminiUsage.dailyResetIn})` : ''}</div>}
+                        {geminiUsage.usageLimit && <div><b>Limit</b> {geminiUsage.usageLimit}</div>}
+                        {totalAcrossModels > 0 && <div><b>Total tokens</b> {totalAcrossModels.toLocaleString()}</div>}
+                        {geminiUsage.empty && <div style={{ opacity: 0.7, fontSize: 11 }}>No API calls this session</div>}
+                      </>
+                    ) : (
+                      <div style={{ opacity: 0.6, fontSize: 11 }}>패널 열면 자동으로 /stats model 실행</div>
+                    )}
+                  </div>
+                );
+              }
+              if (currentAgent === 'codex') {
+                return (
+                  <div className="claude-chat-usage-tooltip">
+                    <div><b>Codex</b> {codexUsage?.modelName || model}</div>
+                    {codexUsage ? (
+                      <>
+                        {codexUsage.account && <div><b>Account</b> {codexUsage.account}</div>}
+                        {codexUsage.fiveHourPct && <div style={{ opacity: 0.8, fontSize: 11 }}>5h: {codexUsage.fiveHourPct} left{codexUsage.fiveHourReset ? ` (resets ${codexUsage.fiveHourReset})` : ''}</div>}
+                        {codexUsage.weeklyPct && <div style={{ opacity: 0.8, fontSize: 11 }}>Weekly: {codexUsage.weeklyPct} left{codexUsage.weeklyReset ? ` (resets ${codexUsage.weeklyReset})` : ''}</div>}
+                      </>
+                    ) : (
+                      <div style={{ opacity: 0.6, fontSize: 11 }}>패널 열면 자동으로 /status 실행</div>
+                    )}
+                  </div>
+                );
+              }
               const is1M = /\[1m\]/i.test(model) || /1m/i.test(usage.model);
               const maxCtx = is1M ? 1_000_000 : 200_000;
-              const fmt = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
               const ctxPct = Math.round((usage.lastTurnInput / maxCtx) * 100);
               const planPct = subLimits?.fiveHourPct;
               return (

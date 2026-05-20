@@ -229,6 +229,8 @@ contextBridge.exposeInMainWorld('api', {
   codexStop: (sessionId: string, requestId?: string) => ipcRenderer.invoke('codex:stop', { sessionId, requestId }),
   claudeProbeUsage: () => ipcRenderer.invoke('claude:probe-usage'),
   claudeProbeUsageTui: () => ipcRenderer.invoke('claude:probe-usage-tui'),
+  codexProbeStatus: () => ipcRenderer.invoke('codex:probe-status'),
+  geminiProbeStats: () => ipcRenderer.invoke('gemini:probe-stats'),
   claudeFetchUsageApi: () => ipcRenderer.invoke('claude:fetch-usage-api'),
   claudeFetchModels: () => ipcRenderer.invoke('claude:fetch-models'),
   claudeReadSettings: () => ipcRenderer.invoke('claude:read-settings'),
