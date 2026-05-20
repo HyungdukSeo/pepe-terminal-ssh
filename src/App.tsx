@@ -2799,7 +2799,7 @@ function App() {
           <button
             className={`tool-btn btn-pin${terminalPinned ? ' pinned' : ''}`}
             title={terminalPinned ? '터미널 패널 고정 해제 (세로 탭으로 최소화)' : '터미널 패널 고정'}
-            onClick={() => setTerminalPinned(p => !p)}
+            onClick={() => { const next = !terminalPinned; setTerminalPinned(next); if (!next) setTerminalVisible(false); }}
           >
             {terminalPinned ? (
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none" strokeLinecap="round" strokeLinejoin="round">
