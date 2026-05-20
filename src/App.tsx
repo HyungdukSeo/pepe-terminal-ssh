@@ -3753,7 +3753,7 @@ function App() {
             {!claudeChatPinned && (
               <div className="claude-chat-sidebar-trigger">
                 <div className="claude-chat-sidebar-trigger-top" onClick={onClickTrigger} onMouseEnter={onEnterTriggerHover} onMouseLeave={onLeaveTriggerHover} style={{ cursor: 'pointer' }} title="클릭=토글 / 2.5초 오버=자동 열림">
-                  <span className="claude-chat-sidebar-trigger-text">🤖 Claude</span>
+                  <span className="claude-chat-sidebar-trigger-text">🤖 AI Chat</span>
                 </div>
                 <div className="claude-chat-sidebar-trigger-bottom" />
               </div>

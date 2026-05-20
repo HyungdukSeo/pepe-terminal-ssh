@@ -5085,7 +5085,18 @@ body.popout-options .session-editor h3:first-child {
   padding: 2px 7px;
   border-radius: 4px;
   transition: background 0.15s, color 0.15s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
 }
+.claude-chat-agent-btn svg {
+  display: block;
+  opacity: 0.55;
+  transition: opacity 0.15s;
+}
+.claude-chat-agent-btn:hover svg { opacity: 0.85; }
+.claude-chat-agent-btn.active svg { opacity: 1; }
 .claude-chat-agent-btn:hover {
   background: #2a2a2a;
   color: #ccc;

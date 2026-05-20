@@ -23,6 +23,37 @@ mermaid.initialize({
 // Mermaid 다이어그램 키워드 — 이 패턴으로 시작하면 mermaid 블록으로 간주
 const MERMAID_START_RE = /^(graph\s+(TB|TD|BT|RL|LR)|flowchart\s+(TB|TD|BT|RL|LR)|sequenceDiagram|classDiagram|stateDiagram(-v2)?|erDiagram|gantt|pie|journey|gitGraph|mindmap|timeline|quadrantChart)\b/;
 
+// ── AI 에이전트 탭 아이콘 ─────────────────────────────────────────────────────
+const ClaudeTabIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="claudeTabG" x1="2" y1="1.5" x2="14" y2="14.5" gradientUnits="userSpaceOnUse">
+        <stop stopColor="#A78BFA"/>
+        <stop offset="1" stopColor="#3B82F6"/>
+      </linearGradient>
+    </defs>
+    <path d="M8 1.5L13.5 4.75V11.25L8 14.5L2.5 11.25V4.75L8 1.5Z" fill="url(#claudeTabG)"/>
+    <path d="M8 4L11 6V10L8 12L5 10V6L8 4Z" fill="rgba(255,255,255,0.25)"/>
+  </svg>
+);
+
+const GeminiTabIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M8 1C8 4.87 10.13 7 14 7C10.13 7 8 9.13 8 13C8 9.13 5.87 7 2 7C5.87 7 8 4.87 8 1Z" fill="#4285F4"/>
+    <path d="M8 1C8 4.87 9.065 6.5 8 7C9.065 7.5 8 9.13 8 13C8 9.13 6.935 7.5 8 7C6.935 6.5 8 4.87 8 1Z" fill="#EA4335" opacity="0.7"/>
+    <path d="M14 7C10.13 7 9 7.5 8 7C9 7 10.13 7.5 14 7Z" fill="#FBBC05" opacity="0"/>
+    <circle cx="8" cy="7" r="1.2" fill="white" opacity="0.5"/>
+  </svg>
+);
+
+const CodexTabIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="8" cy="8" r="6.5" fill="#10B981"/>
+    <path d="M8 3.8L9.15 6.85L12.2 8L9.15 9.15L8 12.2L6.85 9.15L3.8 8L6.85 6.85L8 3.8Z" fill="white" opacity="0.9"/>
+  </svg>
+);
+// ────────────────────────────────────────────────────────────────────────────
+
 type CodexApprovalPolicy = 'suggest' | 'auto-edit' | 'full-auto';
 
 const CODEX_APPROVAL_ITEMS: Array<{ value: CodexApprovalPolicy; label: string }> = [
@@ -1786,9 +1817,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       <div className="claude-chat-container">
         <div className="claude-chat-header">
           <div className="claude-chat-agent-switcher">
-            <button className={`claude-chat-agent-btn ${currentAgent === 'claude' ? 'active' : ''}`} title="Claude Code" onClick={() => switchAgent('claude')}>🤖</button>
-            <button className={`claude-chat-agent-btn ${currentAgent === 'gemini' ? 'active' : ''}`} title="Gemini" onClick={() => switchAgent('gemini')}>✨</button>
-            <button className={`claude-chat-agent-btn ${currentAgent === 'codex' ? 'active' : ''}`} title="Codex" onClick={() => switchAgent('codex')}>🧠</button>
+            <button className={`claude-chat-agent-btn ${currentAgent === 'claude' ? 'active' : ''}`} title="Claude Code" onClick={() => switchAgent('claude')}><ClaudeTabIcon /></button>
+            <button className={`claude-chat-agent-btn ${currentAgent === 'gemini' ? 'active' : ''}`} title="Gemini" onClick={() => switchAgent('gemini')}><GeminiTabIcon /></button>
+            <button className={`claude-chat-agent-btn ${currentAgent === 'codex' ? 'active' : ''}`} title="Codex" onClick={() => switchAgent('codex')}><CodexTabIcon /></button>
           </div>
           {onClose && <button className="claude-chat-close" onClick={onClose}>×</button>}
         </div>
@@ -1806,17 +1837,17 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               className={`claude-chat-agent-btn ${currentAgent === 'claude' ? 'active' : ''}`}
               title="Claude Code"
               onClick={() => switchAgent('claude')}
-            >🤖</button>
+            ><ClaudeTabIcon /></button>
             <button
               className={`claude-chat-agent-btn ${currentAgent === 'gemini' ? 'active' : ''}`}
               title="Gemini"
               onClick={() => switchAgent('gemini')}
-            >✨</button>
+            ><GeminiTabIcon /></button>
             <button
               className={`claude-chat-agent-btn ${currentAgent === 'codex' ? 'active' : ''}`}
               title="Codex"
               onClick={() => switchAgent('codex')}
-            >🧠</button>
+            ><CodexTabIcon /></button>
           </div>
           {onClose && <button className="claude-chat-close" onClick={onClose}>×</button>}
         </div>
@@ -1853,17 +1884,17 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             className={`claude-chat-agent-btn ${currentAgent === 'claude' ? 'active' : ''}`}
             title="Claude Code"
             onClick={() => switchAgent('claude')}
-          >🤖</button>
+          ><ClaudeTabIcon /></button>
           <button
             className={`claude-chat-agent-btn ${currentAgent === 'gemini' ? 'active' : ''}`}
             title="Gemini"
             onClick={() => switchAgent('gemini')}
-          >✨</button>
+          ><GeminiTabIcon /></button>
           <button
             className={`claude-chat-agent-btn ${currentAgent === 'codex' ? 'active' : ''}`}
             title="Codex"
             onClick={() => switchAgent('codex')}
-          >🧠</button>
+          ><CodexTabIcon /></button>
         </div>
         {version && <span className="claude-chat-version" style={{ marginLeft: 4, color: '#666', fontSize: 11 }}>{version}</span>}
         <div className="claude-chat-header-actions">

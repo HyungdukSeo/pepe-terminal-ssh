@@ -3,7 +3,7 @@
   "loading": "로딩 중...",
   "notFound": "세션을 찾을 수 없음",
   "newSession": "새 세션",
-  "header": "Session Editor",
+  "header": "세션 편집",
   "dragMove": "드래그하여 이동",
   "tabs": {
     "general": "일반",
