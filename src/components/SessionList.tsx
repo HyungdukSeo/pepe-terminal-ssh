@@ -577,7 +577,18 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
             onClick={() => {
               const next = !pinned;
               setPinned(next);
-              if (!next) setVisible(false); // 고정 해제 즉시 숨김
+              if (!next) {
+                setVisible(false);
+                // React 상태 배치 전에 DOM을 직접 즉시 숨김
+                if (containerRef.current) {
+                  containerRef.current.classList.add('auto-hide', 'hidden');
+                }
+              } else {
+                // 다시 고정 시 인라인 조작 제거
+                if (containerRef.current) {
+                  containerRef.current.classList.remove('auto-hide', 'hidden');
+                }
+              }
             }}
             title={pinned ? t('unpinTooltip') : t('pinTooltip')}
           >
