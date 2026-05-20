@@ -36,7 +36,7 @@ interface ClientRecord {
 }
 
 interface BridgeMessage {
-  type: 'data' | 'connected' | 'closed' | 'error' | 'auth-prompt' | 'sftp-progress' | 'sftp-complete' | 'sftp-error' | 'auto-track' | 'x11-log';
+  type: 'data' | 'connected' | 'closed' | 'error' | 'auth-prompt' | 'sftp-progress' | 'sftp-complete' | 'sftp-error' | 'sftp-transfer-start' | 'sftp-file-start' | 'sftp-conflict' | 'auto-track' | 'x11-log';
   panelId: string;
   data?: string;
   error?: string;
@@ -52,6 +52,61 @@ class SSHBridge extends EventEmitter {
   private sftpCache: Map<string, any> = new Map();
   private scriptRunners: Map<string, ExpectSendRunner> = new Map();
   private pendingAuth: Map<string, (responses: string[]) => void> = new Map();
+  // 파일 충돌(이미 존재) 시 사용자 응답 대기
+  private conflictResolvers: Map<string, (decision: any) => void> = new Map();
+  // 전송별 "모두 적용" 기본 결정 — { [transferId]: { file?: 'overwrite'|'skip'|'resume', dir?: 'overwrite'|'skip' } }
+  private transferDefaults: Map<string, { file?: string; dir?: string }> = new Map();
+  // 사용자가 취소(cancel) 한 transferId
+  private cancelledTransfers: Set<string> = new Set();
+
+  public resolveConflict(requestId: string, decision: any) {
+    const fn = this.conflictResolvers.get(requestId);
+    if (fn) {
+      this.conflictResolvers.delete(requestId);
+      fn(decision);
+    }
+  }
+
+  // 전송 취소 — UI 에서 "제거" 동작 시 호출. 폴더 전송 시 다음 child 부터 중단됨.
+  public cancelTransfer(transferId: string) {
+    this.cancelledTransfers.add(transferId);
+    // 충돌 다이얼로그 대기 중이면 cancel 응답으로 깨움
+    for (const [reqId, resolver] of this.conflictResolvers.entries()) {
+      this.conflictResolvers.delete(reqId);
+      resolver({ cancel: true });
+    }
+    this.emit('message', { type: 'sftp-complete', panelId: 'transfer', data: JSON.stringify({ filename: '', direction: 'cancelled', transferId, rel: '', rootName: '' }) });
+  }
+
+  private requestConflictDecision(meta: any): Promise<any> {
+    const requestId = `cf-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+    return new Promise((resolve) => {
+      this.conflictResolvers.set(requestId, resolve);
+      this.emit('message', { type: 'sftp-conflict', panelId: 'transfer', data: JSON.stringify({ requestId, ...meta }) });
+    });
+  }
+
+  // 대상이 존재하는지 + 정보 반환
+  private async dstStat(dst: { mode: string; termId?: string; path: string }): Promise<{ exists: boolean; isDir: boolean; size: number; mtime: number }> {
+    try {
+      if (dst.mode === 'local') {
+        const s = await fs.promises.stat(dst.path);
+        return { exists: true, isDir: s.isDirectory(), size: s.size, mtime: Math.floor(s.mtimeMs / 1000) };
+      } else {
+        const sftp = await this.getSftp(dst.termId!);
+        const s: any = await new Promise((res, rej) => sftp.stat(dst.path, (e: any, st: any) => e ? rej(e) : res(st)));
+        return { exists: true, isDir: s.isDirectory(), size: s.size, mtime: s.mtime };
+      }
+    } catch { return { exists: false, isDir: false, size: 0, mtime: 0 }; }
+  }
+
+  // 충돌 해결시 새 경로(rename) 생성
+  private renameDstPath(dst: { mode: string; termId?: string; path: string }, newName: string): { mode: string; termId?: string; path: string } {
+    const sep = dst.mode === 'local' ? path.sep : '/';
+    const parent = dst.path.includes(sep) ? dst.path.slice(0, dst.path.lastIndexOf(sep)) : '';
+    const newPath = parent ? parent + sep + newName : newName;
+    return { ...dst, path: newPath };
+  }
 
   onMessage(fn: (m: BridgeMessage) => void) {
     this.on('message', fn);
@@ -522,29 +577,67 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
 
   // 백그라운드 cwd 폴링 — separate exec 채널로 readlink /proc/PID/cwd 를 주기적으로 실행.
   // 셸에 일체 명령 보내지 않음. cwd 변경되면 fake OSC 7 emit.
+  // ★ 채널 동시 개수 제한 + 연속 에러 시 백오프 — 서버의 MaxSessions 한계 회피
   private _startCwdPolling(panelId: string): void {
     this._stopCwdPolling(panelId); // 중복 방지
-    const interval = 400;
+    const baseInterval = 400;
+    const maxInterval = 30_000; // 최대 30초까지 백오프
+    let currentInterval = baseInterval;
+    let consecutiveErrors = 0;
+    let inFlight = false; // 이전 exec 미완료면 다음 tick 스킵
     const pid = this.shellPids.get(panelId);
     if (!pid) return;
+    const scheduleNext = () => {
+      if (!this.cwdPollers.has(panelId)) return; // 정지됨
+      const t = setTimeout(tick, currentInterval);
+      this.cwdPollers.set(panelId, t);
+    };
     const tick = () => {
       const rec = this.clients.get(panelId);
       if (!rec?.conn) { this._stopCwdPolling(panelId); return; }
       const curPid = this.shellPids.get(panelId);
-      if (!curPid) return;
-      // 사용자 로그인 셸(csh) 의 rc 파일이 stdout 에 출력을 추가할 수 있어 — 고유 마커로 readlink 결과만 추출
+      if (!curPid) { scheduleNext(); return; }
+      if (inFlight) { scheduleNext(); return; } // 이전 호출 응답 대기 중 — 채널 누적 방지
+      inFlight = true;
       const cmd = `/bin/sh -c 'printf "<<PEPE>>"; readlink /proc/${curPid}/cwd 2>/dev/null; printf "<<END>>"'`;
       rec.conn.exec(cmd, (err: any, stream: any) => {
         if (err) {
-          console.log(`[autotrack-${panelId.slice(-6)}] poll exec err:`, err);
+          consecutiveErrors++;
+          // 처음 1회만 로그 — 폭주 방지
+          if (consecutiveErrors === 1) {
+            console.log(`[autotrack-${panelId.slice(-6)}] poll exec err:`, err?.message || err);
+          }
+          // 백오프: 연속 에러 횟수에 따라 interval 증가
+          if (consecutiveErrors >= 3) {
+            currentInterval = Math.min(maxInterval, currentInterval * 2);
+            if (consecutiveErrors === 3 || consecutiveErrors % 10 === 0) {
+              console.log(`[autotrack-${panelId.slice(-6)}] backoff: interval=${currentInterval}ms (errors=${consecutiveErrors})`);
+            }
+          }
+          // 너무 많이 실패하면 폴링 중단 (서버가 채널 자체 안 받음)
+          if (consecutiveErrors >= 50) {
+            console.log(`[autotrack-${panelId.slice(-6)}] too many errors, stop polling`);
+            this._stopCwdPolling(panelId);
+            return;
+          }
+          inFlight = false;
+          scheduleNext();
           return;
         }
+        // 성공 — 백오프 리셋
+        if (consecutiveErrors > 0) {
+          console.log(`[autotrack-${panelId.slice(-6)}] recovered (errors=${consecutiveErrors})`);
+          consecutiveErrors = 0;
+          currentInterval = baseInterval;
+        }
         let out = '';
-        stream.on('data', (d: Buffer) => { out += d.toString('utf8'); });
-        stream.on('close', () => {
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          inFlight = false;
           const m = out.match(/<<PEPE>>([\s\S]*?)<<END>>/);
           const inner = (m ? m[1] : out).trim();
-          // path 추출 — / 로 시작 (root `/` 단독도 허용)
           let path = '';
           if (inner === '/') {
             path = '/';
@@ -552,28 +645,35 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
             const pathMatch = inner.match(/\/[A-Za-z0-9_\-./~]+/);
             if (pathMatch) path = pathMatch[0];
           }
-          if (!path) {
-            console.log(`[autotrack-${panelId.slice(-6)}] poll: no path in "${inner.slice(0, 100)}"`);
-            return;
+          if (path) {
+            const last = this.lastCwd.get(panelId);
+            if (path !== last) {
+              console.log(`[autotrack-${panelId.slice(-6)}] cwd changed: ${last} → ${path}`);
+              this.lastCwd.set(panelId, path);
+              const oscSeq = `\x1b]7;file://localhost${path}\x1b\\`;
+              this.emit('message', { type: 'data', panelId, data: oscSeq });
+            }
           }
-          const last = this.lastCwd.get(panelId);
-          if (path !== last) {
-            console.log(`[autotrack-${panelId.slice(-6)}] cwd changed: ${last} → ${path}`);
-            this.lastCwd.set(panelId, path);
-            const oscSeq = `\x1b]7;file://localhost${path}\x1b\\`;
-            this.emit('message', { type: 'data', panelId, data: oscSeq });
-          }
-        });
+          scheduleNext();
+        };
+        stream.on('data', (d: Buffer) => { out += d.toString('utf8'); });
+        stream.on('close', finish);
+        stream.on('error', (e: any) => { console.log(`[autotrack-${panelId.slice(-6)}] stream err:`, e?.message || e); finish(); });
+        stream.stderr?.on?.('data', () => {}); // drain stderr
       });
     };
-    tick(); // 즉시 한 번
-    const t = setInterval(tick, interval);
-    this.cwdPollers.set(panelId, t);
+    // 초기 tick 등록 — cwdPollers 에 임시 placeholder 넣고 즉시 실행
+    this.cwdPollers.set(panelId, setTimeout(tick, 0));
   }
 
   private _stopCwdPolling(panelId: string): void {
     const t = this.cwdPollers.get(panelId);
-    if (t) { clearInterval(t); this.cwdPollers.delete(panelId); }
+    if (t) {
+      // setTimeout 과 setInterval 모두 clearTimeout/clearInterval 호환
+      clearTimeout(t as any);
+      clearInterval(t as any);
+      this.cwdPollers.delete(panelId);
+    }
   }
 
   // 런타임 PWD 자동추적 토글 — 백그라운드 폴링 시작/중지. 셸 stdin 에 명령 절대 안 보냄.
@@ -637,6 +737,23 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
 
   // ── SFTP ──
 
+  /** SSH 세션에서 일회성 명령 실행 — stdout 반환 (stderr 무시). git status 등 짧은 조회용. */
+  public execCommand(panelId: string, command: string, timeoutMs = 5000): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const rec = this.clients.get(panelId);
+      if (!rec?.conn) return reject(new Error('연결되지 않음'));
+      rec.conn.exec(command, (err: any, stream: any) => {
+        if (err) return reject(err);
+        let out = '';
+        const to = setTimeout(() => { try { stream.close(); } catch {} reject(new Error('timeout')); }, timeoutMs);
+        stream.on('data', (d: Buffer) => { out += d.toString('utf-8'); });
+        stream.stderr?.on('data', () => { /* ignore */ });
+        stream.on('close', () => { clearTimeout(to); resolve(out); });
+        stream.on('error', (e: any) => { clearTimeout(to); reject(e); });
+      });
+    });
+  }
+
   public getSftp(panelId: string): Promise<any> {
     const cached = this.sftpCache.get(panelId);
     if (cached) return Promise.resolve(cached);
@@ -653,15 +770,16 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
     });
   }
 
-  async handleSFTPDownload(panelId: string, remotePath: string, localPath: string): Promise<void> {
+  async handleSFTPDownload(panelId: string, remotePath: string, localPath: string, ctx?: any): Promise<void> {
     const sftp = await this.getSftp(panelId);
     const filename = remotePath.split('/').pop() || remotePath;
+    const extra = ctx ? { transferId: ctx.transferId, rel: ctx.rel ?? '', rootName: ctx.rootName, srcPath: remotePath, dstPath: localPath } : {};
     // 0바이트 파일 처리
     try {
       const stat: any = await new Promise((res, rej) => sftp.stat(remotePath, (e: any, s: any) => e ? rej(e) : res(s)));
       if (stat.size === 0) {
         fs.writeFileSync(localPath, Buffer.alloc(0));
-        this.emit('message', { type: 'sftp-complete', panelId, data: JSON.stringify({ filename, direction: 'download', localPath }) });
+        this.emit('message', { type: 'sftp-complete', panelId, data: JSON.stringify({ filename, direction: 'download', localPath, ...extra }) });
         return;
       }
     } catch { /* stat 실패하면 일반 다운로드 시도 */ }
@@ -670,22 +788,23 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
         concurrency: 64,
         chunkSize: 32768,
         step: (transferred: number, _chunk: number, total: number) => {
-          this.emit('message', { type: 'sftp-progress', panelId, data: JSON.stringify({ transferred, total, filename, direction: 'download' }) });
+          this.emit('message', { type: 'sftp-progress', panelId, data: JSON.stringify({ transferred, total, filename, direction: 'download', ...extra }) });
         },
       }, (err: any) => {
         if (err) {
-          this.emit('message', { type: 'sftp-error', panelId, error: String(err) });
+          this.emit('message', { type: 'sftp-error', panelId, error: String(err), data: JSON.stringify({ filename, direction: 'download', ...extra }) });
           return reject(err);
         }
-        this.emit('message', { type: 'sftp-complete', panelId, data: JSON.stringify({ filename, direction: 'download', localPath }) });
+        this.emit('message', { type: 'sftp-complete', panelId, data: JSON.stringify({ filename, direction: 'download', localPath, ...extra }) });
         resolve();
       });
     });
   }
 
-  async handleSFTPUpload(panelId: string, localPath: string, remotePath: string): Promise<void> {
+  async handleSFTPUpload(panelId: string, localPath: string, remotePath: string, ctx?: any): Promise<void> {
     const sftp = await this.getSftp(panelId);
     const filename = localPath.replace(/\\/g, '/').split('/').pop() || localPath;
+    const extra = ctx ? { transferId: ctx.transferId, rel: ctx.rel ?? '', rootName: ctx.rootName, srcPath: localPath, dstPath: remotePath } : {};
     // 0바이트 파일 처리
     try {
       const localStat = fs.statSync(localPath);
@@ -696,7 +815,7 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
             sftp.close(handle, (e: any) => e ? rej(e) : res());
           });
         });
-        this.emit('message', { type: 'sftp-complete', panelId, data: JSON.stringify({ filename, direction: 'upload', remotePath }) });
+        this.emit('message', { type: 'sftp-complete', panelId, data: JSON.stringify({ filename, direction: 'upload', remotePath, ...extra }) });
         return;
       }
     } catch { /* stat 실패하면 일반 업로드 시도 */ }
@@ -705,14 +824,14 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
         concurrency: 64,
         chunkSize: 32768,
         step: (transferred: number, _chunk: number, total: number) => {
-          this.emit('message', { type: 'sftp-progress', panelId, data: JSON.stringify({ transferred, total, filename, direction: 'upload' }) });
+          this.emit('message', { type: 'sftp-progress', panelId, data: JSON.stringify({ transferred, total, filename, direction: 'upload', ...extra }) });
         },
       }, (err: any) => {
         if (err) {
-          this.emit('message', { type: 'sftp-error', panelId, error: String(err) });
+          this.emit('message', { type: 'sftp-error', panelId, error: String(err), data: JSON.stringify({ filename, direction: 'upload', ...extra }) });
           return reject(err);
         }
-        this.emit('message', { type: 'sftp-complete', panelId, data: JSON.stringify({ filename, direction: 'upload', remotePath }) });
+        this.emit('message', { type: 'sftp-complete', panelId, data: JSON.stringify({ filename, direction: 'upload', remotePath, ...extra }) });
         resolve();
       });
     });
@@ -723,12 +842,41 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
     return new Promise((resolve, reject) => {
       sftp.readdir(remotePath, (err: any, list: any[]) => {
         if (err) return reject(err);
-        resolve(list.map((item: any) => ({
-          name: item.filename,
-          isDir: item.attrs.isDirectory(),
-          size: item.attrs.size,
-          mtime: item.attrs.mtime,
-        })));
+        resolve(list.map((item: any) => {
+          const attrs = item.attrs;
+          const isDir = attrs.isDirectory();
+          const isLink = typeof attrs.isSymbolicLink === 'function' ? attrs.isSymbolicLink() : false;
+          // POSIX mode → drwxr-xr-x 형식 문자열
+          const m = attrs.mode || 0;
+          const typeChar = isLink ? 'l' : isDir ? 'd' : '-';
+          const rwx = (bits: number) => {
+            return (bits & 4 ? 'r' : '-') + (bits & 2 ? 'w' : '-') + (bits & 1 ? 'x' : '-');
+          };
+          const perm = typeChar
+            + rwx((m >> 6) & 7)
+            + rwx((m >> 3) & 7)
+            + rwx(m & 7);
+          // longname 에서 owner/group 추출 (예: "drwxr-xr-x  3 root root 4096 May 11 10:24 RPMS")
+          let owner = '';
+          let group = '';
+          if (item.longname && typeof item.longname === 'string') {
+            const parts = item.longname.trim().split(/\s+/);
+            if (parts.length >= 4) {
+              owner = parts[2];
+              group = parts[3];
+            }
+          }
+          return {
+            name: item.filename,
+            isDir,
+            size: attrs.size,
+            mtime: attrs.mtime,
+            mode: perm,        // drwxr-xr-x 형식
+            owner: owner || (attrs.uid != null ? String(attrs.uid) : ''),
+            group: group || (attrs.gid != null ? String(attrs.gid) : ''),
+            isLink,
+          };
+        }));
       });
     });
   }
@@ -917,7 +1065,82 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
     src: { mode: string; termId?: string; path: string },
     dst: { mode: string; termId?: string; path: string },
     filename: string,
+    ctx?: { transferId: string; rootName: string; rel: string; rootIsDir?: boolean },
   ): Promise<void> {
+    // 최상위 호출이면 ctx 자동 생성 + transfer-start 이벤트 송출
+    const isRoot = !ctx;
+    if (isRoot) {
+      ctx = { transferId: `tx-${Date.now()}-${Math.random().toString(36).slice(2,8)}`, rootName: filename, rel: '' };
+      const rootIsDir = await this.isSrcDirectory(src);
+      ctx.rootIsDir = rootIsDir;
+      // 전체 크기 사전 계산 (로컬 디렉토리만 사전 계산 — 원격은 비용 큼)
+      let totalSize = 0;
+      try {
+        if (rootIsDir) totalSize = await this.computeTreeSize(src);
+        else totalSize = (await this.getSrcStat(src)).size;
+      } catch {}
+      this.emit('message', { type: 'sftp-transfer-start', panelId: 'transfer', data: JSON.stringify({
+        transferId: ctx.transferId, rootName: filename, rel: '', isDir: rootIsDir, totalSize,
+        srcPath: src.path, dstPath: dst.path,
+        srcMode: src.mode, dstMode: dst.mode,
+        direction: src.mode === 'local' && dst.mode === 'remote' ? 'upload' : (src.mode === 'remote' && dst.mode === 'local' ? 'download' : (src.mode === 'remote' && dst.mode === 'remote' ? 'remote-remote' : 'local-copy')),
+      })});
+    }
+
+    // 사용자가 취소했으면 중단
+    if (this.cancelledTransfers.has(ctx!.transferId)) {
+      this.emit('message', { type: 'sftp-complete', panelId: 'transfer', data: JSON.stringify({ filename, direction: 'cancelled', transferId: ctx!.transferId, rel: ctx!.rel, rootName: ctx!.rootName }) });
+      return;
+    }
+
+    // 충돌 검사 — 대상이 이미 존재하는지
+    const srcIsDir = await this.isSrcDirectory(src);
+    const stat = await this.dstStat(dst);
+    let resumeFrom = 0; // 파일 resume 용 — dst 의 기존 size
+    if (stat.exists) {
+      const defaults = this.transferDefaults.get(ctx!.transferId) || {};
+      const def = srcIsDir ? defaults.dir : defaults.file;
+      let action: string;
+      let newName: string | undefined;
+      if (def) {
+        action = def;
+      } else {
+        // 사용자에게 묻기
+        let srcStat: { size: number; mtime: number } = { size: 0, mtime: 0 };
+        try { const s = await this.getSrcStat(src); srcStat = { size: s.size, mtime: s.mtime }; } catch {}
+        const decision = await this.requestConflictDecision({
+          transferId: ctx!.transferId,
+          rel: ctx!.rel,
+          name: filename,
+          srcIsDir, dstIsDir: stat.isDir,
+          srcSize: srcStat.size, dstSize: stat.size,
+          srcMtime: srcStat.mtime, dstMtime: stat.mtime,
+          srcPath: src.path, dstPath: dst.path,
+          direction: src.mode === 'local' && dst.mode === 'remote' ? 'upload' : (src.mode === 'remote' && dst.mode === 'local' ? 'download' : (src.mode === 'remote' && dst.mode === 'remote' ? 'remote-remote' : 'local-copy')),
+        });
+        action = decision?.action || 'skip';
+        newName = decision?.newName;
+        if (decision?.applyAll) {
+          const cur = this.transferDefaults.get(ctx!.transferId) || {};
+          if (srcIsDir) cur.dir = action; else cur.file = action;
+          this.transferDefaults.set(ctx!.transferId, cur);
+        }
+        if (decision?.cancel) {
+          this.cancelledTransfers.add(ctx!.transferId);
+          this.emit('message', { type: 'sftp-complete', panelId: 'transfer', data: JSON.stringify({ filename, direction: 'cancelled', transferId: ctx!.transferId, rel: ctx!.rel, rootName: ctx!.rootName, isDir: srcIsDir }) });
+          return;
+        }
+      }
+      if (action === 'skip') {
+        this.emit('message', { type: 'sftp-complete', panelId: 'transfer', data: JSON.stringify({ filename, direction: 'skipped', transferId: ctx!.transferId, rel: ctx!.rel, rootName: ctx!.rootName, isDir: srcIsDir }) });
+        return;
+      } else if (action === 'rename' && newName) {
+        dst = this.renameDstPath(dst, newName);
+      } else if (action === 'resume' && !srcIsDir) {
+        resumeFrom = stat.size;
+      }
+      // 'overwrite' 면 그대로 진행
+    }
     // 디렉토리면 재귀 복사
     if (await this.isSrcDirectory(src)) {
       await this.ensureDstDir(dst);
@@ -931,9 +1154,10 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
       for (const entry of entries) {
         const childSrc = { ...src, path: joinPath(src.path, entry, src.mode) };
         const childDst = { ...dst, path: joinPath(dst.path, entry, dst.mode) };
-        await this.handleTransfer(childSrc, childDst, entry);
+        const childRel = ctx!.rel ? `${ctx!.rel}/${entry}` : entry;
+        await this.handleTransfer(childSrc, childDst, entry, { ...ctx!, rel: childRel });
       }
-      this.emit('message', { type: 'sftp-complete', panelId: 'transfer', data: JSON.stringify({ filename, direction: 'dir-done' }) });
+      this.emit('message', { type: 'sftp-complete', panelId: 'transfer', data: JSON.stringify({ filename, direction: 'dir-done', transferId: ctx!.transferId, rel: ctx!.rel, rootName: ctx!.rootName, isDir: true }) });
       return;
     }
 
@@ -941,29 +1165,46 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
     let srcStat: { size: number; atime: number; mtime: number };
     try { srcStat = await this.getSrcStat(src); } catch { srcStat = { size: -1, atime: 0, mtime: 0 }; }
 
+    // 파일 시작 알림 (size 포함)
+    this.emit('message', { type: 'sftp-file-start', panelId: 'transfer', data: JSON.stringify({
+      transferId: ctx!.transferId, rel: ctx!.rel, rootName: ctx!.rootName, size: srcStat.size,
+      srcPath: src.path, dstPath: dst.path,
+    })});
+
     // 0바이트 파일 처리
     if (srcStat.size === 0) {
       await this.createEmptyFile(dst);
       await this.setDstTimestamp(dst, srcStat.atime, srcStat.mtime);
-      this.emit('message', { type: 'sftp-complete', panelId: 'transfer', data: JSON.stringify({ filename, direction: 'zero-byte' }) });
+      this.emit('message', { type: 'sftp-complete', panelId: 'transfer', data: JSON.stringify({ filename, direction: 'zero-byte', transferId: ctx!.transferId, rel: ctx!.rel, rootName: ctx!.rootName }) });
       return;
     }
 
     const srcLocal = src.mode === 'local';
     const dstLocal = dst.mode === 'local';
 
+    // resume(이어쓰기) — 비-디렉토리만 지원
+    if (resumeFrom > 0 && resumeFrom < srcStat.size) {
+      await this.resumeTransfer(src, dst, resumeFrom, srcStat.size, filename, ctx!);
+      await this.setDstTimestamp(dst, srcStat.atime, srcStat.mtime);
+      return;
+    }
+    if (resumeFrom > 0 && resumeFrom >= srcStat.size) {
+      // 이미 동일 또는 더 큰 크기 → 완료 처리
+      this.emit('message', { type: 'sftp-complete', panelId: 'transfer', data: JSON.stringify({ filename, direction: 'resume-skipped', transferId: ctx!.transferId, rel: ctx!.rel, rootName: ctx!.rootName }) });
+      return;
+    }
     if (srcLocal && dstLocal) {
       // 로컬 → 로컬
       await fs.promises.copyFile(src.path, dst.path);
       await this.setDstTimestamp(dst, srcStat.atime, srcStat.mtime);
-      this.emit('message', { type: 'sftp-complete', panelId: 'transfer', data: JSON.stringify({ filename, direction: 'local-copy' }) });
+      this.emit('message', { type: 'sftp-complete', panelId: 'transfer', data: JSON.stringify({ filename, direction: 'local-copy', transferId: ctx!.transferId, rel: ctx!.rel, rootName: ctx!.rootName }) });
     } else if (srcLocal && !dstLocal) {
       // 로컬 → 원격
-      await this.handleSFTPUpload(dst.termId!, src.path, dst.path);
+      await this.handleSFTPUpload(dst.termId!, src.path, dst.path, ctx);
       await this.setDstTimestamp(dst, srcStat.atime, srcStat.mtime);
     } else if (!srcLocal && dstLocal) {
       // 원격 → 로컬
-      await this.handleSFTPDownload(src.termId!, src.path, dst.path);
+      await this.handleSFTPDownload(src.termId!, src.path, dst.path, ctx);
       await this.setDstTimestamp(dst, srcStat.atime, srcStat.mtime);
     } else {
       // 원격 → 원격 (스트림 파이프)
@@ -975,18 +1216,95 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
         let transferred = 0;
         readStream.on('data', (chunk: Buffer) => {
           transferred += chunk.length;
-          this.emit('message', { type: 'sftp-progress', panelId: 'transfer', data: JSON.stringify({ transferred, total: 0, filename, direction: 'remote-remote' }) });
+          this.emit('message', { type: 'sftp-progress', panelId: 'transfer', data: JSON.stringify({ transferred, total: srcStat.size, filename, direction: 'remote-remote', transferId: ctx!.transferId, rel: ctx!.rel, rootName: ctx!.rootName }) });
         });
         readStream.on('error', (err: any) => reject(err));
         writeStream.on('error', (err: any) => reject(err));
         writeStream.on('close', async () => {
           await this.setDstTimestamp(dst, srcStat.atime, srcStat.mtime);
-          this.emit('message', { type: 'sftp-complete', panelId: 'transfer', data: JSON.stringify({ filename, direction: 'remote-remote' }) });
+          this.emit('message', { type: 'sftp-complete', panelId: 'transfer', data: JSON.stringify({ filename, direction: 'remote-remote', transferId: ctx!.transferId, rel: ctx!.rel, rootName: ctx!.rootName }) });
           resolve();
         });
         readStream.pipe(writeStream);
       });
     }
+  }
+
+  // 이어쓰기(resume) — dst 의 기존 size 부터 src 의 나머지를 append
+  private async resumeTransfer(
+    src: { mode: string; termId?: string; path: string },
+    dst: { mode: string; termId?: string; path: string },
+    resumeFrom: number,
+    totalSize: number,
+    filename: string,
+    ctx: { transferId: string; rootName: string; rel: string },
+  ): Promise<void> {
+    const direction = src.mode === 'local' && dst.mode === 'remote' ? 'upload' :
+                      src.mode === 'remote' && dst.mode === 'local' ? 'download' :
+                      src.mode === 'remote' && dst.mode === 'remote' ? 'remote-remote' : 'local-copy';
+    const extra = { transferId: ctx.transferId, rel: ctx.rel, rootName: ctx.rootName, srcPath: src.path, dstPath: dst.path };
+
+    let readStream: any, writeStream: any;
+    if (src.mode === 'local') {
+      readStream = fs.createReadStream(src.path, { start: resumeFrom });
+    } else {
+      const sftp = await this.getSftp(src.termId!);
+      readStream = sftp.createReadStream(src.path, { start: resumeFrom });
+    }
+    if (dst.mode === 'local') {
+      writeStream = fs.createWriteStream(dst.path, { flags: 'a' });
+    } else {
+      const sftp = await this.getSftp(dst.termId!);
+      writeStream = sftp.createWriteStream(dst.path, { flags: 'a' });
+    }
+    return new Promise((resolve, reject) => {
+      let transferred = resumeFrom;
+      let lastEmit = 0;
+      readStream.on('data', (chunk: Buffer) => {
+        transferred += chunk.length;
+        const now = Date.now();
+        if (now - lastEmit >= 100 || transferred >= totalSize) {
+          lastEmit = now;
+          this.emit('message', { type: 'sftp-progress', panelId: 'transfer', data: JSON.stringify({ transferred, total: totalSize, filename, direction, ...extra }) });
+        }
+      });
+      readStream.on('error', (err: any) => reject(err));
+      writeStream.on('error', (err: any) => reject(err));
+      const onDone = () => {
+        this.emit('message', { type: 'sftp-progress', panelId: 'transfer', data: JSON.stringify({ transferred: totalSize, total: totalSize, filename, direction, ...extra }) });
+        this.emit('message', { type: 'sftp-complete', panelId: 'transfer', data: JSON.stringify({ filename, direction, resumed: true, ...extra }) });
+        resolve();
+      };
+      writeStream.on('close', onDone);
+      writeStream.on('finish', onDone);
+      readStream.pipe(writeStream);
+    });
+  }
+
+  // 트리 전체 크기 계산 (로컬만 정확 / 원격은 한 단계만)
+  private async computeTreeSize(src: { mode: string; termId?: string; path: string }): Promise<number> {
+    try {
+      if (src.mode === 'local') {
+        const stat = await fs.promises.stat(src.path);
+        if (!stat.isDirectory()) return stat.size;
+        let total = 0;
+        const entries = await fs.promises.readdir(src.path);
+        for (const e of entries) {
+          total += await this.computeTreeSize({ ...src, path: path.join(src.path, e) });
+        }
+        return total;
+      } else {
+        const sftp = await this.getSftp(src.termId!);
+        const stat: any = await new Promise((res, rej) => sftp.stat(src.path, (e: any, s: any) => e ? rej(e) : res(s)));
+        if (!stat.isDirectory()) return stat.size;
+        const list: any[] = await new Promise((res, rej) => sftp.readdir(src.path, (e: any, l: any) => e ? rej(e) : res(l)));
+        let total = 0;
+        for (const item of list) {
+          total += await this.computeTreeSize({ ...src, path: src.path.endsWith('/') ? src.path + item.filename : src.path + '/' + item.filename });
+        }
+        return total;
+      }
+    } catch { return 0; }
   }
 
   // SSH exec: 원격에서 쉘 명령 실행하고 stdout/stderr/exitCode 반환

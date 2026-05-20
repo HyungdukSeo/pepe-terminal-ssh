@@ -27,11 +27,15 @@ contextBridge.exposeInMainWorld('api', {
   importSessions: () => ipcRenderer.invoke('sessions:import'),
 
   // File Explorer
-  feListDir: (mode: string, dirPath: string, termId?: string) => ipcRenderer.invoke('fe:list-dir', { mode, termId, dirPath }),
+  feListDir: (mode: string, dirPath: string, termId?: string, encoding?: string) => ipcRenderer.invoke('fe:list-dir', { mode, termId, dirPath, encoding }),
   feGetDrives: () => ipcRenderer.invoke('fe:get-drives'),
+  feGetFileIcon: (filePath: string, size?: 'small' | 'normal' | 'large') => ipcRenderer.invoke('fe:get-file-icon', { filePath, size }),
+  feGetFileIconsBatch: (filePaths: string[]) => ipcRenderer.invoke('fe:get-file-icons-batch', { filePaths }),
+  feGetIconsByExt: (exts: string[], isDir?: boolean) => ipcRenderer.invoke('fe:get-icons-by-ext', { exts, isDir }),
   feGetHome: () => ipcRenderer.invoke('fe:get-home'),
   feTransfer: (src: any, dst: any, filename: string) => ipcRenderer.invoke('fe:transfer', { src, dst, filename }),
   feMkdir: (mode: string, dirPath: string, termId?: string) => ipcRenderer.invoke('fe:mkdir', { mode, termId, dirPath }),
+  feCreateFile: (mode: string, filePath: string, termId?: string) => ipcRenderer.invoke('fe:create-file', { mode, termId, filePath }),
   feDelete: (mode: string, filePath: string, termId?: string) => ipcRenderer.invoke('fe:delete', { mode, termId, filePath }),
   feRename: (mode: string, oldPath: string, newPath: string, termId?: string) => ipcRenderer.invoke('fe:rename', { mode, termId, oldPath, newPath }),
   feHomeDir: (mode: string, termId?: string) => ipcRenderer.invoke('fe:home-dir', { mode, termId }),
@@ -60,6 +64,31 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('sftp:complete', handler);
     return () => ipcRenderer.removeListener('sftp:complete', handler);
   },
+  onSFTPTransferStart: (cb: (p: any) => void) => {
+    const handler = (_: any, p: any) => cb(p);
+    ipcRenderer.on('sftp:transfer-start', handler);
+    return () => ipcRenderer.removeListener('sftp:transfer-start', handler);
+  },
+  onSFTPFileStart: (cb: (p: any) => void) => {
+    const handler = (_: any, p: any) => cb(p);
+    ipcRenderer.on('sftp:file-start', handler);
+    return () => ipcRenderer.removeListener('sftp:file-start', handler);
+  },
+  onSFTPError: (cb: (p: any) => void) => {
+    const handler = (_: any, p: any) => cb(p);
+    ipcRenderer.on('sftp:error', handler);
+    return () => ipcRenderer.removeListener('sftp:error', handler);
+  },
+  onSFTPConflict: (cb: (p: any) => void) => {
+    const handler = (_: any, p: any) => cb(p);
+    ipcRenderer.on('sftp:conflict', handler);
+    return () => ipcRenderer.removeListener('sftp:conflict', handler);
+  },
+  feResolveConflict: (requestId: string, decision: any) => ipcRenderer.invoke('fe:resolve-conflict', { requestId, decision }),
+  feCancelTransfer: (transferId: string) => ipcRenderer.invoke('fe:cancel-transfer', { transferId }),
+  shellShowItem: (fullPath: string) => ipcRenderer.invoke('shell:show-item', { fullPath }),
+  shellOpenPath: (dirPath: string) => ipcRenderer.invoke('shell:open-path', { dirPath }),
+  feChmod: (opts: { mode: string; termId?: string; paths: string[]; octal: number; recursive?: boolean }) => ipcRenderer.invoke('fe:chmod', opts),
 
   // Window
   windowStartDrag: (mouseX: number, mouseY: number) => ipcRenderer.send('window:start-drag', { mouseX, mouseY }),
@@ -68,6 +97,7 @@ contextBridge.exposeInMainWorld('api', {
   windowMinimize: () => ipcRenderer.invoke('window:minimize'),
   windowToggleMaximize: () => ipcRenderer.invoke('window:toggle-maximize'),
   windowClose: () => ipcRenderer.invoke('window:close'),
+  windowFocus: () => ipcRenderer.invoke('window:focus'),
   windowIsMaximized: () => ipcRenderer.invoke('window:is-maximized'),
   onWindowMaximized: (cb: (m: boolean) => void) => {
     const listener = (_e: any, m: boolean) => cb(m);
@@ -167,6 +197,9 @@ contextBridge.exposeInMainWorld('api', {
   },
   sshAuthResponse: (panelId: string, responses: string[]) =>
     ipcRenderer.invoke('ssh:auth-response', { panelId, responses }),
+
+  // Git 상태 — local cwd 또는 원격 SSH 세션의 git repo
+  gitStatus: (params: { mode: 'local' | 'remote'; termId?: string; cwd?: string }) => ipcRenderer.invoke('git:status', params),
 
   // Claude Code CLI
   claudeCheck: () => ipcRenderer.invoke('claude:check'),

@@ -295,31 +295,84 @@ function restoreSavedScroll(termId: string) {
     }
   } catch {}
 }
+
+// xterm 5.3 의 rows 증가 시 grow bug 수동 보정.
+// fit() 직후 rows 가 늘어났다면, buffer 끝에 추가된 빈 줄을 제거하고 ybase/ydisp/y 를 재계산해서
+// 스크롤 위치(맨 아래에 컨텐츠 보이도록)를 유지. fit() 호출 전후로 prevRows 와 r 을 비교해야 함.
+export function applyXtermGrowFix(term: any, prevRows: number) {
+  const r = term.rows;
+  console.log('[GROWFIX] called prevRows=' + prevRows + ' r=' + r);
+  if (r <= prevRows) { console.log('[GROWFIX] skip (no grow)'); return; }
+  try {
+    const core = term._core;
+    const buf = core?.buffer;
+    if (!buf || !buf.lines) { console.log('[GROWFIX] skip (no buf)'); return; }
+    const cursorAbsolute = buf.ybase + buf.y;
+    const before = { ybase: buf.ybase, ydisp: buf.ydisp, y: buf.y, len: buf.lines.length, cursorAbs: cursorAbsolute };
+    // 마지막 줄 몇 개가 빈 줄인지 미리 확인
+    let trailingBlanks = 0;
+    for (let i = buf.lines.length - 1; i >= 0; i--) {
+      const ln = buf.lines.get(i);
+      if (ln && typeof ln.getTrimmedLength === 'function' && ln.getTrimmedLength() === 0) trailingBlanks++;
+      else break;
+    }
+    console.log('[GROWFIX] before: ' + JSON.stringify(before) + ' trailingBlanks=' + trailingBlanks);
+    // 트림 하한: 커서 위치를 포함하면서 viewport rows 이상이어야 함.
+    const minLen = Math.max(cursorAbsolute + 1, r);
+    const initialLen = buf.lines.length;
+    while (buf.lines.length > minLen) {
+      const last = buf.lines.get(buf.lines.length - 1);
+      if (last && (typeof last.getTrimmedLength === 'function') && last.getTrimmedLength() === 0) {
+        buf.lines.length = buf.lines.length - 1;
+      } else { break; }
+    }
+    const trimmed = initialLen - buf.lines.length;
+    const newYbase = Math.max(0, buf.lines.length - r);
+    const newY = cursorAbsolute - newYbase;
+    console.log('[GROWFIX] trim: minLen=' + minLen + ' trimmed=' + trimmed + ' newLen=' + buf.lines.length + ' newYbase=' + newYbase + ' newY=' + newY);
+    buf.ybase = newYbase;
+    buf.ydisp = newYbase;
+    buf.y = newY;
+    core._viewport?.syncScrollArea?.();
+    try { core._onScroll?.fire?.(newYbase); } catch {}
+    const vp = term.element?.querySelector?.('.xterm-viewport') as HTMLElement | null;
+    if (vp) {
+      const cellH = core._renderService?.dimensions?.css?.cell?.height || 17;
+      vp.scrollTop = newYbase * cellH;
+    }
+    core._renderService?.refreshRows?.(0, r - 1);
+    console.log('[GROWFIX] done. final: ybase=' + buf.ybase + ' y=' + buf.y + ' len=' + buf.lines.length);
+  } catch (e) { console.error('[GROWFIX] error', e); }
+}
+
 // 외부에서 termId 의 fit + resize 강제 — 워크스페이스 전환 후 풀스크린 터미널 크기 보정 등
 export function refitTerm(termId: string) {
   const entry = termStore.get(termId);
   if (!entry) return;
   try {
-    entry.fit.fit();
     const term: any = entry.term;
+    const prevRows = term.rows;
+    const bufA = term._core?.buffer;
+    console.log('[REFIT] start prevRows=' + prevRows + ' buf=' + (bufA ? JSON.stringify({ybase:bufA.ybase,y:bufA.y,len:bufA.lines?.length}) : 'null'));
+    entry.fit.fit();
     const c = term.cols;
     const r = term.rows;
+    const bufB = term._core?.buffer;
+    console.log('[REFIT] after fit rows=' + r + ' buf=' + (bufB ? JSON.stringify({ybase:bufB.ybase,y:bufB.y,len:bufB.lines?.length}) : 'null'));
     if (c && r) {
-      if ((window as any).api?.ptyResize) (window as any).api.ptyResize(termId, c, r);
-      (window as any).api?.resizeSSH?.(termId, c, r);
+      if (ptyConnected.has(termId)) schedulePtyResize(termId, c, r);
+      else (window as any).api?.resizeSSH?.(termId, c, r);
     }
-    // xterm 의 내부 viewport scroll-area 강제 재계산 — DOM 이동 후 scrollbar 가 안 보이는 케이스 핵심 fix
-    // term._core._viewport.syncScrollArea() 가 scroll-area div 의 height 를 (totalRows * cellHeight) 로 갱신
-    try { term._core?._viewport?.syncScrollArea?.(); } catch {}
-    // 그래도 안 되면 행 수 일시적으로 변경 → 복원으로 강제 resize 트리거
-    try {
-      const rows = term.rows;
-      if (rows && rows > 1) {
-        term.resize(term.cols, rows - 1);
-        term.resize(term.cols, rows);
-      }
-    } catch {}
+    if (r > prevRows) {
+      applyXtermGrowFix(term, prevRows);
+    } else {
+      try { term._core?._viewport?.syncScrollArea?.(); } catch {}
+    }
+    const bufC = term._core?.buffer;
+    console.log('[REFIT] before refresh buf=' + (bufC ? JSON.stringify({ybase:bufC.ybase,y:bufC.y,len:bufC.lines?.length}) : 'null'));
     term.refresh?.(0, term.rows - 1);
+    const bufD = term._core?.buffer;
+    console.log('[REFIT] after refresh buf=' + (bufD ? JSON.stringify({ybase:bufD.ybase,y:bufD.y,len:bufD.lines?.length}) : 'null'));
     // viewport 의 overflow 토글 + scrollTop 만지기로 브라우저 scrollbar 재렌더 강제
     const elem = term.element as HTMLElement | undefined;
     const viewport = elem?.querySelector?.('.xterm-viewport') as HTMLElement | null;
@@ -332,6 +385,13 @@ export function refitTerm(termId: string) {
       viewport.scrollTop = st + 1;
       viewport.scrollTop = st;
     }
+    const bufE = term._core?.buffer;
+    console.log('[REFIT] end buf=' + (bufE ? JSON.stringify({ybase:bufE.ybase,y:bufE.y,len:bufE.lines?.length}) : 'null'));
+    // 80ms 후 다시 확인 — 누가 cursor 를 되돌리는지 추적
+    setTimeout(() => {
+      const bufF = term._core?.buffer;
+      console.log('[REFIT] +80ms buf=' + (bufF ? JSON.stringify({ybase:bufF.ybase,y:bufF.y,len:bufF.lines?.length}) : 'null'));
+    }, 80);
   } catch {}
 }
 const sshInitialized = new Set<string>();
@@ -1545,7 +1605,33 @@ function ensureSSHSetup(termId: string) {
   });
 
   sshDataHandlers.set(termId, (p: any) => {
-    try { term.write(p.data); } catch {}
+    try {
+      // 사용자가 스크롤 위로 올렸을 때 새 출력으로 scrollback 증가하면서 viewport 가 따라 움직이지
+      // 않도록 ydisp 를 안정화. write 전후로 끝에서부터의 라인 offset 을 보존.
+      const core = (term as any)._core;
+      const buf = core?.buffer;
+      const wasScrolledUp = buf && buf.ydisp < buf.ybase;
+      const offsetFromEnd = wasScrolledUp ? (buf.lines.length - buf.ydisp) : -1;
+      term.write(p.data);
+      if (wasScrolledUp && offsetFromEnd > 0) {
+        try {
+          const buf2 = core?.buffer;
+          if (buf2 && buf2.lines) {
+            const newYdisp = Math.max(0, Math.min(buf2.ybase, buf2.lines.length - offsetFromEnd));
+            if (buf2.ydisp !== newYdisp) {
+              buf2.ydisp = newYdisp;
+              const vp = (term as any).element?.querySelector?.('.xterm-viewport') as HTMLElement | null;
+              if (vp) {
+                const cellH = core?._renderService?.dimensions?.css?.cell?.height || 17;
+                vp.scrollTop = newYdisp * cellH;
+              }
+              try { core?._onScroll?.fire?.(newYdisp); } catch {}
+              try { core?._renderService?.refreshRows?.(0, (term as any).rows - 1); } catch {}
+            }
+          }
+        } catch {}
+      }
+    } catch {}
   });
 
   sshClosedHandlers.set(termId, () => {
@@ -1591,8 +1677,9 @@ function ensureSSHSetup(termId: string) {
           promptPasswordAndConnect(termId, info.sessionId, cols, rows);
         }, 200);
       } else if (info?.quickSession) {
-        // 빠른연결 — 같은 이벤트 디스패치 메커니즘으로 모달 재호출
+        // 빠른연결 — 인증 실패 후엔 즉시 모달 재표시 (id/pwd 둘 다, 이전 username 은 hint 로 pre-fill)
         setTimeout(() => {
+          const prevUsername = info.quickSession.username || '';
           const tryQuickConnect = (sessInfo: any): void => {
             quickConnectPending.add(termId);
             (window as any).api?.quickConnectSSH?.(termId, sessInfo).then((r: string) => {
@@ -1603,19 +1690,34 @@ function ensureSSHSetup(termId: string) {
                     termId,
                     sessionId: '',
                     hostHint: sessInfo.host,
-                    userHint: sessInfo.username,
+                    userHint: sessInfo.username || prevUsername,
                     needUsername,
                     resolve: (result: any) => {
                       if (result === null) {
                         quickConnectPending.delete(termId);
-                        try { term.write(`\r\n\x1b[90m${tt('output.connectionCancelled')}\x1b[0m\r\n`); } catch {}
+                        try {
+                          term.write(`\r\n\x1b[90m${tt('output.connectionCancelled')}\x1b[0m\r\n`);
+                          term.write('\x1b[33m▶ 다시 시도하려면: 터미널 클릭 또는 미니탭 우클릭 → 재연결\x1b[0m\r\n');
+                        } catch {}
+                        // 터미널 영역 클릭 1회 → 자격증명 모달 재오픈
+                        setTimeout(() => {
+                          const entry = termStore.get(termId);
+                          const el = (entry?.term as any)?.element as HTMLElement | undefined;
+                          if (!el) return;
+                          const onceClick = (ev: MouseEvent) => {
+                            ev.stopPropagation();
+                            el.removeEventListener('mousedown', onceClick, true);
+                            tryQuickConnect(sessInfo);
+                          };
+                          el.addEventListener('mousedown', onceClick, true);
+                        }, 100);
                         return;
                       }
-                      let nextUsername = sessInfo.username;
+                      let nextUsername = sessInfo.username || prevUsername;
                       let nextPassword = '';
                       if (typeof result === 'string') nextPassword = result;
                       else if (result && typeof result === 'object') {
-                        nextUsername = result.username || sessInfo.username;
+                        nextUsername = result.username || sessInfo.username || prevUsername;
                         nextPassword = result.password || '';
                       }
                       const next = {
@@ -1631,7 +1733,11 @@ function ensureSSHSetup(termId: string) {
               }
             }).catch(() => {});
           };
-          tryQuickConnect(info.quickSession);
+          // 인증 실패 후엔 id+pwd 모두 다시 받기 — username 비워서 'need-credentials' 강제 진입.
+          // userHint 는 위 dispatch 에서 prevUsername 으로 채움.
+          const cleared = { ...info.quickSession, username: '', auth: { type: 'password', password: '' } };
+          registerTermSession(termId, '', info.sessionName || info.host || '', info.host || '', cleared);
+          tryQuickConnect(cleared);
         }, 200);
       }
       return;
@@ -1674,6 +1780,28 @@ function ensureSSHSetup(termId: string) {
 // ── 로컬 셸 (PTY) ──
 const ptyInitialized = new Set<string>();
 const ptyConnected = new Set<string>();
+// ConPTY 는 SIGWINCH 직후 전체화면 repaint 를 보냄 — resize 후 일정 시간 해당 패턴을 drop 해서 커서 깨짐 방지
+const ptyDropRepaintUntil = new Map<string, number>();
+const ptyResizeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const PTY_RESIZE_DEBOUNCE_MS = 1500;  // resize 이벤트 debounce (ms)
+const PTY_DROP_WINDOW_MS = 8000;       // ConPTY repaint drop 유지 시간 (ms) — maximize→restore round-trip 까지 cover
+function schedulePtyResize(termId: string, cols: number, rows: number) {
+  // drop window 를 호출 즉시 활성화 — debounce 기간 동안 PSReadLine 이 보내는 repaint 도 차단되도록.
+  // 이후 ptyResize 가 실제로 전송되고 ConPTY 가 SIGWINCH-기반 repaint 를 보내는 시점까지 모두 cover.
+  const totalWindow = PTY_RESIZE_DEBOUNCE_MS + PTY_DROP_WINDOW_MS;
+  ptyDropRepaintUntil.set(termId, Date.now() + totalWindow);
+  console.log('[SCHED-RESIZE] tid=' + termId + ' set drop window until=' + (Date.now() + totalWindow) + ' (cols=' + cols + ' rows=' + rows + ')');
+  const prev = ptyResizeTimers.get(termId);
+  if (prev) clearTimeout(prev);
+  const t = setTimeout(() => {
+    ptyResizeTimers.delete(termId);
+    (window as any).api?.ptyResize?.(termId, cols, rows);
+    // 실제 PTY resize 전송 시점부터 다시 3s 연장 — ConPTY repaint 도 cover
+    ptyDropRepaintUntil.set(termId, Date.now() + PTY_DROP_WINDOW_MS);
+    console.log('[SCHED-RESIZE] ptyResize sent. drop window extended');
+  }, PTY_RESIZE_DEBOUNCE_MS);
+  ptyResizeTimers.set(termId, t);
+}
 // SSH 가 PTY 를 takeover 할 때 pty:exit 의 "셸이 종료되었습니다" 메시지를 1회 억제하기 위한 플래그
 const ptyExitSuppressed = new Set<string>();
 const ptyDataHandlers = new Map<string, (p: any) => void>();
@@ -1700,7 +1828,58 @@ function ensurePtySetup(termId: string) {
   const { term } = getOrCreateTerm(termId);
 
   ptyDataHandlers.set(termId, (p: any) => {
-    try { term.write(p.data); } catch {}
+    try {
+      const data: string = p.data;
+      // 디버그: 데이터 들어올 때마다 head 와 buf 상태 로그
+      const head = data.slice(0, 40).replace(/\x1b/g, '<ESC>').replace(/[\r\n]/g, '?');
+      const bufP = (term as any)._core?.buffer;
+      const dropUntilVal = ptyDropRepaintUntil.get(termId);
+      const inWindow = dropUntilVal && Date.now() < dropUntilVal;
+      console.log('[PTY-IN] tid=' + termId + ' len=' + data.length + ' head="' + head + '" buf=' + (bufP ? JSON.stringify({ybase:bufP.ybase,y:bufP.y,len:bufP.lines?.length}) : 'null') + ' dropUntil=' + dropUntilVal + ' inWin=' + inWindow);
+      // ConPTY drop window: PTY resize 직후 오는 전체화면 repaint 를 억제해 커서 위치 깨짐 방지.
+      // ConPTY/PSReadLine 이 보내는 full-screen repaint 시그니처 패턴들:
+      //   sigE — \x1b[?25l \x1b[H        (커서숨김 + 커서홈)
+      //   sigF — \x1b[?25l \x1b[m \x1b[H (커서숨김 + SGR리셋 + 커서홈)  ← 이전에 누락됐던 패턴
+      //   sigA — \x1b[H \x1b[2J           (커서홈 + 화면지우기)
+      //   sigB — \x1b[2J \x1b[H           (화면지우기 + 커서홈)
+      const dropUntil = ptyDropRepaintUntil.get(termId);
+      if (dropUntil && Date.now() < dropUntil) {
+        // ConPTY/PSReadLine 전체화면 repaint 시그니처:
+        // - 시작: \x1b[?25l (커서 숨김)
+        // - 중간: 0개 이상의 SGR 시퀀스 (\x1b[<digits;>m) — 색상/스타일 리셋
+        // - 그 후: \x1b[H (커서 홈) — 화면 좌상단으로 이동
+        // 예: \x1b[?25l\x1b[H, \x1b[?25l\x1b[m\x1b[H, \x1b[?25l\x1b[38;5;9m\x1b[H 등 모두 매치
+        const sigHideHome = /^\x1b\[\?25l(?:\x1b\[[\d;]*m)*\x1b\[H/.test(data);
+        // 화면 클리어 (cursor home + ED) 패턴
+        const sigClear = /^\x1b\[H\x1b\[2J/.test(data) || /^\x1b\[2J\x1b\[H/.test(data);
+        if (sigHideHome || sigClear) { console.log('[PTY-IN] DROPPED (in window) head="' + head + '"'); return; }
+        console.log('[PTY-IN] in drop window but no match → passing through');
+      }
+      // 스크롤 위로 올린 상태에서 빠른 출력 (tail -F 등) 시 viewport drift 방지
+      const core = (term as any)._core;
+      const bufBefore = core?.buffer;
+      const wasScrolledUp = bufBefore && bufBefore.ydisp < bufBefore.ybase;
+      const offsetFromEnd = wasScrolledUp ? (bufBefore.lines.length - bufBefore.ydisp) : -1;
+      term.write(data);
+      if (wasScrolledUp && offsetFromEnd > 0) {
+        try {
+          const buf2 = core?.buffer;
+          if (buf2 && buf2.lines) {
+            const newYdisp = Math.max(0, Math.min(buf2.ybase, buf2.lines.length - offsetFromEnd));
+            if (buf2.ydisp !== newYdisp) {
+              buf2.ydisp = newYdisp;
+              const vp = (term as any).element?.querySelector?.('.xterm-viewport') as HTMLElement | null;
+              if (vp) {
+                const cellH = core?._renderService?.dimensions?.css?.cell?.height || 17;
+                vp.scrollTop = newYdisp * cellH;
+              }
+              try { core?._onScroll?.fire?.(newYdisp); } catch {}
+              try { core?._renderService?.refreshRows?.(0, (term as any).rows - 1); } catch {}
+            }
+          }
+        } catch {}
+      }
+    } catch {}
   });
 
   ptyExitHandlers.set(termId, () => {
@@ -2605,11 +2784,20 @@ export const TerminalPanel: React.FC<Props> = ({
         if (!proposed || !proposed.cols || !proposed.rows || !isFinite(proposed.cols) || !isFinite(proposed.rows)) return;
         lastContainerSizeMap.set(activeTermId, { w: cw, h: ch });
         // 안전한 사이즈 확인 후 실제 fit 적용
+        const prevRows1 = (e.term as any).rows;
+        const bufBefore1 = (e.term as any)._core?.buffer;
+        const before1 = bufBefore1 ? { ybase: bufBefore1.ybase, y: bufBefore1.y, len: bufBefore1.lines?.length } : null;
+        console.log('[DOFIT-1] before fit prevRows=' + prevRows1 + ' buf=' + JSON.stringify(before1) + ' cw=' + cw + ' ch=' + ch);
         fit.fit();
         const newCols = (e.term as any).cols;
         const newRows = (e.term as any).rows;
+        const bufAfter1 = (e.term as any)._core?.buffer;
+        const after1 = bufAfter1 ? { ybase: bufAfter1.ybase, y: bufAfter1.y, len: bufAfter1.lines?.length } : null;
+        console.log('[DOFIT-1] after fit rows=' + newRows + ' cols=' + newCols + ' buf=' + JSON.stringify(after1));
         // 비정상 사이즈 차단 (proposeDimensions 통과 후에도 체크)
         if (!newCols || !newRows || !isFinite(newCols) || !isFinite(newRows)) return;
+        // rows 증가 시 xterm grow bug 보정 (분할창 닫기 등으로 viewport 가 커진 경우)
+        if (newRows > prevRows1) applyXtermGrowFix(e.term, prevRows1);
         const last = lastResizeMap.get(activeTermId);
         if (last && last.cols === newCols && last.rows === newRows) return;
         // 안정화 검증 — 직전 fit 결과와 비교, 다르면 pending 으로 두고 SIGWINCH 보류 (layout 안정 대기)
@@ -2625,9 +2813,17 @@ export const TerminalPanel: React.FC<Props> = ({
               if (!cont2 || cont2.clientWidth < 50 || cont2.clientHeight < 30) return;
               const proposed2 = (fit as any).proposeDimensions?.();
               if (!proposed2 || !proposed2.cols || !proposed2.rows || !isFinite(proposed2.cols) || !isFinite(proposed2.rows)) return;
+              const prevRows2 = (e2.term as any).rows;
+              const bufBefore2 = (e2.term as any)._core?.buffer;
+              const before2 = bufBefore2 ? { ybase: bufBefore2.ybase, y: bufBefore2.y, len: bufBefore2.lines?.length } : null;
+              console.log('[DOFIT-2] before fit prevRows=' + prevRows2 + ' buf=' + JSON.stringify(before2));
               fit.fit();
               const c2 = (e2.term as any).cols, r2 = (e2.term as any).rows;
+              const bufAfter2 = (e2.term as any)._core?.buffer;
+              const after2 = bufAfter2 ? { ybase: bufAfter2.ybase, y: bufAfter2.y, len: bufAfter2.lines?.length } : null;
+              console.log('[DOFIT-2] after fit rows=' + r2 + ' cols=' + c2 + ' buf=' + JSON.stringify(after2));
               if (!c2 || !r2 || !isFinite(c2) || !isFinite(r2)) return;
+              if (r2 > prevRows2) applyXtermGrowFix(e2.term, prevRows2);
               const p = pendingResize.get(activeTermId);
               if (!p || p.cols !== c2 || p.rows !== r2) {
                 pendingResize.set(activeTermId, { cols: c2, rows: r2 });
@@ -2638,7 +2834,7 @@ export const TerminalPanel: React.FC<Props> = ({
               lastResizeMap.set(activeTermId, { cols: c2, rows: r2 });
               (window as any).__lastResizeTime = (window as any).__lastResizeTime || {};
               (window as any).__lastResizeTime[activeTermId] = Date.now();
-              if (ptyConnected.has(activeTermId)) window.api?.ptyResize?.(activeTermId, c2, r2);
+              if (ptyConnected.has(activeTermId)) schedulePtyResize(activeTermId, c2, r2);
               else window.api?.resizeSSH?.(activeTermId, c2, r2);
             } catch {}
           }, 200);
@@ -2647,7 +2843,7 @@ export const TerminalPanel: React.FC<Props> = ({
         // pending 과 동일 → 안정화 확인됨, SIGWINCH 송신
         lastResizeMap.set(activeTermId, { cols: newCols, rows: newRows });
         if (ptyConnected.has(activeTermId)) {
-          window.api?.ptyResize?.(activeTermId, newCols, newRows);
+          schedulePtyResize(activeTermId, newCols, newRows);
         } else {
           window.api?.resizeSSH?.(activeTermId, newCols, newRows);
         }
@@ -2655,6 +2851,11 @@ export const TerminalPanel: React.FC<Props> = ({
     };
 
     const debouncedFit = () => {
+      // 즉시 drop window 활성화 — doFit 의 80ms debounce 대기 동안 도착하는 ConPTY repaint 도 차단되도록.
+      // maximize/restore 같이 PSReadLine 이 OS 레벨 이벤트로 먼저 redraw 를 보낼 때 보호.
+      if (activeTermId && ptyConnected.has(activeTermId)) {
+        ptyDropRepaintUntil.set(activeTermId, Date.now() + PTY_RESIZE_DEBOUNCE_MS + PTY_DROP_WINDOW_MS);
+      }
       if (resizeTimer) clearTimeout(resizeTimer);
       resizeTimer = setTimeout(doFit, 80);
     };
@@ -2717,6 +2918,8 @@ export const TerminalPanel: React.FC<Props> = ({
     try { (window as any).api?.pasteModalOpen?.(tid, text); } catch {}
   };
   const [renamingTermId, setRenamingTermId] = useState<string | null>(null);
+  // 수동 더블클릭 감지 — 첫 클릭이 layout 재렌더를 유발해 native dblclick 이 발화 안 하는 케이스 보강
+  const lastClickRef = useRef<{ termId: string; at: number } | null>(null);
   const [renameValue, setRenameValue] = useState('');
   // 미니탭바 우측 패널 컨트롤(분할/플로팅/투명도) 표시 토글 — 기본 숨김
   const [showPanelControls, setShowPanelControls] = useState(false);
@@ -2823,8 +3026,20 @@ export const TerminalPanel: React.FC<Props> = ({
                   }
                   setDropZone(null);
                 }}
-                onClick={e => { e.stopPropagation(); onSwitchSession?.(nodeId, idx); }}
-                onDoubleClick={e => { e.stopPropagation(); onDuplicateSession?.(nodeId, sess.termId); }}
+                onClick={e => {
+                  e.stopPropagation();
+                  // 수동 더블클릭 — 같은 미니탭에서 500ms 내 2번째 클릭이면 복제 실행
+                  // (native onDoubleClick 은 layout 재렌더 시 발화 안 하는 케이스가 있어 수동 감지로 통일)
+                  const now = Date.now();
+                  const prev = lastClickRef.current;
+                  if (prev && prev.termId === sess.termId && now - prev.at < 500) {
+                    lastClickRef.current = null;
+                    onDuplicateSession?.(nodeId, sess.termId);
+                    return;
+                  }
+                  lastClickRef.current = { termId: sess.termId, at: now };
+                  onSwitchSession?.(nodeId, idx);
+                }}
                 onAuxClick={e => { if (e.button === 1) { e.preventDefault(); e.stopPropagation(); window.api?.disconnectSSH?.(sess.termId); onCloseSession?.(nodeId, sess.termId); } }}
                 onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setMiniCtx({ x: e.clientX, y: e.clientY, termId: sess.termId, name: sess.sessionName }); }}
               >
@@ -3109,7 +3324,46 @@ export const TerminalPanel: React.FC<Props> = ({
                   await window.api?.connectSSH?.(tid, info.sessionId, cols, rows);
                 } else if (info.quickSession) {
                   quickConnectPending.add(tid);
-                  await (window as any).api?.quickConnectSSH?.(tid, info.quickSession, cols, rows);
+                  // 빠른연결 재시도 — 자격증명 부족하면 prompt 모달로 입력 받기 (취소 후 재연결 케이스 지원)
+                  const tryConnect = async (sessInfo: any): Promise<void> => {
+                    const r = await (window as any).api?.quickConnectSSH?.(tid, sessInfo, cols, rows);
+                    if (r === 'need-credentials' || r === 'need-password') {
+                      const needUsername = r === 'need-credentials';
+                      window.dispatchEvent(new CustomEvent('ssh-password-prompt', {
+                        detail: {
+                          termId: tid,
+                          sessionId: '',
+                          hostHint: sessInfo.host,
+                          userHint: sessInfo.username,
+                          needUsername,
+                          resolve: (result: any) => {
+                            if (result === null) {
+                              quickConnectPending.delete(tid);
+                              sshConnecting.delete(tid);
+                              return;
+                            }
+                            let nextUsername = sessInfo.username;
+                            let nextPassword = '';
+                            if (typeof result === 'string') nextPassword = result;
+                            else if (result && typeof result === 'object') {
+                              nextUsername = result.username || sessInfo.username;
+                              nextPassword = result.password || '';
+                            }
+                            const next: any = {
+                              ...sessInfo,
+                              username: nextUsername,
+                              name: nextUsername ? `${nextUsername}@${sessInfo.host}` : sessInfo.host,
+                              auth: { type: 'password', password: nextPassword },
+                            };
+                            // 새 자격증명을 termSessionMap 에 저장
+                            registerTermSession(tid, '', nextUsername ? `${nextUsername}@${sessInfo.host}` : sessInfo.host, sessInfo.host, next);
+                            tryConnect(next).catch(() => {});
+                          },
+                        },
+                      }));
+                    }
+                  };
+                  tryConnect(info.quickSession).catch(() => {});
                 }
               } catch {}
             }},
@@ -3174,8 +3428,8 @@ export const TerminalPanel: React.FC<Props> = ({
             { label: t('menu.find'), onClick: () => {
               try { window.dispatchEvent(new CustomEvent('open-search')); } catch {}
             }},
-            { label: t('menu.clearScreen'), onClick: () => clearScreenInTerm(activeTermId) },
-            { label: t('menu.clearScrollbackBuffer'), onClick: () => clearScrollbackInTerm(activeTermId) },
+            { label: t('menu.clearScreen'), onClick: () => { clearScreenInTerm(activeTermId); setTimeout(() => focusTerm(activeTermId), 0); } },
+            { label: t('menu.clearScrollbackBuffer'), onClick: () => { clearScrollbackInTerm(activeTermId); setTimeout(() => focusTerm(activeTermId), 0); } },
             { label: t('menu.changeScrollback'), onClick: () => {
               const cur = getScrollbackForTerm(activeTermId);
               setScrollbackDialog({ value: String(cur) });
@@ -3231,39 +3485,44 @@ export const TerminalPanel: React.FC<Props> = ({
         />
       )}
       {scrollbackDialog && activeTermId && ReactDOM.createPortal(
-        <div className="session-editor-backdrop" onClick={() => setScrollbackDialog(null)}>
-          <div className="session-editor" style={{ width: 320 }} onClick={e => e.stopPropagation()}>
-            <h3>{t('dialogs.scrollbackTitle')}</h3>
-            <div style={{ padding: '8px 0', color: '#aaa', fontSize: 12 }}>{t('dialogs.scrollbackHint')}</div>
-            <input
-              type="number"
-              autoFocus
-              min={1000}
-              max={1000000}
-              step={1000}
-              value={scrollbackDialog.value}
-              onChange={e => setScrollbackDialog({ value: e.target.value })}
-              onKeyDown={e => {
-                if (e.key === 'Enter') {
-                  const n = Math.max(1000, Math.min(1000000, Number(scrollbackDialog.value) || 0));
-                  if (n) applyScrollbackToTerm(activeTermId, n);
-                  setScrollbackDialog(null);
-                } else if (e.key === 'Escape') {
-                  setScrollbackDialog(null);
-                }
-              }}
-              style={{ width: '100%', background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '8px', fontSize: 14, fontFamily: 'monospace', boxSizing: 'border-box' }}
-            />
-            <div className="session-editor-actions" style={{ marginTop: 12 }}>
-              <button className="btn-cancel" onClick={() => setScrollbackDialog(null)}>{t('dialogs.cancel')}</button>
-              <button className="btn-save" onClick={() => {
-                const n = Math.max(1000, Math.min(1000000, Number(scrollbackDialog.value) || 0));
-                if (n) applyScrollbackToTerm(activeTermId, n);
-                setScrollbackDialog(null);
-              }}>{t('dialogs.apply')}</button>
+        (() => {
+          const closeAndFocus = () => { setScrollbackDialog(null); setTimeout(() => focusTerm(activeTermId), 0); };
+          return (
+            <div className="session-editor-backdrop" onClick={closeAndFocus}>
+              <div className="session-editor" style={{ width: 320 }} onClick={e => e.stopPropagation()}>
+                <h3>{t('dialogs.scrollbackTitle')}</h3>
+                <div style={{ padding: '8px 0', color: '#aaa', fontSize: 12 }}>{t('dialogs.scrollbackHint')}</div>
+                <input
+                  type="number"
+                  autoFocus
+                  min={1000}
+                  max={1000000}
+                  step={1000}
+                  value={scrollbackDialog.value}
+                  onChange={e => setScrollbackDialog({ value: e.target.value })}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                      const n = Math.max(1000, Math.min(1000000, Number(scrollbackDialog.value) || 0));
+                      if (n) applyScrollbackToTerm(activeTermId, n);
+                      closeAndFocus();
+                    } else if (e.key === 'Escape') {
+                      closeAndFocus();
+                    }
+                  }}
+                  style={{ width: '100%', background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '8px', fontSize: 14, fontFamily: 'monospace', boxSizing: 'border-box' }}
+                />
+                <div className="session-editor-actions" style={{ marginTop: 12 }}>
+                  <button className="btn-cancel" onClick={closeAndFocus}>{t('dialogs.cancel')}</button>
+                  <button className="btn-save" onClick={() => {
+                    const n = Math.max(1000, Math.min(1000000, Number(scrollbackDialog.value) || 0));
+                    if (n) applyScrollbackToTerm(activeTermId, n);
+                    closeAndFocus();
+                  }}>{t('dialogs.apply')}</button>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>,
+          );
+        })(),
         document.body
       )}
       {fontDialog && ReactDOM.createPortal(

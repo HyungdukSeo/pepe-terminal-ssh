@@ -25,6 +25,8 @@ type Session = {
   scrollback?: number;
   icon?: string;
   dbms?: { type: 'altibase'; port: number; user: string; password: string; host?: string };
+  x11Forward?: boolean;
+  x11Display?: number;
 };
 
 type Folder = {
@@ -138,14 +140,27 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
     }
   };
 
-  // popout 세션 편집기에서 저장 완료 시 자동 reload
+  // popout 세션 편집기에서 저장 완료 시 자동 reload + 설정 변경 감지
   useEffect(() => {
     const off = (window as any).api?.onSessionEditorSaved?.((p: { session?: Session }) => {
+      const s = p?.session;
+      if (s?.id) {
+        // 변경 전 세션 (현재 state) 와 비교 — X11 변경 시 활성 연결 재접속
+        const prev = sessions.find(x => x.id === s.id);
+        const x11Changed = !!prev && (!!prev.x11Forward !== !!s.x11Forward || (prev.x11Display ?? 0) !== (s.x11Display ?? 0));
+        if (x11Changed) {
+          try {
+            window.dispatchEvent(new CustomEvent('session-setting-changed', {
+              detail: { sessionId: s.id, fields: ['x11Forward', 'x11Display'], requiresReconnect: true },
+            }));
+          } catch {}
+        }
+      }
       reload();
-      if (p?.session?.id) { setSelectedId(p.session.id); setSelectedType('session'); }
+      if (s?.id) { setSelectedId(s.id); setSelectedType('session'); }
     });
     return () => { try { off?.(); } catch {} };
-  }, []);
+  }, [sessions]);
 
   const onPointerDown = (e: React.PointerEvent) => {
     (e.target as Element).setPointerCapture?.(e.pointerId);
@@ -269,11 +284,22 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
   };
 
   const onSaveSession = async (s: Session) => {
+    // 변경 전 세션 — 일부 설정 (X11 forwarding 등) 변경 시 활성 연결 재접속 필요
+    const prev = sessions.find(x => x.id === s.id);
     await (window as any).api.saveSession(s);
     // 저장만 — 창 유지
     await reload();
     setSelectedId(s.id);
     setSelectedType('session');
+    // X11 forwarding / display 변경 — 재접속 없이는 효과 없음. 활성 연결에 즉시 적용 위해 reconnect.
+    const x11Changed = !!prev && (!!prev.x11Forward !== !!s.x11Forward || (prev.x11Display ?? 0) !== (s.x11Display ?? 0));
+    if (x11Changed) {
+      try {
+        window.dispatchEvent(new CustomEvent('session-setting-changed', {
+          detail: { sessionId: s.id, fields: ['x11Forward', 'x11Display'], requiresReconnect: true },
+        }));
+      } catch {}
+    }
   };
 
   // 저장 + 창 닫기 + 연결

@@ -1,8 +1,8 @@
 // src/components/FileExplorer.tsx
 import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { FixedSizeList as VList, ListChildComponentProps } from 'react-window';
 import { FilePanel, PanelSource } from './FilePanel';
+import { TransferLog } from './TransferLog';
 import type { PanelSession } from '../utils/layoutUtils';
 
 const api = (window as any).api || {};
@@ -17,12 +17,13 @@ export const FileExplorer: React.FC<Props> = ({ sessions }) => {
   const [sources, setSources] = useState<PanelSource[]>([{ mode: 'local', label: localLabel }]);
   const [leftSource, setLeftSource] = useState<PanelSource>({ mode: 'local', label: localLabel });
   const [rightSource, setRightSource] = useState<PanelSource>({ mode: 'local', label: localLabel });
-  const [leftPath, setLeftPath] = useState('C:\\');
-  const [rightPath, setRightPath] = useState('C:\\');
+  // 초기 경로는 빈 문자열 — feGetHome 으로 home 받아오면 즉시 설정.
+  // (C:\\ 초기값이면 C:\\ → home 으로 한번 점프하는 깜빡임 발생)
+  const [leftPath, setLeftPath] = useState('');
+  const [rightPath, setRightPath] = useState('');
   const [leftSelected, setLeftSelected] = useState<Set<string>>(new Set());
   const [rightSelected, setRightSelected] = useState<Set<string>>(new Set());
   const [transferring, setTransferring] = useState(false);
-  const [transfers, setTransfers] = useState<{ id: string; filename: string; pct: number; done: boolean }[]>([]);
   const [initDone, setInitDone] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const rightSourceSetRef = React.useRef(false);
@@ -35,7 +36,7 @@ export const FileExplorer: React.FC<Props> = ({ sessions }) => {
   const [sftpConnecting, setSftpConnecting] = useState(false);
   const [transfersHeight, setTransfersHeight] = useState(() => {
     const saved = localStorage.getItem('feTransfersHeight');
-    return saved ? Number(saved) : 120;
+    return saved ? Number(saved) : 200;
   });
   const resizing = React.useRef<{ startY: number; startH: number } | null>(null);
   // 세션 ID → 폴더 이름 매핑 (드롭다운 label 에 폴더 접두사 붙이기용)
@@ -91,28 +92,19 @@ export const FileExplorer: React.FC<Props> = ({ sessions }) => {
       setInitDone(true);
     })();
 
-    // SFTP 진행률
-    let unsub: any, unsub2: any;
+    // 전송 진행률은 이제 TransferLog 컴포넌트에서 직접 처리
+    // 단, 전송 종료 시점에 버튼 disable 해제 처리만 남김
+    let unsub2: any;
     try {
-      unsub = api?.onSFTPProgress?.((p: any) => {
-        try {
-          const d = JSON.parse(p.data);
-          setTransfers(prev => {
-            const existing = prev.find(t => t.filename === d.filename && !t.done);
-            if (existing) return prev.map(t => t === existing ? { ...t, pct: d.total > 0 ? Math.round(d.transferred / d.total * 100) : 0 } : t);
-            return [...prev, { id: `t-${Date.now()}`, filename: d.filename, pct: d.total > 0 ? Math.round(d.transferred / d.total * 100) : 0, done: false }];
-          });
-        } catch {}
-      });
       unsub2 = api?.onSFTPComplete?.((p: any) => {
         try {
           const d = JSON.parse(p.data);
-          setTransfers(prev => prev.map(t => t.filename === d.filename && !t.done ? { ...t, pct: 100, done: true } : t));
+          // 루트 전송 완료시(또는 dir-done 일 때) transferring 해제
+          if (d.rel === '' || d.direction === 'dir-done') setTransferring(false);
         } catch {}
-        setTransferring(false);
       });
     } catch {}
-    return () => { try { unsub?.(); } catch {} try { unsub2?.(); } catch {} };
+    return () => { try { unsub2?.(); } catch {} };
   }, []);
 
   // 파일 전송 탭에서 세션 더블클릭으로 SFTP 연결된 이벤트 수신
@@ -356,7 +348,6 @@ export const FileExplorer: React.FC<Props> = ({ sessions }) => {
     }
 
     setTransferring(false);
-    setTimeout(() => setTransfers(prev => prev.filter(t => !t.done)), 3000);
     setRefreshKey(k => k + 1);
   };
 
@@ -381,7 +372,6 @@ export const FileExplorer: React.FC<Props> = ({ sessions }) => {
       }
     }
     setTransferring(false);
-    setTimeout(() => setTransfers(prev => prev.filter(t => !t.done)), 3000);
     setRefreshKey(k => k + 1);
   };
 
@@ -391,7 +381,7 @@ export const FileExplorer: React.FC<Props> = ({ sessions }) => {
     const onMove = (ev: MouseEvent) => {
       if (!resizing.current) return;
       const delta = resizing.current.startY - ev.clientY;
-      const newH = Math.max(40, Math.min(400, resizing.current.startH + delta));
+      const newH = Math.max(80, Math.min(600, resizing.current.startH + delta));
       setTransfersHeight(newH);
     };
     const onUp = () => {
@@ -431,30 +421,8 @@ export const FileExplorer: React.FC<Props> = ({ sessions }) => {
         </div>
       </div>
       <div className="fe-transfers-resize" onMouseDown={onResizeStart} />
-      <div className="fe-transfers" style={{ height: transfersHeight, display: 'flex', flexDirection: 'column' }}>
-        <div className="fe-transfers-header">{t('tabTransfersHeader')}</div>
-        {transfers.length === 0 ? (
-          <div className="fe-transfers-empty">{t('tabTransfersEmpty')}</div>
-        ) : (
-          <div style={{ flex: 1, minHeight: 0 }}>
-            <VList height={Math.max(0, transfersHeight - 28)} width="100%" itemCount={transfers.length} itemSize={24} overscanCount={10}>
-              {({ index, style }: ListChildComponentProps) => {
-                const t = transfers[index];
-                if (!t) return null;
-                return (
-                  <div key={t.id} className={`fe-transfer-row ${t.done ? 'done' : ''}`} style={style}>
-                    <span className="fe-transfer-icon">{t.done ? '✅' : '⏳'}</span>
-                    <span className="fe-transfer-text">{t.filename}</span>
-                    <div className="fe-progress-track">
-                      <div className="fe-progress-fill" style={{ width: `${t.pct}%` }} />
-                    </div>
-                    <span className="fe-progress-pct">{t.pct}%</span>
-                  </div>
-                );
-              }}
-            </VList>
-          </div>
-        )}
+      <div className="fe-transfers" style={{ height: transfersHeight }}>
+        <TransferLog />
       </div>
       {showSftpConnect && (
         <div className="session-editor-backdrop" onClick={() => setShowSftpConnect(null)}>

@@ -54,6 +54,27 @@ function runSigntool(signtoolPath, args, filePath) {
   });
 }
 
+function findWindowsKitSigntool() {
+  const roots = [
+    process.env.PEPE_SIGNTOOL_DIR,
+    'C:\\Program Files (x86)\\Windows Kits\\10\\bin',
+    'C:\\Program Files\\Windows Kits\\10\\bin',
+  ].filter(Boolean);
+  for (const root of roots) {
+    try {
+      if (!fs.existsSync(root)) continue;
+      const candidates = [];
+      for (const version of fs.readdirSync(root)) {
+        const p = path.join(root, version, 'x64', 'signtool.exe');
+        if (fs.existsSync(p)) candidates.push(p);
+      }
+      candidates.sort().reverse();
+      if (candidates[0]) return candidates[0];
+    } catch {}
+  }
+  return null;
+}
+
 // electron-builder 가 호출하는 진입점
 module.exports = async function (configuration) {
   const filePath = configuration.path;
@@ -79,7 +100,9 @@ module.exports = async function (configuration) {
     signtoolPath = path.join(winCodeSignDir, versions[0], 'windows-10', 'x64', 'signtool.exe');
     if (!fs.existsSync(signtoolPath)) throw new Error('signtool.exe 없음: ' + signtoolPath);
   } catch (err) {
-    throw new Error('[sign-with-retry] signtool 위치 탐색 실패: ' + err.message);
+    signtoolPath = findWindowsKitSigntool();
+    if (!signtoolPath) throw new Error('[sign-with-retry] signtool 위치 탐색 실패: ' + err.message);
+    console.warn(`[sign-with-retry] winCodeSign cache unavailable; using Windows Kits signtool: ${signtoolPath}`);
   }
 
   const baseArgs = [

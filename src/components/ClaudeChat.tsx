@@ -212,6 +212,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const [installed, setInstalled] = useState<boolean | null>(null);
   const [version, setVersion] = useState<string>('');
   const [messages, setMessages] = useState<Message[]>([]);
+  // Git 상태 — 현재 cwd / 활성 SSH 세션 자동 감지
+  const [gitStatus, setGitStatus] = useState<{ ok: boolean; branch?: string; additions?: number; deletions?: number } | null>(null);
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
   // 현재 진행 중 활동(툴 이름 등) — 스트리밍 인디케이터 옆에 표시
@@ -220,6 +222,11 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const [toolTimeline, setToolTimeline] = useState<ToolTimelineItem[]>([]);
   // 승인 대기 중인 계획 (ExitPlanMode 수신 시)
   const [pendingPlan, setPendingPlan] = useState<string | null>(null);
+  // 계획 편집 모드 — 사용자가 markdown 원본을 수정한 뒤 그 내용으로 진행 가능
+  const [planEditing, setPlanEditing] = useState(false);
+  const [planEditedText, setPlanEditedText] = useState('');
+  // 계획 진행 시 추가 요구사항 — 계획에 덧붙여서 전송
+  const [planExtraNote, setPlanExtraNote] = useState('');
   // 최근 거부한 계획 (실수 방지 — 다시 보기/재승인 가능)
   const [lastRejectedPlan, setLastRejectedPlan] = useState<string | null>(null);
   // 사용량 추적 — stream-json result 이벤트에서 누적
@@ -799,10 +806,40 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     return () => { if (dispose) dispose(); };
   }, [sessionId]);
 
-  // 자동 스크롤
+  // Git 상태 자동 갱신 — 활성 SSH 세션 우선, 아니면 로컬 cwd. 메시지 변경 / 세션 전환 시 폴링.
+  useEffect(() => {
+    let cancelled = false;
+    const fetchGit = async () => {
+      try {
+        const termId = activeSshSession?.termId;
+        const params: any = termId ? { mode: 'remote', termId } : { mode: 'local' };
+        const r: any = await (window as any).api?.gitStatus?.(params);
+        if (cancelled) return;
+        if (r?.ok) setGitStatus({ ok: true, branch: r.branch, additions: r.additions, deletions: r.deletions });
+        else setGitStatus(null);
+      } catch { if (!cancelled) setGitStatus(null); }
+    };
+    fetchGit();
+    const t = setInterval(fetchGit, 15000); // 15s polling
+    return () => { cancelled = true; clearInterval(t); };
+  }, [activeSshSession?.termId, messages.length]);
+
+  // 자동 스크롤 — 메시지 변경 시 + agent 전환 후 messages 영역이 재마운트될 때
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
   }, [messages]);
+  // installed 가 true 가 되어 chat view 로 돌아왔을 때, scrollRef 가 새로 mount 되므로 즉시 bottom 으로 이동
+  useEffect(() => {
+    if (installed && messages.length > 0) {
+      // mount 직후엔 scrollHeight 가 계산 안 됐을 수 있어 약간의 지연 + 비-smooth 스크롤
+      requestAnimationFrame(() => {
+        if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      });
+      setTimeout(() => {
+        if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      }, 50);
+    }
+  }, [installed]);
 
   // Mermaid 다이어그램 렌더링 — messages 변경 / pendingPlan 시 미렌더 mermaid 코드블록을 SVG 로 변환
   useEffect(() => {
@@ -1432,9 +1469,19 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   // streaming 상태 race 방지용 — 승인 시점에 streaming 이 아직 true 면 끝나기를 기다렸다 send
   const pendingApprovalSendRef = useRef<string | null>(null);
   const approvePlan = () => {
+    // 편집 모드면 수정된 계획 내용으로 진행. 원본과 동일하면 기본 메시지.
+    const edited = planEditing ? planEditedText.trim() : '';
+    const original = (pendingPlan || '').trim();
+    const extra = planExtraNote.trim();
     setPendingPlan(null);
+    setPlanEditing(false);
+    setPlanEditedText('');
+    setPlanExtraNote('');
     setLastRejectedPlan(null);
-    const text = '위 계획대로 진행해줘';
+    let text = (edited && edited !== original)
+      ? `다음 계획대로 진행해줘:\n\n${edited}`
+      : '위 계획대로 진행해줘';
+    if (extra) text += `\n\n[추가 요구사항]\n${extra}`;
     console.log('[ClaudeChat] approvePlan, streaming=', streaming);
     if (streaming) {
       pendingApprovalSendRef.current = text;
@@ -1464,6 +1511,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     }
   }, [streaming, send]);
   const rejectPlan = () => {
+    setPlanEditing(false);
+    setPlanEditedText('');
+    setPlanExtraNote('');
     setPendingPlan(prev => { if (prev) setLastRejectedPlan(prev); return null; });
     setMessages(prev => [...prev, { role: 'assistant', content: tt('planRejected'), id: `reject-${Date.now()}` }]);
   };
@@ -1609,15 +1659,42 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   };
 
   if (installed === null) {
-    return <div className="claude-chat-container"><div className="claude-chat-loading">{currentAgent === 'gemini' ? tt('loadingGemini') : currentAgent === 'codex' ? tt('loadingCodex') : tt('loading')}</div></div>;
+    return (
+      <div className="claude-chat-container">
+        <div className="claude-chat-header">
+          <div className="claude-chat-agent-switcher">
+            <button className={`claude-chat-agent-btn ${currentAgent === 'claude' ? 'active' : ''}`} title="Claude Code" onClick={() => switchAgent('claude')}>🤖</button>
+            <button className={`claude-chat-agent-btn ${currentAgent === 'gemini' ? 'active' : ''}`} title="Gemini" onClick={() => switchAgent('gemini')}>✨</button>
+            <button className={`claude-chat-agent-btn ${currentAgent === 'codex' ? 'active' : ''}`} title="Codex" onClick={() => switchAgent('codex')}>🧠</button>
+          </div>
+          {onClose && <button className="claude-chat-close" onClick={onClose}>×</button>}
+        </div>
+        <div className="claude-chat-loading">{currentAgent === 'gemini' ? tt('loadingGemini') : currentAgent === 'codex' ? tt('loadingCodex') : tt('loading')}</div>
+      </div>
+    );
   }
   if (!installed) {
-    const agentIcon = currentAgent === 'gemini' ? '✨ Gemini' : currentAgent === 'codex' ? '🧠 Codex' : '🤖 Claude';
     const notInstalledMsg = currentAgent === 'gemini' ? tt('notInstalledGemini') : currentAgent === 'codex' ? tt('notInstalledCodex') : tt('notInstalled');
     return (
       <div className="claude-chat-container">
         <div className="claude-chat-header">
-          <span>{agentIcon}</span>
+          <div className="claude-chat-agent-switcher">
+            <button
+              className={`claude-chat-agent-btn ${currentAgent === 'claude' ? 'active' : ''}`}
+              title="Claude Code"
+              onClick={() => switchAgent('claude')}
+            >🤖</button>
+            <button
+              className={`claude-chat-agent-btn ${currentAgent === 'gemini' ? 'active' : ''}`}
+              title="Gemini"
+              onClick={() => switchAgent('gemini')}
+            >✨</button>
+            <button
+              className={`claude-chat-agent-btn ${currentAgent === 'codex' ? 'active' : ''}`}
+              title="Codex"
+              onClick={() => switchAgent('codex')}
+            >🧠</button>
+          </div>
           {onClose && <button className="claude-chat-close" onClick={onClose}>×</button>}
         </div>
         <div className="claude-chat-notinstalled">
@@ -1680,39 +1757,6 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           {onClose && <button className="claude-chat-close" onClick={onClose} title={tt('close')}>×</button>}
         </div>
       </div>
-      {pendingToolApproval && (
-        <div className="claude-chat-plan-overlay">
-          <div className="claude-chat-plan-modal">
-            <div className="claude-chat-plan-title">{tt('approveToolPrompt', { toolName: pendingToolApproval.toolName })}</div>
-            <div className="claude-chat-plan-body">
-              <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-{JSON.stringify(pendingToolApproval.toolInput, null, 2).slice(0, 2000)}
-              </pre>
-            </div>
-            <div className="claude-chat-plan-actions">
-              <button className="claude-chat-plan-btn reject" onClick={denyTool}>{tt('deny')}</button>
-              <button className="claude-chat-plan-btn approve" onClick={approveTool} autoFocus>{tt('approveOnce')}</button>
-            </div>
-          </div>
-        </div>
-      )}
-      {pendingPlan && (
-        <div className="claude-chat-plan-overlay" onClick={rejectPlan}>
-          <div className="claude-chat-plan-modal" onClick={e => e.stopPropagation()}
-            onKeyDown={e => { if (e.key === 'Enter') approvePlan(); else if (e.key === 'Escape') rejectPlan(); }}
-            tabIndex={0}
-          >
-            <div className="claude-chat-plan-title">{tt('planApprovalTitle')}</div>
-            <div className="claude-chat-plan-body"
-              dangerouslySetInnerHTML={{ __html: renderMd(pendingPlan) }}
-            />
-            <div className="claude-chat-plan-actions">
-              <button className="claude-chat-plan-btn reject" onClick={rejectPlan}>{tt('planDeny')}</button>
-              <button className="claude-chat-plan-btn approve" onClick={approvePlan} autoFocus>{tt('planProceed')}</button>
-            </div>
-          </div>
-        </div>
-      )}
       {showUsagePanel && (
         <div className="claude-chat-usage-panel claude-chat-usage-popup"
           style={usagePopupPos ? { left: usagePopupPos.left, bottom: usagePopupPos.bottom, right: 'auto' } : undefined}
@@ -1970,6 +2014,76 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         );
       })()}
       <div className="claude-chat-messages" ref={scrollRef} style={showHistoryPanel ? { display: 'none' } : undefined}>
+        {pendingToolApproval && (
+          <div className="claude-chat-plan-overlay">
+            <div className="claude-chat-plan-modal">
+              <div className="claude-chat-plan-title">{tt('approveToolPrompt', { toolName: pendingToolApproval.toolName })}</div>
+              <div className="claude-chat-plan-body">
+                <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+{JSON.stringify(pendingToolApproval.toolInput, null, 2).slice(0, 2000)}
+                </pre>
+              </div>
+              <div className="claude-chat-plan-actions">
+                <button className="claude-chat-plan-btn reject" onClick={denyTool}>{tt('deny')}</button>
+                <button className="claude-chat-plan-btn approve" onClick={approveTool} autoFocus>{tt('approveOnce')}</button>
+              </div>
+            </div>
+          </div>
+        )}
+        {pendingPlan && (
+          <div className="claude-chat-plan-overlay" onClick={rejectPlan}>
+            <div className="claude-chat-plan-modal" onClick={e => e.stopPropagation()}
+              onKeyDown={e => { if (!planEditing && e.key === 'Enter') approvePlan(); else if (e.key === 'Escape') rejectPlan(); }}
+              tabIndex={0}
+            >
+              <div className="claude-chat-plan-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>{tt('planApprovalTitle')}</span>
+                <button
+                  style={{ background: 'transparent', border: '1px solid #3a5075', color: '#9cf', borderRadius: 4, padding: '2px 8px', cursor: 'pointer', fontSize: 12 }}
+                  onClick={() => {
+                    if (!planEditing) { setPlanEditedText(pendingPlan); setPlanEditing(true); }
+                    else { setPlanEditing(false); }
+                  }}
+                  title={planEditing ? '미리보기로 전환' : '편집 모드'}
+                >
+                  {planEditing ? '👁 미리보기' : '✎ 편집'}
+                </button>
+              </div>
+              {planEditing ? (
+                <textarea
+                  className="claude-chat-plan-body"
+                  value={planEditedText}
+                  onChange={e => setPlanEditedText(e.target.value)}
+                  style={{ resize: 'none', background: '#0a0f1a', color: '#cde', border: 'none', outline: 'none', fontFamily: 'inherit', fontSize: 13, lineHeight: 1.55, padding: '12px 16px', width: '100%', boxSizing: 'border-box', flex: 1, minHeight: 200, display: 'block' }}
+                  autoFocus
+                />
+              ) : (
+                <div className="claude-chat-plan-body"
+                  dangerouslySetInnerHTML={{ __html: renderMd(pendingPlan) }}
+                />
+              )}
+              <div style={{ padding: '8px 16px', borderTop: '1px solid #2a3a50', background: '#0f1318' }}>
+                <div style={{ fontSize: 11, color: '#8aa', marginBottom: 4 }}>➕ 추가 요구사항 (선택)</div>
+                <textarea
+                  value={planExtraNote}
+                  onChange={e => setPlanExtraNote(e.target.value)}
+                  placeholder="예: 테스트 코드도 추가해줘 / 주석 한글로 써줘 / dry-run 으로 먼저 보여줘 ..."
+                  rows={2}
+                  style={{ resize: 'vertical', background: '#0a0f1a', color: '#cde', border: '1px solid #2a3a50', outline: 'none', fontFamily: 'inherit', fontSize: 12, lineHeight: 1.5, padding: '6px 10px', width: '100%', boxSizing: 'border-box', borderRadius: 4 }}
+                  onKeyDown={e => {
+                    // textarea 안에서 Enter 는 줄바꿈이어야 하므로 부모로 전파 차단
+                    e.stopPropagation();
+                    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); approvePlan(); }
+                  }}
+                />
+              </div>
+              <div className="claude-chat-plan-actions">
+                <button className="claude-chat-plan-btn reject" onClick={rejectPlan}>{tt('planDeny')}</button>
+                <button className="claude-chat-plan-btn approve" onClick={approvePlan} autoFocus={!planEditing}>{tt('planProceed')}</button>
+              </div>
+            </div>
+          </div>
+        )}
         {messages.length === 0 && (
           <div className="claude-chat-empty">
             <p>{currentAgent === 'gemini' ? tt('askPlaceholderGemini') : currentAgent === 'codex' ? tt('askPlaceholderCodex') : tt('askPlaceholder')}</p>
@@ -2025,7 +2139,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             </div>
           ) : (() => {
             const groupKey = g.key;
-            const expanded = expandedToolGroups.has(groupKey);
+            // 실행 중인 도구가 있으면 자동 펼침 (사용자가 보고 있을 수 있는 진행 상황)
+            const anyRunningInGroup = g.tools.some(t => t.status === 'running');
+            const expanded = expandedToolGroups.has(groupKey) || anyRunningInGroup;
             const summary = (() => {
               // 툴 이름별 카운트로 요약 — "검색함 Read 2개, Bash 1개" 식
               const counts: Record<string, number> = {};
@@ -2036,9 +2152,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               }
               return Object.entries(counts).map(([k, v]) => `${k} ${tt('toolCount', { count: v })}`).join(', ');
             })();
-            const anyRunning = g.tools.some(t => t.status === 'running');
             const anyError = g.tools.some(t => t.status === 'error');
-            const headerIcon = anyRunning ? '⏳' : anyError ? '✕' : '✓';
+            const headerIcon = anyRunningInGroup ? '⏳' : anyError ? '✕' : '✓';
             return (
               <div key={g.key} className={`claude-chat-tool-group ${expanded ? 'expanded' : 'collapsed'}`}>
                 <button className="claude-chat-tool-group-header" onClick={() => toggleToolGroup(groupKey)} title={expanded ? tt('collapse') : tt('expand')}>
@@ -2049,7 +2164,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                 {expanded && (
                   <div className="claude-chat-tool-group-body">
                     {g.tools.map(t => {
-                      const isOpen = expandedToolItems.has(t.id);
+                      // 실행 중인 도구는 자동 펼침 (진행 상황 보이도록)
+                      const isOpen = expandedToolItems.has(t.id) || t.status === 'running';
                       const labelShort = t.label.length > 80 ? t.label.slice(0, 80) + '…' : t.label;
                       return (
                         <div key={`t-${t.id}`} className={`claude-chat-timeline-item ${t.status} ${isOpen ? 'open' : 'closed'}`}>
@@ -2081,6 +2197,56 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         </div>
       )}
       <div className="claude-chat-input-area" style={showHistoryPanel ? { display: 'none' } : undefined}>
+        {(() => {
+          if (!gitStatus?.ok || !gitStatus.branch) return null;
+          // 엄격한 git 키워드 — 모호한 일반 단어 (push, fetch, diff, merge 등) 제외
+          // 명시적 git 관련 표현만 인정
+          const gitRe = /\bgit\s|\bgit$|`git\b|\bPR\b|\bpull request\b|\bgithub\b|\bgitlab\b|\bcommit\s|`commit`|\bbranch\s.*\b(main|master|dev|feature|release)\b|\bcheckout -b|\bgit\.exe/i;
+          const toolHits = toolTimeline.filter(t => /\bgit[\s.]/i.test(t.label)).map(t => t.label);
+          const msgHitsDetailed = messages
+            .map((m, idx) => {
+              const c = typeof m.content === 'string' ? m.content : '';
+              const match = c.match(gitRe);
+              return match ? { idx, role: m.role, matched: match[0], snippet: c.slice(Math.max(0, (match.index || 0) - 20), (match.index || 0) + 60) } : null;
+            })
+            .filter(Boolean);
+          const toolMatch = toolHits.length > 0;
+          const msgMatch = msgHitsDetailed.length > 0;
+          console.log('[GITBAR] check', {
+            branch: gitStatus.branch,
+            msgCount: messages.length,
+            toolMatch, toolHits,
+            msgMatch, msgHits: msgHitsDetailed,
+          });
+          if (!toolMatch && !msgMatch) return null;
+          return (
+          <div className="claude-chat-git-bar" title={activeSshSession ? `원격 SSH (${activeSshSession.label})` : '로컬'}>
+            <span className="claude-chat-git-branch">
+              <span style={{ opacity: 0.7 }}>⎇</span> {gitStatus.branch}
+            </span>
+            {(gitStatus.additions || gitStatus.deletions) ? (
+              <span className="claude-chat-git-diff">
+                <span style={{ color: '#5cd97a' }}>+{(gitStatus.additions || 0).toLocaleString()}</span>
+                {' '}
+                <span style={{ color: '#ff7a7a' }}>−{(gitStatus.deletions || 0).toLocaleString()}</span>
+              </span>
+            ) : (
+              <span className="claude-chat-git-diff" style={{ opacity: 0.5 }}>변경 없음</span>
+            )}
+            <button
+              className="claude-chat-git-pr-btn"
+              title="현재 변경사항으로 PR 생성을 AI 에게 요청"
+              onClick={() => {
+                // AI 에게 PR 생성 요청 메시지 자동 전송
+                const branch = gitStatus.branch || 'HEAD';
+                const stat = `+${gitStatus.additions || 0} -${gitStatus.deletions || 0}`;
+                const text = `현재 변경사항으로 PR 을 생성해줘.\n- branch: \`${branch}\`\n- diff: ${stat}\n\n변경 요약과 함께 \`gh pr create\` 명령어로 PR 을 만들어 줘.`;
+                send(text, []);
+              }}
+            >PR 생성</button>
+          </div>
+          );
+        })()}
         {lastRejectedPlan && !pendingPlan && (
           <div className="claude-chat-rejected-plan-bar">
             <button

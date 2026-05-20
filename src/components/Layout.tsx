@@ -30,6 +30,8 @@ type CommonHandlers = {
   workspaceList?: { id: string; title: string }[];
   currentWorkspaceId?: string;
   onMoveSessionToWorkspace?: (fromNodeId: string, termId: string, targetTabId: string) => void;
+  // 컨테이너 노드의 자식 분할 비율 변경 알림 — 사용자가 drag 로 조절 시
+  onContainerResize?: (containerNodeId: string, sizes: number[]) => void;
 };
 
 type Props = CommonHandlers & { root: LayoutNode };
@@ -38,7 +40,8 @@ type CProps = CommonHandlers & { node: ContainerNode };
 
 export const Layout: React.FC<Props> = ({ root, ...h }) => (
   <div className="layout-root">
-    <NodeView node={root} {...h} />
+    {/* key={root.id} — 워크스페이스 전환 시 트리 완전 재구성 → 각 워크스페이스 독립된 상태 보장 */}
+    <NodeView key={root.id} node={root} {...h} />
   </div>
 );
 
@@ -82,25 +85,25 @@ const NodeView: React.FC<NodeProps> = ({ node, ...h }) => {
   return <ContainerNodeView node={node} {...h} />;
 };
 
-// 워크스페이스(탭) 전환 시 분할 사이즈가 초기화되지 않도록 컨테이너 노드 ID 기준으로
-// 모듈 레벨에서 사이즈를 보존한다. (로컬 useState만 사용하면 탭 전환 시 unmount → 초기값 복귀)
-const containerSizesStore = new Map<string, number[]>();
-
 function ContainerNodeView({ node, ...h }: CProps) {
   const isRow = node.type === 'row';
-  const [sizes, setSizes] = useState<number[]>(() => {
-    const saved = containerSizesStore.get(node.id);
-    if (saved && saved.length === node.children.length) return [...saved];
+  // 노드에 저장된 sizes 가 있으면 그걸 사용, 아니면 균등 분할로 초기화
+  const initialSizes = () => {
+    if (Array.isArray(node.sizes) && node.sizes.length === node.children.length && node.sizes.every(n => typeof n === 'number' && n > 0)) {
+      return [...node.sizes];
+    }
     return node.children.map(() => 1);
-  });
+  };
+  const [sizes, setSizes] = useState<number[]>(initialSizes);
+  // sizes 의 최신 값을 ref 로 유지 — window event listener 의 stale closure 회피
+  const sizesRef = useRef<number[]>(sizes);
+  sizesRef.current = sizes;
   const prevCountRef = useRef(node.children.length);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const dragging = useRef<{ index: number; start: number; sizes: number[] } | null>(null);
 
-  const persistSizes = (s: number[]) => {
-    containerSizesStore.set(node.id, [...s]);
-    setSizes(s);
-  };
+  // 워크스페이스 전환은 부모의 key={root.id} 가 처리 (컴포넌트 remount → useState 재초기화)
+  // 같은 노드에서 children 개수 변경 시 sizes 재분배 (아래 useEffect)
 
   useEffect(() => {
     const prev = prevCountRef.current, cur = node.children.length;
@@ -110,7 +113,7 @@ function ContainerNodeView({ node, ...h }: CProps) {
       const ps = sizes.reduce((a, b) => a + b, 0) || 1;
       const s = ns.reduce((a, b) => a + b, 0) || 1;
       for (let i = 0; i < ns.length; i++) ns[i] = (ns[i] / s) * ps;
-      persistSizes(ns); prevCountRef.current = cur;
+      setSizes(ns); prevCountRef.current = cur;
     }
   }, [node.children.length]);
 
@@ -131,13 +134,18 @@ function ContainerNodeView({ node, ...h }: CProps) {
     let nL = (ps[index] / pSum) * total + delta, nR = (ps[index + 1] / pSum) * total - delta;
     const min = 40, comb = (ps[index] / pSum + ps[index + 1] / pSum) * total;
     if (nL < min) { nL = min; nR = comb - min; } if (nR < min) { nR = min; nL = comb - min; }
-    const ns = [...ps]; ns[index] = (nL / total) * pSum; ns[index + 1] = (nR / total) * pSum; persistSizes(ns);
+    const ns = [...ps]; ns[index] = (nL / total) * pSum; ns[index + 1] = (nR / total) * pSum; setSizes(ns);
   };
   const onMouseUp = () => {
+    const wasDragging = !!dragging.current;
     dragging.current = null;
     window.removeEventListener('mousemove', onMouseMove);
     window.removeEventListener('mouseup', onMouseUp);
     setSuppressPtyResize(false);
+    // 드래그 종료 시점 — sizes 의 최신값을 ref 로 읽어 영속화
+    if (wasDragging && h.onContainerResize) {
+      h.onContainerResize(node.id, [...sizesRef.current]);
+    }
     // 드래그 종료 후 단 한 번만 PTY에 최종 cols/rows 전달
     setTimeout(() => { window.dispatchEvent(new Event('resize')); refitAllTerms(); }, 80);
   };
