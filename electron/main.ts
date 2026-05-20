@@ -4304,8 +4304,13 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
         ? `--sandbox danger-full-access`
         : `-c 'sandbox_permissions=["disk-full-read-access","network-full-access"]'`;
       const ps1 = [
-        `[Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8`,
+        // (1) 콘솔 코드페이지 → UTF-8 (네이티브 exe stdout 인코딩도 영향받음)
+        `chcp 65001 | Out-Null`,
+        // (2) .NET 입출력 인코딩 + PowerShell 파이프 인코딩 모두 UTF-8
+        `[Console]::InputEncoding = [Console]::OutputEncoding = $OutputEncoding = [System.Text.Encoding]::UTF8`,
+        // (3) 프롬프트 파일을 UTF-8로 읽기
         `$content = [System.IO.File]::ReadAllText('${tmpFile.replace(/\\/g, '\\\\').replace(/'/g, "''")}', [System.Text.Encoding]::UTF8)`,
+        // (4) codex 실행 (UTF-8 파이프)
         `$content | & codex exec${modelFlag}${effortFlagPs1} --skip-git-repo-check ${winSandbox}`,
       ].join('\r\n');
       fs.writeFileSync(ps1File, ps1, 'utf-8');
