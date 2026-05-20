@@ -1,6 +1,5 @@
 // src/components/SessionList.tsx
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
-import { flushSync } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { SessionEditor } from './SessionEditor';
 
@@ -564,9 +563,9 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
           <div className="session-sidebar-trigger-bottom" />
         </div>
       )}
-      {(pinned || visible) && <div
+      <div
         ref={containerRef}
-        className={`session-sidebar-inner ${!pinned ? 'auto-hide' : ''}`}
+        className={`session-sidebar-inner ${!pinned ? 'auto-hide' : ''} ${!pinned && !visible ? 'hidden' : ''}`}
         style={{ width }}
         onMouseLeave={handleMouseLeaveSidebar}
         onMouseEnter={handleMouseEnterSidebar}
@@ -577,11 +576,8 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
             className={`btn-pin ${pinned ? 'pinned' : ''}`}
             onClick={() => {
               const next = !pinned;
-              // flushSync: 상태 업데이트를 즉시 동기적으로 DOM에 반영
-              flushSync(() => {
-                setPinned(next);
-                setVisible(next); // 고정 해제 → false(즉시 숨김), 고정 → true
-              });
+              setPinned(next);
+              if (!next) setVisible(false); // 고정 해제 즉시 숨김
             }}
             title={pinned ? t('unpinTooltip') : t('pinTooltip')}
           >
@@ -693,7 +689,7 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
 
 
         <div className="session-resize-handle" onPointerDown={onPointerDown} />
-      </div>}
+      </div>
 
       {editing && <SessionEditor session={editing} folders={folders} onSave={onSaveSession} onSaveAndConnect={onSaveAndConnect} onCancel={() => setEditing(null)} />}
 
