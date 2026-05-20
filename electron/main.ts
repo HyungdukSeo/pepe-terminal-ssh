@@ -4280,8 +4280,13 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
 
     const modelFlag = model ? ` -m ${model}` : '';
     const codexEffort = effort === 'max' ? 'xhigh' : effort;
+    // Unix(bash): -c "model_reasoning_effort=\"medium\""
     const effortFlag = codexEffort && ['low', 'medium', 'high', 'xhigh'].includes(codexEffort)
       ? ` -c "model_reasoning_effort=\\"${codexEffort}\\""`
+      : '';
+    // Windows(ps1): single-quote 사용 — PowerShell에서 \" 이 \로 전달되는 버그 방지
+    const effortFlagPs1 = codexEffort && ['low', 'medium', 'high', 'xhigh'].includes(codexEffort)
+      ? ` -c 'model_reasoning_effort="${codexEffort}"'`
       : '';
     // suggest → read-only, auto-edit/full-auto → danger-full-access (파일 쓰기 허용)
     const fullAccess = approvalPolicy === 'auto-edit' || approvalPolicy === 'full-auto';
@@ -4301,7 +4306,7 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
       const ps1 = [
         `[Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8`,
         `$content = [System.IO.File]::ReadAllText('${tmpFile.replace(/\\/g, '\\\\').replace(/'/g, "''")}', [System.Text.Encoding]::UTF8)`,
-        `$content | & codex exec${modelFlag}${effortFlag} --skip-git-repo-check ${winSandbox}`,
+        `$content | & codex exec${modelFlag}${effortFlagPs1} --skip-git-repo-check ${winSandbox}`,
       ].join('\r\n');
       fs.writeFileSync(ps1File, ps1, 'utf-8');
       shellCmd = `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${ps1File}"`;
