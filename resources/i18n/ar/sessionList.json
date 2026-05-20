@@ -24,6 +24,7 @@
   "ctxDeleteSelected": "🗑 حذف المحدد",
   "ctxRename": "إعادة تسمية",
   "ctxCopy": "نسخ",
+  "ctxCopyFolder": "نسخ المجلد (مع المحتويات)",
   "ctxPaste": "لصق",
   "ctxFileTransfer": "📁 نقل الملفات",
   "ctxUp": "↑ أعلى",

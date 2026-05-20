@@ -184,6 +184,49 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
   }, [onPointerMove]);
 
   const [copiedSession, setCopiedSession] = useState<Session | null>(null);
+  const [copiedFolder, setCopiedFolder] = useState<{ folder: Folder; allFolders: Folder[]; allSessions: Session[] } | null>(null);
+
+  // 폴더 복사 — 하위 폴더/세션 전체 수집
+  const handleCopyFolder = (folderId: string) => {
+    const folder = folders.find(x => x.id === folderId);
+    if (!folder) return;
+    const getAllSubFolders = (parentId: string): Folder[] => {
+      const children = folders.filter(f => f.parentId === parentId);
+      return [...children, ...children.flatMap(c => getAllSubFolders(c.id))];
+    };
+    const subFolders = getAllSubFolders(folderId);
+    const allFolders = [folder, ...subFolders];
+    const folderIds = new Set(allFolders.map(f => f.id));
+    const allSessions = sessions.filter(s => s.folderId && folderIds.has(s.folderId));
+    setCopiedFolder({ folder, allFolders, allSessions });
+    setCopiedSession(null); // 세션 복사 클립보드 초기화
+  };
+
+  // 폴더 붙여넣기 — 새 ID 생성 후 재귀적으로 폴더/세션 저장
+  const handlePasteFolder = async () => {
+    if (!copiedFolder) return;
+    const { folder, allFolders, allSessions } = copiedFolder;
+    let seq = 0;
+    const makeId = (prefix: string) => `${prefix}-${Date.now()}-${(++seq).toString(36)}`;
+    // 구 ID → 새 ID 매핑
+    const idMap = new Map<string, string>();
+    for (const f of allFolders) idMap.set(f.id, makeId('folder'));
+    // 폴더 저장 (루트부터 순서대로)
+    for (const f of allFolders) {
+      const newId = idMap.get(f.id)!;
+      const newParentId = f.id === folder.id
+        ? (folder.parentId ?? undefined)                      // 원본과 같은 레벨에 붙여넣기
+        : (f.parentId ? idMap.get(f.parentId) : undefined);
+      const name = f.id === folder.id ? `${f.name} (${t('copySuffix')})` : f.name;
+      await (window as any).api.saveFolder({ id: newId, name, parentId: newParentId });
+    }
+    // 세션 저장
+    for (const s of allSessions) {
+      const newFolderId = s.folderId ? idMap.get(s.folderId) : undefined;
+      await (window as any).api.saveSession({ ...s, id: makeId('sess'), folderId: newFolderId });
+    }
+    await reload();
+  };
 
   const handleConnect = (s: Session) => onConnect(s.id, s.name, targetPanelId ?? null, s.theme, s.fontFamily, s.fontSize, s.scrollback);
   const _handleDisconnect = () => onDisconnect?.(targetPanelId ?? null); void _handleDisconnect;
@@ -391,7 +434,7 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
                   <span className="folder-toggle" onClick={e => { e.stopPropagation(); toggleCollapse(f.id); }}>{isCollapsed ? '▶' : '▼'}</span>
                   <span className="folder-icon">📁</span>
                   {renamingId === f.id ? (
-                    <input className="folder-rename-input" value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={handleRenameSubmit} onKeyDown={e => { if (e.key === 'Enter') handleRenameSubmit(); if (e.key === 'Escape') setRenamingId(null); }} autoFocus onClick={e => e.stopPropagation()} />
+                    <input className="folder-rename-input" value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={handleRenameSubmit} onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') handleRenameSubmit(); if (e.key === 'Escape') setRenamingId(null); }} autoFocus onClick={e => e.stopPropagation()} />
                   ) : (<span className="folder-name">{f.name}</span>)}
                 </div>
                 {!isCollapsed && renderTree(f.id, depth + 1)}
@@ -436,7 +479,7 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
                 onDragEnd={() => setDragOverId(null)}
               >
                 {renamingId === s.id ? (
-                  <input className="folder-rename-input" value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={handleRenameSubmit} onKeyDown={e => { if (e.key === 'Enter') handleRenameSubmit(); if (e.key === 'Escape') setRenamingId(null); }} autoFocus onClick={e => e.stopPropagation()} />
+                  <input className="folder-rename-input" value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={handleRenameSubmit} onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') handleRenameSubmit(); if (e.key === 'Escape') setRenamingId(null); }} autoFocus onClick={e => e.stopPropagation()} />
                 ) : (
                   <div className="session-item-name" title={`${s.host}:${s.port}${s.username ? ' ('+s.username+')' : ''}`}>
                     <span className="session-icon">{s.icon || '📡'}</span>{s.name}
@@ -454,6 +497,16 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
 
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hoverShowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mouseInsideRef = useRef(false);
+
+  // 컨텍스트 메뉴가 닫힐 때 마우스가 사이드바 밖이면 숨김 타이머 시작
+  useEffect(() => {
+    if (pinned || contextMenu) return;
+    if (!mouseInsideRef.current) {
+      if (hideTimer.current) clearTimeout(hideTimer.current);
+      hideTimer.current = setTimeout(() => setVisible(false), 500);
+    }
+  }, [contextMenu, pinned]);
 
   const handleClickTrigger = () => {
     if (pinned) return;
@@ -471,12 +524,15 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
   };
 
   const handleMouseLeaveSidebar = () => {
+    mouseInsideRef.current = false;
     if (pinned) return;
+    if (contextMenu) return; // 컨텍스트 메뉴 열려있으면 숨기지 않음
     if (hideTimer.current) clearTimeout(hideTimer.current);
     hideTimer.current = setTimeout(() => setVisible(false), 500);
   };
 
   const handleMouseEnterSidebar = () => {
+    mouseInsideRef.current = true;
     if (pinned) return;
     if (hideTimer.current) { clearTimeout(hideTimer.current); hideTimer.current = null; }
   };
@@ -551,14 +607,18 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
               e.preventDefault();
               handleDelete();
             }
-            // Ctrl+C: 세션 복사
-            if ((e.ctrlKey || e.metaKey) && e.key === 'c' && selectedId && selectedType === 'session') {
+            // Ctrl+C: 세션/폴더 복사
+            if ((e.ctrlKey || e.metaKey) && e.key === 'c' && selectedId) {
               e.preventDefault();
-              const s = sessions.find(x => x.id === selectedId);
-              if (s) setCopiedSession(s);
+              if (selectedType === 'session') {
+                const s = sessions.find(x => x.id === selectedId);
+                if (s) { setCopiedSession(s); setCopiedFolder(null); }
+              } else if (selectedType === 'folder') {
+                handleCopyFolder(selectedId);
+              }
             }
             // prefix 점프 — 파일 트리와 동일: startsWith, 가시 항목 순회, 같은 키 반복 시 순환
-            if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+            if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey && !renamingId) {
               const items: { id: string; name: string; type: 'session' | 'folder' }[] = [];
               const walk = (parentId?: string) => {
                 const fs = folders.filter(f => (f.parentId ?? undefined) === (parentId ?? undefined));
@@ -588,11 +648,16 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
               }
               return;
             }
-            // Ctrl+V: 세션 붙여넣기
-            if ((e.ctrlKey || e.metaKey) && e.key === 'v' && copiedSession) {
-              e.preventDefault();
-              const newSess = { ...copiedSession, id: `sess-${Date.now()}`, name: `${copiedSession.name} (${t('copySuffix')})` };
-              (async () => { await (window as any).api.saveSession(newSess); await reload(); setSelectedId(newSess.id); setSelectedType('session'); })();
+            // Ctrl+V: 세션/폴더 붙여넣기
+            if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+              if (copiedFolder) {
+                e.preventDefault();
+                handlePasteFolder();
+              } else if (copiedSession) {
+                e.preventDefault();
+                const newSess = { ...copiedSession, id: `sess-${Date.now()}`, name: `${copiedSession.name} (${t('copySuffix')})` };
+                (async () => { await (window as any).api.saveSession(newSess); await reload(); setSelectedId(newSess.id); setSelectedType('session'); })();
+              }
             }
           }}
           onDragOver={e => { if (e.dataTransfer.types.includes('text/session-id')) { e.preventDefault(); setDragOverId('root'); } }}
@@ -737,17 +802,29 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
               </div>
               <div className="context-menu-item" onClick={() => {
                 const s = sessions.find(x => x.id === contextMenu.id);
-                if (s) setCopiedSession(s);
+                if (s) { setCopiedSession(s); setCopiedFolder(null); }
                 setContextMenu(null);
               }}>
                 {t('ctxCopy')}
               </div>
             </>
           )}
-          {copiedSession && (
+          {contextMenu.type === 'folder' && (
             <div className="context-menu-item" onClick={() => {
-              const newSess = { ...copiedSession, id: `sess-${Date.now()}`, name: `${copiedSession.name} (${t('copySuffix')})` };
-              (async () => { await (window as any).api.saveSession(newSess); await reload(); setSelectedId(newSess.id); setSelectedType('session'); })();
+              handleCopyFolder(contextMenu.id);
+              setContextMenu(null);
+            }}>
+              {t('ctxCopyFolder')}
+            </div>
+          )}
+          {(copiedSession || copiedFolder) && (
+            <div className="context-menu-item" onClick={() => {
+              if (copiedFolder) {
+                handlePasteFolder();
+              } else if (copiedSession) {
+                const newSess = { ...copiedSession, id: `sess-${Date.now()}`, name: `${copiedSession.name} (${t('copySuffix')})` };
+                (async () => { await (window as any).api.saveSession(newSess); await reload(); setSelectedId(newSess.id); setSelectedType('session'); })();
+              }
               setContextMenu(null);
             }}>
               {t('ctxPaste')}

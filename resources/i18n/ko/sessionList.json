@@ -27,6 +27,7 @@
   "ctxDeleteSelected": "🗑 선택 항목 삭제",
   "ctxRename": "이름 변경",
   "ctxCopy": "복사",
+  "ctxCopyFolder": "폴더 복사 (하위 포함)",
   "ctxPaste": "붙여넣기",
   "ctxFileTransfer": "📁 파일 전송",
   "ctxUp": "↑ 위로",

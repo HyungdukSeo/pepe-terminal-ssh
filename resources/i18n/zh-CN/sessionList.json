@@ -24,6 +24,7 @@
   "ctxDeleteSelected": "🗑 删除所选",
   "ctxRename": "重命名",
   "ctxCopy": "复制",
+  "ctxCopyFolder": "复制文件夹（含子项）",
   "ctxPaste": "粘贴",
   "ctxFileTransfer": "📁 文件传输",
   "ctxUp": "↑ 上移",

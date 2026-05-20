@@ -27,6 +27,7 @@
   "ctxDeleteSelected": "🗑 Delete selection",
   "ctxRename": "Rename",
   "ctxCopy": "Copy",
+  "ctxCopyFolder": "Copy folder (with children)",
   "ctxPaste": "Paste",
   "ctxFileTransfer": "📁 File transfer",
   "ctxUp": "↑ Up",
