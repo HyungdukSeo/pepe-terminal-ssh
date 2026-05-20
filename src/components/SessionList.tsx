@@ -203,7 +203,8 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
   };
 
   // 폴더 붙여넣기 — 새 ID 생성 후 재귀적으로 폴더/세션 저장
-  const handlePasteFolder = async () => {
+  // targetParentId: undefined=원본과 같은 레벨, string=해당 폴더 안에 붙여넣기
+  const handlePasteFolder = async (targetParentId?: string | null) => {
     if (!copiedFolder) return;
     const { folder, allFolders, allSessions } = copiedFolder;
     let seq = 0;
@@ -214,9 +215,13 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
     // 폴더 저장 (루트부터 순서대로)
     for (const f of allFolders) {
       const newId = idMap.get(f.id)!;
-      const newParentId = f.id === folder.id
-        ? (folder.parentId ?? undefined)                      // 원본과 같은 레벨에 붙여넣기
-        : (f.parentId ? idMap.get(f.parentId) : undefined);
+      let newParentId: string | undefined;
+      if (f.id === folder.id) {
+        // 루트 폴더: targetParentId 지정 시 그 안에, 아니면 원본과 같은 레벨
+        newParentId = targetParentId != null ? targetParentId : (folder.parentId ?? undefined);
+      } else {
+        newParentId = f.parentId ? idMap.get(f.parentId) : undefined;
+      }
       const name = f.id === folder.id ? `${f.name} (${t('copySuffix')})` : f.name;
       await (window as any).api.saveFolder({ id: newId, name, parentId: newParentId });
     }
@@ -652,7 +657,9 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
             if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
               if (copiedFolder) {
                 e.preventDefault();
-                handlePasteFolder();
+                // 폴더 선택 중이면 그 안에, 아니면 원본과 같은 레벨
+                const target = selectedType === 'folder' && selectedId ? selectedId : null;
+                handlePasteFolder(target);
               } else if (copiedSession) {
                 e.preventDefault();
                 const newSess = { ...copiedSession, id: `sess-${Date.now()}`, name: `${copiedSession.name} (${t('copySuffix')})` };
@@ -814,13 +821,15 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
               handleCopyFolder(contextMenu.id);
               setContextMenu(null);
             }}>
-              {t('ctxCopyFolder')}
+              {t('ctxCopy')}
             </div>
           )}
           {(copiedSession || copiedFolder) && (
             <div className="context-menu-item" onClick={() => {
               if (copiedFolder) {
-                handlePasteFolder();
+                // 우클릭 대상이 폴더이면 그 안에, 아니면 원본과 같은 레벨
+                const target = contextMenu.type === 'folder' ? contextMenu.id : null;
+                handlePasteFolder(target);
               } else if (copiedSession) {
                 const newSess = { ...copiedSession, id: `sess-${Date.now()}`, name: `${copiedSession.name} (${t('copySuffix')})` };
                 (async () => { await (window as any).api.saveSession(newSess); await reload(); setSelectedId(newSess.id); setSelectedType('session'); })();
