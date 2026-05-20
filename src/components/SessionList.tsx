@@ -564,10 +564,10 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
           <div className="session-sidebar-trigger-bottom" />
         </div>
       )}
-      <div
+      {(pinned || visible) && <div
         ref={containerRef}
-        className={`session-sidebar-inner ${!pinned ? 'auto-hide' : ''} ${!pinned && !visible ? 'hidden' : ''}`}
-        style={{ width, display: (!pinned && !visible) ? 'none' : undefined }}
+        className={`session-sidebar-inner ${!pinned ? 'auto-hide' : ''}`}
+        style={{ width }}
         onMouseLeave={handleMouseLeaveSidebar}
         onMouseEnter={handleMouseEnterSidebar}
       >
@@ -693,7 +693,7 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
 
 
         <div className="session-resize-handle" onPointerDown={onPointerDown} />
-      </div>
+      </div>}
 
       {editing && <SessionEditor session={editing} folders={folders} onSave={onSaveSession} onSaveAndConnect={onSaveAndConnect} onCancel={() => setEditing(null)} />}
 
