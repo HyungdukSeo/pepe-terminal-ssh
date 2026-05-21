@@ -883,12 +883,22 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           setChatHistory(hList => hList.map(h => h.id === aid ? { ...h, streaming: false, pendingRequestId: null } : h));
         }
       } else if (msg.type === 'text' && msg.text) {
+        // ⚠ updater 는 반드시 순수해야 함 — React StrictMode 가 updater 를 2번 호출함.
+        // asstId 결정 + ref 변경 + nextSeq() 는 updater 밖에서 1회만 수행하고,
+        // updater 안에서는 prev + 고정값만 사용 (codex/gemini 응답 누락 버그 수정).
+        const txt = msg.text;
+        let asstId = currentAsstIdRef.current;
+        if (!asstId) {
+          asstId = `asst-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+          currentAsstIdRef.current = asstId;
+        }
+        const fixedAsstId = asstId;
+        const newSeq = nextSeq();
         setMessages(prev => {
-          const asstId = currentAsstIdRef.current;
-          if (asstId) return prev.map(m => m.id === asstId ? { ...m, content: m.content + msg.text } : m);
-          const newId = `asst-${Date.now()}`;
-          currentAsstIdRef.current = newId;
-          return [...prev, { role: 'assistant', content: msg.text, id: newId, seq: nextSeq(), agent: streamAgent }];
+          if (prev.some(m => m.id === fixedAsstId)) {
+            return prev.map(m => m.id === fixedAsstId ? { ...m, content: m.content + txt } : m);
+          }
+          return [...prev, { role: 'assistant', content: txt, id: fixedAsstId, seq: newSeq, agent: streamAgent }];
         });
       }
     });
@@ -934,6 +944,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
 
   // Mermaid 다이어그램 렌더링 — messages 변경 / pendingPlan 시 미렌더 mermaid 코드블록을 SVG 로 변환
   useEffect(() => {
+    // 스트리밍 중엔 messages 가 빠르게 변함 → 디바운스로 마지막 변경 후 1회만 렌더.
+    // (미완성 mermaid 블록을 렌더 시도하다 에러 div 가 남는 문제 방지)
+    const __mermaidTimer = setTimeout(() => {
     // 메시지 영역 + plan 모달 본문 모두 스캔
     const roots: HTMLElement[] = [];
     if (scrollRef.current) roots.push(scrollRef.current);
@@ -1158,6 +1171,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         }
       }
     })();
+    }, 250);
+    return () => clearTimeout(__mermaidTimer);
   }, [messages, toolTimeline, pendingPlan, currentAgent, activeHistoryId, installed]);
 
   // 메시지/세션ID 변경 시 활성 이력 항목에 동기화

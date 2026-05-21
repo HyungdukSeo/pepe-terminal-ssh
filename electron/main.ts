@@ -4267,23 +4267,9 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
 
     const isWin = process.platform === 'win32';
     const tmpFile = path.join(os.tmpdir(), `codex-prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`);
-    // Windows: codex.exe(Rust)가 stdin을 MultiByteToWideChar(CP_ACP)로 읽는 것으로 확인됨
-    // CP_ACP = 한국어 Windows = CP949 → UTF-8 바이트를 CP949로 오해석 → 한글 깨짐
-    // → 프롬프트를 CP949(시스템 ACP)로 인코딩해서 쓰면 codex.exe가 올바르게 디코딩
-    // iconv-lite는 이미 node_modules에 존재 (marked 의존성)
-    if (isWin) {
-      try {
-        const iconv = require('iconv-lite');
-        const cp949Bytes: Buffer = iconv.encode(prompt, 'CP949');
-        fs.writeFileSync(tmpFile, cp949Bytes);
-        console.log('[codex] prompt encoded as CP949, bytes:', cp949Bytes.length);
-      } catch {
-        fs.writeFileSync(tmpFile, prompt, 'utf-8');
-        console.log('[codex] iconv-lite unavailable, fallback UTF-8');
-      }
-    } else {
-      fs.writeFileSync(tmpFile, prompt, 'utf-8');
-    }
+    // codex.exe(Rust)는 stdin을 raw UTF-8로 검증하며 읽음 (invalid UTF-8 시 에러 후 종료)
+    // → 반드시 UTF-8 바이트를 전달해야 함 (fallback shell 방식용 tmpFile)
+    fs.writeFileSync(tmpFile, prompt, 'utf-8');
 
     const augmentedPath = buildAugmentedPath();
     const spawnEnv = {
@@ -4305,17 +4291,61 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
       ? ` -c model_reasoning_effort=${codexEffort}`
       : '';
 
-    let proc: any;
+    // Windows: codex.exe 직접 spawn — cmd.exe/type/chcp/codex.cmd/codex.js 계층을
+    // 전부 우회. 이 계층들이 UTF-8 바이트를 코드페이지 변환해서 한글이 깨짐.
+    // (claude 는 codex.js 같은 sub-binary spawn 계층이 없어 정상 동작)
+    // codex.exe 에 Node pipe 로 UTF-8 바이트 직접 write → Rust 가 raw UTF-8 정상 수신.
+    const findCodexExe = (): string | null => {
+      try {
+        const codexCmdLine = execSync('where codex.cmd', { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }) as string;
+        const codexCmdPath = codexCmdLine.split('\n')[0].trim();
+        const npmDir = path.dirname(codexCmdPath);
+        const codexPkgDir = path.join(npmDir, 'node_modules', '@openai', 'codex');
+        const archName = process.arch === 'x64' ? 'x64' : 'arm64';
+        const triple = process.arch === 'x64' ? 'x86_64-pc-windows-msvc' : 'aarch64-pc-windows-msvc';
+        const candidates = [
+          path.join(codexPkgDir, 'node_modules', '@openai', `codex-win32-${archName}`, 'vendor', triple, 'codex', 'codex.exe'),
+          path.join(codexPkgDir, 'vendor', triple, 'codex', 'codex.exe'),
+        ];
+        for (const p of candidates) { if (fs.existsSync(p)) return p; }
+      } catch {}
+      return null;
+    };
 
-    if (isWin) {
-      // v2.1.0 검증된 방식: chcp 65001 + type 파일 파이프 → codex exec (shell:true)
-      // cmd.exe 에서 chcp 65001 설정 후 type이 UTF-8 파일 바이트를 그대로 pipe
-      // → codex.js(stdio:inherit) → codex.exe 까지 UTF-8 코드페이지 유지
+    // 직접 spawn 용 인수 배열 (shell 없음 → 따옴표/이스케이프 불필요)
+    const buildCodexArgs = (): string[] => {
+      const args = ['exec'];
+      if (model) args.push('-m', model);
+      if (codexEffort && ['low', 'medium', 'high', 'xhigh'].includes(codexEffort)) {
+        args.push('-c', `model_reasoning_effort="${codexEffort}"`);
+      }
+      args.push('--skip-git-repo-check');
+      if (fullAccess) {
+        args.push('--sandbox', 'danger-full-access');
+      } else {
+        args.push('-c', 'sandbox_permissions=["disk-full-read-access","network-full-access"]');
+      }
+      return args;
+    };
+
+    let proc: any;
+    let usedDirectExe = false;
+    const codexExePath = isWin ? findCodexExe() : null;
+
+    if (isWin && codexExePath) {
+      // ✅ codex.exe 직접 spawn + stdin pipe → UTF-8 바이트 그대로 전달
+      const args = buildCodexArgs();
+      console.log('[codex] direct exe:', codexExePath);
+      console.log('[codex] args:', args.join(' '));
+      proc = spawn(codexExePath, args, { shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: spawnEnv, cwd });
+      usedDirectExe = true;
+    } else if (isWin) {
+      // fallback: codex.exe 못 찾으면 shell 방식 (한글 깨질 수 있음)
       const sandbox = fullAccess
         ? `--sandbox danger-full-access`
         : `-c "sandbox_permissions=[\\"disk-full-read-access\\",\\"network-full-access\\"]"`;
       const shellCmd = `chcp 65001 >nul && type "${tmpFile}" | codex exec${modelFlag}${effortFlag} --skip-git-repo-check ${sandbox}`;
-      console.log('[codex] shell cmd (win):', shellCmd);
+      console.log('[codex] shell fallback (win):', shellCmd);
       proc = spawn(shellCmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd });
     } else {
       // Mac/Linux
@@ -4328,6 +4358,16 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
     }
     console.log('[codex] PATH has npm:', augmentedPath.toLowerCase().includes('npm'));
     codexProcesses.set(procKey, proc);
+
+    // 직접 spawn 시: 프롬프트 UTF-8 바이트를 stdin 에 직접 write (cmd.exe 우회)
+    if (usedDirectExe) {
+      try {
+        proc.stdin.write(Buffer.from(prompt, 'utf-8'));
+        proc.stdin.end();
+      } catch (e) {
+        console.log('[codex] stdin write error:', e);
+      }
+    }
 
     const cleanupTmp = () => { try { fs.unlinkSync(tmpFile); } catch {} };
 
