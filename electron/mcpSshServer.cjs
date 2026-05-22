@@ -74,18 +74,46 @@ function sendMsg(msg) {
   process.stdout.write(json + '\n');
 }
 
-const TOOL = {
-  name: 'ssh_exec',
-  description: 'Execute a shell command on the remote SSH server and return stdout/stderr/exit code. Use for commands that must run on the remote Linux host (cleartool, git, make, grep, find, ls, cat, sed, awk, etc.). Do NOT use this for simple file reads — prefer the Read tool on UNC-mapped paths for that.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      command: { type: 'string', description: 'Shell command to execute on remote SSH. Example: "ctco /view/.../file.c" or "ls -la /tmp"' },
-      timeout_ms: { type: 'number', description: 'Max wait in milliseconds (default 60000)' },
+// 원격 경로를 셸에 안전하게 넣기 (단일따옴표 escape)
+function shq(p) { return "'" + String(p).replace(/'/g, "'\\''") + "'"; }
+
+const TOOLS = [
+  {
+    name: 'ssh_exec',
+    description: 'Execute a shell command on the remote SSH server and return stdout/stderr/exit code. Use for commands that must run on the remote Linux host (cleartool, git, make, grep, find, ls, sed, awk, etc.).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: 'Shell command to execute on remote SSH. Example: "ctco /view/.../file.c" or "ls -la /tmp"' },
+        timeout_ms: { type: 'number', description: 'Max wait in milliseconds (default 60000)' },
+      },
+      required: ['command'],
     },
-    required: ['command'],
   },
-};
+  {
+    name: 'ssh_read_file',
+    description: 'Read the full contents of a file on the remote SSH server. Use this to read remote files (binary-safe via base64 transport).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path of the file on the remote host. Example: "/view/.../TraceJob.c"' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'ssh_write_file',
+    description: 'Write (create or overwrite) a file on the remote SSH server with the given text content. Use this to save edits to remote files.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path of the file on the remote host.' },
+        content: { type: 'string', description: 'Full text content to write to the file.' },
+      },
+      required: ['path', 'content'],
+    },
+  },
+];
 
 function handleMessage(msg) {
   const { id, method, params } = msg;
@@ -105,40 +133,71 @@ function handleMessage(msg) {
   if (method === 'notifications/initialized') return; // notify, no reply
 
   if (method === 'tools/list') {
-    sendMsg({ jsonrpc: '2.0', id, result: { tools: [TOOL] } });
+    sendMsg({ jsonrpc: '2.0', id, result: { tools: TOOLS } });
     return;
   }
 
   if (method === 'tools/call') {
     const name = params?.name;
     const args = params?.arguments || {};
+    if (!DEFAULT_TERM_ID) {
+      sendMsg({ jsonrpc: '2.0', id, error: { code: -32000, message: 'No SSH session configured (PEPE_TERM_ID missing)' } });
+      return;
+    }
+    const ok = (text, isError) => sendMsg({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }], isError: !!isError } });
+    const fail = (msg2) => sendMsg({ jsonrpc: '2.0', id, error: { code: -32000, message: String(msg2) } });
+
     if (name === 'ssh_exec') {
       const command = String(args.command || '');
       const timeoutMs = Number(args.timeout_ms) || 60000;
-      if (!DEFAULT_TERM_ID) {
-        sendMsg({ jsonrpc: '2.0', id, error: { code: -32000, message: 'No SSH session configured (PEPE_TERM_ID missing)' } });
-        return;
-      }
-      if (!command.trim()) {
-        sendMsg({ jsonrpc: '2.0', id, error: { code: -32602, message: 'command is required' } });
-        return;
-      }
+      if (!command.trim()) { sendMsg({ jsonrpc: '2.0', id, error: { code: -32602, message: 'command is required' } }); return; }
       callExec(DEFAULT_TERM_ID, command, timeoutMs)
         .then(result => {
           const text = `$ ${command}\n\n[stdout]\n${result.stdout || '(empty)'}\n\n[stderr]\n${result.stderr || '(empty)'}\n\n[exit code] ${result.exitCode}`;
-          sendMsg({
-            jsonrpc: '2.0', id,
-            result: {
-              content: [{ type: 'text', text }],
-              isError: (result.exitCode !== 0 && result.exitCode !== null),
-            },
-          });
+          ok(text, result.exitCode !== 0 && result.exitCode !== null);
         })
-        .catch(err => {
-          sendMsg({ jsonrpc: '2.0', id, error: { code: -32000, message: String(err) } });
-        });
+        .catch(fail);
       return;
     }
+
+    if (name === 'ssh_read_file') {
+      const p = String(args.path || '');
+      if (!p.trim()) { sendMsg({ jsonrpc: '2.0', id, error: { code: -32602, message: 'path is required' } }); return; }
+      // base64 로 전송 → 인코딩/바이너리 안전
+      callExec(DEFAULT_TERM_ID, `base64 ${shq(p)}`, 60000)
+        .then(result => {
+          if (result.exitCode !== 0 && result.exitCode !== null) {
+            ok(`Failed to read ${p}:\n${result.stderr || '(no stderr)'}`, true);
+            return;
+          }
+          let text;
+          try { text = Buffer.from(String(result.stdout || '').replace(/\s+/g, ''), 'base64').toString('utf-8'); }
+          catch { text = String(result.stdout || ''); }
+          ok(text);
+        })
+        .catch(fail);
+      return;
+    }
+
+    if (name === 'ssh_write_file') {
+      const p = String(args.path || '');
+      if (!p.trim()) { sendMsg({ jsonrpc: '2.0', id, error: { code: -32602, message: 'path is required' } }); return; }
+      const content = String(args.content != null ? args.content : '');
+      const b64 = Buffer.from(content, 'utf-8').toString('base64');
+      // heredoc 으로 base64 전달 → base64 -d 로 디코드해 파일에 기록 (셸 escape 안전)
+      const cmd = `base64 -d > ${shq(p)} <<'PEPE_B64_EOF'\n${b64}\nPEPE_B64_EOF`;
+      callExec(DEFAULT_TERM_ID, cmd, 60000)
+        .then(result => {
+          if (result.exitCode !== 0 && result.exitCode !== null) {
+            ok(`Failed to write ${p}:\n${result.stderr || '(no stderr)'}`, true);
+            return;
+          }
+          ok(`Wrote ${Buffer.byteLength(content, 'utf-8')} bytes to ${p}`);
+        })
+        .catch(fail);
+      return;
+    }
+
     sendMsg({ jsonrpc: '2.0', id, error: { code: -32601, message: `Unknown tool: ${name}` } });
     return;
   }

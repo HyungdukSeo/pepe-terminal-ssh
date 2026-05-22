@@ -255,8 +255,9 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('claude:get-mount-path', { panelId, remotePath }),
   claudeStop: (sessionId: string, requestId?: string) => ipcRenderer.invoke('claude:stop', { sessionId, requestId }),
   geminiCheck: () => ipcRenderer.invoke('gemini:check'),
-  geminiSend: (sessionId: string, prompt: string, requestId?: string, model?: string, yolo?: boolean) =>
-    ipcRenderer.invoke('gemini:send', { sessionId, prompt, requestId, model, yolo }),
+  geminiModelInfo: () => ipcRenderer.invoke('gemini:modelInfo'),
+  geminiSend: (sessionId: string, prompt: string, requestId?: string, model?: string, yolo?: boolean, addDirs?: string[], sshTermId?: string) =>
+    ipcRenderer.invoke('gemini:send', { sessionId, prompt, requestId, model, yolo, addDirs, sshTermId }),
   geminiStop: (sessionId: string, requestId?: string) => ipcRenderer.invoke('gemini:stop', { sessionId, requestId }),
   codexCheck: () => ipcRenderer.invoke('codex:check'),
   codexSend: (sessionId: string, prompt: string, requestId?: string, model?: string, approvalPolicy?: string, effort?: string) =>

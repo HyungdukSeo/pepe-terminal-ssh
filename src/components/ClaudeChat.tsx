@@ -23,6 +23,23 @@ mermaid.initialize({
 // Mermaid 다이어그램 키워드 — 이 패턴으로 시작하면 mermaid 블록으로 간주
 const MERMAID_START_RE = /^(graph\s+(TB|TD|BT|RL|LR)|flowchart\s+(TB|TD|BT|RL|LR)|sequenceDiagram|classDiagram|stateDiagram(-v2)?|erDiagram|gantt|pie|journey|gitGraph|mindmap|timeline|quadrantChart)\b/;
 
+// gemini 모델 목록. pro=true 는 유료 요금제(Code Assist Standard 이상)에서만 사용 가능 →
+// free-tier 계정에서는 '지원안함' 으로 표시. tier 는 gemini:modelInfo(loadCodeAssist) 로 조회.
+const GEMINI_MODELS: { v: string; l: string; icon: string; pro?: boolean }[] = [
+  { v: 'gemini-3-flash-preview', l: 'Gemini 3 Flash', icon: '⚡' },
+  { v: 'gemini-3.1-flash-lite-preview', l: 'Gemini 3.1 Flash Lite', icon: '⚡' },
+  { v: 'gemini-2.5-flash', l: 'Gemini 2.5 Flash', icon: '⚡' },
+  { v: 'gemini-2.5-flash-lite', l: 'Gemini 2.5 Flash Lite', icon: '⚡' },
+  { v: 'gemini-3-pro', l: 'Gemini 3 Pro', icon: '✨', pro: true },
+  { v: 'gemini-2.5-pro', l: 'Gemini 2.5 Pro', icon: '✨', pro: true },
+];
+const isValidGeminiModel = (m: string) => GEMINI_MODELS.some(x => x.v === m);
+// 요금제(isPaid)에 따라 해당 모델을 실제 사용할 수 있는지
+const isGeminiModelUsable = (m: string, isPaid: boolean) => {
+  const def = GEMINI_MODELS.find(x => x.v === m);
+  return !!def && (!def.pro || isPaid);
+};
+
 // flowchart 노드 라벨에 () / :: / # 등 특수문자가 unquoted 로 들어가면 mermaid 파서가 깨짐.
 // (예: E[new TraceJob(datas)] → Parse error). 라벨을 "..." 로 감싸 안전하게 만든다.
 // codex 가 생성하는 다이어그램이 특히 함수명/스코프 연산자를 라벨에 자주 넣음.
@@ -278,7 +295,10 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     saveCurrentAgentSettings();
     const saved = agentSettingsMemory.current[aiAgent];
     setCurrentAgent(aiAgent);
-    setModelRaw(saved?.model ?? defaultModelFor(aiAgent));
+    {
+      const m = saved?.model ?? defaultModelFor(aiAgent);
+      setModelRaw(aiAgent === 'gemini' && !isValidGeminiModel(m) ? defaultModelFor('gemini') : m);
+    }
     setEffort(saved?.effort ?? 'medium');
     setPermissionMode(saved?.permissionMode ?? 'default');
     setPerToolApproval(saved?.perToolApproval ?? true);
@@ -342,6 +362,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   // codex 전용 — 컨텍스트 윈도우 크기 + 요금 한도(rate_limits) (codex 세션 rollout 파일에서 추출)
   type CodexRateWindow = { used_percent: number; window_minutes: number; resets_at: number };
   const [codexInfo, setCodexInfo] = useState<{ contextWindow: number | null; primary: CodexRateWindow | null; secondary: CodexRateWindow | null; planType: string | null } | null>(null);
+  // gemini 요금제(tier) — 모델 가용성('지원안함') 판별용. null=미조회
+  const [geminiTier, setGeminiTier] = useState<{ tierId: string; tierName: string; isPaid: boolean } | null>(null);
   const [showUsagePanel, setShowUsagePanel] = useState<boolean>(false);
   const [showUsageTooltip, setShowUsageTooltip] = useState<boolean>(false);
   const [usagePopupPos, setUsagePopupPos] = useState<{ left: number; bottom: number } | null>(null);
@@ -606,6 +628,26 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       if (!perToolApproval) setPerToolApproval(true);
     }
   }, [permissionMode]);
+  // gemini 탭 진입 시 요금제(tier) 조회 → 모델 가용성('지원안함') 갱신
+  useEffect(() => {
+    if (currentAgent !== 'gemini') return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r: any = await (window as any).api?.geminiModelInfo?.();
+        if (!cancelled && r?.success) {
+          setGeminiTier({ tierId: r.tierId, tierName: r.tierName, isPaid: !!r.isPaid });
+        }
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [currentAgent]);
+  // 요금제 확인 후 현재 선택 모델이 못 쓰는 모델이면 기본 모델로 자동 전환
+  useEffect(() => {
+    if (currentAgent === 'gemini' && geminiTier && !isGeminiModelUsable(model, geminiTier.isPaid)) {
+      setModel('gemini-2.5-flash');
+    }
+  }, [geminiTier, currentAgent]);
   // 모델 선택 — 에이전트별 기본 모델
   const defaultModelFor = (a: AgentType) => a === 'gemini' ? 'gemini-2.5-flash' : a === 'codex' ? 'gpt-5.5' : 'opus';
   const [model, setModelRaw] = useState<string>(defaultModelFor(aiAgent));
@@ -621,7 +663,10 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     saveCurrentAgentSettings();
     const saved = agentSettingsMemory.current[a];
     setCurrentAgent(a);
-    setModelRaw(saved?.model ?? defaultModelFor(a));
+    {
+      const m = saved?.model ?? defaultModelFor(a);
+      setModelRaw(a === 'gemini' && !isValidGeminiModel(m) ? defaultModelFor('gemini') : m);
+    }
     setEffort(saved?.effort ?? 'medium');
     setPermissionMode(saved?.permissionMode ?? 'default');
     setPerToolApproval(saved?.perToolApproval ?? true);
@@ -1339,24 +1384,42 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           return { unix: p, unc: `${activeMount.mountRoot}\\${uncRel}` };
         });
 
-      contextLines.push(
-        `# 중요: 원격 SSH 파일 접근 규칙`,
-        ``,
-        `현재 SSH 세션: **${activeMount.label}**`,
-        `이 세션의 원격 Linux 파일시스템 전체가 로컬 WebDAV 에 마운트되어 있습니다.`,
-        ``,
-        `## 경로 매핑 규칙`,
-        `- 원격 Unix 루트 \`/\` ↔ 로컬 UNC \`${activeMount.mountRoot}\\\``,
-        `- 원격 \`/a/b/c.txt\` ↔ 로컬 \`${activeMount.mountRoot}\\a\\b\\c.txt\``,
-        ``,
-        `## 도구 사용 규칙 (반드시 준수)`,
-        `❌ **로컬 Bash 툴을 쓰지 마세요** — 이 시스템은 Windows 이며 Unix 경로 \`/view/...\` 를 Bash 로 접근할 수 없습니다.`,
-        `✅ **파일 읽기/탐색**: Read / Glob / Grep / LS 툴을 UNC 경로로 호출`,
-        `✅ **파일 편집/작성**: Edit / Write 툴을 UNC 경로로 호출 (실제 원격 SSH 서버에 실시간 반영됨)`,
-        `✅ **원격 명령 실행 (cleartool, ctco, make, git 등)**: \`mcp__pepe_ssh__ssh_exec\` 툴 사용 — command 만 원격 Unix 경로로 전달 (UNC 변환 NO). 예: \`ssh_exec(command="ctco /view/.../file.c")\``,
-        `✅ 파일 경로가 언급되면: 파일 I/O 는 UNC 변환, 쉘 명령 argument 는 Unix 경로 그대로`,
-        ``,
-      );
+      if (currentAgentRef.current === 'gemini') {
+        // Gemini 는 WebDAV UNC 워크스페이스를 못 씀 → pepe_ssh MCP 도구로만 원격 접근
+        contextLines.push(
+          `# 중요: 원격 SSH 접근 규칙 (필수)`,
+          ``,
+          `현재 SSH 세션: **${activeMount.label}** — 원격 Linux 호스트입니다.`,
+          `원격 파일/명령은 반드시 **pepe_ssh MCP 도구**로 접근하세요.`,
+          ``,
+          `## 도구 사용 규칙 (반드시 준수)`,
+          `❌ Read / Write / Edit / Glob / LS / Bash 등 로컬 파일·셸 도구를 원격 경로에 쓰지 마세요 — 원격 파일은 이 PC 에 없습니다.`,
+          `✅ **원격 파일 읽기**: \`ssh_read_file(path="/원격/유닉스/절대경로")\``,
+          `✅ **원격 파일 쓰기/수정**: \`ssh_write_file(path="...", content="...")\` — 수정 시 먼저 ssh_read_file 로 읽고 수정된 전체 내용을 다시 씁니다`,
+          `✅ **원격 명령 실행**: \`ssh_exec(command="...")\` — cleartool, ctco, git, make, grep, find, ls 등`,
+          `✅ 모든 경로는 **원격 Unix 절대경로 그대로** 사용 (예: \`/view/ghj_view/vobs/...\`). Windows/UNC 경로 변환 불필요.`,
+          ``,
+        );
+      } else {
+        contextLines.push(
+          `# 중요: 원격 SSH 파일 접근 규칙`,
+          ``,
+          `현재 SSH 세션: **${activeMount.label}**`,
+          `이 세션의 원격 Linux 파일시스템 전체가 로컬 WebDAV 에 마운트되어 있습니다.`,
+          ``,
+          `## 경로 매핑 규칙`,
+          `- 원격 Unix 루트 \`/\` ↔ 로컬 UNC \`${activeMount.mountRoot}\\\``,
+          `- 원격 \`/a/b/c.txt\` ↔ 로컬 \`${activeMount.mountRoot}\\a\\b\\c.txt\``,
+          ``,
+          `## 도구 사용 규칙 (반드시 준수)`,
+          `❌ **로컬 Bash 툴을 쓰지 마세요** — 이 시스템은 Windows 이며 Unix 경로 \`/view/...\` 를 Bash 로 접근할 수 없습니다.`,
+          `✅ **파일 읽기/탐색**: Read / Glob / Grep / LS 툴을 UNC 경로로 호출`,
+          `✅ **파일 편집/작성**: Edit / Write 툴을 UNC 경로로 호출 (실제 원격 SSH 서버에 실시간 반영됨)`,
+          `✅ **원격 명령 실행 (cleartool, ctco, make, git 등)**: \`mcp__pepe_ssh__ssh_exec\` 툴 사용 — command 만 원격 Unix 경로로 전달 (UNC 변환 NO). 예: \`ssh_exec(command="ctco /view/.../file.c")\``,
+          `✅ 파일 경로가 언급되면: 파일 I/O 는 UNC 변환, 쉘 명령 argument 는 Unix 경로 그대로`,
+          ``,
+        );
+      }
 
       if (pathMappings.length > 0) {
         contextLines.push(`## 이번 질문에서 감지된 경로 (미리 번역됨)`);
@@ -1533,7 +1596,10 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     setLocalFileAttachments([]);
     try {
       if (currentAgentRef.current === 'gemini') {
-        await (window as any).api?.geminiSend?.(sessionId, prompt, requestId, model, geminiYolo);
+        // 요금제에서 못 쓰는 모델(또는 미등록 모델)이면 안전한 기본 모델로 대체
+        const geminiModel = isGeminiModelUsable(model, geminiTier?.isPaid === true) ? model : 'gemini-2.5-flash';
+        // sshTermId 전달 → gemini 에 SSH MCP(pepe_ssh) 제공 (원격 파일/명령)
+        await (window as any).api?.geminiSend?.(sessionId, prompt, requestId, geminiModel, geminiYolo, addDirs, sshTermId);
       } else if (currentAgentRef.current === 'codex') {
         // codex 는 비대화형(exec)이라 실행 중 승인이 불가 → claude 처럼 "계획 먼저 보여주고 승인" 2단계로 처리.
         // plan 모드(또는 default + 승인성 발화 아님)면 계획 단계로 전송.
@@ -1581,7 +1647,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       setMessages(prev => [...prev, { role: 'assistant', content: `❌ ${err}`, id: `err-${Date.now()}`, seq: nextSeq() }]);
       setStreaming(false);
     }
-  }, [sessionId, streaming, mountEntries, activeMount, localFileAttachments, permissionMode, model, perToolApproval, messages, toolTimeline]);
+  }, [sessionId, streaming, mountEntries, activeMount, localFileAttachments, permissionMode, model, perToolApproval, messages, toolTimeline, geminiTier]);
 
   // 외부에서 컨텍스트 전달되면 추가 (기존 첨부에 append, 중복 제거)
   useEffect(() => {
@@ -1848,16 +1914,14 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         { id: 'model-gpt4o',    section: 'Model', label: 'Model: GPT-4o (API키 전용)',     desc: '🟢', run: () => setModel('gpt-4o') },
       ]
     : currentAgent === 'gemini'
-    ? [
-        { id: 'model-g31pro',   section: 'Model', label: 'Model: Gemini 3.1 Pro',            desc: '✨', run: () => setModel('gemini-3.1-pro') },
-        { id: 'model-g31prev',  section: 'Model', label: 'Model: Gemini 3.1 Pro Preview',     desc: '✨', run: () => setModel('gemini-3.1-pro-preview') },
-        { id: 'model-g31fl',    section: 'Model', label: 'Model: Gemini 3.1 Flash Lite',      desc: '⚡', run: () => setModel('gemini-3.1-flash-lite-preview') },
-        { id: 'model-g3pro',    section: 'Model', label: 'Model: Gemini 3 Pro',               desc: '✨', run: () => setModel('gemini-3-pro') },
-        { id: 'model-g3fl',     section: 'Model', label: 'Model: Gemini 3 Flash',             desc: '⚡', run: () => setModel('gemini-3-flash-preview') },
-        { id: 'model-g25pro',   section: 'Model', label: 'Model: Gemini 2.5 Pro',             desc: '🔵', run: () => setModel('gemini-2.5-pro') },
-        { id: 'model-g25fl',    section: 'Model', label: 'Model: Gemini 2.5 Flash',           desc: '⚡', run: () => setModel('gemini-2.5-flash') },
-        { id: 'model-g25fll',   section: 'Model', label: 'Model: Gemini 2.5 Flash Lite',      desc: '⚡', run: () => setModel('gemini-2.5-flash-lite') },
-      ]
+    ? GEMINI_MODELS.map(m => {
+        const usable = !m.pro || geminiTier?.isPaid === true;
+        return {
+          id: `model-${m.v}`, section: 'Model',
+          label: `Model: ${m.l}${usable ? '' : ' (지원안함)'}`,
+          desc: usable ? m.icon : '🚫', run: () => { if (usable) setModel(m.v); },
+        };
+      })
     // Claude — Anthropic /v1/models 결과로 동적 생성, 없으면 fallback
     : availableModels.length > 0
       ? (() => {
@@ -2746,18 +2810,18 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             <>
               <select
                 className="claude-chat-perm-select"
-                value={model}
+                value={isGeminiModelUsable(model, geminiTier?.isPaid === true) ? model : 'gemini-2.5-flash'}
                 onChange={e => setModel(e.target.value)}
-                title={tt('geminiModelSelect')}
+                title={geminiTier ? `${tt('geminiModelSelect')} · ${geminiTier.tierName}` : tt('geminiModelSelect')}
               >
-                <option value="gemini-3.1-pro">✨ Gemini 3.1 Pro</option>
-                <option value="gemini-3.1-pro-preview">✨ Gemini 3.1 Pro Preview</option>
-                <option value="gemini-3.1-flash-lite-preview">⚡ Gemini 3.1 Flash Lite</option>
-                <option value="gemini-3-pro">✨ Gemini 3 Pro</option>
-                <option value="gemini-3-flash-preview">⚡ Gemini 3 Flash</option>
-                <option value="gemini-2.5-pro">🔵 Gemini 2.5 Pro</option>
-                <option value="gemini-2.5-flash">⚡ Gemini 2.5 Flash</option>
-                <option value="gemini-2.5-flash-lite">⚡ Gemini 2.5 Flash Lite</option>
+                {GEMINI_MODELS.map(m => {
+                  const usable = !m.pro || geminiTier?.isPaid === true;
+                  return (
+                    <option key={m.v} value={m.v} disabled={!usable}>
+                      {m.icon} {m.l}{!usable ? ' — 지원안함' : ''}
+                    </option>
+                  );
+                })}
               </select>
               <label className="claude-chat-tool-approval-label" title={tt('geminiAutoApproveTitle')}>
                 <input type="checkbox" checked={geminiYolo} onChange={e => setGeminiYolo(e.target.checked)} />
