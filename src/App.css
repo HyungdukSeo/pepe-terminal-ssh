@@ -5198,6 +5198,14 @@ body.popout-options .session-editor h3:first-child {
   color: #58a6ff;
   font-weight: 600;
   margin-bottom: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.claude-chat-msg-role svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
 }
 .claude-chat-msg-content {
   color: #ddd;

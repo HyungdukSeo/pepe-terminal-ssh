@@ -4272,8 +4272,10 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
     const GEMINI_META_TOOLS = new Set(['update_topic', 'save_memory']);
     const geminiMetaToolIds = new Set<string>();
     // 모델이 텍스트에 섞어 내보내는 update_topic(...) 등 토픽 지시문 제거
+    // ⚠ trimStart() 금지 — 스트리밍 delta 마다 호출되므로 줄바꿈으로 시작하는 delta 의
+    // 선행 개행이 잘려 인접 줄이 붙어버림(코드블록/mermaid 깨짐). 지시문만 제거.
     const stripGeminiDirectives = (s: string): string =>
-      s.replace(/update_topic\s*\(\s*\w+\s*=\s*(['"])[\s\S]*?\1(?:\s*,\s*\w+\s*=\s*(['"])[\s\S]*?\2)*\s*\)/g, '').trimStart();
+      s.replace(/update_topic\s*\(\s*\w+\s*=\s*(['"])[\s\S]*?\1(?:\s*,\s*\w+\s*=\s*(['"])[\s\S]*?\2)*\s*\)/g, '');
 
     const handleGeminiEvent = (evt: any) => {
       const t = evt?.type;

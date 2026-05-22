@@ -46,6 +46,12 @@ const isGeminiModelUsable = (m: string, isPaid: boolean) => {
 function sanitizeMermaidLabels(src: string): string {
   let out = src;
 
+  // 모델이 지정한 테마/init 디렉티브 제거 → 앱 전역 dark 테마로 통일.
+  // (Claude 가 종종 %%{init: {theme}}%% 나 frontmatter 로 라이트 테마를 넣어 배경이 하얗게 나옴)
+  out = out.replace(/%%\{\s*init\s*:[\s\S]*?\}\s*%%[ \t]*\r?\n?/gi, '');
+  out = out.replace(/^---[ \t]*\r?\n[\s\S]*?\r?\n---[ \t]*\r?\n/, fm =>
+    fm.replace(/^[ \t]*theme[ \t]*:.*\r?\n/gim, ''));
+
   if (/^\s*sequenceDiagram\b/im.test(out)) {
     // Gemini가 줄바꿈 없이 붙여 내는 sequence 구문을 렌더 직전에 복구한다.
     out = out.replace(/([^\n])\s*(Note\s+(?:over|right of|left of)\b)/g, '$1\n    $2');
@@ -62,6 +68,41 @@ function sanitizeMermaidLabels(src: string): string {
     });
     for (const [from, to] of renames) {
       out = out.replace(new RegExp(`\\b${from}\\b`, 'g'), to);
+    }
+    // Claude 가 단계 구분용으로 넣는 'rect rgb(...)' 의 밝은 파스텔 색은 dark 배경에서
+    // 흰 박스처럼 보임 → 밝은 색만 저투명(rgba 0.13) 톤으로 변환해 dark 배경이 비치게 한다.
+    out = out.replace(/(^|\n)([ \t]*)rect[ \t]+rgba?\(([^)]+)\)/gi, (m, nl, indent, args) => {
+      const nums = String(args).split(',').map(s => parseFloat(s.trim()));
+      const [r, g, b] = nums;
+      if ([r, g, b].some(n => isNaN(n))) return m;
+      const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+      if (lum < 0.5) return m; // 이미 어두우면 그대로 유지
+      return `${nl}${indent}rect rgba(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)}, 0.13)`;
+    });
+    // 라벨/메시지 텍스트의 부등호 처리. HTML 엔티티(&lt; &gt;)는 끝의 ';' 가
+    // mermaid 의 문장 구분자로 오인되어 파싱이 깨지고, 원시 < > 는 HTML 태그로
+    // 오인됨 → 둘 다 특수의미가 없는 전각 부등호(＜ ＞)로 치환한다. <br/> 는 보존.
+    {
+      const escAngles = (t: string): string =>
+        t.split(/(<br\s*\/?>)/i)
+          .map((seg, i) => i % 2 === 1 ? '<br/>' : seg
+            .replace(/&lt;/gi, '＜')
+            .replace(/&gt;/gi, '＞')
+            .replace(/&amp;/gi, '&')
+            .replace(/&quot;/gi, '"')
+            .replace(/&#0*39;|&apos;/gi, "'")
+            .replace(/</g, '＜')
+            .replace(/>/g, '＞'))
+          .join('');
+      out = out.split('\n').map(line => {
+        const pm = line.match(/^(\s*(?:participant|actor)\s+[A-Za-z_]\w*\s+as\s+)(.+)$/i);
+        if (pm) return pm[1] + escAngles(pm[2]);
+        const cm = line.match(/^([^:\n]*:)(.*)$/);
+        if (cm && /(-{1,2}>>?|-{1,2}x|-{1,2}\)|^\s*Note\b)/i.test(cm[1])) {
+          return cm[1] + escAngles(cm[2]);
+        }
+        return line;
+      }).join('\n');
     }
     return out;
   }
@@ -204,6 +245,7 @@ function closeDanglingMermaidFences(md: string): string {
   const out: string[] = [];
   let inMermaid = false;
   let mermaidBodyLines = 0;
+  let mermaidIsFlowchart = false;
   let skipNextOrphanFence = false;
   const isMermaidSyntax = (line: string): boolean => {
     const t = line.trim();
@@ -223,6 +265,7 @@ function closeDanglingMermaidFences(md: string): string {
     if (!inMermaid && /^```\s*mermaid\b/i.test(t)) {
       inMermaid = true;
       mermaidBodyLines = 0;
+      mermaidIsFlowchart = false;
       skipNextOrphanFence = false;
       out.push(line);
       continue;
@@ -238,7 +281,14 @@ function closeDanglingMermaidFences(md: string): string {
         out.push(line);
         continue;
       }
-      if (mermaidBodyLines > 0 && !isMermaidSyntax(line)) {
+      // 첫 본문 라인에서 다이어그램 타입 판별
+      if (mermaidBodyLines === 0 && t) {
+        mermaidIsFlowchart = /^(flowchart|graph)\b/.test(t);
+      }
+      // 미완성 fence 휴리스틱은 flowchart/graph 에서만 적용.
+      // isMermaidSyntax 가 flowchart 문법만 인식 → sequence/class/state 등은
+      // participant·메시지 라인을 prose 로 오인해 fence 를 중간에 잘라버림.
+      if (mermaidIsFlowchart && mermaidBodyLines > 0 && !isMermaidSyntax(line)) {
         out.push('```');
         inMermaid = false;
         mermaidBodyLines = 0;
@@ -1315,6 +1365,34 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           const svgHolder = document.createElement('div');
           svgHolder.className = 'claude-chat-mermaid-svg';
           svgHolder.innerHTML = svg;
+          // 모델이 라이트 테마 디렉티브를 넣어 SVG 배경이 하얗게 나오는 경우 방어 —
+          // SVG 인라인 배경 및 전체 캔버스 배경 rect 를 투명화해 앱 dark 배경이 비치게 한다.
+          try {
+            const renderedSvg = svgHolder.querySelector('svg') as SVGSVGElement | null;
+            if (renderedSvg) {
+              renderedSvg.style.backgroundColor = 'transparent';
+              const isLight = (c: string) => {
+                const v = c.trim().toLowerCase();
+                return v === '#fff' || v === '#ffffff' || v === 'white' ||
+                  v === 'rgb(255, 255, 255)' || v === 'rgb(255,255,255)' ||
+                  /^#(f{3}|f{6})$/.test(v) || /^#(e|f)[0-9a-f]/.test(v);
+              };
+              // 임베드된 <style> 의 background-color 선언 제거
+              renderedSvg.querySelectorAll('style').forEach(st => {
+                if (st.textContent && /background(-color)?\s*:/i.test(st.textContent)) {
+                  st.textContent = st.textContent.replace(/background(-color)?\s*:[^;}]+;?/gi, '');
+                }
+              });
+              // 전체 캔버스를 덮는 밝은 배경 rect 만 투명화 (개별 노드/박스는 건드리지 않음)
+              renderedSvg.querySelectorAll('rect').forEach(r => {
+                const cls = r.getAttribute('class') || '';
+                const fill = (r.getAttribute('fill') || r.style.fill || '').toString();
+                if (!fill || !isLight(fill)) return;
+                const isBg = /background/i.test(cls) || (!cls && (!r.previousElementSibling));
+                if (isBg) { r.setAttribute('fill', 'transparent'); r.style.fill = 'transparent'; }
+              });
+            }
+          } catch {}
           // helper: SVG → PNG Blob (data URL 사용 — Electron CSP/blob 이슈 회피)
           const svgToPngBlob = async (scale = 2): Promise<Blob> => {
             const svgEl = svgHolder.querySelector('svg') as SVGSVGElement | null;
@@ -2792,7 +2870,15 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                 }
               }}
             >
-              <div className="claude-chat-msg-role">{g.m.role === 'user' ? '👤 You' : (g.m.agent || currentAgent) === 'gemini' ? '✨ Gemini' : (g.m.agent || currentAgent) === 'codex' ? '🧠 Codex' : '🤖 Claude'}</div>
+              <div className="claude-chat-msg-role">{
+                g.m.role === 'user'
+                  ? <>👤 You</>
+                  : (g.m.agent || currentAgent) === 'gemini'
+                    ? <><GeminiTabIcon /> Gemini</>
+                    : (g.m.agent || currentAgent) === 'codex'
+                      ? <><CodexTabIcon /> Codex</>
+                      : <><ClaudeTabIcon /> Claude</>
+              }</div>
               <div
                 className="claude-chat-msg-content"
                 dangerouslySetInnerHTML={{ __html: renderMd(g.m.content) }}
