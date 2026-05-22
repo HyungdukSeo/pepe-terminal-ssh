@@ -646,6 +646,25 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     })();
     return () => { cancelled = true; };
   }, [currentAgent]);
+  // codex 탭 진입 시 요금 한도 조회 → 대화 없이도 남은 한도 표시 (최근 rollout 파일 기반)
+  useEffect(() => {
+    if (currentAgent !== 'codex') return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r: any = await (window as any).api?.codexRateLimits?.();
+        if (!cancelled && r?.success && r.rateLimits) {
+          setCodexInfo({
+            contextWindow: r.info?.model_context_window || null,
+            primary: r.rateLimits.primary || null,
+            secondary: r.rateLimits.secondary || null,
+            planType: r.rateLimits.plan_type || null,
+          });
+        }
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [currentAgent]);
   // 요금제 확인 후 현재 선택 모델이 못 쓰는 모델이면 기본 모델로 자동 전환
   useEffect(() => {
     if (currentAgent === 'gemini' && geminiTier && !isGeminiModelUsable(model, geminiTier.isPaid)) {

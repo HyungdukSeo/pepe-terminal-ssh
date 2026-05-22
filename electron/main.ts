@@ -4428,6 +4428,51 @@ ipcMain.handle('codex:check', async () => {
   }
 });
 
+// codex 토큰/요금 한도 — 가장 최근 세션 rollout 파일에서 추출 (대화 없이도 탭 진입 시 표시용)
+ipcMain.handle('codex:rateLimits', async () => {
+  try {
+    const fs = require('fs'), path = require('path'), os = require('os');
+    const sessionsDir = path.join(os.homedir(), '.codex', 'sessions');
+    if (!fs.existsSync(sessionsDir)) return { success: false };
+    let newest: string | null = null, newestMtime = 0;
+    const walk = (dir: string, depth: number) => {
+      if (depth > 4) return;
+      let entries: string[] = [];
+      try { entries = fs.readdirSync(dir); } catch { return; }
+      for (const name of entries) {
+        const p = path.join(dir, name);
+        let st: any;
+        try { st = fs.statSync(p); } catch { continue; }
+        if (st.isDirectory()) walk(p, depth + 1);
+        else if (name.startsWith('rollout-') && name.endsWith('.jsonl') && st.mtimeMs > newestMtime) {
+          newestMtime = st.mtimeMs; newest = p;
+        }
+      }
+    };
+    walk(sessionsDir, 0);
+    if (!newest) return { success: false };
+    const lines = fs.readFileSync(newest, 'utf-8').split('\n').filter(Boolean);
+    let lastUsage: any = null, totalUsage: any = null, ctxWindow: any = null, rateLimits: any = null, saw = false;
+    for (const line of lines) {
+      try {
+        const e = JSON.parse(line);
+        if (e?.payload?.type === 'token_count') {
+          saw = true;
+          const inf = e.payload.info;
+          if (inf?.last_token_usage) lastUsage = inf.last_token_usage;
+          if (inf?.total_token_usage) totalUsage = inf.total_token_usage;
+          if (inf?.model_context_window) ctxWindow = inf.model_context_window;
+          if (e.payload.rate_limits) rateLimits = e.payload.rate_limits;
+        }
+      } catch {}
+    }
+    if (!saw) return { success: false };
+    return { success: true, info: { last_token_usage: lastUsage, total_token_usage: totalUsage, model_context_window: ctxWindow }, rateLimits };
+  } catch (e: any) {
+    return { success: false, error: String(e) };
+  }
+});
+
 ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, approvalPolicy, effort }: { sessionId: string; prompt: string; requestId?: string; model?: string; approvalPolicy?: 'suggest' | 'auto-edit' | 'full-auto'; effort?: string }) => {
   try {
     // 같은 sessionId로 실행 중인 Gemini 프로세스 정리
