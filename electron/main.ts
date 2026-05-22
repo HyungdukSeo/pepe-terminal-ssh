@@ -4282,7 +4282,9 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
     };
 
     const codexEffort = effort === 'max' ? 'xhigh' : effort;
-    const fullAccess = approvalPolicy === 'auto-edit' || approvalPolicy === 'full-auto';
+    // codex 는 항상 danger-full-access(샌드박스 OFF)로 실행 — claude 와 동일하게 OS 샌드박스 없음.
+    // Windows 샌드박스(restricted token)는 UNC/WebDAV 네트워크 경로를 차단하므로 반드시 꺼야 함.
+    void approvalPolicy;
     const cwd = process.env.USERPROFILE || process.env.HOME || os.homedir();
 
     const modelFlag = model ? ` -m ${model}` : '';
@@ -4314,17 +4316,14 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
 
     // 직접 spawn 용 인수 배열 (shell 없음 → 따옴표/이스케이프 불필요)
     const buildCodexArgs = (): string[] => {
-      const args = ['exec'];
+      const args = ['exec', '--json'];
       if (model) args.push('-m', model);
       if (codexEffort && ['low', 'medium', 'high', 'xhigh'].includes(codexEffort)) {
         args.push('-c', `model_reasoning_effort="${codexEffort}"`);
       }
       args.push('--skip-git-repo-check');
-      if (fullAccess) {
-        args.push('--sandbox', 'danger-full-access');
-      } else {
-        args.push('-c', 'sandbox_permissions=["disk-full-read-access","network-full-access"]');
-      }
+      // 샌드박스 OFF — UNC/WebDAV 네트워크 경로 접근 허용
+      args.push('--sandbox', 'danger-full-access');
       return args;
     };
 
@@ -4341,18 +4340,14 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
       usedDirectExe = true;
     } else if (isWin) {
       // fallback: codex.exe 못 찾으면 shell 방식 (한글 깨질 수 있음)
-      const sandbox = fullAccess
-        ? `--sandbox danger-full-access`
-        : `-c "sandbox_permissions=[\\"disk-full-read-access\\",\\"network-full-access\\"]"`;
-      const shellCmd = `chcp 65001 >nul && type "${tmpFile}" | codex exec${modelFlag}${effortFlag} --skip-git-repo-check ${sandbox}`;
+      const sandbox = `--sandbox danger-full-access`;
+      const shellCmd = `chcp 65001 >nul && type "${tmpFile}" | codex exec --json${modelFlag}${effortFlag} --skip-git-repo-check ${sandbox}`;
       console.log('[codex] shell fallback (win):', shellCmd);
       proc = spawn(shellCmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd });
     } else {
       // Mac/Linux
-      const sandbox = fullAccess
-        ? `--sandbox danger-full-access`
-        : `-c 'sandbox_permissions=["disk-full-read-access","network-full-access"]'`;
-      const shellCmd = `cat "${tmpFile}" | codex exec${modelFlag}${effortFlag} --skip-git-repo-check ${sandbox}`;
+      const sandbox = `--sandbox danger-full-access`;
+      const shellCmd = `cat "${tmpFile}" | codex exec --json${modelFlag}${effortFlag} --skip-git-repo-check ${sandbox}`;
       console.log('[codex] shell cmd (unix):', shellCmd);
       proc = spawn(shellCmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd });
     }
@@ -4375,29 +4370,169 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
     let stdoutHadContent = false;
     const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*[mGKHF]/g, '').replace(/\r/g, '');
     proc.stdout.setEncoding('utf-8');
+
+    // ── codex --json (JSONL) 이벤트 → claude:stream (Claude 호환 포맷) 변환 ──
+    // codex 의 도구 사용 내역(command_execution, file_change, mcp_tool_call 등)을
+    // Claude 의 tool_use/tool_result 포맷으로 매핑 → 렌더러가 그대로 타임라인에 표시.
+    const sendStream = (message: any) =>
+      mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message });
+    // codex item id(item_0, item_1...)는 매 실행마다 0부터 재사용됨 → 요청별 prefix 로
+    // 전역 고유 id 생성 (없으면 메시지/툴 id 가 이전 응답과 충돌해 새 응답이 묻힘)
+    const idPrefix = requestId || `cdx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    let codexThreadId = '';
+
+    // codex 세션 rollout 파일에서 token_count(토큰 사용량 + rate_limits) 추출.
+    // exec --json stdout 에는 rate_limits 가 안 나오지만 ~/.codex/sessions/.../rollout-*.jsonl 에 기록됨.
+    const readCodexSessionInfo = (threadId: string): any => {
+      try {
+        const sessionsDir = path.join(os.homedir(), '.codex', 'sessions');
+        if (!fs.existsSync(sessionsDir)) return null;
+        let target: string | null = null;
+        const walk = (dir: string, depth: number) => {
+          if (target || depth > 4) return;
+          let entries: string[] = [];
+          try { entries = fs.readdirSync(dir).sort().reverse(); } catch { return; }
+          for (const name of entries) {
+            if (target) return;
+            const p = path.join(dir, name);
+            let st: any;
+            try { st = fs.statSync(p); } catch { continue; }
+            if (st.isDirectory()) walk(p, depth + 1);
+            else if (name.startsWith('rollout-') && name.endsWith('.jsonl') && threadId && name.includes(threadId)) {
+              target = p;
+              return;
+            }
+          }
+        };
+        walk(sessionsDir, 0);
+        if (!target) return null;
+        const lines = fs.readFileSync(target, 'utf-8').split('\n').filter(Boolean);
+        // 모든 token_count 이벤트를 순회하며 필드별 최신값을 누적 수집.
+        // (특정 이벤트가 rate_limits / model_context_window 를 누락해도 다른 이벤트에서 보강)
+        let lastUsage: any = null, totalUsage: any = null, ctxWindow: any = null, rateLimits: any = null;
+        let sawTokenCount = false;
+        for (const line of lines) {
+          try {
+            const e = JSON.parse(line);
+            if (e?.payload?.type === 'token_count') {
+              sawTokenCount = true;
+              const inf = e.payload.info;
+              if (inf?.last_token_usage) lastUsage = inf.last_token_usage;
+              if (inf?.total_token_usage) totalUsage = inf.total_token_usage;
+              if (inf?.model_context_window) ctxWindow = inf.model_context_window;
+              if (e.payload.rate_limits) rateLimits = e.payload.rate_limits;
+            }
+          } catch {}
+        }
+        if (!sawTokenCount) return null;
+        return {
+          info: { last_token_usage: lastUsage, total_token_usage: totalUsage, model_context_window: ctxWindow },
+          rateLimits,
+        };
+      } catch {}
+      return null;
+    };
+    const isToolItem = (t: string) => !!t && t !== 'agent_message' && t !== 'reasoning' && t !== 'error';
+    const codexToolName = (it: any): string => {
+      switch (it?.type) {
+        case 'command_execution': return 'Shell';
+        case 'file_change': return 'FileChange';
+        case 'mcp_tool_call': return it.tool ? `${it.server || 'mcp'}.${it.tool}` : 'McpTool';
+        case 'web_search': return 'WebSearch';
+        case 'todo_list': return 'TodoList';
+        case 'patch_apply': return 'PatchApply';
+        default: return it?.type || 'Tool';
+      }
+    };
+    const codexToolInput = (it: any): any => {
+      switch (it?.type) {
+        case 'command_execution': return { command: it.command };
+        case 'file_change': return { changes: it.changes };
+        case 'mcp_tool_call': return it.arguments || it.input || {};
+        case 'web_search': return { query: it.query };
+        case 'todo_list': return { items: it.items };
+        default: { const { id, type, status, aggregated_output, ...rest } = it || {}; return rest; }
+      }
+    };
+    const codexToolResult = (it: any): string => {
+      if (it?.type === 'command_execution') return it.aggregated_output || '';
+      if (it?.type === 'mcp_tool_call') return typeof it.result === 'string' ? it.result : JSON.stringify(it.result ?? '');
+      if (it?.type === 'file_change') return (it.changes || []).map((c: any) => `${c.kind || ''} ${c.path || ''}`.trim()).join('\n') || 'applied';
+      if (it?.type === 'web_search') return it.query || '';
+      if (it?.type === 'todo_list') return (it.items || []).map((t: any) => `${t.completed ? '✓' : '○'} ${t.text ?? t}`).join('\n');
+      try { return JSON.stringify(it); } catch { return ''; }
+    };
+    const codexIsError = (it: any): boolean =>
+      it?.status === 'failed' || (typeof it?.exit_code === 'number' && it.exit_code !== 0);
+
+    const handleCodexEvent = (evt: any) => {
+      const t = evt?.type;
+      if (t === 'thread.started') {
+        codexThreadId = evt?.thread_id || '';
+      } else if (t === 'item.started' || t === 'item.updated') {
+        const it = evt.item;
+        if (it && isToolItem(it.type)) {
+          stdoutHadContent = true;
+          sendStream({ type: 'assistant', message: { id: `${idPrefix}-a-${it.id}`, content: [{ type: 'tool_use', id: `${idPrefix}-${it.id}`, name: codexToolName(it), input: codexToolInput(it) }] } });
+        }
+      } else if (t === 'item.completed') {
+        const it = evt.item;
+        if (!it) return;
+        if (it.type === 'agent_message') {
+          if (it.text) {
+            stdoutHadContent = true;
+            sendStream({ type: 'assistant', message: { id: `${idPrefix}-m-${it.id}`, content: [{ type: 'text', text: it.text }] } });
+          }
+        } else if (it.type === 'reasoning') {
+          // 추론 단계 — 화면 표시 안 함
+        } else if (it.type === 'error') {
+          sendStream({ type: 'error', text: it.message || it.text || 'codex error' });
+        } else if (isToolItem(it.type)) {
+          stdoutHadContent = true;
+          // tool_use (started 이벤트 누락 대비 — 중복 id 는 렌더러가 무시) + tool_result
+          sendStream({ type: 'assistant', message: { id: `${idPrefix}-a-${it.id}`, content: [{ type: 'tool_use', id: `${idPrefix}-${it.id}`, name: codexToolName(it), input: codexToolInput(it) }] } });
+          sendStream({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: `${idPrefix}-${it.id}`, content: codexToolResult(it), is_error: codexIsError(it) }] } });
+        }
+      } else if (t === 'turn.completed') {
+        // 토큰 사용량은 close 시점에 rollout 파일에서 더 정확히 읽음 (여기선 skip)
+      } else if (t === 'error' || t === 'turn.failed') {
+        const m = evt?.error?.message || evt?.message || evt?.error || 'codex error';
+        sendStream({ type: 'error', text: typeof m === 'string' ? m : JSON.stringify(m) });
+      }
+      // thread.started / turn.started → 무시 (done 은 close 에서 전송)
+    };
+
+    const handleCodexLine = (rawLine: string) => {
+      const line = stripAnsi(rawLine);
+      if (!line.trim()) return;
+      console.log('[codex] stdout line:', line.slice(0, 200));
+      const trimmed = line.trimStart();
+      // JSONL 이벤트
+      if (trimmed.startsWith('{')) {
+        try { handleCodexEvent(JSON.parse(trimmed)); return; }
+        catch { /* JSON 아님 → 평문 처리로 폴백 */ }
+      }
+      // ERROR: {json} 평문
+      if (trimmed.startsWith('ERROR:')) {
+        const jsonStr = trimmed.slice('ERROR:'.length).trim();
+        try {
+          const obj = JSON.parse(jsonStr);
+          sendStream({ type: 'error', text: obj?.error?.message || obj?.message || jsonStr });
+        } catch {
+          sendStream({ type: 'error', text: jsonStr || line });
+        }
+        return;
+      }
+      // 그 외 평문 → 텍스트
+      stdoutHadContent = true;
+      sendStream({ type: 'text', text: line + '\n' });
+    };
+
     proc.stdout.on('data', (data: string) => {
       stdoutBuf += data;
       const lines = stdoutBuf.split('\n');
       stdoutBuf = lines.pop() || '';
-      for (const rawLine of lines) {
-        const line = stripAnsi(rawLine);
-        if (!line.trim()) continue;
-        console.log('[codex] stdout line:', line.slice(0, 200));
-        // ERROR: {json} → parse 후 error 타입으로 전달
-        if (line.trimStart().startsWith('ERROR:')) {
-          try {
-            const jsonStr = line.trimStart().slice('ERROR:'.length).trim();
-            const obj = JSON.parse(jsonStr);
-            const errMsg = obj?.error?.message || obj?.message || jsonStr;
-            mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: errMsg } });
-          } catch {
-            mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: line.trimStart().slice('ERROR:'.length).trim() || line } });
-          }
-          continue;
-        }
-        stdoutHadContent = true;
-        mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'text', text: line + '\n' } });
-      }
+      for (const rawLine of lines) handleCodexLine(rawLine);
     });
     // Codex stderr = stdin echo + 세션 메타데이터
     let codexStderrBuf = '';
@@ -4415,20 +4550,7 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
     proc.on('close', (code: number) => {
       console.log('[codex] close, code:', code);
       // 남은 stdout 버퍼 플러시
-      if (stdoutBuf.trim()) {
-        const flushed = stripAnsi(stdoutBuf);
-        if (flushed.trimStart().startsWith('ERROR:')) {
-          try {
-            const obj = JSON.parse(flushed.trimStart().slice(6).trim());
-            mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: obj?.error?.message || flushed } });
-          } catch {
-            mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: flushed } });
-          }
-        } else {
-          stdoutHadContent = true;
-          mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'text', text: flushed } });
-        }
-      }
+      if (stdoutBuf.trim()) handleCodexLine(stdoutBuf);
       // stderr: stdout 에 아무 내용도 없을 때만 명백한 에러 라인 표시
       if (!stdoutHadContent && code !== 0 && codexStderrBuf.trim()) {
         const errLines = codexStderrBuf.split('\n')
@@ -4437,6 +4559,15 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
           mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: errLines.join('\n') } });
         }
       }
+      // 토큰 사용량 + rate_limits(요금 한도) — codex 세션 rollout 파일에서 추출
+      try {
+        const sess = readCodexSessionInfo(codexThreadId);
+        console.log('[codex] rollout read — thread:', codexThreadId, '| found:', !!sess,
+          sess ? `| info keys: ${sess.info ? Object.keys(sess.info).join(',') : 'none'} | ctxWin: ${sess.info?.model_context_window} | rateLimits: ${sess.rateLimits ? 'yes' : 'no'}` : '');
+        if (sess && (sess.info || sess.rateLimits)) {
+          sendStream({ type: 'codex_usage', info: sess.info, rateLimits: sess.rateLimits });
+        }
+      } catch (e) { console.log('[codex] session info read fail:', e); }
       cleanupTmp();
       codexProcesses.delete(procKey);
       mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'done', code } });

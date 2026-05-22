@@ -23,6 +23,32 @@ mermaid.initialize({
 // Mermaid 다이어그램 키워드 — 이 패턴으로 시작하면 mermaid 블록으로 간주
 const MERMAID_START_RE = /^(graph\s+(TB|TD|BT|RL|LR)|flowchart\s+(TB|TD|BT|RL|LR)|sequenceDiagram|classDiagram|stateDiagram(-v2)?|erDiagram|gantt|pie|journey|gitGraph|mindmap|timeline|quadrantChart)\b/;
 
+// flowchart 노드 라벨에 () / :: / # 등 특수문자가 unquoted 로 들어가면 mermaid 파서가 깨짐.
+// (예: E[new TraceJob(datas)] → Parse error). 라벨을 "..." 로 감싸 안전하게 만든다.
+// codex 가 생성하는 다이어그램이 특히 함수명/스코프 연산자를 라벨에 자주 넣음.
+function sanitizeMermaidLabels(src: string): string {
+  if (!/^\s*(flowchart|graph)\b/im.test(src)) return src;
+  const quote = (label: string): string | null => {
+    const t = label.trim();
+    if (!t || t.startsWith('"')) return null; // 이미 따옴표 / 빈 값 → 그대로
+    // 특수문자 없으면 굳이 감싸지 않음 (단순 라벨은 원형 유지)
+    if (!/[()#:;<>&]/.test(t)) return null;
+    return `"${t.replace(/"/g, '&quot;')}"`;
+  };
+  let out = src;
+  // id[label]  ([[ / [( 같은 더블/복합 모양은 제외 — 안쪽에 [] 없을 때만)
+  out = out.replace(/([A-Za-z0-9_]+)\[([^\[\]\n]+)\]/g, (m, id, label) => {
+    const q = quote(label);
+    return q ? `${id}[${q}]` : m;
+  });
+  // id{label}
+  out = out.replace(/([A-Za-z0-9_]+)\{([^{}\n]+)\}/g, (m, id, label) => {
+    const q = quote(label);
+    return q ? `${id}{${q}}` : m;
+  });
+  return out;
+}
+
 // ── AI 에이전트 탭 아이콘 (실제 브랜드 SVG, simple-icons 기반) ───────────────
 /** Anthropic Claude 공식 로고 (simple-icons, #D97757) */
 const ClaudeTabIcon = () => (
@@ -313,6 +339,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     model: string;
   };
   const [usage, setUsage] = useState<UsageStat>({ inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, totalCostUsd: 0, turns: 0, lastTurnInput: 0, lastTurnOutput: 0, lastTurnFreshInput: 0, lastTurnCacheRead: 0, lastTurnCacheCreate: 0, model: '' });
+  // codex 전용 — 컨텍스트 윈도우 크기 + 요금 한도(rate_limits) (codex 세션 rollout 파일에서 추출)
+  type CodexRateWindow = { used_percent: number; window_minutes: number; resets_at: number };
+  const [codexInfo, setCodexInfo] = useState<{ contextWindow: number | null; primary: CodexRateWindow | null; secondary: CodexRateWindow | null; planType: string | null } | null>(null);
   const [showUsagePanel, setShowUsagePanel] = useState<boolean>(false);
   const [showUsageTooltip, setShowUsageTooltip] = useState<boolean>(false);
   const [usagePopupPos, setUsagePopupPos] = useState<{ left: number; bottom: number } | null>(null);
@@ -496,6 +525,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   // requestId → historyId 매핑. 비활성 대화의 stream 도 해당 history 항목에 계속 반영하기 위함.
   const requestToHistoryRef = useRef<Map<string, string>>(new Map());
   const requestToAgentRef = useRef<Map<string, AgentType>>(new Map());
+  // codex 계획(plan) 단계로 전송된 requestId 집합 — 응답 수신 시 계획 모달 표시 판별용
+  const codexPlanRequestsRef = useRef<Set<string>>(new Set());
   // activeHistoryId 의 ref 미러 — stream listener 가 stale closure 없이 즉시 현재값 사용
   const activeHistoryIdRef = useRef<string | null>(null);
   // 메시지/툴 호출 순서 카운터 — 둘을 발생 순서대로 인터리브 렌더링
@@ -861,6 +892,24 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         setActivity('');
         currentAsstIdRef.current = null;
         activeRequestIdRef.current = null;
+        // codex 계획 단계 응답 — [CODEX_PLAN] 마커가 있으면 계획 승인 모달 표시
+        if (reqId && codexPlanRequestsRef.current.has(reqId)) {
+          codexPlanRequestsRef.current.delete(reqId);
+          setMessages(prev => {
+            let idx = -1;
+            for (let i = prev.length - 1; i >= 0; i--) { if (prev[i].role === 'assistant') { idx = i; break; } }
+            if (idx >= 0) {
+              const mt = prev[idx].content.match(/^\s*\[CODEX_PLAN\]\s*\n?([\s\S]*)$/);
+              if (mt) {
+                const planText = mt[1].trim();
+                setTimeout(() => setPendingPlan(planText), 0);
+                // 계획은 모달로만 표시 — 채팅 메시지에서는 제거 (모달+채팅 중복 방지)
+                return prev.filter((_, i) => i !== idx);
+              }
+            }
+            return prev;
+          });
+        }
         if (reqId) {
           requestToHistoryRef.current.delete(reqId);
           requestToAgentRef.current.delete(reqId);
@@ -875,12 +924,48 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         setStreaming(false);
         activeRequestIdRef.current = null;
         if (reqId) {
+          codexPlanRequestsRef.current.delete(reqId);
           requestToHistoryRef.current.delete(reqId);
           requestToAgentRef.current.delete(reqId);
         }
         const aid = activeHistoryIdRef.current;
         if (aid) {
           setChatHistory(hList => hList.map(h => h.id === aid ? { ...h, streaming: false, pendingRequestId: null } : h));
+        }
+      } else if (msg.type === 'codex_usage') {
+        // codex 토큰 사용량 + 요금 한도 → usage / codexInfo 상태 반영 (rollout 파일 기반)
+        const info = msg.info;
+        const last = info?.last_token_usage;
+        const total = info?.total_token_usage || last;
+        if (last) {
+          const inT = last.input_tokens || 0;
+          const cachedT = last.cached_input_tokens || 0;
+          const outT = (last.output_tokens || 0) + (last.reasoning_output_tokens || 0);
+          const totIn = total?.input_tokens || inT;
+          const totOut = (total?.output_tokens || 0) + (total?.reasoning_output_tokens || 0);
+          const totCached = total?.cached_input_tokens || cachedT;
+          setUsage(prev => ({
+            ...prev,
+            inputTokens: prev.inputTokens + totIn,
+            outputTokens: prev.outputTokens + totOut,
+            cacheReadTokens: prev.cacheReadTokens + totCached,
+            lastTurnInput: inT,
+            lastTurnOutput: outT,
+            lastTurnFreshInput: Math.max(0, inT - cachedT),
+            lastTurnCacheRead: cachedT,
+            lastTurnCacheCreate: 0,
+            turns: prev.turns + 1,
+            model: prev.model || model,
+          }));
+        }
+        const rl = msg.rateLimits;
+        if (info?.model_context_window || rl) {
+          setCodexInfo({
+            contextWindow: info?.model_context_window || null,
+            primary: rl?.primary || null,
+            secondary: rl?.secondary || null,
+            planType: rl?.plan_type || null,
+          });
         }
       } else if (msg.type === 'text' && msg.text) {
         // ⚠ updater 는 반드시 순수해야 함 — React StrictMode 가 updater 를 2번 호출함.
@@ -992,9 +1077,11 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         }
         // 처리 시작 전 src 기록 (에러 시 재시도 방지)
         codeEl.setAttribute('data-mermaid-src', source);
+        // 특수문자 라벨을 따옴표로 감싸 mermaid 파서 에러 방지 (codex 다이어그램 대응)
+        const renderSrc = sanitizeMermaidLabels(source);
         try {
           const { svg } = await Promise.race([
-            mermaid.render(id, source),
+            mermaid.render(id, renderSrc),
             new Promise<never>((_, reject) =>
               setTimeout(() => reject(new Error('mermaid render timeout (8s)')), 8000)
             ),
@@ -1448,7 +1535,24 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       if (currentAgentRef.current === 'gemini') {
         await (window as any).api?.geminiSend?.(sessionId, prompt, requestId, model, geminiYolo);
       } else if (currentAgentRef.current === 'codex') {
-        await (window as any).api?.codexSend?.(sessionId, prompt, requestId, model, codexApprovalPolicy, effort);
+        // codex 는 비대화형(exec)이라 실행 중 승인이 불가 → claude 처럼 "계획 먼저 보여주고 승인" 2단계로 처리.
+        // plan 모드(또는 default + 승인성 발화 아님)면 계획 단계로 전송.
+        const approveKeywords = ['실행', '진행', '좋아', 'yes', 'ok', '승인', 'approve', '해줘', 'go ahead', '네'];
+        const isApproval = approveKeywords.some(k => text.toLowerCase().includes(k.toLowerCase()));
+        const codexPlanPhase = permissionMode === 'plan' || (permissionMode === 'default' && !isApproval);
+        let codexPrompt = prompt;
+        if (codexPlanPhase) {
+          codexPrompt += '\n\n' + [
+            `# 계획 모드 (반드시 준수)`,
+            `- 지금은 "계획(plan) 단계"입니다. 실제로 파일을 수정하거나 변경성 명령(쓰기/삭제/빌드/설치 등)을 실행하지 마세요. (파일 읽기/탐색은 허용)`,
+            `- 이 요청을 수행하는 데 **파일 생성/수정 또는 변경성 명령 실행이 필요한 경우에만** 단계별 실행 계획을 작성하세요.`,
+            `- 계획을 작성하는 경우: 응답의 **맨 첫 줄에 정확히 \`[CODEX_PLAN]\`** 만 단독으로 출력하고, 다음 줄부터 마크다운 번호 목록으로 계획을 작성하세요.`,
+            `- 요청이 단순 정보성(설명, 다이어그램, 분석, 질문 답변 등 — 파일 변경/명령 실행 불필요)이면 \`[CODEX_PLAN]\` 마커 없이 평소대로 바로 답하세요.`,
+            `- 계획을 제시하면 사용자가 승인한 뒤 다음 턴에 실제로 실행됩니다.`,
+          ].join('\n');
+          codexPlanRequestsRef.current.add(requestId);
+        }
+        await (window as any).api?.codexSend?.(sessionId, codexPrompt, requestId, model, codexApprovalPolicy, effort);
       } else {
         const disallowBash = !!sshTermId;
         const resumeSessionId = claudeSessionIdRef.current;
@@ -1620,8 +1724,11 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     setPlanEditedText('');
     setPlanExtraNote('');
     setLastRejectedPlan(null);
-    let text = (edited && edited !== original)
-      ? `다음 계획대로 진행해줘:\n\n${edited}`
+    // 계획 본문을 항상 메시지에 포함 — codex 는 세션 메모리가 없어 계획을 다시 전달해야 함
+    // (계획은 모달에서만 보였고 채팅 메시지로는 남지 않으므로, 승인 메시지에 계획 전문을 담음)
+    const planToUse = (edited && edited !== original) ? edited : original;
+    let text = planToUse
+      ? `아래 계획대로 정확히 진행해줘:\n\n${planToUse}`
       : '위 계획대로 진행해줘';
     if (extra) text += `\n\n[추가 요구사항]\n${extra}`;
     console.log('[ClaudeChat] approvePlan, streaming=', streaming);
@@ -1955,8 +2062,54 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           onMouseEnter={showUsage}
           onMouseLeave={hideUsageDelayed}
         >
-          {/* 컨텍스트 분해 — 마지막 turn 시점의 누적 컨텍스트 구성 */}
-          {(() => {
+          {/* codex: 컨텍스트 사용량 + 요금 한도 (rate_limits) */}
+          {currentAgent === 'codex' && (() => {
+            const fmt = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+            const fmtReset = (unixSec: number, withDate: boolean): string => {
+              const d = new Date(unixSec * 1000);
+              if (withDate) return `${d.getMonth() + 1}월 ${d.getDate()}일`;
+              const h = d.getHours(); const m = d.getMinutes();
+              const ap = h < 12 ? '오전' : '오후';
+              const h12 = h % 12 === 0 ? 12 : h % 12;
+              return `${ap} ${h12}:${String(m).padStart(2, '0')}`;
+            };
+            const Row: React.FC<{ label: string; val: string }> = ({ label, val }) => (
+              <div className="claude-chat-usage-row">
+                <span className="claude-chat-usage-label">{label}</span>
+                <span className="claude-chat-usage-val">{val}</span>
+              </div>
+            );
+            const maxCtx = codexInfo?.contextWindow || 256_000;
+            const used = usage.lastTurnInput;
+            const ctxPct = Math.round((used / maxCtx) * 100);
+            const p = codexInfo?.primary;
+            const s = codexInfo?.secondary;
+            return (
+              <>
+                <div className="claude-chat-usage-divider" />
+                <div className="claude-chat-usage-row" style={{ color: '#9cc' }}>
+                  <span className="claude-chat-usage-label">━ Codex 컨텍스트</span>
+                  <span className="claude-chat-usage-val">{fmt(used)} / {fmt(maxCtx)} ({ctxPct}%)</span>
+                </div>
+                <Row label="캐시 적중" val={fmt(usage.lastTurnCacheRead)} />
+                <Row label="새 입력" val={fmt(usage.lastTurnFreshInput)} />
+                <Row label="출력(+추론)" val={fmt(usage.lastTurnOutput)} />
+                {(p || s) && (
+                  <>
+                    <div className="claude-chat-usage-divider" />
+                    <div className="claude-chat-usage-row" style={{ color: '#9cc' }}>
+                      <span className="claude-chat-usage-label">━ 남은 요금 한도</span>
+                      <span className="claude-chat-usage-val">{codexInfo?.planType || ''}</span>
+                    </div>
+                    {p && <Row label="5시간" val={`${Math.max(0, 100 - p.used_percent)}% · ${fmtReset(p.resets_at, false)} 리셋`} />}
+                    {s && <Row label="1주" val={`${Math.max(0, 100 - s.used_percent)}% · ${fmtReset(s.resets_at, true)} 리셋`} />}
+                  </>
+                )}
+              </>
+            );
+          })()}
+          {/* 컨텍스트 분해 — 마지막 turn 시점의 누적 컨텍스트 구성 (Claude/Gemini) */}
+          {currentAgent !== 'codex' && (() => {
             // 사용자가 선택한 모델 기준으로 max 결정
             const is1M = /\[1m\]/i.test(model) || /1m/i.test(usage.model);
             const maxCtx = is1M ? 1_000_000 : 200_000;
@@ -1991,7 +2144,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               </>
             );
           })()}
-          {subLimits && (
+          {currentAgent === 'claude' && subLimits && (
             <>
               <div className="claude-chat-usage-divider" />
               <div className="claude-chat-usage-row" style={{ color: '#9cc' }}>
@@ -2778,9 +2931,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           <div
             ref={usageTriggerRef}
             className="claude-chat-usage-trigger-wrap"
-            onMouseEnter={() => { setShowUsageTooltip(true); fetchUsageApi(); /* 캐시 hit 면 호출 안 함 */ }}
+            onMouseEnter={() => { setShowUsageTooltip(true); if (currentAgent === 'claude') fetchUsageApi(); /* 캐시 hit 면 호출 안 함 */ }}
             onMouseLeave={() => setShowUsageTooltip(false)}
-            onClick={() => { showUsage(); fetchUsageApi(); }}
+            onClick={() => { showUsage(); if (currentAgent === 'claude') fetchUsageApi(); }}
           >
             <span className="claude-chat-usage-trigger" title={tt('usageTriggerTitle')}>
               {(() => {
@@ -2789,9 +2942,23 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               })()}
             </span>
             {showUsageTooltip && !showUsagePanel && (() => {
+              const fmt = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+              if (currentAgent === 'codex') {
+                const maxCtx = codexInfo?.contextWindow || 256_000;
+                const ctxPct = Math.round((usage.lastTurnInput / maxCtx) * 100);
+                const p = codexInfo?.primary;
+                const s = codexInfo?.secondary;
+                return (
+                  <div className="claude-chat-usage-tooltip">
+                    <div><b>Context</b> {fmt(usage.lastTurnInput)} / {fmt(maxCtx)} ({ctxPct}%)</div>
+                    {(p || s) && (
+                      <div>{p ? `5시간 ${Math.max(0, 100 - p.used_percent)}%` : ''}{p && s ? ' · ' : ''}{s ? `1주 ${Math.max(0, 100 - s.used_percent)}%` : ''}</div>
+                    )}
+                  </div>
+                );
+              }
               const is1M = /\[1m\]/i.test(model) || /1m/i.test(usage.model);
               const maxCtx = is1M ? 1_000_000 : 200_000;
-              const fmt = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
               const ctxPct = Math.round((usage.lastTurnInput / maxCtx) * 100);
               const planPct = subLimits?.fiveHourPct;
               return (
