@@ -682,19 +682,26 @@ body.popout-options .session-editor h3:first-child {
 .app-root.term-fullscreen.has-broadcast .app-main {
   padding-bottom: 24px !important;
 }
-.app-root.term-fullscreen.has-claude-pinned .app-main {
+.app-root.term-fullscreen.has-claude-pinned .app-content-area {
   margin-right: 0 !important;
 }
 
-/* Claude 사이드바 고정 모드 — 트리거 없이 패널이 right: 0 으로 자리잡음 */
-.app-root.has-claude-pinned .app-main {
+/* 콘텐츠 영역 래퍼 — app-main 안에서 바(탭/빠른연결/도구모음)를 제외한 실제 콘텐츠.
+   핀 모드의 패널 너비 확보는 이 래퍼에만 적용 → 상단 바들은 영향 없음. */
+.app-content-area {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+/* Claude 사이드바 고정 모드 — 콘텐츠만 패널 너비만큼 좁힘 (바는 그대로) */
+.app-root.has-claude-pinned .app-content-area {
   margin-right: var(--claude-chat-width, 360px);
 }
-.app-root.has-claude-pinned .broadcast-bar {
-  right: var(--claude-chat-width, 360px);
-}
+/* 일괄전송 바도 패널보다 아래 → 전체 폭 유지 (.broadcast-bar 기본 right:0 사용, override 안 함) */
 /* Claude 사이드바가 자동 숨김 모드일 때: 트리거(20px) 공간만 예약 */
-.app-root.has-claude-autohide .app-main {
+.app-root.has-claude-autohide .app-content-area {
   margin-right: 20px;
 }
 .app-root.has-claude-autohide .broadcast-bar {
@@ -1871,6 +1878,23 @@ body.popout-options .session-editor h3:first-child {
 }
 .terminal-sidebar-trigger:hover .terminal-sidebar-trigger-top {
   color: #ccc;
+}
+/* 터미널 패널 고정(핀) 버튼 — 고정 해제 상태의 트리거에서 다시 고정 */
+.terminal-sidebar-trigger-pin {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 6px 0;
+  font-size: 11px;
+  color: #888;
+  border-bottom: 1px solid #333;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.terminal-sidebar-trigger-pin:hover {
+  color: #fff;
+  background: #2a3a50;
 }
 .terminal-sidebar-trigger-text {
   color: #888;
@@ -4740,12 +4764,14 @@ body.popout-options .session-editor h3:first-child {
   font-family: var(--claude-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
   font-size: var(--claude-font-size, 13px);
 }
-/* 빠른연결 바 표시 시 — QC bar(32px) 만큼 더 내림 (auto-hide 모드만) */
-.app-root.has-quickconnect.has-claude-autohide .claude-chat-sidebar { top: 72px; }
-/* 일괄전송 바 표시 시 — broadcast bar(36px) + 상태바(24px) 만큼 위로 (auto-hide 모드만) */
-.app-root.has-broadcast.has-claude-autohide .claude-chat-sidebar { bottom: 60px; }
-/* 핀 모드일 땐 위/아래 꽉 채움. right 값은 inline style 에서 처리 (pinned 면 0, 아니면 20). */
-.app-root.has-claude-pinned .claude-chat-sidebar { top: 40px; bottom: 24px; }
+/* 상단 바(빠른연결 행 / 도구모음 행) 표시 시 — 한 줄(32px) 만큼 더 내림 (핀/오토하이드 공통) */
+.app-root.has-topbar .claude-chat-sidebar,
+.app-root.has-toptoolbar .claude-chat-sidebar { top: 72px; }
+/* 빠른연결 행 + 별도 도구모음 행이 둘 다 있을 때 — 두 줄(64px) 만큼 */
+.app-root.has-topbar.has-toptoolbar .claude-chat-sidebar { top: 104px; }
+/* 일괄전송 바 표시 시 — broadcast bar(36px) + 상태바(24px) 만큼 위로 (핀/오토하이드 공통) */
+.app-root.has-broadcast .claude-chat-sidebar { bottom: 60px; }
+/* right 값은 inline style 에서 처리 (pinned 면 0, 아니면 20). top/bottom 은 위 규칙들이 담당. */
 .claude-chat-sidebar-resizer {
   position: absolute;
   left: -3px;

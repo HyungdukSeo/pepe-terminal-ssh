@@ -2218,17 +2218,24 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                 <Row label="캐시 적중" val={fmt(usage.lastTurnCacheRead)} />
                 <Row label="새 입력" val={fmt(usage.lastTurnFreshInput)} />
                 <Row label="출력(+추론)" val={fmt(usage.lastTurnOutput)} />
-                {(p || s) && (
-                  <>
-                    <div className="claude-chat-usage-divider" />
-                    <div className="claude-chat-usage-row" style={{ color: '#9cc' }}>
-                      <span className="claude-chat-usage-label">━ 남은 요금 한도</span>
-                      <span className="claude-chat-usage-val">{codexInfo?.planType || ''}</span>
-                    </div>
-                    {p && <Row label="5시간" val={`${Math.max(0, 100 - p.used_percent)}% · ${fmtReset(p.resets_at, false)} 리셋`} />}
-                    {s && <Row label="1주" val={`${Math.max(0, 100 - s.used_percent)}% · ${fmtReset(s.resets_at, true)} 리셋`} />}
-                  </>
-                )}
+                {(p || s) && (() => {
+                  // rollout 스냅샷이 오래돼 resets_at 이 이미 지났으면 그 창은 리셋됨 → ~100% 남음
+                  const winVal = (w: CodexRateWindow, withDate: boolean): string => {
+                    if (w.resets_at * 1000 < Date.now()) return `~100% 남음 (창 리셋됨 · codex 실행 시 갱신)`;
+                    return `${Math.max(0, 100 - w.used_percent)}% 남음 · ${fmtReset(w.resets_at, withDate)} 리셋`;
+                  };
+                  return (
+                    <>
+                      <div className="claude-chat-usage-divider" />
+                      <div className="claude-chat-usage-row" style={{ color: '#9cc' }}>
+                        <span className="claude-chat-usage-label">━ 남은 요금 한도</span>
+                        <span className="claude-chat-usage-val">{codexInfo?.planType || ''}</span>
+                      </div>
+                      {p && <Row label="5시간" val={winVal(p, false)} />}
+                      {s && <Row label="1주" val={winVal(s, true)} />}
+                    </>
+                  );
+                })()}
               </>
             );
           })()}
@@ -3131,11 +3138,13 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                 const ctxPct = Math.round((usage.lastTurnInput / maxCtx) * 100);
                 const p = codexInfo?.primary;
                 const s = codexInfo?.secondary;
+                // resets_at 이 지난 창은 리셋됨 → ~100%
+                const winPct = (w: CodexRateWindow) => w.resets_at * 1000 < Date.now() ? '~100%' : `${Math.max(0, 100 - w.used_percent)}%`;
                 return (
                   <div className="claude-chat-usage-tooltip">
                     <div><b>Context</b> {fmt(usage.lastTurnInput)} / {fmt(maxCtx)} ({ctxPct}%)</div>
                     {(p || s) && (
-                      <div>{p ? `5시간 ${Math.max(0, 100 - p.used_percent)}%` : ''}{p && s ? ' · ' : ''}{s ? `1주 ${Math.max(0, 100 - s.used_percent)}%` : ''}</div>
+                      <div>{p ? `5시간 ${winPct(p)}` : ''}{p && s ? ' · ' : ''}{s ? `1주 ${winPct(s)}` : ''}</div>
                     )}
                   </div>
                 );

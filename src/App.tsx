@@ -2488,7 +2488,7 @@ function App() {
 
   return (
     <div
-      className={`app-root${showBroadcast ? ' has-broadcast' : ''}${showQuickConnect ? ' has-quickconnect' : ''}${fullscreenTermId ? ' term-fullscreen' : ''}${showClaudeChat && claudeChatPinned ? ' has-claude-pinned' : ''}${showClaudeChat && !claudeChatPinned ? ' has-claude-autohide' : ''}${showClaudeChat && !claudeChatPinned && claudeChatVisible ? ' has-claude-visible' : ''}${topPanel ? ' top-panel-' + topPanel : ''}`}
+      className={`app-root${showBroadcast ? ' has-broadcast' : ''}${showQuickConnect ? ' has-quickconnect' : ''}${(showQuickConnect || (showToolbar && toolbarSlot !== 'top')) ? ' has-topbar' : ''}${(showToolbar && toolbarSlot === 'top') ? ' has-toptoolbar' : ''}${fullscreenTermId ? ' term-fullscreen' : ''}${showClaudeChat && claudeChatPinned ? ' has-claude-pinned' : ''}${showClaudeChat && !claudeChatPinned ? ' has-claude-autohide' : ''}${showClaudeChat && !claudeChatPinned && claudeChatVisible ? ' has-claude-visible' : ''}${topPanel ? ' top-panel-' + topPanel : ''}`}
       onMouseMove={e => {
         // 세션/파일트리 모두 unpinned 상태에서 마우스 위치에 따라 topPanel 전환
         const t = e.target as HTMLElement | null;
@@ -2919,6 +2919,8 @@ function App() {
           );
         })()}
 
+        {/* 콘텐츠 영역 — 핀 모드에서 이 래퍼에만 margin-right 적용 (상단 바들은 영향 없음) */}
+        <div className="app-content-area">
         {showSearch && activeTab && (
           <SearchBar
             tabs={tabs}
@@ -3158,6 +3160,21 @@ function App() {
                           <line x1="7" y1="3" x2="7" y2="6" />
                         </svg>
                       </div>
+                      <div
+                        className="terminal-sidebar-trigger-pin"
+                        title="터미널 패널 고정"
+                        onClick={(e) => { e.stopPropagation(); setTerminalPinned(true); }}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" strokeLinecap="round" strokeLinejoin="round">
+                          <rect x="0.7" y="5.5" width="12.6" height="7.8" rx="1.5" fill="#1e2d3d" stroke="#4a7a9b" strokeWidth="1"/>
+                          <line x1="0.7" y1="7.5" x2="13.3" y2="7.5" stroke="#4a7a9b" strokeWidth="0.8"/>
+                          <polyline points="2,11.5 3.2,10.5 2,9.5" stroke="#4ade80" strokeWidth="1.3"/>
+                          <line x1="3.7" y1="10.5" x2="6.5" y2="10.5" stroke="#4ade80" strokeWidth="1.3"/>
+                          <circle cx="10" cy="2" r="1.8" fill="#f87171" stroke="#dc2626" strokeWidth="0.8"/>
+                          <line x1="10" y1="3.8" x2="10" y2="8.5" stroke="#ef4444" strokeWidth="1.4"/>
+                          <polygon points="10,10.2 9.1,8.2 10.9,8.2" fill="#ef4444"/>
+                        </svg>
+                      </div>
                       {leaves.map(leaf => (
                         <div
                           key={leaf.nodeId}
@@ -3241,6 +3258,7 @@ function App() {
             </div>
           );
         })()}
+        </div>
       </div>
 
       {showBroadcast && (
