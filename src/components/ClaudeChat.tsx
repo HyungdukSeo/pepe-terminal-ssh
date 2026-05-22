@@ -364,6 +364,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const [codexInfo, setCodexInfo] = useState<{ contextWindow: number | null; primary: CodexRateWindow | null; secondary: CodexRateWindow | null; planType: string | null } | null>(null);
   // gemini 요금제(tier) — 모델 가용성('지원안함') 판별용. null=미조회
   const [geminiTier, setGeminiTier] = useState<{ tierId: string; tierName: string; isPaid: boolean } | null>(null);
+  // gemini 모델별 잔여 한도 (retrieveUserQuota) — remainingFraction 0~1
+  const [geminiQuota, setGeminiQuota] = useState<{ modelId: string; remainingFraction: number | null; resetTime: string | null }[] | null>(null);
   const [showUsagePanel, setShowUsagePanel] = useState<boolean>(false);
   const [showUsageTooltip, setShowUsageTooltip] = useState<boolean>(false);
   const [usagePopupPos, setUsagePopupPos] = useState<{ left: number; bottom: number } | null>(null);
@@ -547,8 +549,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   // requestId → historyId 매핑. 비활성 대화의 stream 도 해당 history 항목에 계속 반영하기 위함.
   const requestToHistoryRef = useRef<Map<string, string>>(new Map());
   const requestToAgentRef = useRef<Map<string, AgentType>>(new Map());
-  // codex 계획(plan) 단계로 전송된 requestId 집합 — 응답 수신 시 계획 모달 표시 판별용
+  // codex/gemini 계획(plan) 단계로 전송된 requestId 집합 — 응답 수신 시 계획 모달 표시 판별용
   const codexPlanRequestsRef = useRef<Set<string>>(new Set());
+  const geminiPlanRequestsRef = useRef<Set<string>>(new Set());
   // activeHistoryId 의 ref 미러 — stream listener 가 stale closure 없이 즉시 현재값 사용
   const activeHistoryIdRef = useRef<string | null>(null);
   // 메시지/툴 호출 순서 카운터 — 둘을 발생 순서대로 인터리브 렌더링
@@ -637,6 +640,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         const r: any = await (window as any).api?.geminiModelInfo?.();
         if (!cancelled && r?.success) {
           setGeminiTier({ tierId: r.tierId, tierName: r.tierName, isPaid: !!r.isPaid });
+          if (Array.isArray(r.quotaBuckets)) setGeminiQuota(r.quotaBuckets);
         }
       } catch {}
     })();
@@ -937,14 +941,15 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         setActivity('');
         currentAsstIdRef.current = null;
         activeRequestIdRef.current = null;
-        // codex 계획 단계 응답 — [CODEX_PLAN] 마커가 있으면 계획 승인 모달 표시
-        if (reqId && codexPlanRequestsRef.current.has(reqId)) {
+        // codex/gemini 계획 단계 응답 — [CODEX_PLAN]/[GEMINI_PLAN] 마커가 있으면 계획 승인 모달 표시
+        if (reqId && (codexPlanRequestsRef.current.has(reqId) || geminiPlanRequestsRef.current.has(reqId))) {
           codexPlanRequestsRef.current.delete(reqId);
+          geminiPlanRequestsRef.current.delete(reqId);
           setMessages(prev => {
             let idx = -1;
             for (let i = prev.length - 1; i >= 0; i--) { if (prev[i].role === 'assistant') { idx = i; break; } }
             if (idx >= 0) {
-              const mt = prev[idx].content.match(/^\s*\[CODEX_PLAN\]\s*\n?([\s\S]*)$/);
+              const mt = prev[idx].content.match(/^\s*\[(?:CODEX|GEMINI)_PLAN\]\s*\n?([\s\S]*)$/);
               if (mt) {
                 const planText = mt[1].trim();
                 setTimeout(() => setPendingPlan(planText), 0);
@@ -970,6 +975,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         activeRequestIdRef.current = null;
         if (reqId) {
           codexPlanRequestsRef.current.delete(reqId);
+          geminiPlanRequestsRef.current.delete(reqId);
           requestToHistoryRef.current.delete(reqId);
           requestToAgentRef.current.delete(reqId);
         }
@@ -1012,6 +1018,25 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             planType: rl?.plan_type || null,
           });
         }
+      } else if (msg.type === 'gemini_usage' && msg.stats) {
+        // gemini result.stats → usage 상태 (컨텍스트 토큰)
+        const st = msg.stats;
+        const inT = st.input_tokens || 0;
+        const outT = st.output_tokens || 0;
+        const cachedT = st.cached || 0;
+        setUsage(prev => ({
+          ...prev,
+          inputTokens: prev.inputTokens + inT,
+          outputTokens: prev.outputTokens + outT,
+          cacheReadTokens: prev.cacheReadTokens + cachedT,
+          lastTurnInput: inT,
+          lastTurnOutput: outT,
+          lastTurnFreshInput: typeof st.input === 'number' ? st.input : Math.max(0, inT - cachedT),
+          lastTurnCacheRead: cachedT,
+          lastTurnCacheCreate: 0,
+          turns: prev.turns + 1,
+          model: prev.model || model,
+        }));
       } else if (msg.type === 'text' && msg.text) {
         // ⚠ updater 는 반드시 순수해야 함 — React StrictMode 가 updater 를 2번 호출함.
         // asstId 결정 + ref 변경 + nextSeq() 는 updater 밖에서 1회만 수행하고,
@@ -1598,8 +1623,24 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       if (currentAgentRef.current === 'gemini') {
         // 요금제에서 못 쓰는 모델(또는 미등록 모델)이면 안전한 기본 모델로 대체
         const geminiModel = isGeminiModelUsable(model, geminiTier?.isPaid === true) ? model : 'gemini-2.5-flash';
+        // 자동 승인(geminiYolo) OFF + 승인성 발화 아님 → "계획 먼저 보여주고 승인" 단계
+        const approveKeywords = ['실행', '진행', '좋아', 'yes', 'ok', '승인', 'approve', '해줘', 'go ahead', '네'];
+        const isApproval = approveKeywords.some(k => text.toLowerCase().includes(k.toLowerCase()));
+        const geminiPlanPhase = !geminiYolo && !isApproval;
+        let geminiPrompt = prompt;
+        if (geminiPlanPhase) {
+          geminiPrompt += '\n\n' + [
+            `# 계획 모드 (반드시 준수)`,
+            `- 지금은 "계획(plan) 단계"입니다. 파일 쓰기/수정, ClearCase 체크아웃(ctco / cleartool co / ci 등), 빌드·설치 등 변경성 작업을 실제로 실행하지 마세요. (파일 읽기·grep·탐색·분석은 허용)`,
+            `- 요청 수행에 **파일 생성/수정 또는 ClearCase·변경성 명령이 필요한 경우에만** 단계별 실행 계획을 작성하세요.`,
+            `- 계획을 작성하는 경우: 응답의 **맨 첫 줄에 정확히 \`[GEMINI_PLAN]\`** 만 단독으로 출력하고, 다음 줄부터 마크다운 번호 목록으로 계획을 작성하세요.`,
+            `- 요청이 단순 정보성(설명·분석·다이어그램·질문 답변 등 — 파일 변경/ClearCase 불필요)이면 \`[GEMINI_PLAN]\` 마커 없이 평소대로 바로 답하세요.`,
+            `- 계획을 제시하면 사용자가 승인한 뒤 다음 턴에 실제로 실행됩니다.`,
+          ].join('\n');
+          geminiPlanRequestsRef.current.add(requestId);
+        }
         // sshTermId 전달 → gemini 에 SSH MCP(pepe_ssh) 제공 (원격 파일/명령)
-        await (window as any).api?.geminiSend?.(sessionId, prompt, requestId, geminiModel, geminiYolo, addDirs, sshTermId);
+        await (window as any).api?.geminiSend?.(sessionId, geminiPrompt, requestId, geminiModel, geminiYolo, addDirs, sshTermId);
       } else if (currentAgentRef.current === 'codex') {
         // codex 는 비대화형(exec)이라 실행 중 승인이 불가 → claude 처럼 "계획 먼저 보여주고 승인" 2단계로 처리.
         // plan 모드(또는 default + 승인성 발화 아님)면 계획 단계로 전송.
@@ -1647,7 +1688,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       setMessages(prev => [...prev, { role: 'assistant', content: `❌ ${err}`, id: `err-${Date.now()}`, seq: nextSeq() }]);
       setStreaming(false);
     }
-  }, [sessionId, streaming, mountEntries, activeMount, localFileAttachments, permissionMode, model, perToolApproval, messages, toolTimeline, geminiTier]);
+  }, [sessionId, streaming, mountEntries, activeMount, localFileAttachments, permissionMode, model, perToolApproval, messages, toolTimeline, geminiTier, geminiYolo]);
 
   // 외부에서 컨텍스트 전달되면 추가 (기존 첨부에 append, 중복 제거)
   useEffect(() => {
@@ -2172,8 +2213,67 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               </>
             );
           })()}
-          {/* 컨텍스트 분해 — 마지막 turn 시점의 누적 컨텍스트 구성 (Claude/Gemini) */}
-          {currentAgent !== 'codex' && (() => {
+          {/* gemini: 컨텍스트 + 모델별 사용량 (retrieveUserQuota) */}
+          {currentAgent === 'gemini' && (() => {
+            const fmt = (n: number) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+            // resetTime(ISO) → "오전 11:15 (19시간 후)". epoch(1970)면 빈 문자열.
+            const fmtReset = (iso: string | null): string => {
+              if (!iso) return '';
+              try {
+                const d = new Date(iso);
+                if (d.getFullYear() < 2000) return '';
+                const h = d.getHours(), mi = d.getMinutes();
+                const ap = h < 12 ? '오전' : '오후'; const h12 = h % 12 === 0 ? 12 : h % 12;
+                const diff = d.getTime() - Date.now();
+                let rel = '';
+                if (diff > 0) {
+                  const hrs = Math.floor(diff / 3600000), mins = Math.floor((diff % 3600000) / 60000);
+                  rel = hrs > 0 ? ` (${hrs}시간 후)` : ` (${mins}분 후)`;
+                }
+                return `${ap} ${h12}:${String(mi).padStart(2, '0')}${rel}`;
+              } catch { return ''; }
+            };
+            const Row: React.FC<{ label: string; val: string }> = ({ label, val }) => (
+              <div className="claude-chat-usage-row">
+                <span className="claude-chat-usage-label">{label}</span>
+                <span className="claude-chat-usage-val">{val}</span>
+              </div>
+            );
+            const maxCtx = 1_048_576;
+            const used = usage.lastTurnInput;
+            const ctxPct = Math.round((used / maxCtx) * 100);
+            return (
+              <>
+                <div className="claude-chat-usage-divider" />
+                <div className="claude-chat-usage-row" style={{ color: '#9cc' }}>
+                  <span className="claude-chat-usage-label">━ Gemini 컨텍스트</span>
+                  <span className="claude-chat-usage-val">{fmt(used)} / 1M ({ctxPct}%)</span>
+                </div>
+                <Row label="캐시 적중" val={fmt(usage.lastTurnCacheRead)} />
+                <Row label="새 입력" val={fmt(usage.lastTurnFreshInput)} />
+                <Row label="출력" val={fmt(usage.lastTurnOutput)} />
+                {geminiQuota && geminiQuota.length > 0 && (
+                  <>
+                    <div className="claude-chat-usage-divider" />
+                    <div className="claude-chat-usage-row" style={{ color: '#9cc' }}>
+                      <span className="claude-chat-usage-label">━ 모델별 사용량</span>
+                      <span className="claude-chat-usage-val">{geminiTier?.tierName || ''}</span>
+                    </div>
+                    {geminiQuota.map(b => {
+                      const usedPct = b.remainingFraction != null ? Math.round((1 - b.remainingFraction) * 100) : null;
+                      const reset = fmtReset(b.resetTime);
+                      return (
+                        <Row key={b.modelId} label={b.modelId}
+                          val={`${usedPct != null ? usedPct + '% 사용' : '?'}${reset ? ' · ' + reset + ' 리셋' : ''}`} />
+                      );
+                    })}
+                  </>
+                )}
+              </>
+            );
+          })()}
+          {/* 컨텍스트 분해 — 마지막 turn 시점의 누적 컨텍스트 구성 (Claude) */}
+          {currentAgent === 'claude' && (() => {
             // 사용자가 선택한 모델 기준으로 max 결정
             const is1M = /\[1m\]/i.test(model) || /1m/i.test(usage.model);
             const maxCtx = is1M ? 1_000_000 : 200_000;
@@ -3018,6 +3118,18 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                     {(p || s) && (
                       <div>{p ? `5시간 ${Math.max(0, 100 - p.used_percent)}%` : ''}{p && s ? ' · ' : ''}{s ? `1주 ${Math.max(0, 100 - s.used_percent)}%` : ''}</div>
                     )}
+                  </div>
+                );
+              }
+              if (currentAgent === 'gemini') {
+                const maxCtx = 1_048_576; // gemini 모델 컨텍스트 윈도우 (~1M)
+                const ctxPct = Math.round((usage.lastTurnInput / maxCtx) * 100);
+                const cur = geminiQuota?.find(b => b.modelId === model);
+                const curUsed = cur && cur.remainingFraction != null ? Math.round((1 - cur.remainingFraction) * 100) : null;
+                return (
+                  <div className="claude-chat-usage-tooltip">
+                    <div><b>Context</b> {fmt(usage.lastTurnInput)} / 1M ({ctxPct}%)</div>
+                    {curUsed != null && <div>현재 모델 사용량 {curUsed}%</div>}
                   </div>
                 );
               }

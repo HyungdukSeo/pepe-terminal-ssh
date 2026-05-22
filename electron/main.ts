@@ -4156,16 +4156,32 @@ ipcMain.handle('gemini:modelInfo', async () => {
       if (fresh) token = fresh;
     }
     if (!token) return { success: false, error: 'no token' };
-    const tier: any = await new Promise(resolve => {
-      const body = JSON.stringify({ metadata: { ideType: 'IDE_UNSPECIFIED', platform: 'PLATFORM_UNSPECIFIED', pluginType: 'GEMINI' } });
-      const req = https.request('https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist',
+    const codeAssistPost = (endpoint: string, bodyObj: any, pick: (j: any) => any): Promise<any> => new Promise(resolve => {
+      const body = JSON.stringify(bodyObj);
+      const req = https.request(`https://cloudcode-pa.googleapis.com/v1internal:${endpoint}`,
         { method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' } },
-        (res: any) => { let d = ''; res.on('data', (x: any) => d += x); res.on('end', () => { try { resolve(JSON.parse(d).currentTier || null); } catch { resolve(null); } }); });
+        (res: any) => { let d = ''; res.on('data', (x: any) => d += x); res.on('end', () => { try { resolve(pick(JSON.parse(d))); } catch { resolve(null); } }); });
       req.on('error', () => resolve(null));
       req.write(body); req.end();
     });
+    // 1) loadCodeAssist → 요금제(tier) + cloudaicompanionProject
+    const ca: any = await codeAssistPost('loadCodeAssist',
+      { metadata: { ideType: 'IDE_UNSPECIFIED', platform: 'PLATFORM_UNSPECIFIED', pluginType: 'GEMINI' } }, j => j);
+    const tier = ca?.currentTier;
     if (!tier) return { success: false, error: 'tier query failed' };
-    return { success: true, tierId: tier.id, tierName: tier.name, isPaid: tier.id !== 'free-tier' };
+    // 2) retrieveUserQuota — ⚠ project 파라미터 필수. 없으면 전부 remainingFraction=1 인 placeholder 가 옴.
+    const project = ca?.cloudaicompanionProject;
+    const quota = project
+      ? await codeAssistPost('retrieveUserQuota', { project }, j => j.buckets || null)
+      : null;
+    const quotaBuckets = Array.isArray(quota)
+      ? quota.filter((b: any) => b && b.modelId).map((b: any) => ({
+          modelId: b.modelId,
+          remainingFraction: typeof b.remainingFraction === 'number' ? b.remainingFraction : null,
+          resetTime: b.resetTime || null,
+        }))
+      : [];
+    return { success: true, tierId: tier.id, tierName: tier.name, isPaid: tier.id !== 'free-tier', quotaBuckets };
   } catch (e: any) {
     return { success: false, error: String(e) };
   }
@@ -4183,7 +4199,9 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
     const fs = require('fs');
 
     const tmpFile = path.join(os.tmpdir(), `gemini-prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`);
-    fs.writeFileSync(tmpFile, prompt, 'utf-8');
+    // 기본 응답 언어를 한국어로 (사용자가 다른 언어를 명시 요청하지 않는 한)
+    const geminiLangPrefix = '[시스템 지시] 특별한 언어 요청이 없으면 항상 한국어로 응답하세요.\n\n';
+    fs.writeFileSync(tmpFile, geminiLangPrefix + prompt, 'utf-8');
 
     const augmentedPath = buildAugmentedPath();
     const spawnEnv: any = {
@@ -4232,7 +4250,10 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
     }
 
     const modelFlag = model ? ` -m ${model}` : '';
-    const yoloFlag = yolo !== false ? ' --yolo' : '';
+    // gemini 는 비대화형이라 항상 --yolo 필요 (없으면 도구가 막힘).
+    // 승인 게이트는 렌더러의 "계획 승인" 흐름이 담당.
+    void yolo;
+    const yoloFlag = ' --yolo';
     const localDirs = Array.isArray(addDirs) ? addDirs.filter(d => d && !d.startsWith('\\\\')) : [];
     const skippedUnc = Array.isArray(addDirs) ? addDirs.filter(d => d && d.startsWith('\\\\')) : [];
     const includeFlag = localDirs.length > 0
@@ -4241,9 +4262,10 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
     const trustFlag = ' --skip-trust';
     const isWin = process.platform === 'win32';
     const cwd = process.env.USERPROFILE || process.env.HOME || os.homedir();
+    // -o stream-json: 도구 호출/응답을 JSONL 이벤트로 출력 → 도구 타임라인 표시
     const shellCmd = isWin
-      ? `chcp 65001 >nul && type "${tmpFile}" | gemini${modelFlag}${yoloFlag}${trustFlag}${includeFlag}`
-      : `cat "${tmpFile}" | gemini${modelFlag}${yoloFlag}${trustFlag}${includeFlag}`;
+      ? `chcp 65001 >nul && type "${tmpFile}" | gemini -o stream-json${modelFlag}${yoloFlag}${trustFlag}${includeFlag}`
+      : `cat "${tmpFile}" | gemini -o stream-json${modelFlag}${yoloFlag}${trustFlag}${includeFlag}`;
     console.log('[gemini] include-dirs(local):', localDirs.length ? localDirs.join(', ') : '(none)');
     if (skippedUnc.length) console.log('[gemini] UNC dirs skipped (realpathSync hang 회피):', skippedUnc.join(', '));
     const proc = spawn(shellCmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd });
@@ -4255,18 +4277,67 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
     };
 
     console.log('[gemini] spawn — model:', model || 'default', '| yolo:', yolo !== false);
+    const sendStream = (message: any) => mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message });
+    // gemini stream-json 이벤트 → claude:stream (Claude 호환 포맷) 변환
+    const gIdPrefix = requestId || `gmn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    let geminiHadOutput = false;
+    let gTextBuf = '';
+    let gSegment = 0;
+    const flushGeminiText = () => {
+      if (gTextBuf.trim()) {
+        sendStream({ type: 'assistant', message: { id: `${gIdPrefix}-m-${gSegment}`, content: [{ type: 'text', text: gTextBuf }] } });
+        gSegment++;
+      }
+      gTextBuf = '';
+    };
+    // gemini 내부 메타 도구 — 화면에 표시하지 않음 (대화 토픽 관리용 bookkeeping)
+    const GEMINI_META_TOOLS = new Set(['update_topic', 'save_memory']);
+    const geminiMetaToolIds = new Set<string>();
+    // 모델이 텍스트에 섞어 내보내는 update_topic(...) 등 토픽 지시문 제거
+    const stripGeminiDirectives = (s: string): string =>
+      s.replace(/update_topic\s*\(\s*\w+\s*=\s*(['"])[\s\S]*?\1(?:\s*,\s*\w+\s*=\s*(['"])[\s\S]*?\2)*\s*\)/g, '').trimStart();
+
+    const handleGeminiEvent = (evt: any) => {
+      const t = evt?.type;
+      if (t === 'message') {
+        // role=user 는 입력 에코 → 무시. assistant 만 누적.
+        if (evt.role === 'assistant' && typeof evt.content === 'string' && evt.content) {
+          const cleaned = stripGeminiDirectives(evt.content);
+          if (cleaned) {
+            geminiHadOutput = true;
+            gTextBuf += cleaned;
+          }
+        }
+      } else if (t === 'tool_use') {
+        // 메타 도구는 타임라인에 표시 안 함
+        if (GEMINI_META_TOOLS.has(evt.tool_name)) { geminiMetaToolIds.add(evt.tool_id); return; }
+        geminiHadOutput = true;
+        flushGeminiText(); // 도구 앞의 텍스트를 먼저 메시지로 확정 (타임라인 인터리브)
+        sendStream({ type: 'assistant', message: { id: `${gIdPrefix}-a-${evt.tool_id}`, content: [{ type: 'tool_use', id: `${gIdPrefix}-${evt.tool_id}`, name: evt.tool_name || 'tool', input: evt.parameters || {} }] } });
+      } else if (t === 'tool_result') {
+        if (geminiMetaToolIds.has(evt.tool_id)) return; // 메타 도구 결과 무시
+        const out = evt.output ?? evt.content ?? evt.result ?? evt.error ?? evt.status ?? '';
+        sendStream({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: `${gIdPrefix}-${evt.tool_id}`, content: typeof out === 'string' ? out : JSON.stringify(out), is_error: !!evt.status && evt.status !== 'success' }] } });
+      } else if (t === 'error') {
+        sendStream({ type: 'error', text: String(evt.message || evt.error || 'gemini error') });
+      } else if (t === 'result') {
+        // 토큰 사용량(컨텍스트) — 렌더러 usage 표시용
+        if (evt.stats) sendStream({ type: 'gemini_usage', stats: evt.stats });
+      }
+      // init / thought → 무시 (done 은 close 에서)
+    };
+
     let stdoutBuf = '';
-    let stdoutHadContent = false;
     proc.stdout.setEncoding('utf-8');
     proc.stdout.on('data', (data: string) => {
       stdoutBuf += data;
       const lines = stdoutBuf.split('\n');
       stdoutBuf = lines.pop() || '';
       for (const line of lines) {
-        if (!line) continue;
+        if (!line.trim()) continue;
         console.log('[gemini] stdout:', line.slice(0, 200));
-        stdoutHadContent = true;
-        mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'text', text: line + '\n' } });
+        try { handleGeminiEvent(JSON.parse(line)); }
+        catch { /* JSONL 아닌 노이즈 라인 → 무시 */ }
       }
     });
     // stderr 노이즈 — 재시도 백오프/경고 (gemini 가 내부 재시도 후 성공하면 무시)
@@ -4279,18 +4350,19 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
     });
     proc.on('error', (err: any) => {
       console.log('[gemini] spawn error:', err);
-      mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: String(err) } });
+      sendStream({ type: 'error', text: String(err) });
     });
     proc.on('close', (code: number) => {
-      console.log('[gemini] close, code:', code, '| had output:', stdoutHadContent || !!stdoutBuf);
-      if (stdoutBuf) {
-        stdoutHadContent = true;
-        mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'text', text: stdoutBuf } });
+      // 남은 stdout 버퍼 + 마지막 텍스트 세그먼트 플러시
+      if (stdoutBuf.trim()) {
+        try { handleGeminiEvent(JSON.parse(stdoutBuf)); } catch {}
       }
+      flushGeminiText();
+      console.log('[gemini] close, code:', code, '| had output:', geminiHadOutput);
       // ⚠ 에러는 gemini 가 실제 실패(출력 없음)했을 때만 표시.
       // gemini 는 일시적 429/rate-limit 시 stderr 에 "quota will reset after 5s" 를 찍고
       // 내부 재시도 → 성공함. 출력이 있으면 stderr 는 재시도 노이즈이므로 무시.
-      if (!stdoutHadContent) {
+      if (!geminiHadOutput) {
         const lines = stderrBuf.split('\n').filter(l => l.trim() && !GEMINI_NOISE.test(l));
         const joined = lines.join('\n');
         if (joined.trim()) {
@@ -4304,12 +4376,12 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
               : `❌ Gemini API 한도 초과. 잠시 후 다시 시도하세요.`;
           }
           console.log('[gemini] error reported:', errText.slice(0, 120));
-          mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: errText } });
+          sendStream({ type: 'error', text: errText });
         }
       }
       cleanupTmp();
       geminiProcesses.delete(procKey);
-      mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'done', code } });
+      sendStream({ type: 'done', code });
     });
     return { success: true };
   } catch (err: any) {
