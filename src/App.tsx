@@ -261,6 +261,7 @@ function App() {
   const [, setSftpProgress] = useState<{ filename: string; transferred: number; total: number; direction: string } | null>(null);
   const [availableShells, setAvailableShells] = useState<{ name: string; path: string; icon?: string }[]>([]);
   const [defaultShell, setDefaultShell] = useState<{ name: string; path: string }>({ name: 'Windows PowerShell', path: 'powershell.exe' });
+  const [shellPrefsLoaded, setShellPrefsLoaded] = useState<boolean>(false);
   const [optDefaultShellPath, setOptDefaultShellPath] = useState('');
   const [showBroadcast, setShowBroadcast] = useState<boolean>(true);
   const showBroadcastLoadedRef = useRef(false);
@@ -272,9 +273,20 @@ function App() {
       (window as any).api?.getStartupCwd?.().catch(() => null),
     ]).then(([shells, prefs, cwd]: [any[], any, string | null]) => {
       if (shells?.length) setAvailableShells(shells);
-      const name = prefs?.defaultShellName || shells?.[0]?.name || 'Windows PowerShell';
-      const spath = prefs?.defaultShellPath || shells?.[0]?.path || 'powershell.exe';
+      let name = prefs?.defaultShellName || shells?.[0]?.name || 'Windows PowerShell';
+      // name 으로 shells 목록에서 path 를 찾아 일치시킴 — name/path 불일치 방지
+      const matchedShell = shells?.find((s: any) => s.name === name);
+      const spath = matchedShell?.path || prefs?.defaultShellPath || shells?.[0]?.path || 'powershell.exe';
+      // name 이 shells 목록에 없으면 실제 사용될 shell 의 name 으로 교정 (탭 이름 ↔ 실제 shell 미스매치 방지)
+      if (!matchedShell) {
+        const resolvedShell = shells?.find((s: any) => s.path === spath) || shells?.[0];
+        if (resolvedShell) name = resolvedShell.name;
+      }
+      if (prefs?.defaultShellName && prefs.defaultShellName !== name) {
+        try { (window as any).api?.setUIPrefs?.({ defaultShellName: name }); } catch {}
+      }
       setDefaultShell({ name, path: spath });
+      setShellPrefsLoaded(true);
       // 초기 탭의 세션명/경로/cwd를 업데이트
       setTabs(prev => prev.map((t, i) => {
         if (i !== 0) return t;
@@ -3203,7 +3215,8 @@ function App() {
                     if (terminalHideTimer.current) { clearTimeout(terminalHideTimer.current); terminalHideTimer.current = null; }
                   }}
                 >
-                  <Layout root={activeTab.layout}
+                  {/* shellPrefsLoaded 전에 마운트되면 shellPath=undefined 로 PowerShell 폴백되므로 지연 렌더 */}
+                  {shellPrefsLoaded && <Layout root={activeTab.layout}
                     selectedPanelId={selectedPanelId}
                     onSplit={(nodeId, dir) => openSplitSessionPicker(dir, nodeId)}
                     onSplitWithPicker={(nodeId, dir) => openSplitSessionPickerWithPrompt(dir, nodeId)}
@@ -3251,7 +3264,7 @@ function App() {
                     }}
                     onOpenRemoteFile={handleOpenRemoteFile}
                     onAttachToClaude={handleAttachToClaude}
-                  />
+                  />}
                 </div>
               </div>
               </div>
