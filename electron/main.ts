@@ -4125,36 +4125,14 @@ ipcMain.handle('gemini:check', async () => {
   }
 });
 
-function refreshGeminiToken(refreshToken: string): Promise<string | null> {
-  return new Promise(resolve => {
-    try {
-      const https = require('https');
-      const params = new URLSearchParams({
-        grant_type: 'refresh_token',
-        refresh_token: refreshToken,
-        client_id: '681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com',
-        client_secret: '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',
-      }).toString();
-      const req = https.request('https://oauth2.googleapis.com/token',
-        { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' } },
-        (res: any) => { let d = ''; res.on('data', (x: any) => d += x); res.on('end', () => { try { resolve(JSON.parse(d).access_token || null); } catch { resolve(null); } }); });
-      req.on('error', () => resolve(null));
-      req.write(params); req.end();
-    } catch { resolve(null); }
-  });
-}
-
 ipcMain.handle('gemini:modelInfo', async () => {
   try {
     const fs = require('fs'), path = require('path'), os = require('os'), https = require('https');
     const credPath = path.join(os.homedir(), '.gemini', 'oauth_creds.json');
     if (!fs.existsSync(credPath)) return { success: false, error: 'no oauth creds' };
     const cred = JSON.parse(fs.readFileSync(credPath, 'utf-8'));
-    let token = cred.access_token;
-    if (!token || (cred.expiry_date && cred.expiry_date < Date.now() + 60_000)) {
-      const fresh = cred.refresh_token ? await refreshGeminiToken(cred.refresh_token) : null;
-      if (fresh) token = fresh;
-    }
+    // 토큰은 gemini CLI 가 oauth_creds.json 에 관리/갱신 — 그대로 사용 (만료 시 API 가 401 → 실패 처리)
+    const token = cred.access_token;
     if (!token) return { success: false, error: 'no token' };
     const codeAssistPost = (endpoint: string, bodyObj: any, pick: (j: any) => any): Promise<any> => new Promise(resolve => {
       const body = JSON.stringify(bodyObj);
