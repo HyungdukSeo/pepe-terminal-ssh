@@ -44,7 +44,30 @@ const isGeminiModelUsable = (m: string, isPaid: boolean) => {
 // (예: E[new TraceJob(datas)] → Parse error). 라벨을 "..." 로 감싸 안전하게 만든다.
 // codex 가 생성하는 다이어그램이 특히 함수명/스코프 연산자를 라벨에 자주 넣음.
 function sanitizeMermaidLabels(src: string): string {
-  if (!/^\s*(flowchart|graph)\b/im.test(src)) return src;
+  let out = src;
+
+  if (/^\s*sequenceDiagram\b/im.test(out)) {
+    // Gemini가 줄바꿈 없이 붙여 내는 sequence 구문을 렌더 직전에 복구한다.
+    out = out.replace(/([^\n])\s*(Note\s+(?:over|right of|left of)\b)/g, '$1\n    $2');
+    out = out.replace(/(\b(?:alt|opt|loop|par|and|else)\b[^\n]*?)\s*(Note\s+(?:over|right of|left of)\b)/g, '$1\n    $2');
+
+    // Mermaid sequenceDiagram에서 create/destroy 같은 키워드는 actor id로 쓰면 파서가 오해한다.
+    const reserved = new Set(['actor', 'participant', 'create', 'destroy', 'note', 'alt', 'else', 'opt', 'loop', 'par', 'and', 'rect', 'end']);
+    const renames = new Map<string, string>();
+    out = out.replace(/(^|\n)(\s*(?:participant|actor)\s+)([A-Za-z_][A-Za-z0-9_]*)(\b)/g, (m, nl, prefix, id, suffix) => {
+      if (!reserved.has(String(id).toLowerCase())) return m;
+      const safe = `P_${id}`;
+      renames.set(id, safe);
+      return `${nl}${prefix}${safe}${suffix}`;
+    });
+    for (const [from, to] of renames) {
+      out = out.replace(new RegExp(`\\b${from}\\b`, 'g'), to);
+    }
+    return out;
+  }
+
+  if (!/^\s*(flowchart|graph)\b/im.test(out)) return out;
+  out = out.replace(/(^|\n)(\s*)style([A-Za-z_][A-Za-z0-9_-]*)(\s+)/g, '$1$2style $3$4');
   const quote = (label: string): string | null => {
     const t = label.trim();
     if (!t || t.startsWith('"')) return null; // 이미 따옴표 / 빈 값 → 그대로
@@ -52,7 +75,6 @@ function sanitizeMermaidLabels(src: string): string {
     if (!/[()#:;<>&]/.test(t)) return null;
     return `"${t.replace(/"/g, '&quot;')}"`;
   };
-  let out = src;
   // id[label]  ([[ / [( 같은 더블/복합 모양은 제외 — 안쪽에 [] 없을 때만)
   out = out.replace(/([A-Za-z0-9_]+)\[([^\[\]\n]+)\]/g, (m, id, label) => {
     const q = quote(label);
@@ -64,6 +86,48 @@ function sanitizeMermaidLabels(src: string): string {
     return q ? `${id}{${q}}` : m;
   });
   return out;
+}
+function adjustMermaidNodeLabelContrast(root: HTMLElement) {
+  const parseColor = (value: string | null): [number, number, number] | null => {
+    if (!value) return null;
+    const v = value.trim();
+    if (!v || v === 'none' || v === 'transparent' || v === 'currentColor') return null;
+    const hex = v.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+    if (hex) {
+      const h = hex[1].length === 3
+        ? hex[1].split('').map(ch => ch + ch).join('')
+        : hex[1];
+      return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+    }
+    const rgb = v.match(/^rgba?\((\d+(?:\.\d+)?),\s*(\d+(?:\.\d+)?),\s*(\d+(?:\.\d+)?)/i);
+    if (rgb) return [Number(rgb[1]), Number(rgb[2]), Number(rgb[3])];
+    return null;
+  };
+  const luminance = ([r, g, b]: [number, number, number]) => {
+    const toLinear = (c: number) => {
+      const v = Math.max(0, Math.min(255, c)) / 255;
+      return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
+  };
+
+  root.querySelectorAll<SVGGElement>('svg g.node').forEach(node => {
+    const shape = node.querySelector<SVGElement>('rect, polygon, path, circle, ellipse');
+    const fill = parseColor(shape?.getAttribute('fill') || shape?.style.fill || (shape ? getComputedStyle(shape).fill : null));
+    if (!fill) return;
+    const textColor = luminance(fill) > 0.45 ? '#111827' : '#f8fafc';
+    node.querySelectorAll<SVGElement>('text').forEach(el => {
+      el.style.setProperty('fill', textColor, 'important');
+      el.style.setProperty('stroke', 'none', 'important');
+      el.style.setProperty('text-shadow', 'none', 'important');
+    });
+    node.querySelectorAll<SVGElement>('.nodeLabel, .nodeLabel *').forEach(el => {
+      el.style.setProperty('color', textColor, 'important');
+      el.style.setProperty('fill', textColor, 'important');
+      el.style.setProperty('stroke', 'none', 'important');
+      el.style.setProperty('text-shadow', 'none', 'important');
+    });
+  });
 }
 
 // ── AI 에이전트 탭 아이콘 (실제 브랜드 SVG, simple-icons 기반) ───────────────
@@ -133,6 +197,64 @@ function CodexApprovalIcon({ value }: { value: CodexApprovalPolicy }) {
   );
 }
 
+
+function closeDanglingMermaidFences(md: string): string {
+  md = md.replace(/([^\n])```\s*mermaid\b/gi, '$1\n```mermaid');
+  const lines = md.split('\n');
+  const out: string[] = [];
+  let inMermaid = false;
+  let mermaidBodyLines = 0;
+  let skipNextOrphanFence = false;
+  const isMermaidSyntax = (line: string): boolean => {
+    const t = line.trim();
+    if (!t) return true;
+    if (/^```/.test(t)) return true;
+    if (/^%%/.test(t)) return true;
+    if (MERMAID_START_RE.test(t)) return true;
+    if (/^(subgraph|end|direction|classDef|class|style\s+|style[A-Za-z_][A-Za-z0-9_-]*\s+|linkStyle\s+)/.test(t)) return true;
+    if (/^(click|accTitle|accDescr)\b/.test(t)) return true;
+    if (/^[A-Za-z_][A-Za-z0-9_]*\s*(\[|\{|\(|--|---|==|-.|:::|-->)/.test(t)) return true;
+    if (/^[A-Za-z_][A-Za-z0-9_]*\s*$/.test(t)) return true;
+    return false;
+  };
+
+  for (const line of lines) {
+    const t = line.trim();
+    if (!inMermaid && /^```\s*mermaid\b/i.test(t)) {
+      inMermaid = true;
+      mermaidBodyLines = 0;
+      skipNextOrphanFence = false;
+      out.push(line);
+      continue;
+    }
+    if (!inMermaid && skipNextOrphanFence && /^```\s*$/.test(t)) {
+      skipNextOrphanFence = false;
+      continue;
+    }
+    if (inMermaid) {
+      if (/^```/.test(t)) {
+        inMermaid = false;
+        mermaidBodyLines = 0;
+        out.push(line);
+        continue;
+      }
+      if (mermaidBodyLines > 0 && !isMermaidSyntax(line)) {
+        out.push('```');
+        inMermaid = false;
+        mermaidBodyLines = 0;
+        skipNextOrphanFence = true;
+        out.push(line);
+        continue;
+      }
+      out.push(line);
+      if (t) mermaidBodyLines++;
+      continue;
+    }
+    out.push(line);
+  }
+  if (inMermaid) out.push('```');
+  return out.join('\n');
+}
 // fence 없는 mermaid 블록을 ```mermaid 로 감싸기
 function autoFenceMermaid(md: string): string {
   const lines = md.split('\n');
@@ -225,7 +347,7 @@ function neutralizeSetextHeadings(text: string): string {
   return lines.join('\n');
 }
 function renderMd(content: string): string {
-  return marked.parse(autoConvertTablesInMd(autoFenceMermaid(neutralizeSetextHeadings(content))), { breaks: true }) as string;
+  return marked.parse(autoConvertTablesInMd(autoFenceMermaid(closeDanglingMermaidFences(neutralizeSetextHeadings(content)))), { breaks: true }) as string;
 }
 
 type AgentType = 'claude' | 'gemini' | 'codex';
@@ -1155,7 +1277,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         const id = `mermaid-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 6)}`;
         // 인코딩 깨짐 감지: Korean Compatibility Jamo(U+3130-U+318F)는 diagram에
         // 거의 등장하지 않으며 이 범위 문자가 있으면 mermaid parser가 무한루프에 빠짐
-        if (/[㄰-㆏]/.test(source)) {
+        const sourceAgent = codeEl.closest<HTMLElement>('.claude-chat-msg')?.dataset.agent || currentAgentRef.current;
+        if (sourceAgent !== 'gemini' && /[㄰-㆏]/.test(source)) {
           codeEl.setAttribute('data-mermaid-rendered', 'error');
           codeEl.setAttribute('data-mermaid-src', source);
           const errDiv = document.createElement('div');
@@ -1329,6 +1452,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           };
           if (pre && pre.parentElement) {
             pre.parentElement.replaceChild(wrap, pre);
+            adjustMermaidNodeLabelContrast(wrap);
+            requestAnimationFrame(() => adjustMermaidNodeLabelContrast(wrap));
           }
         } catch (err) {
           codeEl.setAttribute('data-mermaid-rendered', 'error');
@@ -2649,6 +2774,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             <div
               key={g.key}
               className={`claude-chat-msg ${g.m.role}`}
+              data-agent={g.m.role === 'assistant' ? (g.m.agent || currentAgent) : 'user'}
               onContextMenu={e => {
                 const t = e.target as HTMLElement | null;
                 if (t && t.closest && t.closest('.claude-chat-mermaid')) return;
