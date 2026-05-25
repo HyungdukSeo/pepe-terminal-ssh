@@ -41,7 +41,7 @@ export type Session = {
     password: string;
     host?: string;
   };
-  cursorStyle?: 'block' | 'underline' | 'bar' | 'flame' | 'star' | 'heart' | 'circle' | 'rainbow' | 'power';
+  cursorStyle?: 'block' | 'underline' | 'bar' | 'flame' | 'star' | 'heart' | 'circle' | 'rainbow' | 'power' | 'prism';
   cursorBlink?: boolean;
 };
 
@@ -96,7 +96,7 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
   const [showPassword, setShowPassword] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [category, setCategory] = useState<string>('connection');
-  const [cursorStyle, setCursorStyle] = useState<'block' | 'underline' | 'bar' | 'flame' | 'star' | 'heart' | 'circle' | 'rainbow' | 'power'>(session?.cursorStyle ?? 'block');
+  const [cursorStyle, setCursorStyle] = useState<'block' | 'underline' | 'bar' | 'flame' | 'star' | 'heart' | 'circle' | 'rainbow' | 'power' | 'prism'>(session?.cursorStyle ?? 'block');
   const [cursorBlink, setCursorBlink] = useState<boolean>(!!session?.cursorBlink);
 
   useEffect(() => {
@@ -355,24 +355,18 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
               let cursorEmojiOverlay: string | null = null;
               if (cursorStyle === 'bar') cursorStyleSpan = { borderLeft: `2px solid ${cur}`, color: fg, padding: '0 2px 0 0', animation: blinkCss };
               else if (cursorStyle === 'underline') cursorStyleSpan = { borderBottom: `2px solid ${cur}`, color: fg, animation: blinkCss };
-              else if (cursorStyle === 'flame') {
-                cursorEmojiOverlay = '🔥';
-                cursorStyleSpan = {
-                  fontSize: '1.1em', lineHeight: 1, textAlign: 'center',
-                  textShadow: '0 0 8px #ff5722, 0 0 14px #ff9800',
-                  animation: 'flame-flicker 0.6s ease-in-out infinite',
-                };
+              // 효과 커서(flame/star/heart/circle/rainbow/power) — 실제 동작은 네이티브 block 커서 위에서
+              // 테마별 파티클이 분사되는 hyperpower 스타일. 프리뷰도 일관되게 block 으로 표시.
+              else if (['flame', 'star', 'heart', 'circle', 'rainbow', 'power'].includes(cursorStyle)) {
+                cursorStyleSpan = { background: cur, color: bg, padding: '0 2px', animation: blinkCss };
               }
-              else if (cursorStyle === 'star') { cursorEmojiOverlay = '✦'; cursorStyleSpan = { color: '#ffd700', textShadow: '0 0 6px #ffd700', animation: 'star-rotate 2s linear infinite' }; }
-              else if (cursorStyle === 'heart') { cursorEmojiOverlay = '♥'; cursorStyleSpan = { color: '#ff3366', textShadow: '0 0 4px #ff3366', animation: 'heart-pulse 1s ease-in-out infinite' }; }
-              else if (cursorStyle === 'circle') { cursorStyleSpan = { background: cur, borderRadius: '50%', color: bg, width: '0.9em', height: '0.9em', display: 'inline-block', textAlign: 'center', animation: 'circle-pulse 1.2s ease-in-out infinite' }; }
-              else if (cursorStyle === 'rainbow') cursorStyleSpan = {
+              // prism: 무지개 그라데이션이 흐르는 반짝이는 블록 (실제 효과는 터미널에서 적용)
+              else if (cursorStyle === 'prism') cursorStyleSpan = {
                 background: 'linear-gradient(90deg,#ff0000,#ff9900,#ffff00,#00ff00,#00ccff,#3366ff,#cc00ff)',
                 backgroundSize: '300% 100%', color: '#fff',
-                padding: '0 2px', textShadow: '0 0 3px rgba(0,0,0,0.5)',
+                padding: '0 2px', textShadow: '0 0 3px rgba(0,0,0,0.6)',
                 animation: 'rainbow-shift 2s linear infinite',
               };
-              else if (cursorStyle === 'power') { cursorEmojiOverlay = '💥'; cursorStyleSpan = { color: '#ffeb3b', textShadow: '0 0 8px #ff9800, 0 0 14px #ff5722', animation: 'power-shake 0.15s ease-in-out infinite' }; }
               return (
                 <>
                   <div style={{ marginBottom: 12 }}>
@@ -429,6 +423,7 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
                         { id: 'block', label: t('cursor.block') },
                         { id: 'underline', label: t('cursor.underline') },
                         { id: 'bar', label: t('cursor.bar') },
+                        { id: 'prism', label: t('cursor.prism') },
                         { id: 'flame', label: t('cursor.flame') },
                         { id: 'star', label: t('cursor.star') },
                         { id: 'heart', label: t('cursor.heart') },

@@ -1065,117 +1065,231 @@ export function applyFontToTerm(termId: string, fontFamily?: string, fontSize?: 
 // term 별 flame 오버레이 상태 — 새 element + onCursorMove 정리용
 const flameOverlayCleanup: Map<string, () => void> = new Map();
 
-type CustomCursorStyle = 'flame' | 'star' | 'heart' | 'circle' | 'rainbow' | 'power';
-const customCursorStyles: CustomCursorStyle[] = ['flame', 'star', 'heart', 'circle', 'rainbow', 'power'];
+// 모든 효과 커서 — 공통 hyperpower 파티클 시스템(PARTICLE_THEMES) 으로 라우팅
+type CustomCursorStyle = 'flame' | 'star' | 'heart' | 'circle' | 'rainbow' | 'power' | 'prism';
 
-// 키 입력 시 스파크/파티클 효과 (Hyper hyperpower 스타일)
-function spawnPowerSparks(elem: HTMLElement, x: number, y: number) {
-  const colors = ['#ff5722', '#ffc107', '#ffeb3b', '#ff9800', '#f44336'];
-  const count = 8 + Math.floor(Math.random() * 6);
-  for (let i = 0; i < count; i++) {
-    const spark = document.createElement('div');
-    spark.className = 'xterm-power-spark';
-    const angle = (Math.PI * 2 * i) / count + Math.random() * 0.4;
-    const dist = 30 + Math.random() * 30;
-    spark.style.cssText += `left:${x}px;top:${y}px;background:${colors[Math.floor(Math.random() * colors.length)]};box-shadow:0 0 6px currentColor;--dx:${Math.cos(angle) * dist}px;--dy:${Math.sin(angle) * dist}px;`;
-    elem.appendChild(spark);
-    setTimeout(() => { try { spark.remove(); } catch {} }, 700);
-  }
+// ─── Hyperpower 스타일 파티클·흔들림 (vercel/hyperpower 참고) ─────────────────
+// 매 키입력마다 테마별 파티클을 분사하고, 타이핑 강도(shake)는 누적되어 매 프레임
+// 감쇠하면서 터미널 전체에 미세 진동 적용. power/heart/star/flame/rainbow/circle
+// 모두 같은 시스템을 공유하고 테마(색/모양/물리)만 다르다.
+type ParticleShape = 'circle' | 'emoji';
+interface ParticleTheme {
+  shape: ParticleShape;
+  colors?: string[]; // shape=circle 면 채움색, shape=emoji 면 텍스트 글자색 (🔥처럼 색 고정 이모지엔 영향 없음)
+  emojis?: string[]; // shape=emoji 때만
+  sequential?: boolean; // true 면 colors 를 순서대로 사용 (rainbow 처럼) — count 가 colors.length 와 같을 때 한 번의 키 입력이 정확히 무지개 한 세트
+  gravity: number;
+  fade: number;
+  shakeDecay: number;
+  shakeMax: number;
+  shakePerKey: number;
+  countMin: number;
+  countMax: number;
+  sizeMin: number;
+  sizeMax: number;
+  vxRange: number; // 좌우 초기 속도 ±vxRange
+  vyMin: number;   // 위로 솟는 초기 속도 (양수 — 내부에서 -vy 로 적용)
+  vyMax: number;
+  vxArc?: number;  // 0 이상이면 i 번째 파티클의 vx 를 -vxArc..+vxArc 로 균등 분포 → 부채꼴/아크 패턴
+  // 호(arc) 위치 배치 — 정의되면 파티클을 커서 주변 반원 아크에 정렬 (rainbow 처럼).
+  // angle 은 라디안. screen 좌표에서 -π=왼쪽, -π/2=위, 0=오른쪽 (위쪽 반원은 -π..0).
+  arcRadiusX?: number;
+  arcRadiusY?: number;
+  arcAngleMin?: number;
+  arcAngleMax?: number;
+  // 스폰 기준점 오프셋 (cellW/cellH 의 배수). 미지정 시 cell 중앙 하단(0.5, 0.8).
+  // 예: spawnYCellOffset=-0.4 → 커서 셀 위쪽 0.4 칸 지점에서 시작 (텍스트 위에 안 겹침)
+  spawnXCellOffset?: number;
+  spawnYCellOffset?: number;
+  composite: GlobalCompositeOperation; // 'lighter' = 색 가산(네온 글로우), 'source-over' = 일반
+}
+const PARTICLE_THEMES: Record<string, ParticleTheme> = {
+  power: {
+    // 작고 빠른 스파크 — 무거운 중력으로 빨리 떨어지고 격렬한 흔들림 ("punching")
+    shape: 'circle',
+    colors: ['#ff00ff', '#ff0099', '#ff3300', '#ff9900', '#ffff00', '#00ff66', '#00ccff', '#ffffff'],
+    gravity: 0.2, fade: 0.9, shakeDecay: 0.86, shakeMax: 14, shakePerKey: 2.4,
+    countMin: 8, countMax: 18, sizeMin: 1.5, sizeMax: 3.5,
+    vxRange: 3, vyMin: 2, vyMax: 7, composite: 'lighter',
+  },
+  heart: {
+    shape: 'emoji', emojis: ['♥', '❤'],
+    colors: ['#ff3366', '#ff6699', '#ff0066', '#ff99cc', '#ff80ab', '#ffffff'],
+    gravity: 0.04, fade: 0.96, shakeDecay: 1, shakeMax: 0, shakePerKey: 0,
+    countMin: 3, countMax: 7, sizeMin: 12, sizeMax: 22,
+    vxRange: 1.4, vyMin: 0.7, vyMax: 2.8, composite: 'source-over',
+  },
+  star: {
+    shape: 'emoji', emojis: ['✦', '★', '✧', '⋆'],
+    colors: ['#ffd700', '#ffeb3b', '#ffaa00', '#ffffff', '#fff9c4'],
+    gravity: 0.06, fade: 0.95, shakeDecay: 1, shakeMax: 0, shakePerKey: 0,
+    countMin: 4, countMax: 9, sizeMin: 10, sizeMax: 18,
+    vxRange: 1.8, vyMin: 1, vyMax: 3.5, composite: 'source-over',
+  },
+  flame: {
+    shape: 'emoji', emojis: ['🔥'],
+    gravity: -0.04, fade: 0.94, shakeDecay: 1, shakeMax: 0, shakePerKey: 0,
+    countMin: 4, countMax: 9, sizeMin: 14, sizeMax: 22,
+    vxRange: 1.4, vyMin: 1.5, vyMax: 4, composite: 'source-over',
+  },
+  rainbow: {
+    // 🌈 이모지가 커서 중앙에서 시작해 위로 솟아오르며 페이드아웃 (flame 의 무지개 버전).
+    shape: 'emoji', emojis: ['🌈'],
+    gravity: -0.03, fade: 0.94, shakeDecay: 1, shakeMax: 0, shakePerKey: 0,
+    countMin: 3, countMax: 6, sizeMin: 14, sizeMax: 20,
+    vxRange: 1.3, vyMin: 1.5, vyMax: 3.8, composite: 'source-over',
+  },
+  circle: {
+    shape: 'circle',
+    colors: ['#4fc3f7', '#81d4fa', '#b3e5fc', '#29b6f6', '#0288d1', '#ffffff'],
+    gravity: 0.05, fade: 0.96, shakeDecay: 1, shakeMax: 0, shakePerKey: 0,
+    countMin: 3, countMax: 7, sizeMin: 4, sizeMax: 10,
+    vxRange: 1.3, vyMin: 0.6, vyMax: 2.5, composite: 'lighter',
+  },
+};
+interface Particle { x: number; y: number; vx: number; vy: number; color: string; emoji?: string; alpha: number; size: number; }
+
+function setupParticleMode(term: any, elem: HTMLElement, theme: ParticleTheme): () => void {
+  const screen = elem.querySelector('.xterm-screen') as HTMLElement | null;
+  const host = (screen && screen.parentElement) || elem;
+  // 파티클은 canvas 로 그려 perf 확보 (DOM 노드 폭증 회피)
+  const canvas = document.createElement('canvas');
+  canvas.className = 'xterm-power-canvas';
+  canvas.style.cssText = 'position:absolute;left:0;top:0;pointer-events:none;z-index:6;';
+  host.appendChild(canvas);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) { try { canvas.remove(); } catch {} return () => {}; }
+  const resize = () => {
+    const rect = host.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    canvas.width = Math.floor(rect.width);
+    canvas.height = Math.floor(rect.height);
+    canvas.style.width = rect.width + 'px';
+    canvas.style.height = rect.height + 'px';
+  };
+  resize();
+  const ro = (typeof ResizeObserver !== 'undefined') ? new ResizeObserver(resize) : null;
+  ro?.observe(host);
+  // 흔들림 적용 대상 — xterm-screen 의 부모 (커서/뷰포트 함께 흔들림)
+  const shakeTarget = host;
+  const particles: Particle[] = [];
+  let shake = 0;
+  let rafId = 0;
+  let alive = true;
+  const loop = () => {
+    if (!alive) return;
+    const w = canvas.width, h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    ctx.globalCompositeOperation = theme.composite;
+    if (theme.shape === 'emoji') {
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'center';
+    }
+    let writeIdx = 0;
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += theme.gravity;
+      p.alpha *= theme.fade;
+      if (p.alpha < 0.05 || p.y > h + 30 || p.y < -30) continue;
+      ctx.globalAlpha = p.alpha;
+      ctx.fillStyle = p.color;
+      if (theme.shape === 'circle') {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (p.emoji) {
+        ctx.font = `${p.size}px sans-serif`;
+        ctx.fillText(p.emoji, p.x, p.y);
+      }
+      particles[writeIdx++] = p;
+    }
+    particles.length = writeIdx;
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    // shake step — 강도 누적/감쇠 (hyperpower 시그니처)
+    shake *= theme.shakeDecay;
+    if (shake > 0.15) {
+      const sx = (Math.random() - 0.5) * shake;
+      const sy = (Math.random() - 0.5) * shake;
+      shakeTarget.style.transform = `translate(${sx}px, ${sy}px)`;
+    } else {
+      shake = 0;
+      shakeTarget.style.transform = '';
+    }
+    if (particles.length > 0 || shake > 0) rafId = requestAnimationFrame(loop);
+    else rafId = 0;
+  };
+  const spawn = (x: number, y: number) => {
+    const n = theme.countMin + Math.floor(Math.random() * (theme.countMax - theme.countMin + 1));
+    const colors = theme.colors && theme.colors.length ? theme.colors : ['#ffffff'];
+    const emojis = theme.emojis;
+    // arc 위치 배치 활성화 여부 (rainbow 처럼 정확한 호 형태로 배치할 때 사용)
+    const useArcPos = typeof theme.arcRadiusX === 'number' && typeof theme.arcAngleMin === 'number' && typeof theme.arcAngleMax === 'number';
+    for (let i = 0; i < n; i++) {
+      // 색: sequential 이면 인덱스 순환 (무지개 순서 보장), 아니면 랜덤
+      const color = theme.sequential ? colors[i % colors.length] : colors[Math.floor(Math.random() * colors.length)];
+      let px = x, py = y;
+      let vx: number;
+      if (useArcPos) {
+        // 위치를 호 위에 정렬 — i 가 angle 을 균등 분할
+        const t = n > 1 ? i / (n - 1) : 0.5;
+        const angle = theme.arcAngleMin! + (theme.arcAngleMax! - theme.arcAngleMin!) * t;
+        const rx = theme.arcRadiusX!;
+        const ry = theme.arcRadiusY ?? rx;
+        px = x + rx * Math.cos(angle);
+        py = y + ry * Math.sin(angle);
+        vx = 0;
+      } else {
+        // 좌우 속도: vxArc 가 있으면 i 를 -vxArc..+vxArc 로 균등 분포 (부채꼴 아크), 아니면 ±vxRange 랜덤
+        vx = (typeof theme.vxArc === 'number' && n > 1)
+          ? (theme.vxArc * (2 * i / (n - 1) - 1))
+          : (Math.random() - 0.5) * 2 * theme.vxRange;
+      }
+      particles.push({
+        x: px, y: py,
+        vx,
+        vy: -(theme.vyMin + Math.random() * (theme.vyMax - theme.vyMin)),
+        color,
+        emoji: emojis ? emojis[Math.floor(Math.random() * emojis.length)] : undefined,
+        alpha: 1,
+        size: theme.sizeMin + Math.random() * (theme.sizeMax - theme.sizeMin),
+      });
+    }
+    shake = Math.min(theme.shakeMax, shake + theme.shakePerKey);
+    if (!rafId) rafId = requestAnimationFrame(loop);
+  };
+  const offData = term.onData((data: string) => {
+    if (!data) return;
+    // 입력 적용 이후의 커서 위치 기준으로 파티클 발생 (다음 microtask)
+    setTimeout(() => {
+      try {
+        const renderService = term._core?._renderService;
+        const cellW = renderService?.dimensions?.css?.cell?.width ?? 9;
+        const cellH = renderService?.dimensions?.css?.cell?.height ?? 17;
+        const buf = term.buffer.active;
+        const xOff = theme.spawnXCellOffset ?? 0.5;
+        // 커서 셀 정중앙에서 시작 (테마가 spawnYCellOffset 지정 시 그 값 우선)
+        const yOff = theme.spawnYCellOffset ?? 0.5;
+        const x = buf.cursorX * cellW + cellW * xOff;
+        const y = buf.cursorY * cellH + cellH * yOff;
+        spawn(x, y);
+      } catch {}
+    }, 0);
+  });
+  return () => {
+    alive = false;
+    if (rafId) cancelAnimationFrame(rafId);
+    try { offData.dispose(); } catch {}
+    try { ro?.disconnect(); } catch {}
+    try { canvas.remove(); } catch {}
+    try { shakeTarget.style.transform = ''; } catch {}
+  };
 }
 
-// 하트 퍼짐 — 1개 ♥ 가 커서 위치에서 점점 커지며 페이드아웃
-function spawnHeartSpread(elem: HTMLElement, x: number, y: number) {
-  const heart = document.createElement('div');
-  heart.className = 'xterm-heart-spread';
-  heart.textContent = '♥';
-  heart.style.cssText += `left:${x}px;top:${y}px;`;
-  elem.appendChild(heart);
-  setTimeout(() => { try { heart.remove(); } catch {} }, 900);
-}
-
-// 별 번짐 — 여러 ✦ 가 사방으로 회전하며 퍼져나감
-function spawnStarSpread(elem: HTMLElement, x: number, y: number) {
-  const count = 6 + Math.floor(Math.random() * 4);
-  for (let i = 0; i < count; i++) {
-    const star = document.createElement('div');
-    star.className = 'xterm-star-spread';
-    star.textContent = '✦';
-    const angle = (Math.PI * 2 * i) / count + Math.random() * 0.6;
-    const dist = 40 + Math.random() * 30;
-    star.style.cssText += `left:${x}px;top:${y}px;--dx:${Math.cos(angle) * dist}px;--dy:${Math.sin(angle) * dist}px;`;
-    elem.appendChild(star);
-    setTimeout(() => { try { star.remove(); } catch {} }, 1000);
-  }
-}
-
-// 무지개 폭발 — 빨주노초파남보 색색의 점이 사방으로 퍼짐
-function spawnRainbowSpread(elem: HTMLElement, x: number, y: number) {
-  const colors = ['#ff0000', '#ff9900', '#ffff00', '#00ff00', '#00ccff', '#3366ff', '#cc00ff'];
-  const total = 14;
-  for (let i = 0; i < total; i++) {
-    const dot = document.createElement('div');
-    dot.className = 'xterm-rainbow-spread';
-    const angle = (Math.PI * 2 * i) / total + Math.random() * 0.3;
-    const dist = 40 + Math.random() * 35;
-    const color = colors[i % colors.length];
-    dot.style.cssText += `left:${x}px;top:${y}px;background:${color};color:${color};--dx:${Math.cos(angle) * dist}px;--dy:${Math.sin(angle) * dist}px;`;
-    elem.appendChild(dot);
-    setTimeout(() => { try { dot.remove(); } catch {} }, 1000);
-  }
-}
-
-// 불꽃 폭발 — 여러 🔥 가 위쪽으로 솟구치며 사라짐
-function spawnFlameSpread(elem: HTMLElement, x: number, y: number) {
-  const count = 7 + Math.floor(Math.random() * 4);
-  for (let i = 0; i < count; i++) {
-    const f = document.createElement('div');
-    f.className = 'xterm-flame-spread';
-    f.textContent = '🔥';
-    // 위쪽으로 부채꼴 — 좌/우 30도 안에서 위로 50~80px
-    const angle = -Math.PI / 2 + (Math.random() - 0.5) * (Math.PI / 1.5);
-    const dist = 40 + Math.random() * 50;
-    f.style.cssText += `left:${x}px;top:${y}px;--dx:${Math.cos(angle) * dist}px;--dy:${Math.sin(angle) * dist}px;`;
-    elem.appendChild(f);
-    setTimeout(() => { try { f.remove(); } catch {} }, 950);
-  }
-}
-
-function buildCursorOverlayCss(style: CustomCursorStyle): { css: string; emoji?: string } {
-  switch (style) {
-    case 'flame': return { css: `
-      background: linear-gradient(180deg, #ffe066 0%, #ff9933 40%, #ff3300 80%, #cc0000 100%);
-      border-radius: 50% 50% 30% 30% / 60% 60% 40% 40%;
-      box-shadow: 0 0 6px #ff8800, 0 0 12px #ff5500;
-      animation: flame-flicker 0.6s ease-in-out infinite;
-    `};
-    case 'star': return { emoji: '✦', css: `
-      color: #ffd700; text-shadow: 0 0 6px #ffd700, 0 0 12px #ff9900;
-      font-size: 1.1em; line-height: 1; text-align: center;
-      animation: star-rotate 2s linear infinite;
-    `};
-    case 'heart': return { emoji: '♥', css: `
-      color: #ff3366; text-shadow: 0 0 4px #ff3366, 0 0 8px #ff0066;
-      font-size: 1em; line-height: 1; text-align: center;
-      animation: heart-pulse 1s ease-in-out infinite;
-    `};
-    case 'circle': return { css: `
-      background: currentColor; color: #fff;
-      border-radius: 50%; transform-origin: center;
-      animation: circle-pulse 1.2s ease-in-out infinite;
-    `};
-    case 'rainbow': return { css: `
-      background: linear-gradient(90deg,#ff0000,#ff9900,#ffff00,#00ff00,#00ccff,#3366ff,#cc00ff);
-      background-size: 300% 100%;
-      animation: rainbow-shift 2s linear infinite;
-      box-shadow: 0 0 4px rgba(255,255,255,0.4);
-    `};
-    case 'power': return { emoji: '💥', css: `
-      color: #ffeb3b; text-shadow: 0 0 8px #ff9800, 0 0 14px #ff5722;
-      font-size: 1em; line-height: 1; text-align: center;
-      animation: power-shake 0.15s ease-in-out infinite;
-    `};
-  }
-}
+// (구) DOM 기반 spawnHeart/Star/Rainbow/FlameSpread + buildCursorOverlayCss 는
+// 모두 PARTICLE_THEMES + setupParticleMode 로 통합됨 — 이전 구현 제거.
 
 export function applyCursorStyleToTerm(termId: string, style?: 'block' | 'underline' | 'bar' | CustomCursorStyle, blink?: boolean) {
   const entry = termStore.get(termId);
@@ -1185,89 +1299,50 @@ export function applyCursorStyleToTerm(termId: string, style?: 'block' | 'underl
   const prev = flameOverlayCleanup.get(termId);
   if (prev) { try { prev(); } catch {} flameOverlayCleanup.delete(termId); }
   try {
-    if (style && customCursorStyles.includes(style as CustomCursorStyle)) {
-      // xterm 자체 커서 비활성 (얇은 bar 로 두고 오버레이 사용)
-      (entry.term.options as any).cursorStyle = 'bar';
-      (entry.term.options as any).cursorBlink = false;
+    if (style && PARTICLE_THEMES[style]) {
+      // Hyperpower 스타일 — 네이티브 block 커서 + 테마별 canvas 파티클 + 누적 흔들림
       const term: any = entry.term;
+      try { term.options.cursorStyle = 'block'; } catch {}
+      try { term.options.cursorBlink = !!blink; } catch {}
       const elem = term.element as HTMLElement | undefined;
       if (!elem) return;
-      const conf = buildCursorOverlayCss(style as CustomCursorStyle);
-      const overlay = document.createElement('div');
-      overlay.className = 'xterm-custom-cursor';
-      overlay.style.cssText = `position:absolute;pointer-events:none;z-index:5;${conf.css}`;
-      if (conf.emoji) overlay.textContent = conf.emoji;
-      const screen = elem.querySelector('.xterm-screen') as HTMLElement | null;
-      if (screen && screen.parentElement) screen.parentElement.appendChild(overlay);
-      else elem.appendChild(overlay);
-
-      const updatePos = () => {
-        try {
-          const buf = term.buffer.active;
-          const renderService = term._core?._renderService;
-          const cellW = renderService?.dimensions?.css?.cell?.width ?? renderService?.dimensions?.actualCellWidth ?? 9;
-          const cellH = renderService?.dimensions?.css?.cell?.height ?? renderService?.dimensions?.actualCellHeight ?? 17;
-          // 글씨를 가리지 않게 살짝 우측으로 (반 칸 정도) — 입력 위치 다음 칸을 가리키는 형태
-          overlay.style.left = (buf.cursorX * cellW + cellW * 0.5) + 'px';
-          overlay.style.top = (buf.cursorY * cellH) + 'px';
-          overlay.style.width = cellW + 'px';
-          overlay.style.height = cellH + 'px';
-        } catch {}
+      flameOverlayCleanup.set(termId, setupParticleMode(term, elem, PARTICLE_THEMES[style]));
+      return;
+    } else if (style === 'prism') {
+      // 네이티브 xterm block 커서를 그대로 사용 (글자 자동 반전 표시) + cursor 색만
+      // 무지개로 부드럽게 순환 → 시각적으로 "커서가 글자 뒤"에 있는 것처럼 동작.
+      const term: any = entry.term;
+      try { term.options.cursorStyle = 'block'; } catch {}
+      try { term.options.cursorBlink = false; } catch {}
+      // 두 색 사이를 선형 보간해 부드러운 그라데이션 순환 (단순 색 점프 대신)
+      const lerpHex = (a: string, b: string, t: number): string => {
+        const ah = parseInt(a.slice(1), 16), bh = parseInt(b.slice(1), 16);
+        const ar = (ah >> 16) & 0xff, ag = (ah >> 8) & 0xff, ab = ah & 0xff;
+        const br = (bh >> 16) & 0xff, bg = (bh >> 8) & 0xff, bb = bh & 0xff;
+        const r = Math.round(ar + (br - ar) * t);
+        const g = Math.round(ag + (bg - ag) * t);
+        const bl = Math.round(ab + (bb - ab) * t);
+        return '#' + ((r << 16) | (g << 8) | bl).toString(16).padStart(6, '0');
       };
-      updatePos();
-      const off1 = entry.term.onCursorMove(updatePos);
-      const off2 = entry.term.onRender(updatePos);
-      const off3 = entry.term.onResize(updatePos);
-      // 키 입력 hook — power 는 매 키마다 스파크, flame/heart/star/power 는 빈 백스페이스에서 효과
-      let off4: any = null;
-      const fxStyles: CustomCursorStyle[] = ['power', 'heart', 'star', 'flame', 'rainbow'];
-      if (fxStyles.includes(style as CustomCursorStyle)) {
-        off4 = entry.term.onData((data: string) => {
-          try {
-            const parent = overlay.parentElement;
-            if (!parent) return;
-            const left = parseFloat(overlay.style.left || '0');
-            const top = parseFloat(overlay.style.top || '0');
-            // power: 모든 키 입력에 스파크
-            if (style === 'power') spawnPowerSparks(parent, left + 4, top + 8);
-            // 백스페이스 처리 — 빈 입력에서 효과
-            if (data === '\x7f' || data === '\b') {
-              const buf = (term as any).buffer.active;
-              const prevX = buf.cursorX;
-              setTimeout(() => {
-                try {
-                  const newX = (term as any).buffer.active.cursorX;
-                  if (newX < prevX) return; // 정상 삭제 — 효과 X
-                  // 지울 곳 없음 — 모드별 효과
-                  const cx = parseFloat(overlay.style.left || '0') + 6;
-                  const cy = parseFloat(overlay.style.top || '0') + 8;
-                  if (style === 'power') {
-                    elem.classList.remove('xterm-power-shake');
-                    void elem.offsetHeight;
-                    elem.classList.add('xterm-power-shake');
-                    setTimeout(() => elem.classList.remove('xterm-power-shake'), 450);
-                  } else if (style === 'heart') {
-                    spawnHeartSpread(parent, cx, cy);
-                  } else if (style === 'star') {
-                    spawnStarSpread(parent, cx, cy);
-                  } else if (style === 'flame') {
-                    spawnFlameSpread(parent, cx, cy);
-                  } else if (style === 'rainbow') {
-                    spawnRainbowSpread(parent, cx, cy);
-                  }
-                } catch {}
-              }, 60);
-            }
-          } catch {}
-        });
-      }
+      const colors = ['#ff0000', '#ff9900', '#ffff00', '#00ff00', '#00ccff', '#3366ff', '#cc00ff'];
+      const origTheme = { ...(term.options.theme || {}) };
+      let phase = 0;
+      const tick = () => {
+        phase = (phase + 0.015) % 1;
+        const f = phase * colors.length;
+        const idx = Math.floor(f);
+        const next = (idx + 1) % colors.length;
+        const localT = f - idx;
+        const color = lerpHex(colors[idx], colors[next], localT);
+        try { term.options.theme = { ...origTheme, cursor: color, cursorAccent: origTheme.background || '#000000' }; } catch {}
+      };
+      tick();
+      const intervalId = window.setInterval(tick, 25);
       flameOverlayCleanup.set(termId, () => {
-        try { off1.dispose(); } catch {}
-        try { off2.dispose(); } catch {}
-        try { off3.dispose(); } catch {}
-        try { off4?.dispose?.(); } catch {}
-        try { overlay.remove(); } catch {}
+        try { window.clearInterval(intervalId); } catch {}
+        try { term.options.theme = origTheme; } catch {}
       });
+      return;
     } else if (style === 'bar' && blink) {
       // xterm 의 bar+blink 가 시각적으로 안보이는 케이스 → 커스텀 오버레이로 깜박임 구현
       const term: any = entry.term;
