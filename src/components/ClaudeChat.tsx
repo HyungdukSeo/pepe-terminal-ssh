@@ -697,6 +697,13 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const [activeHistoryId, setActiveHistoryId] = useState<string | null>(null);
   const [showHistoryPanel, setShowHistoryPanel] = useState(false);
   const [deleteHistoryConfirm, setDeleteHistoryConfirm] = useState<{ id: string; title: string } | null>(null);
+  // 검색: 현재 대화 메시지 본문 안에서 찾기
+  const [showSearch, setShowSearch] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchHitCount, setSearchHitCount] = useState(0);
+  const [searchCurrent, setSearchCurrent] = useState(0);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchHitsRef = useRef<HTMLElement[]>([]);
   // 메시지 우클릭 컨텍스트 메뉴
   const [msgCtxMenu, setMsgCtxMenu] = useState<{ x: number; y: number; msgId: string; content: string } | null>(null);
   useEffect(() => {
@@ -916,6 +923,119 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     activeHistoryIdRef.current = id;
     setActiveHistoryId(id);
   }, []);
+
+  // ── 메시지 검색 ──────────────────────────────────────────────────────────
+  // 기존 <mark.claude-search-hit> 모두 제거하고 원래 텍스트 노드로 복원
+  const clearSearchHighlights = useCallback((root: HTMLElement | null) => {
+    if (!root) return;
+    const marks = root.querySelectorAll('mark.claude-search-hit');
+    marks.forEach(m => {
+      const parent = m.parentNode;
+      if (!parent) return;
+      const txt = document.createTextNode(m.textContent || '');
+      parent.replaceChild(txt, m);
+    });
+    // 인접 텍스트 노드 정리 (재검색 시 매치 안정성)
+    root.normalize();
+  }, []);
+
+  // 메시지 컨테이너 내 텍스트 노드 중 q 와 일치하는 부분을 <mark> 로 감싸 매치 element 배열 반환
+  const applySearchHighlights = useCallback((root: HTMLElement | null, q: string): HTMLElement[] => {
+    if (!root || !q) return [];
+    const esc = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(esc, 'gi');
+    const hits: HTMLElement[] = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const targets: Text[] = [];
+    let n: Node | null;
+    while ((n = walker.nextNode())) {
+      const t = n as Text;
+      if (!t.nodeValue) continue;
+      const p = t.parentElement;
+      if (!p) continue;
+      // 검색바 자체 / 이미 마크된 것 / script style 제외
+      if (p.closest('.claude-chat-search-bar, mark.claude-search-hit, script, style')) continue;
+      if (re.test(t.nodeValue)) targets.push(t);
+      re.lastIndex = 0;
+    }
+    for (const node of targets) {
+      const text = node.nodeValue!;
+      const parent = node.parentNode!;
+      const frag = document.createDocumentFragment();
+      let lastIdx = 0;
+      re.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(text)) !== null) {
+        if (m.index > lastIdx) frag.appendChild(document.createTextNode(text.slice(lastIdx, m.index)));
+        const mark = document.createElement('mark');
+        mark.className = 'claude-search-hit';
+        mark.textContent = m[0];
+        frag.appendChild(mark);
+        hits.push(mark);
+        lastIdx = m.index + m[0].length;
+        if (m[0].length === 0) re.lastIndex++; // 무한 루프 방지
+      }
+      if (lastIdx < text.length) frag.appendChild(document.createTextNode(text.slice(lastIdx)));
+      parent.replaceChild(frag, node);
+    }
+    return hits;
+  }, []);
+
+  // 검색 쿼리/메시지 변경 시 하이라이트 재적용
+  useEffect(() => {
+    const root = scrollRef.current;
+    clearSearchHighlights(root);
+    if (!showSearch || !searchQuery.trim()) {
+      searchHitsRef.current = [];
+      setSearchHitCount(0);
+      setSearchCurrent(0);
+      return;
+    }
+    const hits = applySearchHighlights(root, searchQuery);
+    searchHitsRef.current = hits;
+    setSearchHitCount(hits.length);
+    // 현재 인덱스 범위 보정 + 그 hit 으로 스크롤
+    setSearchCurrent(prev => {
+      if (hits.length === 0) return 0;
+      const idx = Math.min(prev, hits.length - 1);
+      return idx;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showSearch, searchQuery, messages, toolTimeline, applySearchHighlights, clearSearchHighlights]);
+
+  // 현재 hit 하이라이트 (current 클래스) + 스크롤
+  useEffect(() => {
+    const hits = searchHitsRef.current;
+    hits.forEach((el, i) => el.classList.toggle('current', i === searchCurrent));
+    const cur = hits[searchCurrent];
+    if (cur) cur.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [searchCurrent, searchHitCount]);
+
+  const nextSearchHit = useCallback(() => {
+    setSearchCurrent(prev => {
+      const n = searchHitsRef.current.length;
+      if (n === 0) return 0;
+      return (prev + 1) % n;
+    });
+  }, []);
+  const prevSearchHit = useCallback(() => {
+    setSearchCurrent(prev => {
+      const n = searchHitsRef.current.length;
+      if (n === 0) return 0;
+      return (prev - 1 + n) % n;
+    });
+  }, []);
+  const closeSearch = useCallback(() => {
+    setShowSearch(false);
+    setSearchQuery('');
+  }, []);
+  // 검색 토글 시 입력 자동 포커스
+  useEffect(() => {
+    if (showSearch) {
+      requestAnimationFrame(() => searchInputRef.current?.focus());
+    }
+  }, [showSearch]);
+  // ────────────────────────────────────────────────────────────────────────
 
   // CLI 설치 확인 (currentAgent 변경 시마다 재확인)
   useEffect(() => {
@@ -2403,8 +2523,6 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         </div>
         {version && <span className="claude-chat-version" style={{ marginLeft: 4, color: '#666', fontSize: 11 }}>{version}</span>}
         <div className="claude-chat-header-actions">
-          <button onClick={startNewConversation} title={tt('newConversation')}>＋</button>
-          <button onClick={() => setShowHistoryPanel(v => !v)} title={tt('historyToggle')} className={showHistoryPanel ? 'active' : ''}>≡</button>
           {onTogglePin && (
             <button
               className={`claude-chat-pin ${pinned ? 'pinned' : ''}`}
@@ -2412,6 +2530,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               title={pinned ? tt('unpin') : tt('pin')}
             >📌</button>
           )}
+          <button onClick={() => setShowSearch(v => !v)} title={tt('search') || '검색'} className={showSearch ? 'active' : ''}>🔍</button>
+          <button onClick={startNewConversation} title={tt('newConversation')}>＋</button>
+          <button onClick={() => setShowHistoryPanel(v => !v)} title={tt('historyToggle')} className={showHistoryPanel ? 'active' : ''}>≡</button>
           <button onClick={trashCurrentConversation} title={tt('clear')}>🗑</button>
           {onClose && <button className="claude-chat-close" onClick={onClose} title={tt('close')}>×</button>}
         </div>
@@ -2784,6 +2905,31 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           </div>
         );
       })()}
+      {showSearch && !showHistoryPanel && (
+        <div className="claude-chat-search-bar">
+          <span className="claude-chat-search-icon">🔍</span>
+          <input
+            ref={searchInputRef}
+            className="claude-chat-search-input"
+            value={searchQuery}
+            placeholder={tt('searchPlaceholder') || '메시지 검색...'}
+            onChange={e => setSearchQuery(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Escape') { e.preventDefault(); closeSearch(); }
+              else if (e.key === 'Enter') {
+                e.preventDefault();
+                if (e.shiftKey) prevSearchHit(); else nextSearchHit();
+              }
+            }}
+          />
+          <span className="claude-chat-search-count">
+            {searchQuery.trim() ? (searchHitCount > 0 ? `${searchCurrent + 1}/${searchHitCount}` : '0/0') : ''}
+          </span>
+          <button className="claude-chat-search-btn" onClick={prevSearchHit} disabled={searchHitCount === 0} title="이전">↑</button>
+          <button className="claude-chat-search-btn" onClick={nextSearchHit} disabled={searchHitCount === 0} title="다음">↓</button>
+          <button className="claude-chat-search-btn" onClick={closeSearch} title="닫기 (Esc)">×</button>
+        </div>
+      )}
       <div className="claude-chat-messages" ref={scrollRef} style={showHistoryPanel ? { display: 'none' } : undefined}>
         {pendingToolApproval && (
           <div className="claude-chat-plan-overlay">
