@@ -108,6 +108,37 @@ function sanitizeMermaidLabels(src: string): string {
   }
 
   if (!/^\s*(flowchart|graph)\b/im.test(out)) return out;
+  // mermaid v11 의 'ID@{ shape: X, label: "Y" }' 새 문법을 전통적 노드 모양으로 변환.
+  // 새 문법이 일부 환경/설정(htmlLabels:false 등)에서 SVG 가 비어서 그려지는 케이스 대응.
+  // shape 별로 가까운 전통 모양에 매핑, 매핑 없으면 사각형으로 fallback. 라벨은 따옴표로 감쌈.
+  {
+    const shapePair: Record<string, [string, string]> = {
+      rect: ['[', ']'], 'rounded-rect': ['(', ')'], roundrect: ['(', ')'], 'round-rect': ['(', ')'],
+      stadium: ['([', '])'], pill: ['([', '])'],
+      circle: ['((', '))'], circ: ['((', '))'],
+      'double-circle': ['(((', ')))'], 'dbl-circ': ['(((', ')))'],
+      diamond: ['{', '}'], rhombus: ['{', '}'], decision: ['{', '}'],
+      hex: ['{{', '}}'], hexagon: ['{{', '}}'],
+      cyl: ['[(', ')]'], cylinder: ['[(', ')]'], db: ['[(', ')]'], database: ['[(', ')]'],
+      subroutine: ['[[', ']]'], framed: ['[[', ']]'], procs: ['[[', ']]'],
+      parallelogram: ['[/', '/]'], 'parallelogram-alt': ['[\\', '\\]'],
+      trapezoid: ['[/', '\\]'], 'trap-b': ['[\\', '/]'], 'inv-trap': ['[\\', '/]'],
+      flag: ['>', ']'], asym: ['>', ']'],
+      tri: ['[/', '\\]'], triangle: ['[/', '\\]'], // 전통 mermaid 에 직접 삼각형 없음 → 사다리꼴로 근사
+    };
+    out = out.replace(
+      /([A-Za-z_][A-Za-z0-9_]*)@\{[^{}\n]*?\}/g,
+      (m, id) => {
+        const shapeM = m.match(/shape\s*:\s*["']?([\w-]+)["']?/i);
+        const labelM = m.match(/label\s*:\s*(["'])((?:\\.|(?!\1).)*)\1/);
+        const shape = (shapeM?.[1] || 'rect').toLowerCase();
+        const label = labelM?.[2] ?? id;
+        const pair = shapePair[shape] || ['[', ']'];
+        const safeLabel = label.replace(/"/g, '#quot;');
+        return `${id}${pair[0]}"${safeLabel}"${pair[1]}`;
+      }
+    );
+  }
   out = out.replace(/(^|\n)(\s*)style([A-Za-z_][A-Za-z0-9_-]*)(\s+)/g, '$1$2style $3$4');
   const quote = (label: string): string | null => {
     const t = label.trim();
@@ -697,6 +728,26 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const [activeHistoryId, setActiveHistoryId] = useState<string | null>(null);
   const [showHistoryPanel, setShowHistoryPanel] = useState(false);
   const [deleteHistoryConfirm, setDeleteHistoryConfirm] = useState<{ id: string; title: string } | null>(null);
+  // 에이전트 간 컨텍스트 공유 — 켜져있으면 send 시 이전 transcript(다른 에이전트 답변 포함) 를 inject.
+  // UIPrefs 에 영속화. 기본값 true (기존 동작 유지).
+  const [shareContext, setShareContext] = useState<boolean>(true);
+  const shareContextRef = useRef(true);
+  const shareContextLoadedRef = useRef(false);
+  useEffect(() => { shareContextRef.current = shareContext; }, [shareContext]);
+  useEffect(() => {
+    (async () => {
+      try {
+        const prefs = await (window as any).api?.getUIPrefs?.();
+        if (typeof prefs?.aiShareContext === 'boolean') setShareContext(prefs.aiShareContext);
+      } catch {}
+      shareContextLoadedRef.current = true;
+    })();
+  }, []);
+  useEffect(() => {
+    if (!shareContextLoadedRef.current) return;
+    try { (window as any).api?.setUIPrefs?.({ aiShareContext: shareContext }); } catch {}
+  }, [shareContext]);
+
   // 검색: 현재 대화 메시지 본문 안에서 찾기
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -1854,7 +1905,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
 
     // 0.7) 포크/리로드된 대화 — 이전 메시지가 있으면 컨텍스트로 inject.
     // Claude: --resume 없이 새 세션이면 주입. Gemini/Codex: 항상 주입 (세션 개념 없음).
-    if (messages.length > 0) {
+    // 단, "에이전트 컨텍스트 공유" 가 꺼져있으면 inject 자체를 생략 → 에이전트가 다른 에이전트의 답변을 볼 수 없음.
+    if (shareContextRef.current && messages.length > 0) {
       // 메시지와 툴 호출을 seq 순으로 인터리브
       type TItem = { seq: number; kind: 'msg'; m: Message } | { seq: number; kind: 'tool'; t: ToolTimelineItem };
       const items: TItem[] = [
@@ -2531,6 +2583,11 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             >📌</button>
           )}
           <button onClick={() => setShowSearch(v => !v)} title={tt('search') || '검색'} className={showSearch ? 'active' : ''}>🔍</button>
+          <button
+            onClick={() => setShareContext(v => !v)}
+            title={shareContext ? '에이전트 간 컨텍스트 공유 켜짐 — 클릭하여 끄기' : '에이전트 간 컨텍스트 공유 꺼짐 — 클릭하여 켜기'}
+            className={`claude-chat-share-toggle ${shareContext ? 'on' : 'off'}`}
+          >🔗</button>
           <button onClick={startNewConversation} title={tt('newConversation')}>＋</button>
           <button onClick={() => setShowHistoryPanel(v => !v)} title={tt('historyToggle')} className={showHistoryPanel ? 'active' : ''}>≡</button>
           <button onClick={trashCurrentConversation} title={tt('clear')}>🗑</button>
