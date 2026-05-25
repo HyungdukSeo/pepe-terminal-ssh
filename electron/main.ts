@@ -4261,9 +4261,28 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
     let geminiHadOutput = false;
     let gTextBuf = '';
     let gSegment = 0;
+    // flush 시 누적 텍스트에 대한 최종 정리. 모델이 update_topic 의 내부
+    // 파라미터(strategic_intent 등)를 평문으로 흘리는 경우가 있는데, 이 누수는
+    // 여러 델타에 걸쳐 쪼개져 오므로 per-delta 정리로는 못 잡고 flush 시 한 번 더 거른다.
+    // 'strategic_intent:' 다음부터 첫 마침표(.) 또는 줄바꿈까지를 한 단위로 제거.
+    const finalizeGeminiText = (s: string): string => {
+      let out = s;
+      // 1) update_topic(arg='...') / save_memory(arg='...') 함수 호출 — 여러 델타에
+      //    걸쳐 쪼개져 오는 경우 per-delta 로는 못 잡으므로 누적 버퍼에서 다시 제거.
+      out = out.replace(
+        /\b(?:update_topic|save_memory)\s*\(\s*\w+\s*=\s*(['"])[\s\S]*?\1(?:\s*,\s*\w+\s*=\s*(['"])[\s\S]*?\2)*\s*\)\s*\n?/g,
+        ''
+      );
+      // 2) bare 'strategic_intent: ...' narration 누수 — 첫 마침표/줄바꿈까지 제거
+      out = out.replace(/\bstrategic_intent\s*:[^.\n]*[.\n]?/gi, '');
+      // 3) 제거 후 선두 공백/개행 정리
+      out = out.replace(/^\s+/, '');
+      return out;
+    };
     const flushGeminiText = () => {
-      if (gTextBuf.trim()) {
-        sendStream({ type: 'assistant', message: { id: `${gIdPrefix}-m-${gSegment}`, content: [{ type: 'text', text: gTextBuf }] } });
+      const cleaned = finalizeGeminiText(gTextBuf);
+      if (cleaned.trim()) {
+        sendStream({ type: 'assistant', message: { id: `${gIdPrefix}-m-${gSegment}`, content: [{ type: 'text', text: cleaned }] } });
         gSegment++;
       }
       gTextBuf = '';
