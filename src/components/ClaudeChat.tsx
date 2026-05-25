@@ -1980,6 +1980,39 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     clear();
     setShowHistoryPanel(false);
   };
+  // 🗑 버튼 — 대화 history 항목은 유지하고 내용(messages/toolTimeline/usage)만 비움.
+  // 진행 중인 백그라운드 프로세스는 종료. UI 도 함께 리셋.
+  const trashCurrentConversation = () => {
+    const aid = activeHistoryId;
+    if (aid) {
+      // 진행 중 프로세스 종료 + 매핑 정리
+      for (const [reqId, hid] of Array.from(requestToHistoryRef.current.entries())) {
+        if (hid === aid) {
+          const reqAgent = requestToAgentRef.current.get(reqId) || currentAgentRef.current;
+          try {
+            if (reqAgent === 'gemini') (window as any).api?.geminiStop?.(sessionId, reqId);
+            else if (reqAgent === 'codex') (window as any).api?.codexStop?.(sessionId, reqId);
+            else (window as any).api?.claudeStop?.(sessionId, reqId);
+          } catch {}
+          requestToHistoryRef.current.delete(reqId);
+          requestToAgentRef.current.delete(reqId);
+        }
+      }
+      // history 항목은 남기되 내용만 비움 (title/pinned/agent 등 메타는 유지)
+      setChatHistory(h => h.map(x => x.id === aid ? {
+        ...x,
+        messages: [],
+        toolTimeline: [],
+        usage: { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, totalCostUsd: 0, turns: 0, lastTurnInput: 0, lastTurnOutput: 0, lastTurnFreshInput: 0, lastTurnCacheRead: 0, lastTurnCacheCreate: 0, model: '' },
+        lastRejectedPlan: null,
+        streaming: false,
+        pendingRequestId: null,
+        claudeSessionId: null,
+        updatedAt: Date.now(),
+      } : x));
+    }
+    clear();
+  };
   const loadHistory = (h: ChatHistoryEntry) => {
     // 동일 대화 재선택 — 진행 중 상태 그대로 유지하고 패널만 닫는다
     if (activeHistoryId === h.id) {
@@ -2379,7 +2412,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               title={pinned ? tt('unpin') : tt('pin')}
             >📌</button>
           )}
-          <button onClick={clear} title={tt('clear')}>🗑</button>
+          <button onClick={trashCurrentConversation} title={tt('clear')}>🗑</button>
           {onClose && <button className="claude-chat-close" onClick={onClose} title={tt('close')}>×</button>}
         </div>
       </div>
