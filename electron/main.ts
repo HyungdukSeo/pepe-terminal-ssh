@@ -4299,7 +4299,16 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
         const out = evt.output ?? evt.content ?? evt.result ?? evt.error ?? evt.status ?? '';
         sendStream({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: `${gIdPrefix}-${evt.tool_id}`, content: typeof out === 'string' ? out : JSON.stringify(out), is_error: !!evt.status && evt.status !== 'success' }] } });
       } else if (t === 'error') {
-        sendStream({ type: 'error', text: String(evt.message || evt.error || 'gemini error') });
+        // Gemini CLI 는 응답 끝에 meta 도구(update_topic 등)가 있으면
+        // "Invalid stream: empty response or malformed tool call" 같은 거짓 에러를 종종 뿜는다.
+        // 이미 텍스트/도구 출력이 있었다면(geminiHadOutput) 응답은 정상 전달된 것이므로
+        // 보류 중인 텍스트를 먼저 flush 하고 거짓 에러는 무시한다.
+        const msg = String(evt.message || evt.error || '');
+        if (geminiHadOutput || gTextBuf.trim()) {
+          flushGeminiText();
+          if (/invalid stream|empty response|malformed tool call/i.test(msg)) return;
+        }
+        sendStream({ type: 'error', text: msg || 'gemini error' });
       } else if (t === 'result') {
         // 토큰 사용량(컨텍스트) — 렌더러 usage 표시용
         if (evt.stats) sendStream({ type: 'gemini_usage', stats: evt.stats });
