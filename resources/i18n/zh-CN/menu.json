@@ -57,7 +57,12 @@
     "xStatusRunning": "🟢 运行中",
     "xStatusNone": "⚫ 未运行 X 服务器。",
     "xStatusFail": "查询 X 服务器状态失败",
-    "options": "⚙ 选项..."
+    "options": "⚙ 选项...",
+    "browserWs": "🌐 浏览器工作区",
+    "compareWs": "🔍 文件比较",
+    "logAnalyzerWs": "📈 日志分析",
+    "vpnWs": "🔒 VPN",
+    "i18nWs": "🌍 翻译编辑器"
   },
   "help": {
     "title": "帮助",
