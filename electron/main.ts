@@ -4125,6 +4125,16 @@ ipcMain.handle('gemini:check', async () => {
   }
 });
 
+// 진단용 임시 dump — 렌더러가 sanitize 결과를 파일에 기록 (mermaid 디버그)
+ipcMain.handle('debug:dump', (_e, { name, content }: { name: string; content: string }) => {
+  try {
+    const os = require('os'), path = require('path'), fs = require('fs');
+    const safe = String(name || 'pepe-debug.txt').replace(/[^A-Za-z0-9._-]/g, '_');
+    fs.writeFileSync(path.join(os.tmpdir(), safe), String(content ?? ''), 'utf-8');
+  } catch {}
+  return { ok: true };
+});
+
 ipcMain.handle('gemini:modelInfo', async () => {
   try {
     const fs = require('fs'), path = require('path'), os = require('os'), https = require('https');
@@ -4265,14 +4275,51 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
     // 파라미터(strategic_intent 등)를 평문으로 흘리는 경우가 있는데, 이 누수는
     // 여러 델타에 걸쳐 쪼개져 오므로 per-delta 정리로는 못 잡고 flush 시 한 번 더 거른다.
     // 'strategic_intent:' 다음부터 첫 마침표(.) 또는 줄바꿈까지를 한 단위로 제거.
+    // update_topic / save_memory 같은 메타 도구의 함수 호출 형태를 균형 잡힌 괄호 파서로 제거.
+    // (regex 만으로는 따옴표 안 ')' / unescape 된 따옴표 / 긴 multiline 값을 안정적으로 처리 못함)
+    const stripFnCall = (s: string, fnName: string): string => {
+      const re = new RegExp(`\\b${fnName}\\s*\\(`);
+      let result = s;
+      // 반복 — 같은 fnName 호출이 여러 개 있을 수 있음
+      for (let safety = 0; safety < 20; safety++) {
+        const m = re.exec(result);
+        if (!m) break;
+        const start = m.index;
+        let depth = 1;
+        let i = m.index + m[0].length;
+        let inStr: string | null = null;
+        while (i < result.length && depth > 0) {
+          const c = result[i];
+          if (inStr) {
+            if (c === '\\' && i + 1 < result.length) { i += 2; continue; }
+            if (c === inStr) inStr = null;
+          } else {
+            if (c === '"' || c === "'") inStr = c;
+            else if (c === '(') depth++;
+            else if (c === ')') depth--;
+          }
+          i++;
+        }
+        if (depth === 0) {
+          // 닫는 ')' 찾음 → 그 뒤 선행 개행 1개까지 같이 제거
+          let end = i;
+          if (result[end] === '\n') end++;
+          result = result.slice(0, start) + result.slice(end);
+        } else {
+          // 닫는 ')' 못 찾음 (모델이 미완 출력) → 줄 끝까지 잘라냄. 줄 없으면 전체.
+          const nlIdx = result.indexOf('\n', m.index);
+          if (nlIdx !== -1) result = result.slice(0, start) + result.slice(nlIdx + 1);
+          else result = result.slice(0, start);
+          break;
+        }
+      }
+      return result;
+    };
     const finalizeGeminiText = (s: string): string => {
       let out = s;
-      // 1) update_topic(arg='...') / save_memory(arg='...') 함수 호출 — 여러 델타에
-      //    걸쳐 쪼개져 오는 경우 per-delta 로는 못 잡으므로 누적 버퍼에서 다시 제거.
-      out = out.replace(
-        /\b(?:update_topic|save_memory)\s*\(\s*\w+\s*=\s*(['"])[\s\S]*?\1(?:\s*,\s*\w+\s*=\s*(['"])[\s\S]*?\2)*\s*\)\s*\n?/g,
-        ''
-      );
+      // 1) update_topic(...) / save_memory(...) 함수 호출 — 균형 괄호 파서로 안전하게 제거
+      out = stripFnCall(out, 'update_topic');
+      out = stripFnCall(out, 'save_memory');
       // 2) bare 'strategic_intent: ...' narration 누수 — 첫 마침표/줄바꿈까지 제거
       out = out.replace(/\bstrategic_intent\s*:[^.\n]*[.\n]?/gi, '');
       // 3) 제거 후 선두 공백/개행 정리

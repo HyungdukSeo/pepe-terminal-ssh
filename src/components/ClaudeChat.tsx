@@ -157,6 +157,145 @@ function sanitizeMermaidLabels(src: string): string {
     const q = quote(label);
     return q ? `${id}{${q}}` : m;
   });
+
+  // 한글 등 non-ASCII ID 가 노드 shape ([], (), {}, ([]), {{}}, [(...)] 등) 와 함께 쓰인 경우
+  // mermaid 파서가 ID 로 인식 못해 실패함. 안전한 영문 alias (_n1, _n2 ...) 로 변환.
+  // edges 에서 같은 ID 가 참조되면 함께 교체. 라벨(따옴표/괄호 안)은 영향 받지 않도록 보호.
+  {
+    const aliasMap = new Map<string, string>();
+    let aliasCtr = 0;
+    // 1단계: shape 와 결합된 non-ASCII ID 발견 → alias 생성
+    // 매치 패턴: 줄 처음/공백/세미콜론/->/-->/=>/etc. 다음의 비-ASCII 시작 ID + shape opener
+    const idCharClass = `[^\\s\\[\\](){}<>\\-,;|\\.\\/&%@*+!?:=\"'\`#]`;
+    const collectRe = new RegExp(`(^|[\\s;]|--+>?|==+>?|-\\.-+|<--|<==)(${idCharClass}+)\\s*([\\[({])`, 'gu');
+    out.replace(collectRe, (_m, _prefix, id) => {
+      // 영문/숫자/언더스코어로만 된 ID 는 안전 — 스킵
+      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(id)) return _m;
+      if (!aliasMap.has(id)) aliasMap.set(id, `n${++aliasCtr}`);
+      return _m;
+    });
+    // 2단계: 같은 ID 가 edges 등에서 참조되어도 함께 alias 로 치환되도록 추가 수집 — 첫 단계만으로도 일단 충분
+    if (aliasMap.size > 0) {
+      // 라벨/따옴표 영역은 보호 — 따옴표 안의 같은 단어가 같이 치환되면 안 됨.
+      // 줄 단위로 처리하되 each line: '"' 안과 밖을 구분.
+      const replaceOutsideQuotes = (line: string, fromRaw: string, to: string): string => {
+        const escRaw = fromRaw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        // 줄을 따옴표 기준으로 split — 짝수 인덱스만 따옴표 밖
+        const parts = line.split(/("[^"\n]*"|'[^'\n]*')/);
+        for (let i = 0; i < parts.length; i++) {
+          if (i % 2 === 1) continue; // 따옴표 안 — 보호
+          parts[i] = parts[i].replace(
+            new RegExp(`(^|[\\s;,\\[\\](){}<>]|--+>?|==+>?|-\\.-+|<--|<==)${escRaw}(?=$|[\\s;,\\[\\](){}<>]|--+>?|==+>?|-\\.-+|<==|<--)`, 'g'),
+            (_mm, pre) => `${pre}${to}`
+          );
+        }
+        return parts.join('');
+      };
+      out = out.split('\n').map(line => {
+        for (const [from, to] of aliasMap) line = replaceOutsideQuotes(line, from, to);
+        return line;
+      }).join('\n');
+    }
+  }
+
+  // 'subgraph "Title"' 또는 'subgraph 한글타이틀' 등 안전하지 않은 형태 → 'subgraph _sgN["Title"]' 로 변환.
+  // - 따옴표 형태 OR
+  // - ID 가 비-ASCII(한글 등) 로 시작하는 경우 — 그 자체로 ID 가 안 되어 파서 오류
+  {
+    let sgCtr = 0;
+    out = out.replace(
+      /(^|\n)(\s*)subgraph\s+("([^"\n]+)"|'([^'\n]+)'|([^\s\[\n"'][^\[\n"']*?))(\s*)$/gm,
+      (m, nl, indent, _quoted, dq, sq, bare) => {
+        // 안전한 영문 ID 가 이미 있고 뒤에 shape/title 이 따로 없으면 그대로 둠
+        if (bare && /^[A-Za-z_][A-Za-z0-9_]*$/.test(bare.trim())) return m;
+        sgCtr++;
+        const title = (dq || sq || bare || '').trim().replace(/"/g, '#quot;');
+        return `${nl}${indent}subgraph sg${sgCtr}["${title}"]`;
+      }
+    );
+    // CRLF/CR → LF 정규화 (다른 OS 줄바꿈 혼합 시 정규식 실패 회피)
+    out = out.replace(/\r\n?/g, '\n');
+    // 'subgraph ID [title]' (ID와 '[' 사이 공백) → 'subgraph ID[title]' (공백 제거)
+    // ID 부분은 '[' 도 공백도 아닌 문자들 — \S+ 는 '[' 도 포함해 greedy 매치되어 잘못 잡힘.
+    out = out.replace(/^([ \t]*subgraph[ \t]+[^\[\s]+)[ \t]+(\[)/gm, '$1$2');
+    // 'direction TB|LR|...' 내부 지시는 일부 환경에서 subgraph header 와 충돌 → 제거.
+    out = out.replace(/^[ \t]*direction[ \t]+(TB|TD|BT|LR|RL)[ \t]*$/gm, '');
+    // 노드 label 의 따옴표 안 leading/trailing 공백 trim — 일부 mermaid 버전이 STR 토큰
+    // 시작/끝 공백을 허용 안 함. 예: `["  네모  "]` → `["네모"]`
+    // ⚠ trim 결과가 빈 문자열이면 mermaid 가 거부하므로 원본 유지 (예: T{" "} 처럼 의도적 공백 라벨)
+    out = out.replace(/([\[(){][\[(]?)\s*"([^"\n]+?)"\s*([\])}]?[\])}])/g, (_m, open, content, close) => {
+      const trimmed = content.trim();
+      if (!trimmed) return _m;
+      return `${open}"${trimmed}"${close}`;
+    });
+    // 빈 줄(공백만 있는 줄 포함) 을 단일 newline 으로 축약.
+    while (/\n[ \t]*\n/.test(out)) out = out.replace(/\n[ \t]*\n/g, '\n');
+  }
+
+  // bare 노드 토큰(shape 없이 단독으로 쓰인 한글 식별자) 도 alias 로 치환.
+  // 위 'shape 가 함께 쓰인 경우' alias 와 같은 컨테이너에서 동시에 처리하기 어려워 한 번 더 패스.
+  // 예: subgraph 안의 '세모' 한 줄.
+  // ⚠ 따옴표 안과 shape brackets([], (), {}, [[]], (()), [(...)], {{}} 등) 안의 라벨은 보호 — 그곳 한글은 라벨이지 식별자가 아님.
+  {
+    // 라벨 영역(따옴표 + 모든 mermaid shape + 엣지 라벨) 을 한 번에 매치해 split 의 보호 캡처로 사용.
+    // 순서: 가장 긴 멀티문자 형태부터 (그래야 [[]] 가 [] 보다 먼저 매치)
+    // 엣지 라벨 형태: --|label|--, --label--> (공백 포함), == label ==>, -.label.->
+    const labelProtectRe = /("[^"\n]*"|'[^'\n]*'|\[\[[^\]\n]*\]\]|\(\([^)\n]*\)\)|\{\{[^}\n]*\}\}|\[\([^)\n]*\)\]|\[\/[^\]\n]*\\\]|\[\\[^\]\n]*\/\]|\[\/[^\]\n]*\/\]|\[\\[^\]\n]*\\\]|\[[^\]\n]*\]|\([^)\n]*\)|\{[^}\n]*\}|\|[^|\n]*\||--+\s+[^-\n|]+\s+--+>?|==+\s+[^=\n|]+\s+==+>?|-\.+\s+[^\n|]+?\s+\.+-+>?)/g;
+    const aliasMap = new Map<string, string>();
+    let ctr = 0;
+    // 토큰 정의: 한글 시작 + (한글/영문/숫자/_)*
+    const koTokenRe = /[가-힯ㄱ-ㆎ][가-힯ㄱ-ㆎ\w]*/g;
+    out.split('\n').forEach(line => {
+      // 라벨 영역 외부에서만 한글 토큰 수집
+      const parts = line.split(labelProtectRe);
+      for (let i = 0; i < parts.length; i += 2) {
+        let m;
+        koTokenRe.lastIndex = 0;
+        while ((m = koTokenRe.exec(parts[i])) !== null) {
+          const tok = m[0];
+          if (!aliasMap.has(tok)) aliasMap.set(tok, `n${++ctr}`);
+        }
+      }
+    });
+    if (aliasMap.size > 0) {
+      out = out.split('\n').map(line => {
+        const parts = line.split(labelProtectRe);
+        for (let i = 0; i < parts.length; i += 2) {
+          for (const [from, to] of aliasMap) {
+            const escFrom = from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            parts[i] = parts[i].replace(
+              new RegExp(`(^|[^\\uAC00-\\uD7AF\\u3131-\\u318E\\w])${escFrom}(?=$|[^\\uAC00-\\uD7AF\\u3131-\\u318E\\w])`, 'g'),
+              (_mm, pre) => `${pre}${to}`
+            );
+          }
+        }
+        return parts.join('');
+      }).join('\n');
+      // alias 된 노드의 라벨이 사라지므로 각 alias 의 첫 등장 줄에 `_nX[원본]` 형태로 라벨 부여
+      // (이미 [...]/{...}/(...) shape 가 붙은 경우는 그쪽 라벨이 살아있어 추가 안 함)
+      const lines = out.split('\n');
+      for (const [from, to] of aliasMap) {
+        let labeled = false;
+        for (let i = 0; i < lines.length; i++) {
+          if (!lines[i].includes(to)) continue;
+          // 그 줄에 _nX 뒤에 이미 shape 가 있으면 라벨 보존됨
+          const reShape = new RegExp(`${to}\\s*[\\[({]`);
+          if (reShape.test(lines[i])) { labeled = true; break; }
+        }
+        if (labeled) continue;
+        // shape 가 없는 bare 사용 — 첫 등장에 `[원본]` 추가
+        for (let i = 0; i < lines.length; i++) {
+          // 토큰 경계로 매치한 첫 위치만 라벨링
+          const re = new RegExp(`(^|[^\\w])${to}(?=$|[^\\w])`);
+          if (re.test(lines[i])) {
+            lines[i] = lines[i].replace(re, (_mm, pre) => `${pre}${to}["${from}"]`);
+            break;
+          }
+        }
+      }
+      out = lines.join('\n');
+    }
+  }
   return out;
 }
 function adjustMermaidNodeLabelContrast(root: HTMLElement) {
@@ -286,8 +425,9 @@ function closeDanglingMermaidFences(md: string): string {
     if (MERMAID_START_RE.test(t)) return true;
     if (/^(subgraph|end|direction|classDef|class|style\s+|style[A-Za-z_][A-Za-z0-9_-]*\s+|linkStyle\s+)/.test(t)) return true;
     if (/^(click|accTitle|accDescr)\b/.test(t)) return true;
-    if (/^[A-Za-z_][A-Za-z0-9_]*\s*(\[|\{|\(|--|---|==|-.|:::|-->)/.test(t)) return true;
-    if (/^[A-Za-z_][A-Za-z0-9_]*\s*$/.test(t)) return true;
+    // 한글 등 Unicode 시작 식별자도 mermaid 노드 ID 로 인정 (sanitizer 가 alias 처리)
+    if (/^[A-Za-z_가-힯ㄱ-ㆎ][A-Za-z0-9_가-힯ㄱ-ㆎ]*\s*(\[|\{|\(|--|---|==|-.|:::|-->)/.test(t)) return true;
+    if (/^[A-Za-z_가-힯ㄱ-ㆎ][A-Za-z0-9_가-힯ㄱ-ㆎ]*\s*$/.test(t)) return true;
     return false;
   };
 
@@ -505,7 +645,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     setEffort(saved?.effort ?? 'medium');
     setPermissionMode(saved?.permissionMode ?? 'default');
     setPerToolApproval(saved?.perToolApproval ?? true);
-    setGeminiYolo(saved?.geminiYolo ?? true);
+    setGeminiYolo(saved?.geminiYolo ?? false);
     setCodexApprovalPolicy(saved?.codexApprovalPolicy ?? 'suggest');
   }, [aiAgent]); // eslint-disable-line react-hooks/exhaustive-deps
   const { t: tt } = useTranslation('claudeChat');
@@ -734,6 +874,15 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const shareContextRef = useRef(true);
   const shareContextLoadedRef = useRef(false);
   useEffect(() => { shareContextRef.current = shareContext; }, [shareContext]);
+  // 공유 토글 시점 — 기존 Claude 세션은 토글 전 모드(공유 ON 또는 OFF)에서 만들어진 것이라
+  // 그 세션에 이미 다른 에이전트 컨텍스트가 주입되어 있을 수 있음. --resume 시 옛 메모리를
+  // 그대로 가져오면 공유 OFF 가 무력화됨 → 토글 시점에 폐기해 다음 Claude send 에서 새 세션 생성.
+  // (첫 toggle 직후의 mount-effect 무한 폐기 방지를 위해 ref 로 첫 실행 스킵)
+  const shareContextInitRef = useRef(false);
+  useEffect(() => {
+    if (!shareContextInitRef.current) { shareContextInitRef.current = true; return; }
+    claudeSessionIdRef.current = null;
+  }, [shareContext]);
   useEffect(() => {
     (async () => {
       try {
@@ -821,8 +970,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     try { return localStorage.getItem('claudeEffort') || 'medium'; } catch { return 'medium'; }
   });
   useEffect(() => { try { localStorage.setItem('claudeEffort', effort); } catch {} }, [effort]);
-  // Gemini: --yolo 온/오프 (기본 true)
-  const [geminiYolo, setGeminiYolo] = useState<boolean>(true);
+  // Gemini: --yolo 온/오프 (기본 false — 수동 승인)
+  const [geminiYolo, setGeminiYolo] = useState<boolean>(false);
   // Codex: approval policy
   const [codexApprovalPolicy, setCodexApprovalPolicy] = useState<CodexApprovalPolicy>('suggest');
   const [codexApprovalMenuOpen, setCodexApprovalMenuOpen] = useState(false);
@@ -923,7 +1072,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     setEffort(saved?.effort ?? 'medium');
     setPermissionMode(saved?.permissionMode ?? 'default');
     setPerToolApproval(saved?.perToolApproval ?? true);
-    setGeminiYolo(saved?.geminiYolo ?? true);
+    setGeminiYolo(saved?.geminiYolo ?? false);
     setCodexApprovalPolicy(saved?.codexApprovalPolicy ?? 'suggest');
     onAgentChange?.(a);
   };
@@ -1513,6 +1662,10 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         // 특수문자 라벨을 따옴표로 감싸 mermaid 파서 에러 방지 (codex 다이어그램 대응)
         const renderSrc = sanitizeMermaidLabels(source);
         try {
+          (window as any).api?.debugDump?.('pepe-mermaid-src.txt',
+            `=====SOURCE=====\n${source}\n\n=====SANITIZED=====\n${renderSrc}\n`);
+        } catch {}
+        try {
           const { svg } = await Promise.race([
             mermaid.render(id, renderSrc),
             new Promise<never>((_, reject) =>
@@ -1756,11 +1909,25 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     const addDirsSet = new Set<string>();
     const contextLines: string[] = [];
 
-    // 0.A) 포크/이력 후속 질문이면 작업 대상을 prompt 최상단 + user text 에 직접 명시
+    // 0.A) 포크/이력 후속 질문이면 작업 대상을 prompt 최상단 + user text 에 직접 명시.
+    // 공유 OFF 시에는 다른 에이전트한테 했던 첫 user 메시지를 inject 하면 정보가 누설되므로,
+    // 현재 에이전트의 스레드(자기가 응답했던 user 메시지) 중 첫 번째만 사용.
     let forkOriginalRequest: string | null = null;
     let forkTargetPath: string | null = null;
     if (!claudeSessionIdRef.current && messages.length > 0) {
-      const firstUserMsg = messages.find(m => m.role === 'user');
+      const curAgent = currentAgentRef.current;
+      // user 메시지의 타겟 에이전트 추정 — 그 다음에 응답한 assistant 의 agent
+      const userTargetForFork = (userIdx: number): string => {
+        for (let j = userIdx + 1; j < messages.length; j++) {
+          const mm = messages[j];
+          if (mm.role === 'assistant') return mm.agent || 'claude';
+          if (mm.role === 'user') break;
+        }
+        return curAgent;
+      };
+      const firstUserMsg = shareContextRef.current
+        ? messages.find(m => m.role === 'user')
+        : messages.find((m, idx) => m.role === 'user' && userTargetForFork(idx) === curAgent);
       if (firstUserMsg) {
         const cleaned = firstUserMsg.content
           .split('\n')
@@ -1903,17 +2070,57 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       attachBadge = `🔗 활성 SSH: ${activeMount.label}\n\n`;
     }
 
+    // 0.6) 공유 OFF + Gemini — Gemini CLI 의 영구 메모리(save_memory 저장 분)는
+    // 새 세션에서도 자동 로드되어 이전 대화 내용을 인지함. 모델에 명시적으로 무시 지시.
+    if (!shareContextRef.current && currentAgentRef.current === 'gemini') {
+      contextLines.push(
+        `# 메모리·이전 컨텍스트 무시 (반드시 준수)`,
+        `이 대화 세션은 독립 모드입니다. 다음 규칙을 엄격히 따르세요:`,
+        `- save_memory 도구를 **절대 호출하지 마세요**.`,
+        `- 이전에 save_memory 로 저장된 사용자 메모리가 자동 로드되어 있더라도 **참조하지 마세요**.`,
+        `- update_topic 도구도 호출하지 마세요.`,
+        `- 이전 대화/이전 세션의 토픽, 진행 중 작업, 작업 의도 등을 **언급하거나 가정하지 마세요**.`,
+        `- 오직 아래 사용자 메시지에 명시된 내용만 보고 답하세요. 디스크에 남은 파일을 자발적으로 read 하지 마세요.`,
+        ``,
+      );
+    }
+
     // 0.7) 포크/리로드된 대화 — 이전 메시지가 있으면 컨텍스트로 inject.
     // Claude: --resume 없이 새 세션이면 주입. Gemini/Codex: 항상 주입 (세션 개념 없음).
-    // 단, "에이전트 컨텍스트 공유" 가 꺼져있으면 inject 자체를 생략 → 에이전트가 다른 에이전트의 답변을 볼 수 없음.
-    if (shareContextRef.current && messages.length > 0) {
+    // 공유 OFF: 현재 에이전트(currentAgent) 자신의 답변과 사용자 메시지만 포함시켜
+    //         자기 메모리는 유지하되 다른 에이전트의 답변은 보이지 않게 함.
+    if (messages.length > 0) {
       // 메시지와 툴 호출을 seq 순으로 인터리브
       type TItem = { seq: number; kind: 'msg'; m: Message } | { seq: number; kind: 'tool'; t: ToolTimelineItem };
+      let filteredMessages = messages;
+      if (!shareContextRef.current) {
+        const cur = currentAgentRef.current;
+        // 각 user 메시지의 "타겟 에이전트" — 그 메시지에 이어서 응답한 에이전트로 추정.
+        // 응답이 없는 user(끊긴 턴/현재 진행 중) 는 현재 에이전트가 타겟이라고 간주.
+        const userTarget = (userIdx: number): string => {
+          for (let j = userIdx + 1; j < messages.length; j++) {
+            const mm = messages[j];
+            if (mm.role === 'assistant') return mm.agent || 'claude';
+            if (mm.role === 'user') break; // 응답 없이 다음 user — 응답 없음으로 간주
+          }
+          return cur;
+        };
+        // 현재 에이전트의 스레드(=현재 에이전트가 응답한 user 메시지 + 현재 에이전트의 응답)만 포함.
+        // 도구 타임라인은 소유자 식별 불가 → 보수적으로 모두 제외.
+        filteredMessages = messages.filter((m, idx) => {
+          if (m.role === 'assistant') return (m.agent || 'claude') === cur;
+          return userTarget(idx) === cur;
+        });
+      }
       const items: TItem[] = [
-        ...messages.map((m, i) => ({ seq: m.seq ?? i * 2, kind: 'msg' as const, m })),
-        ...toolTimeline.map((t, i) => ({ seq: t.seq ?? (messages.length * 2 + i * 2 + 1), kind: 'tool' as const, t })),
+        ...filteredMessages.map((m, i) => ({ seq: m.seq ?? i * 2, kind: 'msg' as const, m })),
+        ...(shareContextRef.current
+          ? toolTimeline.map((t, i) => ({ seq: t.seq ?? (filteredMessages.length * 2 + i * 2 + 1), kind: 'tool' as const, t }))
+          : []),
       ];
       items.sort((a, b) => a.seq - b.seq);
+      // 필터링 후 비어있으면 inject 생략
+      if (filteredMessages.length === 0) { items.length = 0; }
       // 오래된 transcript 안의 UNC mountRoot 는 현재 세션과 다를 수 있음 (포트/termId 매 세션 변경).
       // 현재 active mountRoot 가 있으면 모든 옛 \\127.0.0.1@PORT\DavWWWRoot\term-XXX 패턴을 현재 것으로 치환.
       const sanitizeUNC = (s: string): string => {
@@ -1933,6 +2140,10 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           transcriptLines.push('');
         }
       }
+      // 필터링 결과 transcript 가 비어있으면 inject 통째 생략 (예: 공유 OFF + 이 에이전트로는 처음 보내는 경우)
+      if (transcriptLines.length === 0) {
+        // skip
+      } else
       contextLines.push(
         `# 이전 대화 내역 (포크/이어쓰기 — 매우 중요)`,
         `당신(${currentAgentRef.current === 'gemini' ? 'Gemini' : currentAgentRef.current === 'codex' ? 'Codex' : 'Claude'})은 새 CLI 세션에서 시작했지만, 사용자는 아래 대화의 연속으로 이번 질문을 합니다.`,
