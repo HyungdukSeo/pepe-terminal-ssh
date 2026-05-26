@@ -3428,13 +3428,6 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         // 공유 OFF 시 — 현재 에이전트가 "참여한" 대화는 모두 그 에이전트 view 에 표시.
         // (originAgent 만으로 필터하면 처음 시작한 에이전트의 사이드바에만 보임 → 다른 에이전트로
         //  이어서 대화한 경우 그쪽 사이드바에 안 보이는 문제 회피).
-        const histOrigin = (h: ChatHistoryEntry): string => {
-          if (h.originAgent) return h.originAgent;
-          for (const m of h.messages) {
-            if (m.role === 'assistant' && m.agent) return m.agent;
-          }
-          return 'claude';
-        };
         const histAgents = (h: ChatHistoryEntry): Set<string> => {
           const set = new Set<string>();
           if (h.originAgent) set.add(h.originAgent);
