@@ -49,6 +49,7 @@ import {
   findEmptyLeafId,
   countSessionInTree,
   createInitialLayout,
+  resetLayoutSizes,
 } from './utils/layoutUtils';
 
 export type { LayoutNode, ContainerNode, LeafNode, Panel, PanelSession } from './utils/layoutUtils';
@@ -2804,6 +2805,25 @@ function App() {
             setTabs(prev => [...prev, { id, title: '📁 파일 전송', layout: createInitialLayout(id), type: 'fileExplorer', initialTermId: getActiveTermId() ?? undefined }]);
             setActiveTabId(id);
           }}>📁</button>
+          <button
+            className="tool-btn"
+            title="패널 비율 균등 정렬 (현재 워크스페이스의 모든 분할 비율 리셋)"
+            onClick={() => {
+              if (!activeTab) return;
+              updateLayout(activeTab.id, layout => resetLayoutSizes(layout));
+              try { window.dispatchEvent(new CustomEvent('terminal-fit-all')); } catch {}
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+              {/* 2x2 균등 분할 패널 — 4개 같은 크기 박스 */}
+              <rect x="0.7" y="0.7" width="5.8" height="5.8" rx="1" fill="#1e2d3d" stroke="#4a7a9b" strokeWidth="1"/>
+              <rect x="7.5" y="0.7" width="5.8" height="5.8" rx="1" fill="#1e2d3d" stroke="#4a7a9b" strokeWidth="1"/>
+              <rect x="0.7" y="7.5" width="5.8" height="5.8" rx="1" fill="#1e2d3d" stroke="#4a7a9b" strokeWidth="1"/>
+              <rect x="7.5" y="7.5" width="5.8" height="5.8" rx="1" fill="#1e2d3d" stroke="#4a7a9b" strokeWidth="1"/>
+              {/* 균등 정렬 인디케이터 — 우측 하단에 작은 ✓ */}
+              <path d="M10 11.5 L11 12.5 L13 10.3" stroke="#4ade80" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" fill="none"/>
+            </svg>
+          </button>
           <span className="tool-sep" />
           <button className={`tool-btn ${showQuickConnect ? 'active' : ''}`} title={showQuickConnect ? '빠른 연결 바 숨기기' : '빠른 연결 바 표시'} onClick={() => setShowQuickConnect(v => !v)}>⚡</button>
           <button className={`tool-btn ${showClaudeChat ? 'active' : ''}`} title={showClaudeChat ? 'Claude 채팅 숨기기' : 'Claude 채팅 표시'} onClick={() => setShowClaudeChat(v => !v)}>🤖</button>

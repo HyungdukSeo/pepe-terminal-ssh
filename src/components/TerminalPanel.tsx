@@ -1060,6 +1060,18 @@ export function applyFontToTerm(termId: string, fontFamily?: string, fontSize?: 
   if (fontFamily) entry.term.options.fontFamily = fontFamily;
   if (fontSize) { entry.term.options.fontSize = fontSize; termFontSizes.set(termId, fontSize); }
   try { entry.fit.fit(); } catch {}
+  // fit 후 변경된 cols/rows 를 원격 셸(PTY/SSH)에 SIGWINCH 로 전파 — 안 보내면
+  // vi 같은 풀스크린 앱이 옛 row 수만 채워서 아래쪽이 비어 보임.
+  try {
+    const term: any = entry.term;
+    const c = term.cols || 80;
+    const r = term.rows || 24;
+    if (ptyConnected.has(termId)) {
+      (window as any).api?.ptyResize?.(termId, c, r);
+    } else {
+      (window as any).api?.resizeSSH?.(termId, c, r);
+    }
+  } catch {}
 }
 
 // term 별 flame 오버레이 상태 — 새 element + onCursorMove 정리용

@@ -117,6 +117,19 @@ function ContainerNodeView({ node, ...h }: CProps) {
     }
   }, [node.children.length]);
 
+  // 외부에서 node.sizes 가 변경된 경우(예: '패널 비율 균등 정렬' 리셋) 로컬 sizes 와 동기화 + refit.
+  // 드래그 중에는 onContainerResize 가 종료 시점에만 호출되어 local sizes 와 node.sizes 가
+  // 잠시 다를 수 있는데, 이 effect 는 둘이 같으면 no-op 이라 무한 루프 안 걸림.
+  useEffect(() => {
+    const fromProp: number[] = Array.isArray(node.sizes) && node.sizes.length === node.children.length && node.sizes.every(n => typeof n === 'number' && n > 0)
+      ? [...node.sizes]
+      : node.children.map(() => 1);
+    if (fromProp.length === sizes.length && fromProp.every((v, i) => v === sizes[i])) return;
+    setSizes(fromProp);
+    setTimeout(() => { window.dispatchEvent(new Event('resize')); refitAllTerms(); }, 80);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(node.sizes)]);
+
   const onMouseDown = (e: React.MouseEvent, index: number) => {
     e.preventDefault();
     dragging.current = { index, start: isRow ? e.clientX : e.clientY, sizes: [...sizes] };

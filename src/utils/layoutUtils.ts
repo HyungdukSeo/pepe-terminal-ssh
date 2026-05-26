@@ -249,6 +249,13 @@ export function switchPanelSession(
   return walk(root);
 }
 
+/** 트리 안의 모든 ContainerNode 에서 sizes 를 제거해 균등 분할로 리셋 */
+export function resetLayoutSizes(node: LayoutNode): LayoutNode {
+  if (node.type === 'leaf') return node;
+  const { sizes: _drop, ...rest } = node;
+  return { ...rest, children: node.children.map(resetLayoutSizes) };
+}
+
 export function countLeaves(node: LayoutNode): number {
   if (node.type === 'leaf') return 1;
   return node.children.reduce((sum, child) => sum + countLeaves(child), 0);
