@@ -2454,6 +2454,21 @@ body.popout-options .session-editor h3:first-child {
   white-space: nowrap;
   flex: 1;
 }
+.claude-chat-history-agent {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: 6px;
+  flex-shrink: 0;
+}
+.claude-chat-history-agent svg {
+  width: 14px;
+  height: 14px;
+}
+/* 여러 에이전트가 함께 쓰인 대화는 아이콘들이 겹쳐서 컴팩트하게 보이도록 */
+.claude-chat-history-agent svg + svg {
+  margin-left: -4px;
+}
 .claude-chat-history-actions {
   display: flex;
   gap: 2px;
