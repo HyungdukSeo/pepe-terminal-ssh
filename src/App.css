@@ -2258,10 +2258,14 @@ body.popout-options .session-editor h3:first-child {
   flex-wrap: nowrap;
   border-bottom: 1px solid #2a3340;
   overflow: hidden;
+  /* 도구모음/빠른연결 옆 빈 공간이 부모 색으로 비치지 않도록 도구모음과 같은 배경 사용 */
+  background: #1a1a1a;
 }
 .quickconnect-row > .qc-wrap { flex: 0 0 auto; display: flex; box-sizing: border-box; }
 .quickconnect-row > .qc-wrap > .quick-connect-bar { flex: 0 0 auto; border-bottom: 0; }
 .quickconnect-row > .tool-toolbar { border-bottom: 0; flex: 0 0 auto; }
+/* 빠른연결 바가 숨겨져 도구모음이 행에 단독으로 있을 때는 행을 가득 채워 우측 여백 없앰 */
+.quickconnect-row > .tool-toolbar:only-child { flex: 1 1 auto; }
 .qc-divider-static {
   width: 1px;
   background: #3a475a;
