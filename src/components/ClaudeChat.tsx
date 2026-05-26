@@ -2678,6 +2678,49 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     setChatHistory(h => h.map(x => x.id === id ? { ...x, title: newTitle } : x));
   };
 
+  // 가장 최근 대화 자동 선택 — 초기 마운트 / 에이전트 전환 / 공유모드 전환 시 트리거.
+  // 현재 view 의 이력이 비어있으면 새 대화 상태 유지 (공유 OFF + 그 에이전트 첫 사용 시 등).
+  const autoSelectViewRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!chatHistoryLoadedRef.current) return;
+    const viewKey = `${currentAgent}_${shareContext}`;
+    if (autoSelectViewRef.current === viewKey) return; // 이 view 에선 이미 자동선택 처리됨
+    autoSelectViewRef.current = viewKey;
+    // 현재 view 에서 보이는 이력 목록 계산
+    const visible = shareContext
+      ? chatHistory
+      : chatHistory.filter(h => {
+          const set = new Set<string>();
+          if (h.originAgent) set.add(h.originAgent);
+          for (const m of h.messages) { if (m.agent) set.add(m.agent); }
+          if (set.size === 0) set.add('claude');
+          return set.has(currentAgent);
+        });
+    // 활성 history 가 새 view 에서도 보이면 그대로 유지
+    const activeStillVisible = activeHistoryIdRef.current && visible.some(h => h.id === activeHistoryIdRef.current);
+    if (activeStillVisible) return;
+    if (visible.length > 0) {
+      // 가장 최근 (updatedAt 기준) 항목 자동 로드
+      const latest = [...visible].sort((a, b) => b.updatedAt - a.updatedAt)[0];
+      loadHistory(latest);
+    } else {
+      // 현재 view 에 이력 없음 → 새 대화 (UI 만 리셋, 백그라운드 프로세스는 살림)
+      activeRequestIdRef.current = null;
+      setMessages([]);
+      setToolTimeline([]);
+      setActivity('');
+      setPendingPlan(null);
+      setPendingPlanAgent(null);
+      setStreaming(false);
+      claudeSessionIdRef.current = null;
+      recentLocalPathsRef.current.clear();
+      currentAsstIdRef.current = null;
+      setActiveHist(null);
+      setLastRejectedPlan(null);
+      setLastRejectedPlanAgent(null);
+    }
+  }, [currentAgent, shareContext, chatHistory.length]);
+
   // 계획 승인 — "진행해줘" 메시지로 bypass 모드 send 자동 실행
   // streaming 상태 race 방지용 — 승인 시점에 streaming 이 아직 true 면 끝나기를 기다렸다 send
   const pendingApprovalSendRef = useRef<string | null>(null);
@@ -2933,12 +2976,17 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     return (
       <div className="claude-chat-container">
         <div className="claude-chat-header">
-          <div className="claude-chat-agent-switcher">
-            <button className={`claude-chat-agent-btn ${currentAgent === 'claude' ? 'active' : ''}`} title="Claude Code" onClick={() => switchAgent('claude')}><ClaudeTabIcon /></button>
-            <button className={`claude-chat-agent-btn ${currentAgent === 'gemini' ? 'active' : ''}`} title="Gemini" onClick={() => switchAgent('gemini')}><GeminiTabIcon /></button>
-            <button className={`claude-chat-agent-btn ${currentAgent === 'codex' ? 'active' : ''}`} title="Codex" onClick={() => switchAgent('codex')}><CodexTabIcon /></button>
+          <div className="claude-chat-header-left">
+            <div className="claude-chat-agent-switcher">
+              <button className={`claude-chat-agent-btn ${currentAgent === 'claude' ? 'active' : ''}`} title="Claude Code" onClick={() => switchAgent('claude')}><ClaudeTabIcon /></button>
+              <button className={`claude-chat-agent-btn ${currentAgent === 'gemini' ? 'active' : ''}`} title="Gemini" onClick={() => switchAgent('gemini')}><GeminiTabIcon /></button>
+              <button className={`claude-chat-agent-btn ${currentAgent === 'codex' ? 'active' : ''}`} title="Codex" onClick={() => switchAgent('codex')}><CodexTabIcon /></button>
+            </div>
           </div>
-          {onClose && <button className="claude-chat-close" onClick={onClose}>×</button>}
+          <div className="claude-chat-header-center" />
+          <div className="claude-chat-header-actions">
+            {onClose && <button className="claude-chat-close" onClick={onClose}>×</button>}
+          </div>
         </div>
         <div className="claude-chat-loading">{currentAgent === 'gemini' ? tt('loadingGemini') : currentAgent === 'codex' ? tt('loadingCodex') : tt('loading')}</div>
       </div>
@@ -2949,24 +2997,29 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     return (
       <div className="claude-chat-container">
         <div className="claude-chat-header">
-          <div className="claude-chat-agent-switcher">
-            <button
-              className={`claude-chat-agent-btn ${currentAgent === 'claude' ? 'active' : ''}`}
-              title="Claude Code"
-              onClick={() => switchAgent('claude')}
-            ><ClaudeTabIcon /></button>
-            <button
-              className={`claude-chat-agent-btn ${currentAgent === 'gemini' ? 'active' : ''}`}
-              title="Gemini"
-              onClick={() => switchAgent('gemini')}
-            ><GeminiTabIcon /></button>
-            <button
-              className={`claude-chat-agent-btn ${currentAgent === 'codex' ? 'active' : ''}`}
-              title="Codex"
-              onClick={() => switchAgent('codex')}
-            ><CodexTabIcon /></button>
+          <div className="claude-chat-header-left">
+            <div className="claude-chat-agent-switcher">
+              <button
+                className={`claude-chat-agent-btn ${currentAgent === 'claude' ? 'active' : ''}`}
+                title="Claude Code"
+                onClick={() => switchAgent('claude')}
+              ><ClaudeTabIcon /></button>
+              <button
+                className={`claude-chat-agent-btn ${currentAgent === 'gemini' ? 'active' : ''}`}
+                title="Gemini"
+                onClick={() => switchAgent('gemini')}
+              ><GeminiTabIcon /></button>
+              <button
+                className={`claude-chat-agent-btn ${currentAgent === 'codex' ? 'active' : ''}`}
+                title="Codex"
+                onClick={() => switchAgent('codex')}
+              ><CodexTabIcon /></button>
+            </div>
           </div>
-          {onClose && <button className="claude-chat-close" onClick={onClose}>×</button>}
+          <div className="claude-chat-header-center" />
+          <div className="claude-chat-header-actions">
+            {onClose && <button className="claude-chat-close" onClick={onClose}>×</button>}
+          </div>
         </div>
         <div className="claude-chat-notinstalled">
           <p>{notInstalledMsg}</p>
@@ -2996,25 +3049,27 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   return (
     <div className="claude-chat-container">
       <div className="claude-chat-header">
-        <div className="claude-chat-agent-switcher">
-          <button
-            className={`claude-chat-agent-btn ${currentAgent === 'claude' ? 'active' : ''}`}
-            title="Claude Code"
-            onClick={() => switchAgent('claude')}
-          ><ClaudeTabIcon /></button>
-          <button
-            className={`claude-chat-agent-btn ${currentAgent === 'gemini' ? 'active' : ''}`}
-            title="Gemini"
-            onClick={() => switchAgent('gemini')}
-          ><GeminiTabIcon /></button>
-          <button
-            className={`claude-chat-agent-btn ${currentAgent === 'codex' ? 'active' : ''}`}
-            title="Codex"
-            onClick={() => switchAgent('codex')}
-          ><CodexTabIcon /></button>
+        <div className="claude-chat-header-left">
+          <div className="claude-chat-agent-switcher">
+            <button
+              className={`claude-chat-agent-btn ${currentAgent === 'claude' ? 'active' : ''}`}
+              title="Claude Code"
+              onClick={() => switchAgent('claude')}
+            ><ClaudeTabIcon /></button>
+            <button
+              className={`claude-chat-agent-btn ${currentAgent === 'gemini' ? 'active' : ''}`}
+              title="Gemini"
+              onClick={() => switchAgent('gemini')}
+            ><GeminiTabIcon /></button>
+            <button
+              className={`claude-chat-agent-btn ${currentAgent === 'codex' ? 'active' : ''}`}
+              title="Codex"
+              onClick={() => switchAgent('codex')}
+            ><CodexTabIcon /></button>
+          </div>
+          {version && <span className="claude-chat-version">{version}</span>}
         </div>
-        {version && <span className="claude-chat-version" style={{ marginLeft: 4, color: '#666', fontSize: 11 }}>{version}</span>}
-        <div className="claude-chat-header-actions">
+        <div className="claude-chat-header-center">
           {onTogglePin && (
             <button
               className={`claude-chat-pin ${pinned ? 'pinned' : ''}`}
@@ -3028,6 +3083,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             title={shareContext ? '에이전트 간 컨텍스트 공유 켜짐 — 클릭하여 끄기' : '에이전트 간 컨텍스트 공유 꺼짐 — 클릭하여 켜기'}
             className={`claude-chat-share-toggle ${shareContext ? 'on' : 'off'}`}
           >🔗</button>
+        </div>
+        <div className="claude-chat-header-actions">
           <button onClick={startNewConversation} title={tt('newConversation')}>＋</button>
           <button onClick={() => setShowHistoryPanel(v => !v)} title={tt('historyToggle')} className={showHistoryPanel ? 'active' : ''}>≡</button>
           <button onClick={trashCurrentConversation} title={tt('clear')}>🗑</button>
@@ -3544,23 +3601,30 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         )}
         {(() => {
           // 공유 OFF 면 현재 에이전트의 스레드(자기 응답 + 자기한테 향한 user 메시지)만 카운트.
-          // 비어있으면 empty placeholder 표시.
+          // 단 mixed-agent (공유 ON 시 만들어진) 대화는 필터 안 함 → 메시지가 있으면 무조건 비어있지 않음.
           let hasVisible = messages.length > 0;
           if (!shareContext) {
-            const cur = currentAgent;
-            const userTargetView = (userIdx: number): string => {
-              for (let j = userIdx + 1; j < messages.length; j++) {
-                const mm = messages[j];
-                if (mm.role === 'assistant') return mm.agent || 'claude';
-                if (mm.role === 'user') break;
-              }
-              return cur;
-            };
-            hasVisible = messages.some((m, idx) => {
-              if (m.role === 'assistant') return (m.agent || 'claude') === cur;
-              if (m.agent) return m.agent === cur;
-              return userTargetView(idx) === cur;
-            });
+            const respondedAgents = new Set<string>();
+            for (const m of messages) {
+              if (m.role === 'assistant' && m.agent) respondedAgents.add(m.agent);
+            }
+            const isSharedConv = respondedAgents.size > 1;
+            if (!isSharedConv) {
+              const cur = currentAgent;
+              const userTargetView = (userIdx: number): string => {
+                for (let j = userIdx + 1; j < messages.length; j++) {
+                  const mm = messages[j];
+                  if (mm.role === 'assistant') return mm.agent || 'claude';
+                  if (mm.role === 'user') break;
+                }
+                return cur;
+              };
+              hasVisible = messages.some((m, idx) => {
+                if (m.role === 'assistant') return (m.agent || 'claude') === cur;
+                if (m.agent) return m.agent === cur;
+                return userTargetView(idx) === cur;
+              });
+            }
           }
           if (hasVisible) return null;
           return (
@@ -3572,27 +3636,35 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         })()}
         {(() => {
           // 컨텍스트 공유 OFF 시 — 현재 에이전트의 스레드만 보여주도록 메시지/툴 필터링.
-          // 화면도 에이전트별로 완전히 분리되어 보이게 (다른 에이전트의 메시지·툴 숨김).
+          // 단 이전에 공유 ON 모드에서 만들어진 '여러 에이전트가 섞인 대화' 는 그대로 두고
+          // 필터링하지 않음 (히스토리 무결성 보존, 옛 대화의 흐름 유지).
           let viewMessages = messages;
           let viewToolTimeline = toolTimeline;
           if (!shareContext) {
-            const cur = currentAgent;
-            const userTargetView = (userIdx: number): string => {
-              for (let j = userIdx + 1; j < messages.length; j++) {
-                const mm = messages[j];
-                if (mm.role === 'assistant') return mm.agent || 'claude';
-                if (mm.role === 'user') break;
-              }
-              return cur;
-            };
-            viewMessages = messages.filter((m, idx) => {
-              if (m.role === 'assistant') return (m.agent || 'claude') === cur;
-              if (m.agent) return m.agent === cur;
-              return userTargetView(idx) === cur;
-            });
-            // 도구 타임라인은 소유 에이전트 식별이 어려워 보수적으로 모두 숨김
-            // (다른 에이전트 도구가 누설되지 않도록. 자기 도구도 같이 숨겨지지만 누설 방지가 우선)
-            viewToolTimeline = [];
+            // 한 conversation 안에서 응답한 assistant 의 agent 종류를 세어 본다.
+            const respondedAgents = new Set<string>();
+            for (const m of messages) {
+              if (m.role === 'assistant' && m.agent) respondedAgents.add(m.agent);
+            }
+            const isSharedConv = respondedAgents.size > 1;
+            if (!isSharedConv) {
+              const cur = currentAgent;
+              const userTargetView = (userIdx: number): string => {
+                for (let j = userIdx + 1; j < messages.length; j++) {
+                  const mm = messages[j];
+                  if (mm.role === 'assistant') return mm.agent || 'claude';
+                  if (mm.role === 'user') break;
+                }
+                return cur;
+              };
+              viewMessages = messages.filter((m, idx) => {
+                if (m.role === 'assistant') return (m.agent || 'claude') === cur;
+                if (m.agent) return m.agent === cur;
+                return userTargetView(idx) === cur;
+              });
+              // 도구 타임라인은 소유 에이전트 식별이 어려워 보수적으로 모두 숨김
+              viewToolTimeline = [];
+            }
           }
           // 메시지 + 툴 호출을 발생 순서(seq) 로 인터리브
           type Item = { kind: 'msg'; m: Message; seq: number } | { kind: 'tool'; t: ToolTimelineItem; seq: number };
