@@ -57,7 +57,12 @@
     "xStatusRunning": "🟢 En cours d'exécution",
     "xStatusNone": "⚫ Aucun serveur X en cours d'exécution.",
     "xStatusFail": "Échec de la requête d'état du serveur X",
-    "options": "⚙ Options..."
+    "options": "⚙ Options...",
+    "browserWs": "🌐 Espace Navigateur",
+    "compareWs": "🔍 Comparaison de fichiers",
+    "logAnalyzerWs": "📈 Analyseur de logs",
+    "vpnWs": "🔒 VPN",
+    "i18nWs": "🌍 Éditeur de traduction"
   },
   "help": {
     "title": "Aide",

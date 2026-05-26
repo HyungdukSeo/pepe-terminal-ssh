@@ -68,6 +68,27 @@ class SSHBridge extends EventEmitter {
   private conflictResolvers: Map<string, (decision: any) => void> = new Map();
   // 전송별 "모두 적용" 기본 결정 — { [transferId]: { file?: 'overwrite'|'skip'|'resume', dir?: 'overwrite'|'skip' } }
   private transferDefaults: Map<string, { file?: string; dir?: string }> = new Map();
+  // 워크스페이스 단위 "모두 적용" 기본값 — 연속된 드래그/드롭(transferId 가 매번 새로 생성됨)에도 기억.
+  // 마지막 사용 후 TTL(기본 60초) 동안만 유효 → 한참 뒤 새 전송은 다시 묻도록.
+  private workspaceConflictDefaults: Map<string, { file?: string; dir?: string; lastUsed: number }> = new Map();
+  private readonly WORKSPACE_DEFAULT_TTL_MS = 60_000;
+  private getWorkspaceConflictDefault(workspaceId: string | undefined, kind: 'file' | 'dir'): string | undefined {
+    if (!workspaceId) return undefined;
+    const entry = this.workspaceConflictDefaults.get(workspaceId);
+    if (!entry) return undefined;
+    if (Date.now() - entry.lastUsed > this.WORKSPACE_DEFAULT_TTL_MS) {
+      this.workspaceConflictDefaults.delete(workspaceId);
+      return undefined;
+    }
+    return entry[kind];
+  }
+  private setWorkspaceConflictDefault(workspaceId: string | undefined, kind: 'file' | 'dir', action: string) {
+    if (!workspaceId) return;
+    const cur = this.workspaceConflictDefaults.get(workspaceId) || { lastUsed: Date.now() };
+    cur[kind] = action;
+    cur.lastUsed = Date.now();
+    this.workspaceConflictDefaults.set(workspaceId, cur);
+  }
   // 충돌 다이얼로그 직렬화 뮤텍스 — 병렬 전송 시 다이얼로그가 동시에 뜨는 것 방지
   private conflictLock: Map<string, Promise<void>> = new Map();
   // 사용자가 취소(cancel) 한 transferId
@@ -1598,15 +1619,24 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
       let action: string;
       let newName: string | undefined;
       // 먼저 기존 "모두 적용" 기본값 확인 (락 없이 빠르게)
-      const quickDef = (this.transferDefaults.get(ctx!.transferId) || {})[srcIsDir ? 'dir' : 'file'];
+      // 1) 현재 transferId 의 기본값 → 2) 워크스페이스 단위 TTL 캐시 (연속 드롭 기억)
+      const kind = srcIsDir ? 'dir' : 'file';
+      const quickDef = (this.transferDefaults.get(ctx!.transferId) || {})[kind]
+        || this.getWorkspaceConflictDefault(ctx!.workspaceId, kind);
       if (quickDef) {
         action = quickDef;
+        // 워크스페이스 캐시에서 가져왔다면 사용 시각 갱신 + 현재 transfer 에도 캐시
+        const cur = this.transferDefaults.get(ctx!.transferId) || {};
+        if (srcIsDir) cur.dir = action; else cur.file = action;
+        this.transferDefaults.set(ctx!.transferId, cur);
+        if (ctx!.workspaceId) this.setWorkspaceConflictDefault(ctx!.workspaceId, kind, action);
       } else {
         // 뮤텍스 획득 — 한 번에 다이얼로그 하나만 표시
         const release = await this.acquireConflictLock(ctx!.transferId);
         try {
           // 락 대기 중 다른 워커가 "모두 적용" 결정했을 수 있음 — 재확인
-          const def = (this.transferDefaults.get(ctx!.transferId) || {})[srcIsDir ? 'dir' : 'file'];
+          const def = (this.transferDefaults.get(ctx!.transferId) || {})[kind]
+            || this.getWorkspaceConflictDefault(ctx!.workspaceId, kind);
           if (def) {
             action = def;
           } else {
@@ -1629,6 +1659,8 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
               const cur = this.transferDefaults.get(ctx!.transferId) || {};
               if (srcIsDir) cur.dir = action; else cur.file = action;
               this.transferDefaults.set(ctx!.transferId, cur);
+              // 워크스페이스 단위로도 저장 → 다음 드롭에서도 같은 결정 재사용
+              if (ctx!.workspaceId) this.setWorkspaceConflictDefault(ctx!.workspaceId, kind, action);
             }
             if (decision?.cancel) {
               this.cancelledTransfers.add(ctx!.transferId);

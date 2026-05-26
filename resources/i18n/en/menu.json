@@ -57,7 +57,12 @@
     "xStatusRunning": "🟢 Running",
     "xStatusNone": "⚫ No X server running.",
     "xStatusFail": "Failed to query X server status",
-    "options": "⚙ Options..."
+    "options": "⚙ Options...",
+    "browserWs": "🌐 Browser Workspace",
+    "compareWs": "🔍 File Compare",
+    "logAnalyzerWs": "📈 Log Analyzer",
+    "vpnWs": "🔒 VPN",
+    "i18nWs": "🌍 Translation Editor"
   },
   "help": {
     "title": "Help",

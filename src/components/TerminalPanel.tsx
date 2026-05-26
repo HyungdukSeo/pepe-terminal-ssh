@@ -2913,7 +2913,7 @@ export const TerminalPanel: React.FC<Props> = ({
   const [scrollbackDialog, setScrollbackDialog] = useState<{ value: string } | null>(null);
   const [multiPaste, setMultiPaste] = useState<{ termId: string; text: string } | null>(null); void multiPaste;
   const [shellMenu, setShellMenu] = useState<{ x: number; y: number } | null>(null);
-  const [fontDialog, setFontDialog] = useState<{ termId: string; family: string; size: number } | null>(null);
+  const [fontDialog, setFontDialog] = useState<{ termId: string; family: string; size: number; initialFamily: string; initialSize: number } | null>(null);
   const showMultiLinePasteDialog = (tid: string, text: string) => {
     setMultiPaste({ termId: tid, text });
     // BrowserWindow 모달 직접 띄움 (인라인 모달은 더 이상 사용 안 함)
@@ -3461,7 +3461,7 @@ export const TerminalPanel: React.FC<Props> = ({
               const entry = termStore.get(activeTermId);
               const curFamily = entry ? (entry.term.options.fontFamily || '') : '';
               const curSize = entry ? (entry.term.options.fontSize || 14) : 14;
-              setFontDialog({ termId: activeTermId, family: curFamily, size: curSize });
+              setFontDialog({ termId: activeTermId, family: curFamily, size: curSize, initialFamily: curFamily, initialSize: curSize });
             }},
             { label: t('menu.changeTheme'), onClick: () => {
               const cur = termThemeCache.get(activeTermId) || '';
@@ -3506,7 +3506,7 @@ export const TerminalPanel: React.FC<Props> = ({
         (() => {
           const closeAndFocus = () => { setScrollbackDialog(null); setTimeout(() => focusTerm(activeTermId), 0); };
           return (
-            <div className="session-editor-backdrop" onClick={closeAndFocus}>
+            <div className="session-editor-backdrop">
               <div className="session-editor" style={{ width: 320 }} onClick={e => e.stopPropagation()}>
                 <h3>{t('dialogs.scrollbackTitle')}</h3>
                 <div style={{ padding: '8px 0', color: '#aaa', fontSize: 12 }}>{t('dialogs.scrollbackHint')}</div>
@@ -3544,10 +3544,13 @@ export const TerminalPanel: React.FC<Props> = ({
         document.body
       )}
       {fontDialog && ReactDOM.createPortal(
-        <div className="session-editor-backdrop"
-          onMouseDown={e => { (e.currentTarget as any).__bg = (e.target === e.currentTarget); }}
-          onMouseUp={e => { if ((e.currentTarget as any).__bg && e.target === e.currentTarget) setFontDialog(null); }}
-        >
+        (() => {
+          const revertAndClose = () => {
+            applyFontToTerm(fontDialog.termId, fontDialog.initialFamily || undefined, fontDialog.initialSize);
+            setFontDialog(null);
+          };
+          return (
+        <div className="session-editor-backdrop">
           <div className="session-editor" onClick={e => e.stopPropagation()} style={{ width: 360 }}>
             <h3>{t('dialogs.fontTitle')}</h3>
             <div style={{ marginBottom: 12 }}>
@@ -3582,10 +3585,13 @@ export const TerminalPanel: React.FC<Props> = ({
               />
             </div>
             <div className="session-editor-actions">
+              <button className="btn-cancel" onClick={revertAndClose}>{t('dialogs.cancel')}</button>
               <button className="btn-save" onClick={() => setFontDialog(null)}>{t('dialogs.ok')}</button>
             </div>
           </div>
-        </div>,
+        </div>
+          );
+        })(),
         document.body
       )}
       {shellMenu && availableShells && availableShells.length > 0 && (

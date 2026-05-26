@@ -29,6 +29,8 @@ import { getClaudeFontFamily, getClaudeFontSize, setClaudeFontFamily, setClaudeF
 import { getTerminalSettings, saveTerminalSettings, TerminalSettings } from './utils/terminalSettings';
 import { loadKeybindings, matchKeybinding, getKeybindings, DEFAULT_KEYBINDINGS, KEYBINDING_LABELS, keyEventToCombo, setKeybindingListening } from './utils/keybindings';
 import { getThemeList } from './utils/terminalThemes';
+import { setLanguage, getCurrentLanguage } from './i18n';
+import { useTranslation } from 'react-i18next';
 import { SessionList } from './components/SessionList';
 import { SessionEditor } from './components/SessionEditor';
 import {
@@ -69,6 +71,8 @@ function addBroadcastHistory(text: string) {
 }
 
 function App() {
+  const { t: tOpt } = useTranslation('options');
+  const { t: tMenu } = useTranslation('menu');
   const [tabs, setTabs] = useState<Tab[]>(() => {
     return [{ id: 'tab-1', title: 'Workspace 1', layout: createInitialLayout('tab-1') }];
   });
@@ -235,6 +239,20 @@ function App() {
     setAskPwdPrompts(prev => prev.map(x => x.termId === termId ? { ...x, userInput: value } : x));
   };
   const [themeName, setThemeName] = useState(getCurrentThemeName);
+  const [uiLang, setUiLang] = useState<string>(getCurrentLanguage());
+  const [availableLangs, setAvailableLangs] = useState<string[]>([]);
+  useEffect(() => {
+    (async () => {
+      try {
+        const langs: string[] = await (window as any).api?.i18nListLanguages?.() || [];
+        // en, ko 우선 + 나머지 추가 순서
+        const priority = ['en', 'ko'];
+        const head = priority.filter(p => langs.includes(p));
+        const rest = langs.filter(l => !priority.includes(l));
+        setAvailableLangs([...head, ...rest]);
+      } catch {}
+    })();
+  }, []);
   const [wordSepValue, setWordSepValue] = useState('');
   const [termSettings, setTermSettings] = useState<TerminalSettings>(getTerminalSettings);
   const isOptionsPopout = false; // popout 비활성 — localStorage 격리로 데이터 유실 위험
@@ -2190,106 +2208,106 @@ function App() {
 
   const menuDefs: MenuDef[] = [
     {
-      label: '파일',
+      label: tMenu('file.title'),
       items: [
-        { label: '새 워크스페이스', action: () => addTab() },
-        { label: '워크스페이스 닫기', action: () => activeTab && closeTab(activeTab.id), disabled: tabs.length <= 1 },
+        { label: tMenu('file.newWorkspace'), action: () => addTab() },
+        { label: tMenu('file.closeWorkspace'), action: () => activeTab && closeTab(activeTab.id), disabled: tabs.length <= 1 },
         { separator: true, label: '' },
-        { label: '세션 내보내기...', action: () => (window as any).api.exportSessions() },
-        { label: '세션 가져오기...', action: async () => { const r = await (window as any).api.importSessions(); if (r) { window.dispatchEvent(new Event('sessions-reload')); showToast(r.addedCount != null ? `${r.addedCount}개 세션 가져옴 (총 ${r.totalParsed}개 중)` : '세션을 가져왔습니다.'); } } },
+        { label: tMenu('file.exportSessions'), action: () => (window as any).api.exportSessions() },
+        { label: tMenu('file.importSessions'), action: async () => { const r = await (window as any).api.importSessions(); if (r) { window.dispatchEvent(new Event('sessions-reload')); showToast(r.addedCount != null ? tMenu('file.importedToast', { added: r.addedCount, total: r.totalParsed }) : tMenu('file.importedToastSimple')); } } },
         { separator: true, label: '' },
-        { label: '종료', action: () => window.close() },
+        { label: tMenu('file.quit'), action: () => window.close() },
       ],
     },
     {
-      label: '편집',
+      label: tMenu('edit.title'),
       items: [
-        { label: '복사', shortcut: 'Ctrl+Shift+C', action: () => document.execCommand('copy') },
-        { label: '붙여넣기', shortcut: 'Ctrl+Shift+V', action: () => { navigator.clipboard.readText().then(text => { const tid = getActiveTermId(); if (!tid) return; pasteToTerm(tid, text); }); } },
+        { label: tMenu('edit.copy'), shortcut: 'Ctrl+Shift+C', action: () => document.execCommand('copy') },
+        { label: tMenu('edit.paste'), shortcut: 'Ctrl+Shift+V', action: () => { navigator.clipboard.readText().then(text => { const tid = getActiveTermId(); if (!tid) return; pasteToTerm(tid, text); }); } },
         { separator: true, label: '' },
-        { label: '찾기', shortcut: 'Ctrl+Shift+F', action: () => setShowSearch(true) },
+        { label: tMenu('edit.find'), shortcut: 'Ctrl+Shift+F', action: () => setShowSearch(true) },
       ],
     },
     {
-      label: '보기',
+      label: tMenu('view.title'),
       items: [
         {
-          label: '테마',
+          label: tMenu('view.theme'),
           submenu: getThemeList().map(t => ({
             label: t,
             action: () => handleThemeChange(t),
           })),
         },
         { separator: true, label: '' },
-        { label: '글꼴 크기 +', shortcut: 'Ctrl+휠 위', action: () => applyFontToAll(undefined, (Number(localStorage.getItem('terminalFontSize')) || 14) + 1) },
-        { label: '글꼴 크기 -', shortcut: 'Ctrl+휠 아래', action: () => applyFontToAll(undefined, Math.max(8, (Number(localStorage.getItem('terminalFontSize')) || 14) - 1)) },
+        { label: tMenu('view.fontSizeUp'), shortcut: tMenu('view.wheelUp'), action: () => applyFontToAll(undefined, (Number(localStorage.getItem('terminalFontSize')) || 14) + 1) },
+        { label: tMenu('view.fontSizeDown'), shortcut: tMenu('view.wheelDown'), action: () => applyFontToAll(undefined, Math.max(8, (Number(localStorage.getItem('terminalFontSize')) || 14) - 1)) },
       ],
     },
     {
-      label: '창',
+      label: tMenu('window.title'),
       items: [
-        { label: '세로 분할', action: () => { if (activeTab && selectedPanelId) openSplitSessionPicker('row', selectedPanelId); }, disabled: !selectedPanelId },
-        { label: '가로 분할', action: () => { if (activeTab && selectedPanelId) openSplitSessionPicker('column', selectedPanelId); }, disabled: !selectedPanelId },
+        { label: tMenu('window.splitV'), action: () => { if (activeTab && selectedPanelId) openSplitSessionPicker('row', selectedPanelId); }, disabled: !selectedPanelId },
+        { label: tMenu('window.splitH'), action: () => { if (activeTab && selectedPanelId) openSplitSessionPicker('column', selectedPanelId); }, disabled: !selectedPanelId },
         { separator: true, label: '' },
-        { label: '화면 지우기', shortcut: 'Ctrl+Shift+L', action: () => { const tid = getActiveTermId(); if (tid) clearScreenInTerm(tid); } },
-        { label: '스크롤 버퍼 지우기', shortcut: 'Ctrl+Shift+B', action: () => { const tid = getActiveTermId(); if (tid) clearScrollbackInTerm(tid); } },
-        { label: '모두 지우기', shortcut: 'Ctrl+Shift+A', action: () => { const tid = getActiveTermId(); if (tid) clearAllInTerm(tid); } },
+        { label: tMenu('window.clearScreen'), shortcut: 'Ctrl+Shift+L', action: () => { const tid = getActiveTermId(); if (tid) clearScreenInTerm(tid); } },
+        { label: tMenu('window.clearScrollback'), shortcut: 'Ctrl+Shift+B', action: () => { const tid = getActiveTermId(); if (tid) clearScrollbackInTerm(tid); } },
+        { label: tMenu('window.clearAll'), shortcut: 'Ctrl+Shift+A', action: () => { const tid = getActiveTermId(); if (tid) clearAllInTerm(tid); } },
       ],
     },
     {
-      label: '도구',
+      label: tMenu('tools.title'),
       items: [
-        { label: '📁 파일 전송', action: () => {
+        { label: tMenu('tools.fileTransfer'), action: () => {
           const id = `tab-fe-${Date.now()}`;
-          setTabs(prev => [...prev, { id, title: '📁 파일 전송', layout: createInitialLayout(id), type: 'fileExplorer', initialTermId: getActiveTermId() ?? undefined }]);
+          setTabs(prev => [...prev, { id, title: tMenu('tools.fileTransfer'), layout: createInitialLayout(id), type: 'fileExplorer', initialTermId: getActiveTermId() ?? undefined }]);
           setActiveTabId(id);
         }},
-        { label: '🌐 브라우저 워크스페이스', action: addBrowserTab },
-        { label: '🔍 파일 비교 워크스페이스', action: addCompareTab },
-        { label: '📈 로그 분석 워크스페이스', action: addLogAnalyzerTab },
-        { label: '🔒 VPN 워크스페이스', action: addVpnTab },
-        { label: '🌍 다국어 지원 워크스페이스', action: addI18nEditorTab },
+        { label: '🌐 ' + (tMenu('tools.browserWs', { defaultValue: '브라우저 워크스페이스' })), action: addBrowserTab },
+        { label: '🔍 ' + (tMenu('tools.compareWs', { defaultValue: '파일 비교 워크스페이스' })), action: addCompareTab },
+        { label: '📈 ' + (tMenu('tools.logAnalyzerWs', { defaultValue: '로그 분석 워크스페이스' })), action: addLogAnalyzerTab },
+        { label: '🔒 ' + (tMenu('tools.vpnWs', { defaultValue: 'VPN 워크스페이스' })), action: addVpnTab },
+        { label: '🌍 ' + (tMenu('tools.i18nWs', { defaultValue: '다국어 지원 워크스페이스' })), action: addI18nEditorTab },
         { separator: true, label: '' },
-        { label: showToolbar ? '🧰 도구 모음 바 숨기기' : '🧰 도구 모음 바 표시', action: () => setShowToolbar(v => !v) },
-        { label: showQuickConnect ? '⚡ 빠른 연결 바 숨기기' : '⚡ 빠른 연결 바 표시', action: () => setShowQuickConnect(v => !v) },
-        { label: showClaudeChat ? '🤖 Claude 채팅 숨기기' : '🤖 Claude 채팅 표시', action: () => setShowClaudeChat(v => !v) },
-        { label: showBroadcast ? '📢 텍스트 일괄 전송 바 숨기기' : '📢 텍스트 일괄 전송 바 표시', action: () => { setShowBroadcast(v => !v); } },
+        { label: showToolbar ? tMenu('tools.toolbarHide') : tMenu('tools.toolbarShow'), action: () => setShowToolbar(v => !v) },
+        { label: showQuickConnect ? tMenu('tools.quickConnectHide') : tMenu('tools.quickConnectShow'), action: () => setShowQuickConnect(v => !v) },
+        { label: showClaudeChat ? tMenu('tools.claudeHide') : tMenu('tools.claudeShow'), action: () => setShowClaudeChat(v => !v) },
+        { label: showBroadcast ? tMenu('tools.broadcastHide') : tMenu('tools.broadcastShow'), action: () => { setShowBroadcast(v => !v); } },
         { separator: true, label: '' },
-        { label: '🖥️ X 서버 시작 (DISPLAY=:0)', action: async () => {
+        { label: tMenu('tools.xStart'), action: async () => {
           try {
             const r = await (window as any).api?.x11Start?.(0);
             if (r?.usedBundled) {
-              setInfoModal({ title: 'X 서버 시작', text: `✅ DISPLAY=:0  PID=${r.pid}` });
+              setInfoModal({ title: tMenu('tools.xStartTitle'), text: tMenu('tools.xStartOk', { pid: r.pid }) });
               setTimeout(() => { setInfoModal(null); restoreTerminalFocus(); }, 1200);
             } else {
-              setInfoModal({ title: 'X 서버 시작', text: `⚠️ 번들/외부 X 서버 사용 안 함\n\n${(r?.logs || []).slice(-5).join('\n')}` });
+              setInfoModal({ title: tMenu('tools.xStartTitle'), text: `${tMenu('tools.xStartNoBundle')}\n\n${(r?.logs || []).slice(-5).join('\n')}` });
             }
           } catch (e: any) {
-            setInfoModal({ title: 'X 서버 시작 실패', text: String(e?.message || e) });
+            setInfoModal({ title: tMenu('tools.xStartFail'), text: String(e?.message || e) });
           }
         }},
-        { label: '🛑 X 서버 중지', action: async () => {
+        { label: tMenu('tools.xStop'), action: async () => {
           try {
             await (window as any).api?.x11Stop?.(0);
-            setInfoModal({ title: 'X 서버 중지', text: '✅ 중지 완료.' });
+            setInfoModal({ title: tMenu('tools.xStopTitle'), text: tMenu('tools.xStopOk') });
             setTimeout(() => { setInfoModal(null); restoreTerminalFocus(); }, 1200);
           } catch (e: any) {
-            setInfoModal({ title: 'X 서버 중지 실패', text: String(e?.message || e) });
+            setInfoModal({ title: tMenu('tools.xStopFail'), text: String(e?.message || e) });
           }
         }},
-        { label: 'ℹ️ X 서버 상태', action: async () => {
+        { label: tMenu('tools.xStatus'), action: async () => {
           try {
             const r = await (window as any).api?.x11Status?.();
             const text = r?.anyRunning
-              ? `🟢 실행 중\n\n` + r.running.map((x: any) => `  • DISPLAY=:${x.displayNum}  PID=${x.pid}`).join('\n')
-              : '⚫ 실행 중인 X 서버 없음.';
-            setInfoModal({ title: 'X 서버 상태', text });
+              ? `${tMenu('tools.xStatusRunning')}\n\n` + r.running.map((x: any) => `  • DISPLAY=:${x.displayNum}  PID=${x.pid}`).join('\n')
+              : tMenu('tools.xStatusNone');
+            setInfoModal({ title: tMenu('tools.xStatusTitle'), text });
           } catch (e: any) {
-            setInfoModal({ title: 'X 서버 상태 조회 실패', text: String(e?.message || e) });
+            setInfoModal({ title: tMenu('tools.xStatusFail'), text: String(e?.message || e) });
           }
         }},
         { separator: true, label: '' },
-        { label: '옵션...', action: async () => {
+        { label: tMenu('tools.options'), action: async () => {
           setWordSepValue(getWordSeparator());
           setTermSettings(getTerminalSettings());
           setOptFontFamily(localStorage.getItem('terminalFontFamily') || '');
@@ -2320,11 +2338,11 @@ function App() {
       ],
     },
     {
-      label: '도움말',
+      label: tMenu('help.title'),
       items: [
-        { label: '📖 매뉴얼...', action: () => setShowManual(true) },
+        { label: tMenu('help.manual'), action: () => setShowManual(true) },
         { separator: true, label: '' },
-        { label: '단축키 목록', action: () => {
+        { label: tMenu('help.keybindings'), action: () => {
           const kb = getKeybindings();
           const lines = Object.keys(KEYBINDING_LABELS).map(id => `${kb[id] || '(없음)'} — ${KEYBINDING_LABELS[id]}`);
           setInfoModal({ title: '⌨ 단축키 목록', text: (
@@ -2373,7 +2391,7 @@ function App() {
           ) });
         }},
         { separator: true, label: '' },
-        { label: 'PePe Terminal(SSH) 정보', action: async () => {
+        { label: tMenu('help.about'), action: async () => {
           let sessPath = '';
           try { sessPath = await (window as any).api.getSessionsPath(); } catch {}
           // 버전은 Electron 에서 동적으로 가져옴 (package.json 기반 — 빌드시마다 자동 반영)
@@ -2752,6 +2770,15 @@ function App() {
             }}
           />
           <div className="window-controls-right">
+            <select
+              className="theme-select"
+              value={uiLang}
+              onChange={e => { setUiLang(e.target.value); setLanguage(e.target.value); }}
+              title="UI Language"
+              style={{ marginRight: 4 }}
+            >
+              {availableLangs.map(l => <option key={l} value={l}>{l}</option>)}
+            </select>
             <select className="theme-select" value={themeName} onChange={e => handleThemeChange(e.target.value)}>
               {getThemeList().map(t => <option key={t} value={t}>{t}</option>)}
             </select>
@@ -3456,18 +3483,15 @@ function App() {
           window.addEventListener('mouseup', onUp);
         };
         return (
-        <div className="session-editor-backdrop" onClick={() => {
-          if (isOptionsPopout) return; // popout 모드에선 backdrop 클릭으로 닫지 않음 (창은 OS 가 관리)
-          setShowOptions(false);
-        }}>
+        <div className="session-editor-backdrop">
           <div className="session-editor" onClick={e => e.stopPropagation()} style={{ width: 640 }}>
-            <h3 style={isOptionsPopout ? { userSelect: 'none' } : { cursor: 'move', userSelect: 'none' }} onMouseDown={isOptionsPopout ? undefined : onDragStart} title={isOptionsPopout ? '' : '드래그하여 이동'}>옵션</h3>
+            <h3 style={isOptionsPopout ? { userSelect: 'none' } : { cursor: 'move', userSelect: 'none' }} onMouseDown={isOptionsPopout ? undefined : onDragStart} title={isOptionsPopout ? '' : tOpt('dragToMove')}>{tOpt('title')}</h3>
 
             <div className="options-body">
               <div className="options-tabs options-tabs-side">
-                <button className={`options-tab ${optionsTab === 'terminal' ? 'active' : ''}`} onClick={() => setOptionsTab('terminal')}>터미널</button>
-                <button className={`options-tab ${optionsTab === 'session' ? 'active' : ''}`} onClick={() => setOptionsTab('session')}>세션</button>
-                <button className={`options-tab ${optionsTab === 'keybindings' ? 'active' : ''}`} onClick={() => setOptionsTab('keybindings')}>단축키</button>
+                <button className={`options-tab ${optionsTab === 'terminal' ? 'active' : ''}`} onClick={() => setOptionsTab('terminal')}>{tOpt('tabs.terminal')}</button>
+                <button className={`options-tab ${optionsTab === 'session' ? 'active' : ''}`} onClick={() => setOptionsTab('session')}>{tOpt('tabs.session')}</button>
+                <button className={`options-tab ${optionsTab === 'keybindings' ? 'active' : ''}`} onClick={() => setOptionsTab('keybindings')}>{tOpt('tabs.keybindings')}</button>
               </div>
               <div className="options-pane">
 

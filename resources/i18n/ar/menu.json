@@ -57,7 +57,12 @@
     "xStatusRunning": "🟢 قيد التشغيل",
     "xStatusNone": "⚫ لا يوجد خادم X يعمل.",
     "xStatusFail": "فشل الاستعلام عن حالة خادم X",
-    "options": "⚙ الخيارات..."
+    "options": "⚙ الخيارات...",
+    "browserWs": "🌐 مساحة المتصفح",
+    "compareWs": "🔍 مقارنة الملفات",
+    "logAnalyzerWs": "📈 محلل السجلات",
+    "vpnWs": "🔒 VPN",
+    "i18nWs": "🌍 محرر الترجمة"
   },
   "help": {
     "title": "مساعدة",
