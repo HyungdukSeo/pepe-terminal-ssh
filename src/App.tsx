@@ -1900,6 +1900,32 @@ function App() {
 
   const handleConnectSession = (sessionId: string, sessionName: string, _targetPanelId?: string | null, sessionTheme?: string, sessionFontFamily?: string, sessionFontSize?: number, sessionScrollback?: number) => {
     if (!activeTab) return;
+    // 터미널이 아닌 워크스페이스(브라우저/파일비교/로그분석/VPN/다국어/SQL Tool)에서 더블클릭한 경우
+    // → 기존 터미널 워크스페이스 탭을 찾아 활성화하고 거기서 세션 연결 (없으면 새로 생성).
+    // fileExplorer / fileEditor 는 아래에서 별도 처리(SFTP/편집기 흐름).
+    const NON_TERMINAL_NON_FE: TabType[] = ['browser', 'compare', 'logAnalyzer', 'vpn', 'i18nEditor', 'sqlTool'];
+    if (activeTab.type && NON_TERMINAL_NON_FE.includes(activeTab.type)) {
+      // 터미널 탭은 type 미지정 또는 'terminal' (실제로 type 필드 없는 게 일반적)
+      let termTab = tabs.find(t => !t.type || t.type === 'terminal');
+      let targetLeafId: string | null = null;
+      if (termTab) {
+        setActiveTabId(termTab.id);
+        targetLeafId = findFirstLeafId(termTab.layout);
+      } else {
+        // 터미널 탭이 하나도 없으면 새로 생성
+        const id = `tab-${Date.now()}`;
+        const layout = createInitialLayout(id);
+        setTabs(prev => [...prev, { id, title: `Workspace ${prev.length + 1}`, layout }]);
+        setActiveTabId(id);
+        targetLeafId = findFirstLeafId(layout);
+      }
+      // 새 layout 의 leaf 로 selectedPanelId 갱신 — 옛 패널 ID 가 새 layout 에 없어서 연결 실패하던 문제 회피
+      if (targetLeafId) setSelectedPanelId(targetLeafId);
+      // setActiveTabId/setTabs 적용 후 최신 closure 의 handleConnectSession 을 호출하기 위해 ref 경유.
+      // 직접 재귀 호출은 옛 activeTab 을 캡쳐한 stale closure 라 무한루프 발생.
+      setTimeout(() => handleConnectSessionRef.current?.(sessionId, sessionName, _targetPanelId, sessionTheme, sessionFontFamily, sessionFontSize, sessionScrollback), 50);
+      return;
+    }
     // 파일 전송 탭이면 SFTP 직접 연결하여 파일 탐색기에 추가 (점프 호스트 설정도 반영)
     if (activeTab.type === 'fileExplorer') {
       (async () => {
@@ -2043,6 +2069,11 @@ function App() {
       applySessionTheme(termId); registerTerm(termId);
     }
   };
+
+  // 매 렌더마다 최신 클로저로 갱신 — 비-터미널 워크스페이스에서 탭 전환 후 connect 를
+  // setTimeout 으로 재호출할 때 stale closure(옛 activeTab) 회피용.
+  const handleConnectSessionRef = useRef(handleConnectSession);
+  handleConnectSessionRef.current = handleConnectSession;
 
   const handleQuickConnect = (info: QuickConnectResult) => {
     if (!activeTab) return;
