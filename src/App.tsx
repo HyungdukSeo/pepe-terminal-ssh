@@ -51,6 +51,7 @@ import {
   findEmptyLeafId,
   countSessionInTree,
   createInitialLayout,
+  resetLayoutSizes,
 } from './utils/layoutUtils';
 
 export type { LayoutNode, ContainerNode, LeafNode, Panel, PanelSession } from './utils/layoutUtils';
@@ -1917,6 +1918,32 @@ function App() {
 
   const handleConnectSession = (sessionId: string, sessionName: string, _targetPanelId?: string | null, sessionTheme?: string, sessionFontFamily?: string, sessionFontSize?: number, sessionScrollback?: number) => {
     if (!activeTab) return;
+    // 터미널이 아닌 워크스페이스(브라우저/파일비교/로그분석/VPN/다국어/SQL Tool)에서 더블클릭한 경우
+    // → 기존 터미널 워크스페이스 탭을 찾아 활성화하고 거기서 세션 연결 (없으면 새로 생성).
+    // fileExplorer / fileEditor 는 아래에서 별도 처리(SFTP/편집기 흐름).
+    const NON_TERMINAL_NON_FE: TabType[] = ['browser', 'compare', 'logAnalyzer', 'vpn', 'i18nEditor', 'sqlTool'];
+    if (activeTab.type && NON_TERMINAL_NON_FE.includes(activeTab.type)) {
+      // 터미널 탭은 type 미지정 또는 'terminal' (실제로 type 필드 없는 게 일반적)
+      let termTab = tabs.find(t => !t.type || t.type === 'terminal');
+      let targetLeafId: string | null = null;
+      if (termTab) {
+        setActiveTabId(termTab.id);
+        targetLeafId = findFirstLeafId(termTab.layout);
+      } else {
+        // 터미널 탭이 하나도 없으면 새로 생성
+        const id = `tab-${Date.now()}`;
+        const layout = createInitialLayout(id);
+        setTabs(prev => [...prev, { id, title: `Workspace ${prev.length + 1}`, layout }]);
+        setActiveTabId(id);
+        targetLeafId = findFirstLeafId(layout);
+      }
+      // 새 layout 의 leaf 로 selectedPanelId 갱신 — 옛 패널 ID 가 새 layout 에 없어서 연결 실패하던 문제 회피
+      if (targetLeafId) setSelectedPanelId(targetLeafId);
+      // setActiveTabId/setTabs 적용 후 최신 closure 의 handleConnectSession 을 호출하기 위해 ref 경유.
+      // 직접 재귀 호출은 옛 activeTab 을 캡쳐한 stale closure 라 무한루프 발생.
+      setTimeout(() => handleConnectSessionRef.current?.(sessionId, sessionName, _targetPanelId, sessionTheme, sessionFontFamily, sessionFontSize, sessionScrollback), 50);
+      return;
+    }
     // 파일 전송 탭이면 SFTP 직접 연결하여 파일 탐색기에 추가 (점프 호스트 설정도 반영)
     if (activeTab.type === 'fileExplorer') {
       (async () => {
@@ -2060,6 +2087,11 @@ function App() {
       applySessionTheme(termId); registerTerm(termId);
     }
   };
+
+  // 매 렌더마다 최신 클로저로 갱신 — 비-터미널 워크스페이스에서 탭 전환 후 connect 를
+  // setTimeout 으로 재호출할 때 stale closure(옛 activeTab) 회피용.
+  const handleConnectSessionRef = useRef(handleConnectSession);
+  handleConnectSessionRef.current = handleConnectSession;
 
   const handleQuickConnect = (info: QuickConnectResult) => {
     if (!activeTab) return;
@@ -2831,6 +2863,25 @@ function App() {
             setTabs(prev => [...prev, { id, title: '📁 파일 전송', layout: createInitialLayout(id), type: 'fileExplorer', initialTermId: getActiveTermId() ?? undefined }]);
             setActiveTabId(id);
           }}>📁</button>
+          <button
+            className="tool-btn"
+            title="패널 비율 균등 정렬 (현재 워크스페이스의 모든 분할 비율 리셋)"
+            onClick={() => {
+              if (!activeTab) return;
+              updateLayout(activeTab.id, layout => resetLayoutSizes(layout));
+              try { window.dispatchEvent(new CustomEvent('terminal-fit-all')); } catch {}
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+              {/* 2x2 균등 분할 패널 — 4개 같은 크기 박스 */}
+              <rect x="0.7" y="0.7" width="5.8" height="5.8" rx="1" fill="#1e2d3d" stroke="#4a7a9b" strokeWidth="1"/>
+              <rect x="7.5" y="0.7" width="5.8" height="5.8" rx="1" fill="#1e2d3d" stroke="#4a7a9b" strokeWidth="1"/>
+              <rect x="0.7" y="7.5" width="5.8" height="5.8" rx="1" fill="#1e2d3d" stroke="#4a7a9b" strokeWidth="1"/>
+              <rect x="7.5" y="7.5" width="5.8" height="5.8" rx="1" fill="#1e2d3d" stroke="#4a7a9b" strokeWidth="1"/>
+              {/* 균등 정렬 인디케이터 — 우측 하단에 작은 ✓ */}
+              <path d="M10 11.5 L11 12.5 L13 10.3" stroke="#4ade80" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" fill="none"/>
+            </svg>
+          </button>
           <span className="tool-sep" />
           <button className={`tool-btn ${showQuickConnect ? 'active' : ''}`} title={showQuickConnect ? '빠른 연결 바 숨기기' : '빠른 연결 바 표시'} onClick={() => setShowQuickConnect(v => !v)}>⚡</button>
           <button className={`tool-btn ${showClaudeChat ? 'active' : ''}`} title={showClaudeChat ? 'Claude 채팅 숨기기' : 'Claude 채팅 표시'} onClick={() => setShowClaudeChat(v => !v)}>🤖</button>

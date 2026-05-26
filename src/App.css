@@ -2258,10 +2258,14 @@ body.popout-options .session-editor h3:first-child {
   flex-wrap: nowrap;
   border-bottom: 1px solid #2a3340;
   overflow: hidden;
+  /* 도구모음/빠른연결 옆 빈 공간이 부모 색으로 비치지 않도록 도구모음과 같은 배경 사용 */
+  background: #1a1a1a;
 }
 .quickconnect-row > .qc-wrap { flex: 0 0 auto; display: flex; box-sizing: border-box; }
 .quickconnect-row > .qc-wrap > .quick-connect-bar { flex: 0 0 auto; border-bottom: 0; }
 .quickconnect-row > .tool-toolbar { border-bottom: 0; flex: 0 0 auto; }
+/* 빠른연결 바가 숨겨져 도구모음이 행에 단독으로 있을 때는 행을 가득 채워 우측 여백 없앰 */
+.quickconnect-row > .tool-toolbar:only-child { flex: 1 1 auto; }
 .qc-divider-static {
   width: 1px;
   background: #3a475a;
@@ -2449,6 +2453,21 @@ body.popout-options .session-editor h3:first-child {
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+}
+.claude-chat-history-agent {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: 6px;
+  flex-shrink: 0;
+}
+.claude-chat-history-agent svg {
+  width: 14px;
+  height: 14px;
+}
+/* 여러 에이전트가 함께 쓰인 대화는 아이콘들이 겹쳐서 컴팩트하게 보이도록 */
+.claude-chat-history-agent svg + svg {
+  margin-left: -4px;
 }
 .claude-chat-history-actions {
   display: flex;
@@ -5077,8 +5096,9 @@ body.popout-options .session-editor h3:first-child {
   overflow: hidden;
 }
 .claude-chat-header {
-  display: flex;
-  justify-content: space-between;
+  /* 3열 그리드: 좌(에이전트+버전) / 중앙(핀/검색/공유) / 우(actions). 좌·우 폭이 다르더라도 중앙은 항상 정중앙. */
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
   padding: 8px 12px;
   background: #1a1a2e;
@@ -5088,11 +5108,16 @@ body.popout-options .session-editor h3:first-child {
   font-size: 13px;
   flex-shrink: 0;
 }
+.claude-chat-header-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-self: start;
+}
 .claude-chat-version {
   font-weight: normal;
   color: #888;
   font-size: 11px;
-  margin-left: 6px;
 }
 .claude-chat-agent-switcher {
   display: flex;
@@ -5101,6 +5126,13 @@ body.popout-options .session-editor h3:first-child {
   border: 1px solid #333;
   border-radius: 6px;
   padding: 2px;
+}
+/* 헤더 가운데 — 핀/검색/공유 버튼 묶음 (grid 가운데 컬럼에 자연 배치, 겹침 없음) */
+.claude-chat-header-center {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  justify-self: center;
 }
 .claude-chat-agent-btn {
   background: transparent;
@@ -5134,6 +5166,7 @@ body.popout-options .session-editor h3:first-child {
 .claude-chat-header-actions {
   display: flex;
   gap: 4px;
+  justify-self: end;
 }
 .claude-chat-header-actions button,
 .claude-chat-close {
@@ -5201,6 +5234,88 @@ body.popout-options .session-editor h3:first-child {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+}
+/* ── 에이전트 컨텍스트 공유 토글 (헤더 🔗) ────────────────────────────── */
+.claude-chat-share-toggle {
+  position: relative;
+}
+.claude-chat-share-toggle.on {
+  background: #1f4d2b !important;
+  color: #7fff9e !important;
+  border-color: #2e7a44 !important;
+  box-shadow: 0 0 0 1px #2e7a44 inset;
+}
+.claude-chat-share-toggle.off {
+  background: #3d1d1d !important;
+  color: #999 !important;
+  border-color: #5a2a2a !important;
+  filter: grayscale(0.6);
+}
+.claude-chat-share-toggle.off::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  top: 50%;
+  height: 2px;
+  background: #ff5555;
+  transform: translateY(-50%) rotate(-22deg);
+  transform-origin: center;
+  pointer-events: none;
+  box-shadow: 0 0 3px rgba(255, 85, 85, 0.6);
+}
+/* ── 메시지 검색 (헤더 🔍) ─────────────────────────────────────────────── */
+.claude-chat-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  background: #161b22;
+  border-bottom: 1px solid #2a3548;
+  flex-shrink: 0;
+}
+.claude-chat-search-icon { font-size: 12px; opacity: 0.7; }
+.claude-chat-search-input {
+  flex: 1;
+  min-width: 0;
+  background: #0d1320;
+  color: #ddd;
+  border: 1px solid #2a3548;
+  border-radius: 3px;
+  padding: 4px 8px;
+  font-size: 12px;
+  outline: none;
+}
+.claude-chat-search-input:focus { border-color: #58a6ff; }
+.claude-chat-search-count {
+  font-size: 11px;
+  color: #aaa;
+  min-width: 40px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.claude-chat-search-btn {
+  background: #1f2735;
+  color: #ddd;
+  border: 1px solid #2a3548;
+  border-radius: 3px;
+  padding: 2px 8px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+}
+.claude-chat-search-btn:hover:not(:disabled) { background: #2a3548; color: #fff; }
+.claude-chat-search-btn:disabled { opacity: 0.4; cursor: default; }
+mark.claude-search-hit {
+  background: #ffd54f;
+  color: #111;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+mark.claude-search-hit.current {
+  background: #ff9800;
+  outline: 2px solid #ff5500;
+  outline-offset: 1px;
 }
 .claude-chat-msg-role svg {
   width: 14px;

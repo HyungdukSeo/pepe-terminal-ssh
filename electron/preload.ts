@@ -256,6 +256,7 @@ contextBridge.exposeInMainWorld('api', {
   claudeStop: (sessionId: string, requestId?: string) => ipcRenderer.invoke('claude:stop', { sessionId, requestId }),
   geminiCheck: () => ipcRenderer.invoke('gemini:check'),
   geminiModelInfo: () => ipcRenderer.invoke('gemini:modelInfo'),
+  debugDump: (name: string, content: string) => ipcRenderer.invoke('debug:dump', { name, content }),
   geminiSend: (sessionId: string, prompt: string, requestId?: string, model?: string, yolo?: boolean, addDirs?: string[], sshTermId?: string) =>
     ipcRenderer.invoke('gemini:send', { sessionId, prompt, requestId, model, yolo, addDirs, sshTermId }),
   geminiStop: (sessionId: string, requestId?: string) => ipcRenderer.invoke('gemini:stop', { sessionId, requestId }),

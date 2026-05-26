@@ -107,7 +107,70 @@ function sanitizeMermaidLabels(src: string): string {
     return out;
   }
 
+  // classDiagram 의 'class' 선언에서 ASCII/Unicode 도형 문자가 클래스 이름으로 사용된 경우
+  // → 안전한 영문 alias 로 치환. 원본은 라벨 형태로 표시(주석으로 처리).
+  if (/^\s*classDiagram\b/im.test(out)) {
+    const badChars = /[─│┌┐└┘├┤┬┴┼╔╗╚╝═║╠╣╦╩╬│┃━┏┓┗┛△▲▽▼□■◆◇●○◯◎◉★☆▶◀▷◁]/;
+    const aliasMap = new Map<string, string>();
+    let cCtr = 0;
+    out = out.split('\n').map(line => {
+      // 'class IDENT {' 또는 'class IDENT' 형태
+      const m = line.match(/^(\s*class\s+)(\S+?)(\s*\{?\s*)$/);
+      if (m && badChars.test(m[2])) {
+        const original = m[2];
+        if (!aliasMap.has(original)) aliasMap.set(original, `C${++cCtr}`);
+        const alias = aliasMap.get(original)!;
+        return `${m[1]}${alias}${m[3]}`;
+      }
+      return line;
+    }).join('\n');
+    // 알리아스된 이름이 다른 줄(상속 등)에 참조될 수 있어 같이 교체
+    if (aliasMap.size > 0) {
+      out = out.split('\n').map(line => {
+        for (const [from, to] of aliasMap) {
+          const escFrom = from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          line = line.replace(new RegExp(escFrom, 'g'), to);
+        }
+        return line;
+      }).join('\n');
+    }
+    return out;
+  }
   if (!/^\s*(flowchart|graph)\b/im.test(out)) return out;
+  // mermaid v11 의 'ID@{ shape: X, label: "Y" }' 새 문법을 전통적 노드 모양으로 변환.
+  // 새 문법이 일부 환경/설정(htmlLabels:false 등)에서 SVG 가 비어서 그려지는 케이스 대응.
+  // shape 별로 가까운 전통 모양에 매핑, 매핑 없으면 사각형으로 fallback. 라벨은 따옴표로 감쌈.
+  {
+    const shapePair: Record<string, [string, string]> = {
+      rect: ['[', ']'], 'rounded-rect': ['(', ')'], roundrect: ['(', ')'], 'round-rect': ['(', ')'],
+      stadium: ['([', '])'], pill: ['([', '])'],
+      circle: ['((', '))'], circ: ['((', '))'],
+      'double-circle': ['(((', ')))'], 'dbl-circ': ['(((', ')))'],
+      diamond: ['{', '}'], rhombus: ['{', '}'], decision: ['{', '}'],
+      hex: ['{{', '}}'], hexagon: ['{{', '}}'],
+      cyl: ['[(', ')]'], cylinder: ['[(', ')]'], db: ['[(', ')]'], database: ['[(', ')]'],
+      subroutine: ['[[', ']]'], framed: ['[[', ']]'], procs: ['[[', ']]'],
+      parallelogram: ['[/', '/]'], 'parallelogram-alt': ['[\\', '\\]'],
+      trapezoid: ['[/', '\\]'], 'trap-b': ['[\\', '/]'], 'inv-trap': ['[\\', '/]'],
+      flag: ['>', ']'], asym: ['>', ']'],
+      // tri/triangle 은 mermaid v11 가 네이티브 지원 — 변환하지 않고 원본 그대로 두어
+      // 사다리꼴이 아닌 진짜 삼각형으로 렌더되도록 함.
+    };
+    out = out.replace(
+      /([A-Za-z_][A-Za-z0-9_]*)@\{[^{}\n]*?\}/g,
+      (m, id) => {
+        const shapeM = m.match(/shape\s*:\s*["']?([\w-]+)["']?/i);
+        const labelM = m.match(/label\s*:\s*(["'])((?:\\.|(?!\1).)*)\1/);
+        const shape = (shapeM?.[1] || 'rect').toLowerCase();
+        // tri/triangle 은 mermaid v11 네이티브 처리에 맡김 (변환 X)
+        if (shape === 'tri' || shape === 'triangle') return m;
+        const label = labelM?.[2] ?? id;
+        const pair = shapePair[shape] || ['[', ']'];
+        const safeLabel = label.replace(/"/g, '#quot;');
+        return `${id}${pair[0]}"${safeLabel}"${pair[1]}`;
+      }
+    );
+  }
   out = out.replace(/(^|\n)(\s*)style([A-Za-z_][A-Za-z0-9_-]*)(\s+)/g, '$1$2style $3$4');
   const quote = (label: string): string | null => {
     const t = label.trim();
@@ -126,6 +189,172 @@ function sanitizeMermaidLabels(src: string): string {
     const q = quote(label);
     return q ? `${id}{${q}}` : m;
   });
+
+  // 한글 등 non-ASCII ID 가 노드 shape ([], (), {}, ([]), {{}}, [(...)] 등) 와 함께 쓰인 경우
+  // mermaid 파서가 ID 로 인식 못해 실패함. 안전한 영문 alias (_n1, _n2 ...) 로 변환.
+  // edges 에서 같은 ID 가 참조되면 함께 교체. 라벨(따옴표/괄호 안)은 영향 받지 않도록 보호.
+  {
+    const aliasMap = new Map<string, string>();
+    let aliasCtr = 0;
+    // 1단계: shape 와 결합된 non-ASCII ID 발견 → alias 생성
+    // 매치 패턴: 줄 처음/공백/세미콜론/->/-->/=>/etc. 다음의 비-ASCII 시작 ID + shape opener
+    const idCharClass = `[^\\s\\[\\](){}<>\\-,;|\\.\\/&%@*+!?:=\"'\`#]`;
+    const collectRe = new RegExp(`(^|[\\s;]|--+>?|==+>?|-\\.-+|<--|<==)(${idCharClass}+)\\s*([\\[({])`, 'gu');
+    out.replace(collectRe, (_m, _prefix, id) => {
+      // 영문/숫자/언더스코어로만 된 ID 는 안전 — 스킵
+      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(id)) return _m;
+      if (!aliasMap.has(id)) aliasMap.set(id, `n${++aliasCtr}`);
+      return _m;
+    });
+    // 2단계: 같은 ID 가 edges 등에서 참조되어도 함께 alias 로 치환되도록 추가 수집 — 첫 단계만으로도 일단 충분
+    if (aliasMap.size > 0) {
+      // 라벨/따옴표 영역은 보호 — 따옴표 안의 같은 단어가 같이 치환되면 안 됨.
+      // 줄 단위로 처리하되 each line: '"' 안과 밖을 구분.
+      const replaceOutsideQuotes = (line: string, fromRaw: string, to: string): string => {
+        const escRaw = fromRaw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        // 줄을 따옴표 기준으로 split — 짝수 인덱스만 따옴표 밖
+        const parts = line.split(/("[^"\n]*"|'[^'\n]*')/);
+        for (let i = 0; i < parts.length; i++) {
+          if (i % 2 === 1) continue; // 따옴표 안 — 보호
+          parts[i] = parts[i].replace(
+            new RegExp(`(^|[\\s;,\\[\\](){}<>]|--+>?|==+>?|-\\.-+|<--|<==)${escRaw}(?=$|[\\s;,\\[\\](){}<>]|--+>?|==+>?|-\\.-+|<==|<--)`, 'g'),
+            (_mm, pre) => `${pre}${to}`
+          );
+        }
+        return parts.join('');
+      };
+      out = out.split('\n').map(line => {
+        for (const [from, to] of aliasMap) line = replaceOutsideQuotes(line, from, to);
+        return line;
+      }).join('\n');
+    }
+  }
+
+  // 'subgraph "Title"' 또는 'subgraph 한글타이틀' 등 안전하지 않은 형태 → 'subgraph _sgN["Title"]' 로 변환.
+  // - 따옴표 형태 OR
+  // - ID 가 비-ASCII(한글 등) 로 시작하는 경우 — 그 자체로 ID 가 안 되어 파서 오류
+  {
+    let sgCtr = 0;
+    out = out.replace(
+      /(^|\n)(\s*)subgraph\s+("([^"\n]+)"|'([^'\n]+)'|([^\s\[\n"'][^\[\n"']*?))(\s*)$/gm,
+      (m, nl, indent, _quoted, dq, sq, bare) => {
+        // 안전한 영문 ID 가 이미 있고 뒤에 shape/title 이 따로 없으면 그대로 둠
+        if (bare && /^[A-Za-z_][A-Za-z0-9_]*$/.test(bare.trim())) return m;
+        sgCtr++;
+        const title = (dq || sq || bare || '').trim().replace(/"/g, '#quot;');
+        return `${nl}${indent}subgraph sg${sgCtr}["${title}"]`;
+      }
+    );
+    // CRLF/CR → LF 정규화 (다른 OS 줄바꿈 혼합 시 정규식 실패 회피)
+    out = out.replace(/\r\n?/g, '\n');
+    // 'subgraph ID [title]' (ID와 '[' 사이 공백) → 'subgraph ID[title]' (공백 제거)
+    // ID 부분은 '[' 도 공백도 아닌 문자들 — \S+ 는 '[' 도 포함해 greedy 매치되어 잘못 잡힘.
+    out = out.replace(/^([ \t]*subgraph[ \t]+[^\[\s]+)[ \t]+(\[)/gm, '$1$2');
+    // 'subgraph ID[bare title]' (따옴표 없는 한글/특수문자 title) → 'subgraph ID["title"]'
+    // mermaid 가 unquoted title 의 비-ASCII 문자를 일관성 있게 처리하지 못해 파싱 깨짐.
+    out = out.replace(/^([ \t]*subgraph[ \t]+[^\[\s]+\[)([^\n\]"']+?)(\])/gm, (_m, pre, title, close) => {
+      const t = String(title).trim();
+      if (!t) return _m;
+      return `${pre}"${t}"${close}`;
+    });
+    // 공백/빈 title bracket 통째 제거 — '[" "]', '[\'\']', '[ ]' 등은 mermaid 가 거부.
+    out = out.replace(/^([ \t]*subgraph[ \t]+[^\[\s]+)\[\s*(?:"[\s]*"|'[\s]*'|)\s*\][ \t]*$/gm, '$1');
+    // 'direction TB|LR|...' 내부 지시는 일부 환경에서 subgraph header 와 충돌 → 제거.
+    out = out.replace(/^[ \t]*direction[ \t]+(TB|TD|BT|LR|RL)[ \t]*$/gm, '');
+    // 노드 label 의 따옴표 안 leading/trailing 공백 trim — 일부 mermaid 버전이 STR 토큰
+    // 시작/끝 공백을 허용 안 함. 예: `["  네모  "]` → `["네모"]`
+    // ⚠ trim 결과가 빈 문자열이면 mermaid 가 거부하므로 원본 유지 (예: T{" "} 처럼 의도적 공백 라벨)
+    out = out.replace(/([\[(){][\[(]?)\s*"([^"\n]+?)"\s*([\])}]?[\])}])/g, (_m, open, content, close) => {
+      const trimmed = content.trim();
+      if (!trimmed) return _m;
+      return `${open}"${trimmed}"${close}`;
+    });
+    // 빈 줄(공백만 있는 줄 포함) 을 단일 newline 으로 축약.
+    while (/\n[ \t]*\n/.test(out)) out = out.replace(/\n[ \t]*\n/g, '\n');
+  }
+
+  // 댓글(%%...) 라인은 alias 처리에서 제외 — 주석 안의 한글이 식별자로 오인되지 않도록.
+  // placeholder 로 잠시 치환했다가 마지막에 원본 복원.
+  const _commentPH: string[] = [];
+  out = out.split('\n').map(line => {
+    const m = line.match(/^([ \t]*)(%%.*)$/);
+    if (m) {
+      const idx = _commentPH.length;
+      _commentPH.push(m[2]);
+      return `${m[1]}MERMAID_CMT_${idx}_PH`;
+    }
+    return line;
+  }).join('\n');
+
+  // bare 노드 토큰(shape 없이 단독으로 쓰인 한글 식별자) 도 alias 로 치환.
+  // 위 'shape 가 함께 쓰인 경우' alias 와 같은 컨테이너에서 동시에 처리하기 어려워 한 번 더 패스.
+  // 예: subgraph 안의 '세모' 한 줄.
+  // ⚠ 따옴표 안과 shape brackets([], (), {}, [[]], (()), [(...)], {{}} 등) 안의 라벨은 보호 — 그곳 한글은 라벨이지 식별자가 아님.
+  {
+    // 라벨 영역(따옴표 + 모든 mermaid shape + 엣지 라벨) 을 한 번에 매치해 split 의 보호 캡처로 사용.
+    // 순서: 가장 긴 멀티문자 형태부터 (그래야 [[]] 가 [] 보다 먼저 매치)
+    // 엣지 라벨 형태: --|label|--, --label--> (공백 포함), == label ==>, -.label.->
+    // asymmetric/flag shape '>label]' (워드 문자가 앞에 와야 함 — '-->A' 같은 화살표와 구분)
+    const labelProtectRe = /("[^"\n]*"|'[^'\n]*'|\[\[[^\]\n]*\]\]|\(\([^)\n]*\)\)|\{\{[^}\n]*\}\}|\[\([^)\n]*\)\]|\[\/[^\]\n]*\\\]|\[\\[^\]\n]*\/\]|\[\/[^\]\n]*\/\]|\[\\[^\]\n]*\\\]|\[[^\]\n]*\]|\([^)\n]*\)|\{[^}\n]*\}|(?<=[A-Za-z0-9_가-힯ㄱ-ㆎ])>[^>\n\]]*\]|\|[^|\n]*\||--+\s+[^-\n|]+\s+--+>?|==+\s+[^=\n|]+\s+==+>?|-\.+\s+[^\n|]+?\s+\.+-+>?)/g;
+    const aliasMap = new Map<string, string>();
+    let ctr = 0;
+    // 토큰 정의: 한글 시작 + (한글/영문/숫자/_)*
+    const koTokenRe = /[가-힯ㄱ-ㆎ][가-힯ㄱ-ㆎ\w]*/g;
+    out.split('\n').forEach(line => {
+      // 라벨 영역 외부에서만 한글 토큰 수집
+      const parts = line.split(labelProtectRe);
+      for (let i = 0; i < parts.length; i += 2) {
+        let m;
+        koTokenRe.lastIndex = 0;
+        while ((m = koTokenRe.exec(parts[i])) !== null) {
+          const tok = m[0];
+          if (!aliasMap.has(tok)) aliasMap.set(tok, `n${++ctr}`);
+        }
+      }
+    });
+    if (aliasMap.size > 0) {
+      out = out.split('\n').map(line => {
+        const parts = line.split(labelProtectRe);
+        for (let i = 0; i < parts.length; i += 2) {
+          for (const [from, to] of aliasMap) {
+            const escFrom = from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            parts[i] = parts[i].replace(
+              new RegExp(`(^|[^\\uAC00-\\uD7AF\\u3131-\\u318E\\w])${escFrom}(?=$|[^\\uAC00-\\uD7AF\\u3131-\\u318E\\w])`, 'g'),
+              (_mm, pre) => `${pre}${to}`
+            );
+          }
+        }
+        return parts.join('');
+      }).join('\n');
+      // alias 된 노드의 라벨이 사라지므로 각 alias 의 첫 등장 줄에 `_nX[원본]` 형태로 라벨 부여
+      // (이미 [...]/{...}/(...) shape 가 붙은 경우는 그쪽 라벨이 살아있어 추가 안 함)
+      const lines = out.split('\n');
+      for (const [from, to] of aliasMap) {
+        let labeled = false;
+        for (let i = 0; i < lines.length; i++) {
+          if (!lines[i].includes(to)) continue;
+          // 그 줄에 _nX 뒤에 이미 shape 가 있으면 라벨 보존됨
+          const reShape = new RegExp(`${to}\\s*[\\[({]`);
+          if (reShape.test(lines[i])) { labeled = true; break; }
+        }
+        if (labeled) continue;
+        // shape 가 없는 bare 사용 — 첫 등장에 `[원본]` 추가
+        for (let i = 0; i < lines.length; i++) {
+          // 토큰 경계로 매치한 첫 위치만 라벨링
+          const re = new RegExp(`(^|[^\\w])${to}(?=$|[^\\w])`);
+          if (re.test(lines[i])) {
+            lines[i] = lines[i].replace(re, (_mm, pre) => `${pre}${to}["${from}"]`);
+            break;
+          }
+        }
+      }
+      out = lines.join('\n');
+    }
+  }
+  // 댓글 placeholder 복원
+  if (_commentPH.length > 0) {
+    out = out.replace(/MERMAID_CMT_(\d+)_PH/g, (_m, n) => _commentPH[Number(n)] ?? _m);
+  }
   return out;
 }
 function adjustMermaidNodeLabelContrast(root: HTMLElement) {
@@ -255,8 +484,10 @@ function closeDanglingMermaidFences(md: string): string {
     if (MERMAID_START_RE.test(t)) return true;
     if (/^(subgraph|end|direction|classDef|class|style\s+|style[A-Za-z_][A-Za-z0-9_-]*\s+|linkStyle\s+)/.test(t)) return true;
     if (/^(click|accTitle|accDescr)\b/.test(t)) return true;
-    if (/^[A-Za-z_][A-Za-z0-9_]*\s*(\[|\{|\(|--|---|==|-.|:::|-->)/.test(t)) return true;
-    if (/^[A-Za-z_][A-Za-z0-9_]*\s*$/.test(t)) return true;
+    // 한글 등 Unicode 시작 식별자도 mermaid 노드 ID 로 인정 (sanitizer 가 alias 처리)
+    // shape opener 에 '>' (asymmetric/flag), '@{' (mermaid v11 shape node) 도 포함
+    if (/^[A-Za-z_가-힯ㄱ-ㆎ][A-Za-z0-9_가-힯ㄱ-ㆎ]*\s*(\[|\{|\(|>|@\{|--|---|==|-.|:::|-->)/.test(t)) return true;
+    if (/^[A-Za-z_가-힯ㄱ-ㆎ][A-Za-z0-9_가-힯ㄱ-ㆎ]*\s*$/.test(t)) return true;
     return false;
   };
 
@@ -415,6 +646,8 @@ type ChatHistoryEntry = {
   title: string;
   pinned: boolean;
   updatedAt: number;
+  // 이 대화를 처음 만든 에이전트 (공유 OFF 모드에서 이력 필터링용)
+  originAgent?: 'claude' | 'gemini' | 'codex';
   messages: Message[];
   pendingRequestId?: string | null; // 진행 중 send 의 requestId
   streaming?: boolean; // 진행 중인지
@@ -474,7 +707,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     setEffort(saved?.effort ?? 'medium');
     setPermissionMode(saved?.permissionMode ?? 'default');
     setPerToolApproval(saved?.perToolApproval ?? true);
-    setGeminiYolo(saved?.geminiYolo ?? true);
+    setGeminiYolo(saved?.geminiYolo ?? false);
     setCodexApprovalPolicy(saved?.codexApprovalPolicy ?? 'suggest');
   }, [aiAgent]); // eslint-disable-line react-hooks/exhaustive-deps
   const { t: tt } = useTranslation('claudeChat');
@@ -515,6 +748,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const [planExtraNote, setPlanExtraNote] = useState('');
   // 최근 거부한 계획 (실수 방지 — 다시 보기/재승인 가능)
   const [lastRejectedPlan, setLastRejectedPlan] = useState<string | null>(null);
+  // pending/rejected plan 의 소속 에이전트 — 공유 OFF 시 다른 에이전트 view 에서 숨김
+  const [pendingPlanAgent, setPendingPlanAgent] = useState<string | null>(null);
+  const [lastRejectedPlanAgent, setLastRejectedPlanAgent] = useState<string | null>(null);
   // 사용량 추적 — stream-json result 이벤트에서 누적
   type UsageStat = {
     inputTokens: number;
@@ -697,6 +933,48 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const [activeHistoryId, setActiveHistoryId] = useState<string | null>(null);
   const [showHistoryPanel, setShowHistoryPanel] = useState(false);
   const [deleteHistoryConfirm, setDeleteHistoryConfirm] = useState<{ id: string; title: string } | null>(null);
+  // 에이전트 간 컨텍스트 공유 — 켜져있으면 send 시 이전 transcript(다른 에이전트 답변 포함) 를 inject.
+  // UIPrefs 에 영속화. 기본값 true (기존 동작 유지).
+  const [shareContext, setShareContext] = useState<boolean>(true);
+  const shareContextRef = useRef(true);
+  const shareContextLoadedRef = useRef(false);
+  useEffect(() => { shareContextRef.current = shareContext; }, [shareContext]);
+  // 공유 토글 시점 — 기존 Claude 세션은 토글 전 모드(공유 ON 또는 OFF)에서 만들어진 것이라
+  // 그 세션에 이미 다른 에이전트 컨텍스트가 주입되어 있을 수 있음. --resume 시 옛 메모리를
+  // 그대로 가져오면 공유 OFF 가 무력화됨 → 토글 시점에 폐기해 다음 Claude send 에서 새 세션 생성.
+  // (첫 toggle 직후의 mount-effect 무한 폐기 방지를 위해 ref 로 첫 실행 스킵)
+  const shareContextInitRef = useRef(false);
+  useEffect(() => {
+    if (!shareContextInitRef.current) { shareContextInitRef.current = true; return; }
+    claudeSessionIdRef.current = null;
+  }, [shareContext]);
+  useEffect(() => {
+    (async () => {
+      try {
+        const prefs = await (window as any).api?.getUIPrefs?.();
+        if (typeof prefs?.aiShareContext === 'boolean') setShareContext(prefs.aiShareContext);
+      } catch {}
+      shareContextLoadedRef.current = true;
+    })();
+  }, []);
+  useEffect(() => {
+    if (!shareContextLoadedRef.current) return;
+    try { (window as any).api?.setUIPrefs?.({ aiShareContext: shareContext }); } catch {}
+  }, [shareContext]);
+
+  // 공유 OFF 모드에서 에이전트별로 streaming 상태를 추적 — 한 에이전트 응답 대기 중에
+  // 다른 에이전트로 프롬프트 전송이 가능하도록.
+  const [streamingAgents, setStreamingAgents] = useState<Set<string>>(new Set());
+  const addStreamingAgent = (a: string) => setStreamingAgents(prev => { const s = new Set(prev); s.add(a); return s; });
+  const removeStreamingAgent = (a: string) => setStreamingAgents(prev => { const s = new Set(prev); s.delete(a); return s; });
+
+  // 검색: 현재 대화 메시지 본문 안에서 찾기
+  const [showSearch, setShowSearch] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchHitCount, setSearchHitCount] = useState(0);
+  const [searchCurrent, setSearchCurrent] = useState(0);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchHitsRef = useRef<HTMLElement[]>([]);
   // 메시지 우클릭 컨텍스트 메뉴
   const [msgCtxMenu, setMsgCtxMenu] = useState<{ x: number; y: number; msgId: string; content: string } | null>(null);
   useEffect(() => {
@@ -763,8 +1041,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     try { return localStorage.getItem('claudeEffort') || 'medium'; } catch { return 'medium'; }
   });
   useEffect(() => { try { localStorage.setItem('claudeEffort', effort); } catch {} }, [effort]);
-  // Gemini: --yolo 온/오프 (기본 true)
-  const [geminiYolo, setGeminiYolo] = useState<boolean>(true);
+  // Gemini: --yolo 온/오프 (기본 false — 수동 승인)
+  const [geminiYolo, setGeminiYolo] = useState<boolean>(false);
   // Codex: approval policy
   const [codexApprovalPolicy, setCodexApprovalPolicy] = useState<CodexApprovalPolicy>('suggest');
   const [codexApprovalMenuOpen, setCodexApprovalMenuOpen] = useState(false);
@@ -865,7 +1143,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     setEffort(saved?.effort ?? 'medium');
     setPermissionMode(saved?.permissionMode ?? 'default');
     setPerToolApproval(saved?.perToolApproval ?? true);
-    setGeminiYolo(saved?.geminiYolo ?? true);
+    setGeminiYolo(saved?.geminiYolo ?? false);
     setCodexApprovalPolicy(saved?.codexApprovalPolicy ?? 'suggest');
     onAgentChange?.(a);
   };
@@ -916,6 +1194,119 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     activeHistoryIdRef.current = id;
     setActiveHistoryId(id);
   }, []);
+
+  // ── 메시지 검색 ──────────────────────────────────────────────────────────
+  // 기존 <mark.claude-search-hit> 모두 제거하고 원래 텍스트 노드로 복원
+  const clearSearchHighlights = useCallback((root: HTMLElement | null) => {
+    if (!root) return;
+    const marks = root.querySelectorAll('mark.claude-search-hit');
+    marks.forEach(m => {
+      const parent = m.parentNode;
+      if (!parent) return;
+      const txt = document.createTextNode(m.textContent || '');
+      parent.replaceChild(txt, m);
+    });
+    // 인접 텍스트 노드 정리 (재검색 시 매치 안정성)
+    root.normalize();
+  }, []);
+
+  // 메시지 컨테이너 내 텍스트 노드 중 q 와 일치하는 부분을 <mark> 로 감싸 매치 element 배열 반환
+  const applySearchHighlights = useCallback((root: HTMLElement | null, q: string): HTMLElement[] => {
+    if (!root || !q) return [];
+    const esc = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(esc, 'gi');
+    const hits: HTMLElement[] = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const targets: Text[] = [];
+    let n: Node | null;
+    while ((n = walker.nextNode())) {
+      const t = n as Text;
+      if (!t.nodeValue) continue;
+      const p = t.parentElement;
+      if (!p) continue;
+      // 검색바 자체 / 이미 마크된 것 / script style 제외
+      if (p.closest('.claude-chat-search-bar, mark.claude-search-hit, script, style')) continue;
+      if (re.test(t.nodeValue)) targets.push(t);
+      re.lastIndex = 0;
+    }
+    for (const node of targets) {
+      const text = node.nodeValue!;
+      const parent = node.parentNode!;
+      const frag = document.createDocumentFragment();
+      let lastIdx = 0;
+      re.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(text)) !== null) {
+        if (m.index > lastIdx) frag.appendChild(document.createTextNode(text.slice(lastIdx, m.index)));
+        const mark = document.createElement('mark');
+        mark.className = 'claude-search-hit';
+        mark.textContent = m[0];
+        frag.appendChild(mark);
+        hits.push(mark);
+        lastIdx = m.index + m[0].length;
+        if (m[0].length === 0) re.lastIndex++; // 무한 루프 방지
+      }
+      if (lastIdx < text.length) frag.appendChild(document.createTextNode(text.slice(lastIdx)));
+      parent.replaceChild(frag, node);
+    }
+    return hits;
+  }, []);
+
+  // 검색 쿼리/메시지 변경 시 하이라이트 재적용
+  useEffect(() => {
+    const root = scrollRef.current;
+    clearSearchHighlights(root);
+    if (!showSearch || !searchQuery.trim()) {
+      searchHitsRef.current = [];
+      setSearchHitCount(0);
+      setSearchCurrent(0);
+      return;
+    }
+    const hits = applySearchHighlights(root, searchQuery);
+    searchHitsRef.current = hits;
+    setSearchHitCount(hits.length);
+    // 현재 인덱스 범위 보정 + 그 hit 으로 스크롤
+    setSearchCurrent(prev => {
+      if (hits.length === 0) return 0;
+      const idx = Math.min(prev, hits.length - 1);
+      return idx;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showSearch, searchQuery, messages, toolTimeline, applySearchHighlights, clearSearchHighlights]);
+
+  // 현재 hit 하이라이트 (current 클래스) + 스크롤
+  useEffect(() => {
+    const hits = searchHitsRef.current;
+    hits.forEach((el, i) => el.classList.toggle('current', i === searchCurrent));
+    const cur = hits[searchCurrent];
+    if (cur) cur.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [searchCurrent, searchHitCount]);
+
+  const nextSearchHit = useCallback(() => {
+    setSearchCurrent(prev => {
+      const n = searchHitsRef.current.length;
+      if (n === 0) return 0;
+      return (prev + 1) % n;
+    });
+  }, []);
+  const prevSearchHit = useCallback(() => {
+    setSearchCurrent(prev => {
+      const n = searchHitsRef.current.length;
+      if (n === 0) return 0;
+      return (prev - 1 + n) % n;
+    });
+  }, []);
+  const closeSearch = useCallback(() => {
+    setShowSearch(false);
+    setSearchQuery('');
+  }, []);
+  // 검색 토글 시 입력 자동 포커스
+  useEffect(() => {
+    if (showSearch) {
+      requestAnimationFrame(() => searchInputRef.current?.focus());
+    }
+  }, [showSearch]);
+  // ────────────────────────────────────────────────────────────────────────
 
   // CLI 설치 확인 (currentAgent 변경 시마다 재확인)
   useEffect(() => {
@@ -1039,6 +1430,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             requestToHistoryRef.current.delete(reqId);
             requestToAgentRef.current.delete(reqId);
           }
+          // 비활성 대화의 stream 이 끝났을 때도 streamingAgents set 에서 해당 에이전트 제거
+          // (이게 빠지면 다른 탭으로 전환한 채 응답이 끝나도 그 에이전트가 'streaming' 상태로 영영 남음)
+          removeStreamingAgent(streamAgent);
         }
         return;
       }
@@ -1088,6 +1482,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           const exitPlan = toolUses.find((t: any) => t.name === 'ExitPlanMode');
           if (exitPlan && exitPlan.input?.plan) {
             setPendingPlan(String(exitPlan.input.plan));
+            setPendingPlanAgent(streamAgent);
           }
         }
 
@@ -1129,6 +1524,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           }));
         } catch {}
         setStreaming(false);
+        removeStreamingAgent(streamAgent);
         setActivity('');
         currentAsstIdRef.current = null;
         activeRequestIdRef.current = null;
@@ -1143,7 +1539,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               const mt = prev[idx].content.match(/^\s*\[(?:CODEX|GEMINI)_PLAN\]\s*\n?([\s\S]*)$/);
               if (mt) {
                 const planText = mt[1].trim();
-                setTimeout(() => setPendingPlan(planText), 0);
+                setTimeout(() => { setPendingPlan(planText); setPendingPlanAgent(streamAgent); }, 0);
                 // 계획은 모달로만 표시 — 채팅 메시지에서는 제거 (모달+채팅 중복 방지)
                 return prev.filter((_, i) => i !== idx);
               }
@@ -1163,6 +1559,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       } else if (msg.type === 'error') {
         setMessages(prev => [...prev, { role: 'assistant', content: `❌ ${msg.text}`, id: `err-${Date.now()}`, seq: nextSeq(), agent: streamAgent }]);
         setStreaming(false);
+        removeStreamingAgent(streamAgent);
         activeRequestIdRef.current = null;
         if (reqId) {
           codexPlanRequestsRef.current.delete(reqId);
@@ -1342,6 +1739,10 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         // 특수문자 라벨을 따옴표로 감싸 mermaid 파서 에러 방지 (codex 다이어그램 대응)
         const renderSrc = sanitizeMermaidLabels(source);
         try {
+          (window as any).api?.debugDump?.('pepe-mermaid-src.txt',
+            `=====SOURCE=====\n${source}\n\n=====SANITIZED=====\n${renderSrc}\n`);
+        } catch {}
+        try {
           const { svg } = await Promise.race([
             mermaid.render(id, renderSrc),
             new Promise<never>((_, reject) =>
@@ -1365,6 +1766,83 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           const svgHolder = document.createElement('div');
           svgHolder.className = 'claude-chat-mermaid-svg';
           svgHolder.innerHTML = svg;
+          // 'subgraph 별 ...' 같이 title 에 '★' / '⬟' 가 포함된 cluster 의 사각형을
+          // SVG 별 모양 polygon 으로 교체 — mermaid 자체는 별-shape subgraph 를 지원 안 함.
+          try {
+            const renderedSvg2 = svgHolder.querySelector('svg');
+            if (renderedSvg2) {
+              const clusters = renderedSvg2.querySelectorAll('g.cluster, g.clusters > g');
+              clusters.forEach(cluster => {
+                const title = cluster.querySelector('text, .cluster-label, .nodeLabel');
+                const titleText = title?.textContent || '';
+                let shapeKind: 'star' | 'pentagon' | 'triangle' | 'diamond' | 'hexagon' | null = null;
+                if (/★|☆|⭐/.test(titleText)) shapeKind = 'star';
+                else if (/⬠|⬟/.test(titleText)) shapeKind = 'pentagon';
+                else if (/△|▲|▽|▼/.test(titleText)) shapeKind = 'triangle';
+                else if (/◆|◇|♦|♢/.test(titleText)) shapeKind = 'diamond';
+                else if (/⬢|⬣|⎔/.test(titleText)) shapeKind = 'hexagon';
+                if (!shapeKind) return;
+                const rect = cluster.querySelector(':scope > rect');
+                if (!rect) return;
+                const x = parseFloat(rect.getAttribute('x') || '0');
+                const y = parseFloat(rect.getAttribute('y') || '0');
+                const w = parseFloat(rect.getAttribute('width') || '0');
+                const h = parseFloat(rect.getAttribute('height') || '0');
+                if (!w || !h) return;
+                const cx = x + w / 2, cy = y + h / 2;
+                const outerR = Math.min(w, h) / 2 - 2;
+                const pts: string[] = [];
+                if (shapeKind === 'star') {
+                  // 10 vertex (5 outer + 5 inner) 별. 내접 비율 ~ 0.38.
+                  const innerR = outerR * 0.38;
+                  for (let i = 0; i < 10; i++) {
+                    const r = i % 2 === 0 ? outerR : innerR;
+                    const ang = -Math.PI / 2 + i * (Math.PI / 5);
+                    pts.push(`${(cx + r * Math.cos(ang)).toFixed(1)},${(cy + r * Math.sin(ang)).toFixed(1)}`);
+                  }
+                  // 별 모양은 좁아서 안에 자식이 안 들어가므로 가로/세로 1.4 배 확장
+                  // → 별 꼭지점이 rect 영역 밖으로 나가지만 viewBox 가 자동 조정되거나
+                  //   별이 더 큼직하게 보임. 내부 자식 위치는 mermaid 의 기존 좌표 그대로.
+                } else if (shapeKind === 'pentagon') {
+                  for (let i = 0; i < 5; i++) {
+                    const ang = -Math.PI / 2 + i * (2 * Math.PI / 5);
+                    pts.push(`${(cx + outerR * Math.cos(ang)).toFixed(1)},${(cy + outerR * Math.sin(ang)).toFixed(1)}`);
+                  }
+                } else if (shapeKind === 'triangle') {
+                  // 정삼각형 (꼭지 위) — rect 영역에 내접. 3개 꼭지점.
+                  // 내용물이 안에 들어가야 하므로 폭/높이를 살짝 확장 (1.15배)
+                  const tw = w / 2 * 1.15;
+                  const th = h / 2 * 1.05;
+                  pts.push(`${cx.toFixed(1)},${(cy - th).toFixed(1)}`);
+                  pts.push(`${(cx + tw).toFixed(1)},${(cy + th).toFixed(1)}`);
+                  pts.push(`${(cx - tw).toFixed(1)},${(cy + th).toFixed(1)}`);
+                } else if (shapeKind === 'diamond') {
+                  // 마름모/다이아몬드 — 4개 꼭지점, 90도 회전
+                  const dw = w / 2;
+                  const dh = h / 2;
+                  pts.push(`${cx.toFixed(1)},${(cy - dh).toFixed(1)}`);
+                  pts.push(`${(cx + dw).toFixed(1)},${cy.toFixed(1)}`);
+                  pts.push(`${cx.toFixed(1)},${(cy + dh).toFixed(1)}`);
+                  pts.push(`${(cx - dw).toFixed(1)},${cy.toFixed(1)}`);
+                } else if (shapeKind === 'hexagon') {
+                  // 정육각형, 평면 위 (납작한 면이 위/아래). 6개 꼭지점.
+                  for (let i = 0; i < 6; i++) {
+                    const ang = i * (Math.PI / 3);
+                    pts.push(`${(cx + outerR * Math.cos(ang)).toFixed(1)},${(cy + outerR * Math.sin(ang)).toFixed(1)}`);
+                  }
+                }
+                const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+                poly.setAttribute('points', pts.join(' '));
+                poly.setAttribute('fill', rect.getAttribute('fill') || 'none');
+                poly.setAttribute('stroke', rect.getAttribute('stroke') || '#bbb');
+                poly.setAttribute('stroke-width', rect.getAttribute('stroke-width') || '1.5');
+                // rect 의 클래스/스타일 정보 유지
+                const cls = rect.getAttribute('class');
+                if (cls) poly.setAttribute('class', cls);
+                rect.replaceWith(poly);
+              });
+            }
+          } catch {}
           // 모델이 라이트 테마 디렉티브를 넣어 SVG 배경이 하얗게 나오는 경우 방어 —
           // SVG 인라인 배경 및 전체 캔버스 배경 rect 를 투명화해 앱 dark 배경이 비치게 한다.
           try {
@@ -1573,8 +2051,14 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       : x));
   }, [messages, toolTimeline, usage, lastRejectedPlan, activeHistoryId]);
 
+  // 현재 에이전트 view 에 적용할 streaming — 공유 OFF 시 다른 에이전트 stream 은 제외
+  const currentAgentStreaming = shareContext ? streaming : streamingAgents.has(currentAgent);
   const send = useCallback(async (text: string, contextItems: FileContextItem[]) => {
-    if (!text.trim() || streaming) return;
+    if (!text.trim()) return;
+    // 공유 OFF: 현재 에이전트만 busy 이면 차단, 다른 에이전트 stream 은 신경 안 씀
+    const guardBusy = shareContextRef.current ? streaming : streamingAgents.has(currentAgentRef.current);
+    if (guardBusy) return;
+    addStreamingAgent(currentAgentRef.current);
     // 이번 send 의 대화 세대 기록 — 이후 도착하는 stream 이벤트가 이 세대에 속한 경우만 처리
     activeGenRef.current = conversationGenRef.current;
     // 이번 send 의 고유 requestId
@@ -1585,11 +2069,25 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     const addDirsSet = new Set<string>();
     const contextLines: string[] = [];
 
-    // 0.A) 포크/이력 후속 질문이면 작업 대상을 prompt 최상단 + user text 에 직접 명시
+    // 0.A) 포크/이력 후속 질문이면 작업 대상을 prompt 최상단 + user text 에 직접 명시.
+    // 공유 OFF 시에는 다른 에이전트한테 했던 첫 user 메시지를 inject 하면 정보가 누설되므로,
+    // 현재 에이전트의 스레드(자기가 응답했던 user 메시지) 중 첫 번째만 사용.
     let forkOriginalRequest: string | null = null;
     let forkTargetPath: string | null = null;
     if (!claudeSessionIdRef.current && messages.length > 0) {
-      const firstUserMsg = messages.find(m => m.role === 'user');
+      const curAgent = currentAgentRef.current;
+      // user 메시지의 타겟 에이전트 추정 — 그 다음에 응답한 assistant 의 agent
+      const userTargetForFork = (userIdx: number): string => {
+        for (let j = userIdx + 1; j < messages.length; j++) {
+          const mm = messages[j];
+          if (mm.role === 'assistant') return mm.agent || 'claude';
+          if (mm.role === 'user') break;
+        }
+        return curAgent;
+      };
+      const firstUserMsg = shareContextRef.current
+        ? messages.find(m => m.role === 'user')
+        : messages.find((m, idx) => m.role === 'user' && userTargetForFork(idx) === curAgent);
       if (firstUserMsg) {
         const cleaned = firstUserMsg.content
           .split('\n')
@@ -1710,13 +2208,40 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       );
     }
 
-    // 0.9) 다이어그램/플로우차트는 반드시 Mermaid 코드 블록으로 — ASCII 박스 드로잉 금지
+    // 0.9) 다이어그램/플로우차트는 반드시 Mermaid 코드 블록으로
     contextLines.push(
-      `# 다이어그램 출력 규칙 (반드시 준수)`,
-      `다이어그램(DFD, 플로우차트, 시퀀스, 클래스 등)을 그릴 때는 **반드시 \`\`\`mermaid 코드 블록**으로 출력하세요.`,
-      `**절대 금지**: ASCII 박스 드로잉(─│┌┐└┘╔╗╚╝═║▶◀ 등) 으로 그리지 마세요.`,
-      `이유: 사용자 환경은 Mermaid 를 자동으로 SVG 로 렌더링합니다. ASCII 아트는 한글-라틴 혼합 시 정렬이 깨져 보입니다.`,
-      `예시: 플로우차트 → \`\`\`mermaid\\nflowchart TB\\n  A[Application] --> B[UEnc Library]\\n\`\`\``,
+      `# 다이어그램 출력 가이드`,
+      `다이어그램(DFD, 플로우차트, 시퀀스, 클래스 등)은 **\`\`\`mermaid 코드 블록**으로 출력합니다. 사용자 환경이 자동 SVG 렌더링합니다.`,
+      `**라벨에는 한글/이모지 자유롭게 사용 가능합니다** — 라벨은 시각적으로 표시되는 텍스트이고, 식별자는 영문 그대로 두면 됩니다.`,
+      `**식별자(ID)는 영문/숫자/언더스코어**: 예) \`A\`, \`Node1\`, \`Circle\`. 한글이나 도형 기호(△▲□ 등)를 ID 로 쓰면 파서가 깨집니다.`,
+      `**도형 모양별 문법**:`,
+      `  - 사각형 (네모): \`A[네모]\`  또는 \`A["네모 라벨"]\``,
+      `  - 원 (동그라미): \`B((동그라미))\``,
+      `  - 마름모: \`C{마름모}\``,
+      `  - 삼각형 (세모): **반드시 \`D@{ shape: tri, label: "세모" }\`** 형태로 (mermaid v11 네이티브 삼각형). \`[/세모\\\\]\` 는 사다리꼴이라 X.`,
+      `  - 라운드 사각형: \`E(라운드)\`  육각형: \`F{{육각}}\`  원통: \`G[(원통)]\``,
+      `**subgraph (중첩 그룹)**: \`subgraph X[제목]\`...\`end\` — 제목에 한글 OK, ID 는 영문.`,
+      `**subgraph 를 원형으로 만들기**: \`style X rx:200,ry:200\` — 모서리 반지름을 매우 크게 주면 시각적으로 원/타원처럼 보임. "subgraph 는 항상 사각형이라 원형 못 만든다" 같은 말은 잘못된 것입니다 — rx/ry 트릭으로 충분히 원형이 됩니다.`,
+      `**subgraph 의 모양(컨테이너 박스)을 다양하게 만들기** — title 에 모양 기호를 포함하면 사용자 환경의 SVG 후처리가 사각형을 자동으로 해당 모양 polygon 으로 교체합니다. "subgraph 는 사각형뿐이라 못 만든다"는 잘못된 인식입니다:`,
+      `  - ★ ☆ ⭐ : 별 모양 컨테이너 (예: \`subgraph S["★ 별 영역"]\`)`,
+      `  - △ ▲ ▽ ▼ : **삼각형 모양 컨테이너** — 안에 다른 도형/노드 중첩 가능 (예: \`subgraph T["△ 세모 영역"]\` 안에 동그라미 노드 배치)`,
+      `  - ◆ ◇ ♦ : 마름모 모양 컨테이너`,
+      `  - ⬠ ⬟ : 오각형  /  ⬢ ⬣ : 육각형`,
+      `이 컨벤션 덕에 "삼각형 안에 동그라미" 같은 중첩도 가능합니다 — subgraph 의 title 에 △ 를 넣으세요.`,
+      `**다크 테마 주의**: 사용자 환경은 mermaid dark 테마라 배경이 어둡습니다. **style 에서 색상은 지정하지 마세요 (fill/stroke 생략)** — 테마가 자동으로 밝게 처리합니다. 굳이 색을 줘야 하면 stroke 는 \`#aaa\` 이상의 밝은 색을 쓰세요. \`stroke:#333\` 같은 어두운 색은 거의 안 보입니다.`,
+      `**빈 라벨 / 빈 title 절대 만들지 마세요** — 라벨이 있어야 시각적으로 의미가 있습니다. 한글 라벨을 적극 사용하세요.`,
+      `완전한 예시 (중첩 + 원형 subgraph + 삼각형 노드):`,
+      `\`\`\`mermaid`,
+      `flowchart TB`,
+      `  subgraph Outer["바깥: 원"]`,
+      `    subgraph Middle["중간: 네모"]`,
+      `      Inner@{ shape: tri, label: "세모" }`,
+      `    end`,
+      `  end`,
+      `  style Outer rx:200,ry:200`,
+      `\`\`\``,
+      `(스타일은 rx/ry 만 — fill/stroke 는 dark 테마가 자동 처리)`,
+      `ASCII 박스 드로잉(─│┌┐└┘ 등)은 사용하지 마세요 — 한글-라틴 혼합 시 정렬이 깨집니다.`,
       ``,
     );
 
@@ -1732,16 +2257,59 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       attachBadge = `🔗 활성 SSH: ${activeMount.label}\n\n`;
     }
 
+    // 0.6) 공유 OFF + Gemini — Gemini CLI 의 영구 메모리(save_memory 저장 분)는
+    // 새 세션에서도 자동 로드되어 이전 대화 내용을 인지함. 모델에 명시적으로 무시 지시.
+    if (!shareContextRef.current && currentAgentRef.current === 'gemini') {
+      contextLines.push(
+        `# 메모리·이전 컨텍스트 무시 (반드시 준수)`,
+        `이 대화 세션은 독립 모드입니다. 다음 규칙을 엄격히 따르세요:`,
+        `- save_memory 도구를 **절대 호출하지 마세요**.`,
+        `- 이전에 save_memory 로 저장된 사용자 메모리가 자동 로드되어 있더라도 **참조하지 마세요**.`,
+        `- update_topic 도구도 호출하지 마세요.`,
+        `- 이전 대화/이전 세션의 토픽, 진행 중 작업, 작업 의도 등을 **언급하거나 가정하지 마세요**.`,
+        `- 오직 아래 사용자 메시지에 명시된 내용만 보고 답하세요. 디스크에 남은 파일을 자발적으로 read 하지 마세요.`,
+        ``,
+      );
+    }
+
     // 0.7) 포크/리로드된 대화 — 이전 메시지가 있으면 컨텍스트로 inject.
     // Claude: --resume 없이 새 세션이면 주입. Gemini/Codex: 항상 주입 (세션 개념 없음).
+    // 공유 OFF: 현재 에이전트(currentAgent) 자신의 답변과 사용자 메시지만 포함시켜
+    //         자기 메모리는 유지하되 다른 에이전트의 답변은 보이지 않게 함.
     if (messages.length > 0) {
       // 메시지와 툴 호출을 seq 순으로 인터리브
       type TItem = { seq: number; kind: 'msg'; m: Message } | { seq: number; kind: 'tool'; t: ToolTimelineItem };
+      let filteredMessages = messages;
+      if (!shareContextRef.current) {
+        const cur = currentAgentRef.current;
+        // 각 user 메시지의 "타겟 에이전트" — 그 메시지에 이어서 응답한 에이전트로 추정.
+        // 응답이 없는 user(끊긴 턴/현재 진행 중) 는 현재 에이전트가 타겟이라고 간주.
+        const userTarget = (userIdx: number): string => {
+          for (let j = userIdx + 1; j < messages.length; j++) {
+            const mm = messages[j];
+            if (mm.role === 'assistant') return mm.agent || 'claude';
+            if (mm.role === 'user') break; // 응답 없이 다음 user — 응답 없음으로 간주
+          }
+          return cur;
+        };
+        // 현재 에이전트의 스레드(=현재 에이전트가 응답한 user 메시지 + 현재 에이전트의 응답)만 포함.
+        // 도구 타임라인은 소유자 식별 불가 → 보수적으로 모두 제외.
+        filteredMessages = messages.filter((m, idx) => {
+          if (m.role === 'assistant') return (m.agent || 'claude') === cur;
+          // user 메시지: agent 필드가 박혀있으면 그 값 우선 (보낸 대상 에이전트). 없으면 next-assistant 추정.
+          if (m.agent) return m.agent === cur;
+          return userTarget(idx) === cur;
+        });
+      }
       const items: TItem[] = [
-        ...messages.map((m, i) => ({ seq: m.seq ?? i * 2, kind: 'msg' as const, m })),
-        ...toolTimeline.map((t, i) => ({ seq: t.seq ?? (messages.length * 2 + i * 2 + 1), kind: 'tool' as const, t })),
+        ...filteredMessages.map((m, i) => ({ seq: m.seq ?? i * 2, kind: 'msg' as const, m })),
+        ...(shareContextRef.current
+          ? toolTimeline.map((t, i) => ({ seq: t.seq ?? (filteredMessages.length * 2 + i * 2 + 1), kind: 'tool' as const, t }))
+          : []),
       ];
       items.sort((a, b) => a.seq - b.seq);
+      // 필터링 후 비어있으면 inject 생략
+      if (filteredMessages.length === 0) { items.length = 0; }
       // 오래된 transcript 안의 UNC mountRoot 는 현재 세션과 다를 수 있음 (포트/termId 매 세션 변경).
       // 현재 active mountRoot 가 있으면 모든 옛 \\127.0.0.1@PORT\DavWWWRoot\term-XXX 패턴을 현재 것으로 치환.
       const sanitizeUNC = (s: string): string => {
@@ -1761,6 +2329,10 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           transcriptLines.push('');
         }
       }
+      // 필터링 결과 transcript 가 비어있으면 inject 통째 생략 (예: 공유 OFF + 이 에이전트로는 처음 보내는 경우)
+      if (transcriptLines.length === 0) {
+        // skip
+      } else
       contextLines.push(
         `# 이전 대화 내역 (포크/이어쓰기 — 매우 중요)`,
         `당신(${currentAgentRef.current === 'gemini' ? 'Gemini' : currentAgentRef.current === 'codex' ? 'Codex' : 'Claude'})은 새 CLI 세션에서 시작했지만, 사용자는 아래 대화의 연속으로 이번 질문을 합니다.`,
@@ -1802,10 +2374,36 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       attachBadge += `📁 로컬 ${localFileAttachments.length}개 파일\n\n`;
     }
 
-    const userMsg: Message = { role: 'user', content: attachBadge + text, id: `user-${Date.now()}`, seq: nextSeq() };
+    // user 메시지에도 agent (보낸 대상 에이전트) 를 박아 공유 OFF 시 다른 에이전트 view 로 누설 방지
+    const userMsg: Message = { role: 'user', content: attachBadge + text, id: `user-${Date.now()}`, seq: nextSeq(), agent: currentAgentRef.current as AgentType };
     // 활성 이력 없으면 새 이력 생성 (setMessages updater 밖에서 — strict mode 중복 방지)
     // 클로저 stale 방지 — 현재 활성 history 는 ref 에서 읽기 (포크/이력전환 직후 send 시점 보정)
     let targetHid = activeHistoryIdRef.current;
+    // 공유 OFF 시 — 활성 history 의 originAgent 가 현재 에이전트와 다르면 새 이력 생성.
+    // (Claude 에서 만든 대화에 그대로 머문 채 Gemini 탭으로 전환 후 메시지 보내면
+    //  Claude 의 대화 안에 Gemini 메시지가 섞이지 않고 별도 항목으로 분리됨.)
+    if (!shareContextRef.current && targetHid) {
+      const cur = chatHistory.find(x => x.id === targetHid);
+      const curOrigin = cur?.originAgent
+        || cur?.messages.find(m => m.role === 'assistant' && m.agent)?.agent
+        || 'claude';
+      if (curOrigin !== currentAgentRef.current) {
+        targetHid = null; // 신규 생성 분기로 전환
+        setActiveHist(null);
+        // 옛 대화 messages 도 클리어 — 안 그러면 sync effect 가 옛 메시지를 새 history 에 흘려넣어
+        // 사이드바 아이콘이 옛 에이전트도 함께 표시됨.
+        setMessages([]);
+        setToolTimeline([]);
+        setActivity('');
+        setPendingPlan(null);
+        setPendingPlanAgent(null);
+        setLastRejectedPlan(null);
+        setLastRejectedPlanAgent(null);
+        claudeSessionIdRef.current = null;
+        recentLocalPathsRef.current.clear();
+        currentAsstIdRef.current = null;
+      }
+    }
     if (!targetHid) {
       const newId = `hist-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       const newHist: ChatHistoryEntry = {
@@ -1814,6 +2412,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         title: text.slice(0, 60).replace(/\n/g, ' '),
         pinned: false,
         updatedAt: Date.now(),
+        originAgent: currentAgentRef.current,
         messages: [userMsg],
         pendingRequestId: requestId,
         streaming: true,
@@ -1909,8 +2508,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     } catch (err: any) {
       setMessages(prev => [...prev, { role: 'assistant', content: `❌ ${err}`, id: `err-${Date.now()}`, seq: nextSeq() }]);
       setStreaming(false);
+      removeStreamingAgent(currentAgentRef.current);
     }
-  }, [sessionId, streaming, mountEntries, activeMount, localFileAttachments, permissionMode, model, perToolApproval, messages, toolTimeline, geminiTier, geminiYolo]);
+  }, [sessionId, streaming, streamingAgents, mountEntries, activeMount, localFileAttachments, permissionMode, model, perToolApproval, messages, toolTimeline, geminiTier, geminiYolo]);
 
   // 외부에서 컨텍스트 전달되면 추가 (기존 첨부에 append, 중복 제거)
   useEffect(() => {
@@ -1954,6 +2554,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     }
     activeRequestIdRef.current = null;
     setStreaming(false);
+    removeStreamingAgent(reqAgent);
     setActivity('');
     currentAsstIdRef.current = null;
     if (activeHistoryId) {
@@ -1968,6 +2569,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     setToolTimeline([]);
     setActivity('');
     setPendingPlan(null);
+    setPendingPlanAgent(null);
     setStreaming(false);
     claudeSessionIdRef.current = null;
     recentLocalPathsRef.current.clear();
@@ -1975,10 +2577,44 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     setActiveHist(null);
     setUsage({ inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, totalCostUsd: 0, turns: 0, lastTurnInput: 0, lastTurnOutput: 0, lastTurnFreshInput: 0, lastTurnCacheRead: 0, lastTurnCacheCreate: 0, model: '' });
     setLastRejectedPlan(null);
+    setLastRejectedPlanAgent(null);
   };
   const startNewConversation = () => {
     clear();
     setShowHistoryPanel(false);
+  };
+  // 🗑 버튼 — 대화 history 항목은 유지하고 내용(messages/toolTimeline/usage)만 비움.
+  // 진행 중인 백그라운드 프로세스는 종료. UI 도 함께 리셋.
+  const trashCurrentConversation = () => {
+    const aid = activeHistoryId;
+    if (aid) {
+      // 진행 중 프로세스 종료 + 매핑 정리
+      for (const [reqId, hid] of Array.from(requestToHistoryRef.current.entries())) {
+        if (hid === aid) {
+          const reqAgent = requestToAgentRef.current.get(reqId) || currentAgentRef.current;
+          try {
+            if (reqAgent === 'gemini') (window as any).api?.geminiStop?.(sessionId, reqId);
+            else if (reqAgent === 'codex') (window as any).api?.codexStop?.(sessionId, reqId);
+            else (window as any).api?.claudeStop?.(sessionId, reqId);
+          } catch {}
+          requestToHistoryRef.current.delete(reqId);
+          requestToAgentRef.current.delete(reqId);
+        }
+      }
+      // history 항목은 남기되 내용만 비움 (title/pinned/agent 등 메타는 유지)
+      setChatHistory(h => h.map(x => x.id === aid ? {
+        ...x,
+        messages: [],
+        toolTimeline: [],
+        usage: { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, totalCostUsd: 0, turns: 0, lastTurnInput: 0, lastTurnOutput: 0, lastTurnFreshInput: 0, lastTurnCacheRead: 0, lastTurnCacheCreate: 0, model: '' },
+        lastRejectedPlan: null,
+        streaming: false,
+        pendingRequestId: null,
+        claudeSessionId: null,
+        updatedAt: Date.now(),
+      } : x));
+    }
+    clear();
   };
   const loadHistory = (h: ChatHistoryEntry) => {
     // 동일 대화 재선택 — 진행 중 상태 그대로 유지하고 패널만 닫는다
@@ -1997,6 +2633,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     setActiveHist(h.id);
     setToolTimeline(h.toolTimeline || []);
     setLastRejectedPlan(h.lastRejectedPlan || null);
+    setLastRejectedPlanAgent(null); // history 에 plan agent 는 저장 안 됨 — 다시 명시될 때까지 비활성
+    setPendingPlanAgent(null);
     // 사용량 복원 (없으면 0 으로 초기화)
     setUsage(h.usage || { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, totalCostUsd: 0, turns: 0, lastTurnInput: 0, lastTurnOutput: 0, lastTurnFreshInput: 0, lastTurnCacheRead: 0, lastTurnCacheCreate: 0, model: '' });
     // h.streaming 이 true 라도 실제 진행 중 프로세스 매핑(requestToHistoryRef) 에 없으면 stale → 입력 잠김 방지
@@ -2039,6 +2677,49 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const renameHistory = (id: string, newTitle: string) => {
     setChatHistory(h => h.map(x => x.id === id ? { ...x, title: newTitle } : x));
   };
+
+  // 가장 최근 대화 자동 선택 — 초기 마운트 / 에이전트 전환 / 공유모드 전환 시 트리거.
+  // 현재 view 의 이력이 비어있으면 새 대화 상태 유지 (공유 OFF + 그 에이전트 첫 사용 시 등).
+  const autoSelectViewRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!chatHistoryLoadedRef.current) return;
+    const viewKey = `${currentAgent}_${shareContext}`;
+    if (autoSelectViewRef.current === viewKey) return; // 이 view 에선 이미 자동선택 처리됨
+    autoSelectViewRef.current = viewKey;
+    // 현재 view 에서 보이는 이력 목록 계산
+    const visible = shareContext
+      ? chatHistory
+      : chatHistory.filter(h => {
+          const set = new Set<string>();
+          if (h.originAgent) set.add(h.originAgent);
+          for (const m of h.messages) { if (m.agent) set.add(m.agent); }
+          if (set.size === 0) set.add('claude');
+          return set.has(currentAgent);
+        });
+    // 활성 history 가 새 view 에서도 보이면 그대로 유지
+    const activeStillVisible = activeHistoryIdRef.current && visible.some(h => h.id === activeHistoryIdRef.current);
+    if (activeStillVisible) return;
+    if (visible.length > 0) {
+      // 가장 최근 (updatedAt 기준) 항목 자동 로드
+      const latest = [...visible].sort((a, b) => b.updatedAt - a.updatedAt)[0];
+      loadHistory(latest);
+    } else {
+      // 현재 view 에 이력 없음 → 새 대화 (UI 만 리셋, 백그라운드 프로세스는 살림)
+      activeRequestIdRef.current = null;
+      setMessages([]);
+      setToolTimeline([]);
+      setActivity('');
+      setPendingPlan(null);
+      setPendingPlanAgent(null);
+      setStreaming(false);
+      claudeSessionIdRef.current = null;
+      recentLocalPathsRef.current.clear();
+      currentAsstIdRef.current = null;
+      setActiveHist(null);
+      setLastRejectedPlan(null);
+      setLastRejectedPlanAgent(null);
+    }
+  }, [currentAgent, shareContext, chatHistory.length]);
 
   // 계획 승인 — "진행해줘" 메시지로 bypass 모드 send 자동 실행
   // streaming 상태 race 방지용 — 승인 시점에 streaming 이 아직 true 면 끝나기를 기다렸다 send
@@ -2093,7 +2774,14 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     setPlanEditing(false);
     setPlanEditedText('');
     setPlanExtraNote('');
-    setPendingPlan(prev => { if (prev) setLastRejectedPlan(prev); return null; });
+    setPendingPlan(prev => {
+      if (prev) {
+        setLastRejectedPlan(prev);
+        setLastRejectedPlanAgent(pendingPlanAgent);
+      }
+      setPendingPlanAgent(null);
+      return null;
+    });
     setMessages(prev => [...prev, { role: 'assistant', content: tt('planRejected'), id: `reject-${Date.now()}` }]);
   };
 
@@ -2288,12 +2976,17 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     return (
       <div className="claude-chat-container">
         <div className="claude-chat-header">
-          <div className="claude-chat-agent-switcher">
-            <button className={`claude-chat-agent-btn ${currentAgent === 'claude' ? 'active' : ''}`} title="Claude Code" onClick={() => switchAgent('claude')}><ClaudeTabIcon /></button>
-            <button className={`claude-chat-agent-btn ${currentAgent === 'gemini' ? 'active' : ''}`} title="Gemini" onClick={() => switchAgent('gemini')}><GeminiTabIcon /></button>
-            <button className={`claude-chat-agent-btn ${currentAgent === 'codex' ? 'active' : ''}`} title="Codex" onClick={() => switchAgent('codex')}><CodexTabIcon /></button>
+          <div className="claude-chat-header-left">
+            <div className="claude-chat-agent-switcher">
+              <button className={`claude-chat-agent-btn ${currentAgent === 'claude' ? 'active' : ''}`} title="Claude Code" onClick={() => switchAgent('claude')}><ClaudeTabIcon /></button>
+              <button className={`claude-chat-agent-btn ${currentAgent === 'gemini' ? 'active' : ''}`} title="Gemini" onClick={() => switchAgent('gemini')}><GeminiTabIcon /></button>
+              <button className={`claude-chat-agent-btn ${currentAgent === 'codex' ? 'active' : ''}`} title="Codex" onClick={() => switchAgent('codex')}><CodexTabIcon /></button>
+            </div>
           </div>
-          {onClose && <button className="claude-chat-close" onClick={onClose}>×</button>}
+          <div className="claude-chat-header-center" />
+          <div className="claude-chat-header-actions">
+            {onClose && <button className="claude-chat-close" onClick={onClose}>×</button>}
+          </div>
         </div>
         <div className="claude-chat-loading">{currentAgent === 'gemini' ? tt('loadingGemini') : currentAgent === 'codex' ? tt('loadingCodex') : tt('loading')}</div>
       </div>
@@ -2304,24 +2997,29 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     return (
       <div className="claude-chat-container">
         <div className="claude-chat-header">
-          <div className="claude-chat-agent-switcher">
-            <button
-              className={`claude-chat-agent-btn ${currentAgent === 'claude' ? 'active' : ''}`}
-              title="Claude Code"
-              onClick={() => switchAgent('claude')}
-            ><ClaudeTabIcon /></button>
-            <button
-              className={`claude-chat-agent-btn ${currentAgent === 'gemini' ? 'active' : ''}`}
-              title="Gemini"
-              onClick={() => switchAgent('gemini')}
-            ><GeminiTabIcon /></button>
-            <button
-              className={`claude-chat-agent-btn ${currentAgent === 'codex' ? 'active' : ''}`}
-              title="Codex"
-              onClick={() => switchAgent('codex')}
-            ><CodexTabIcon /></button>
+          <div className="claude-chat-header-left">
+            <div className="claude-chat-agent-switcher">
+              <button
+                className={`claude-chat-agent-btn ${currentAgent === 'claude' ? 'active' : ''}`}
+                title="Claude Code"
+                onClick={() => switchAgent('claude')}
+              ><ClaudeTabIcon /></button>
+              <button
+                className={`claude-chat-agent-btn ${currentAgent === 'gemini' ? 'active' : ''}`}
+                title="Gemini"
+                onClick={() => switchAgent('gemini')}
+              ><GeminiTabIcon /></button>
+              <button
+                className={`claude-chat-agent-btn ${currentAgent === 'codex' ? 'active' : ''}`}
+                title="Codex"
+                onClick={() => switchAgent('codex')}
+              ><CodexTabIcon /></button>
+            </div>
           </div>
-          {onClose && <button className="claude-chat-close" onClick={onClose}>×</button>}
+          <div className="claude-chat-header-center" />
+          <div className="claude-chat-header-actions">
+            {onClose && <button className="claude-chat-close" onClick={onClose}>×</button>}
+          </div>
         </div>
         <div className="claude-chat-notinstalled">
           <p>{notInstalledMsg}</p>
@@ -2351,27 +3049,27 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   return (
     <div className="claude-chat-container">
       <div className="claude-chat-header">
-        <div className="claude-chat-agent-switcher">
-          <button
-            className={`claude-chat-agent-btn ${currentAgent === 'claude' ? 'active' : ''}`}
-            title="Claude Code"
-            onClick={() => switchAgent('claude')}
-          ><ClaudeTabIcon /></button>
-          <button
-            className={`claude-chat-agent-btn ${currentAgent === 'gemini' ? 'active' : ''}`}
-            title="Gemini"
-            onClick={() => switchAgent('gemini')}
-          ><GeminiTabIcon /></button>
-          <button
-            className={`claude-chat-agent-btn ${currentAgent === 'codex' ? 'active' : ''}`}
-            title="Codex"
-            onClick={() => switchAgent('codex')}
-          ><CodexTabIcon /></button>
+        <div className="claude-chat-header-left">
+          <div className="claude-chat-agent-switcher">
+            <button
+              className={`claude-chat-agent-btn ${currentAgent === 'claude' ? 'active' : ''}`}
+              title="Claude Code"
+              onClick={() => switchAgent('claude')}
+            ><ClaudeTabIcon /></button>
+            <button
+              className={`claude-chat-agent-btn ${currentAgent === 'gemini' ? 'active' : ''}`}
+              title="Gemini"
+              onClick={() => switchAgent('gemini')}
+            ><GeminiTabIcon /></button>
+            <button
+              className={`claude-chat-agent-btn ${currentAgent === 'codex' ? 'active' : ''}`}
+              title="Codex"
+              onClick={() => switchAgent('codex')}
+            ><CodexTabIcon /></button>
+          </div>
+          {version && <span className="claude-chat-version">{version}</span>}
         </div>
-        {version && <span className="claude-chat-version" style={{ marginLeft: 4, color: '#666', fontSize: 11 }}>{version}</span>}
-        <div className="claude-chat-header-actions">
-          <button onClick={startNewConversation} title={tt('newConversation')}>＋</button>
-          <button onClick={() => setShowHistoryPanel(v => !v)} title={tt('historyToggle')} className={showHistoryPanel ? 'active' : ''}>≡</button>
+        <div className="claude-chat-header-center">
           {onTogglePin && (
             <button
               className={`claude-chat-pin ${pinned ? 'pinned' : ''}`}
@@ -2379,7 +3077,17 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               title={pinned ? tt('unpin') : tt('pin')}
             >📌</button>
           )}
-          <button onClick={clear} title={tt('clear')}>🗑</button>
+          <button onClick={() => setShowSearch(v => !v)} title={tt('search') || '검색'} className={showSearch ? 'active' : ''}>🔍</button>
+          <button
+            onClick={() => setShareContext(v => !v)}
+            title={shareContext ? '에이전트 간 컨텍스트 공유 켜짐 — 클릭하여 끄기' : '에이전트 간 컨텍스트 공유 꺼짐 — 클릭하여 켜기'}
+            className={`claude-chat-share-toggle ${shareContext ? 'on' : 'off'}`}
+          >🔗</button>
+        </div>
+        <div className="claude-chat-header-actions">
+          <button onClick={startNewConversation} title={tt('newConversation')}>＋</button>
+          <button onClick={() => setShowHistoryPanel(v => !v)} title={tt('historyToggle')} className={showHistoryPanel ? 'active' : ''}>≡</button>
+          <button onClick={trashCurrentConversation} title={tt('clear')}>🗑</button>
           {onClose && <button className="claude-chat-close" onClick={onClose} title={tt('close')}>×</button>}
         </div>
       </div>
@@ -2717,15 +3425,51 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         )}
       </div>
       {showHistoryPanel && (() => {
-        const pinnedHist = chatHistory.filter(h => h.pinned).sort((a, b) => b.updatedAt - a.updatedAt);
-        const recentHist = chatHistory.filter(h => !h.pinned).sort((a, b) => b.updatedAt - a.updatedAt);
-        const renderItem = (h: ChatHistoryEntry) => (
+        // 공유 OFF 시 — 현재 에이전트가 "참여한" 대화는 모두 그 에이전트 view 에 표시.
+        // (originAgent 만으로 필터하면 처음 시작한 에이전트의 사이드바에만 보임 → 다른 에이전트로
+        //  이어서 대화한 경우 그쪽 사이드바에 안 보이는 문제 회피).
+        const histAgents = (h: ChatHistoryEntry): Set<string> => {
+          const set = new Set<string>();
+          if (h.originAgent) set.add(h.originAgent);
+          for (const m of h.messages) {
+            if (m.role === 'assistant' && m.agent) set.add(m.agent);
+            if (m.role === 'user' && m.agent) set.add(m.agent);
+          }
+          if (set.size === 0) set.add('claude');
+          return set;
+        };
+        const visibleHist = shareContext
+          ? chatHistory
+          : chatHistory.filter(h => histAgents(h).has(currentAgent));
+        const pinnedHist = visibleHist.filter(h => h.pinned).sort((a, b) => b.updatedAt - a.updatedAt);
+        const recentHist = visibleHist.filter(h => !h.pinned).sort((a, b) => b.updatedAt - a.updatedAt);
+        const renderItem = (h: ChatHistoryEntry) => {
+          // 대화에서 사용된 에이전트들을 첫 등장 순서로 수집 (assistant 메시지 기준).
+          // assistant 메시지가 하나도 없으면 originAgent 또는 'claude' 로 표시.
+          const seen: string[] = [];
+          for (const m of h.messages) {
+            if (m.role !== 'assistant') continue;
+            const ag = (m.agent || '').toLowerCase();
+            if (!ag) continue;
+            if (!seen.includes(ag)) seen.push(ag);
+          }
+          if (seen.length === 0) seen.push(h.originAgent || 'claude');
+          const iconFor = (a: string) => a === 'gemini' ? GeminiTabIcon : a === 'codex' ? CodexTabIcon : ClaudeTabIcon;
+          const labelFor = (a: string) => a === 'gemini' ? 'Gemini' : a === 'codex' ? 'Codex' : 'Claude';
+          const groupTitle = seen.length > 1 ? seen.map(labelFor).join(' → ') : labelFor(seen[0]);
+          return (
           <div
             key={h.id}
             className={`claude-chat-history-item ${activeHistoryId === h.id ? 'active' : ''}`}
             onClick={() => loadHistory(h)}
           >
-            <span className="claude-chat-history-title" title={h.title}>○ {h.title || tt('noTitle')}</span>
+            <span className="claude-chat-history-agent" title={groupTitle}>
+              {seen.map((a, i) => {
+                const Ic = iconFor(a);
+                return <Ic key={`${a}-${i}`} />;
+              })}
+            </span>
+            <span className="claude-chat-history-title" title={h.title}>{h.title || tt('noTitle')}</span>
             <div className="claude-chat-history-actions">
               <button title={h.pinned ? tt('unpinTitle') : tt('pinnedTitle')} onClick={e => { e.stopPropagation(); togglePinHistory(h.id); }}>
                 {h.pinned ? '📍' : '📌'}
@@ -2741,7 +3485,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               }}>×</button>
             </div>
           </div>
-        );
+          );
+        };
         return (
           <div className="claude-chat-history-panel">
             <div className="claude-chat-history-section-title">{tt('pinnedSection')}</div>
@@ -2751,6 +3496,31 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           </div>
         );
       })()}
+      {showSearch && !showHistoryPanel && (
+        <div className="claude-chat-search-bar">
+          <span className="claude-chat-search-icon">🔍</span>
+          <input
+            ref={searchInputRef}
+            className="claude-chat-search-input"
+            value={searchQuery}
+            placeholder={tt('searchPlaceholder') || '메시지 검색...'}
+            onChange={e => setSearchQuery(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Escape') { e.preventDefault(); closeSearch(); }
+              else if (e.key === 'Enter') {
+                e.preventDefault();
+                if (e.shiftKey) prevSearchHit(); else nextSearchHit();
+              }
+            }}
+          />
+          <span className="claude-chat-search-count">
+            {searchQuery.trim() ? (searchHitCount > 0 ? `${searchCurrent + 1}/${searchHitCount}` : '0/0') : ''}
+          </span>
+          <button className="claude-chat-search-btn" onClick={prevSearchHit} disabled={searchHitCount === 0} title="이전">↑</button>
+          <button className="claude-chat-search-btn" onClick={nextSearchHit} disabled={searchHitCount === 0} title="다음">↓</button>
+          <button className="claude-chat-search-btn" onClick={closeSearch} title="닫기 (Esc)">×</button>
+        </div>
+      )}
       <div className="claude-chat-messages" ref={scrollRef} style={showHistoryPanel ? { display: 'none' } : undefined}>
         {pendingToolApproval && (
           <div className="claude-chat-plan-overlay">
@@ -2768,7 +3538,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             </div>
           </div>
         )}
-        {pendingPlan && (
+        {pendingPlan && (shareContext || !pendingPlanAgent || pendingPlanAgent === currentAgent) && (
           <div className="claude-chat-plan-overlay" onClick={rejectPlan}>
             <div className="claude-chat-plan-modal" onClick={e => e.stopPropagation()}
               onKeyDown={e => { if (!planEditing && e.key === 'Enter') approvePlan(); else if (e.key === 'Escape') rejectPlan(); }}
@@ -2822,18 +3592,78 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             </div>
           </div>
         )}
-        {messages.length === 0 && (
-          <div className="claude-chat-empty">
-            <p>{currentAgent === 'gemini' ? tt('askPlaceholderGemini') : currentAgent === 'codex' ? tt('askPlaceholderCodex') : tt('askPlaceholder')}</p>
-            <p>{currentAgent === 'gemini' ? tt('askEditorHintGemini') : currentAgent === 'codex' ? tt('askEditorHintCodex') : tt('askEditorHint')}</p>
-          </div>
-        )}
         {(() => {
+          // 공유 OFF 면 현재 에이전트의 스레드(자기 응답 + 자기한테 향한 user 메시지)만 카운트.
+          // 단 mixed-agent (공유 ON 시 만들어진) 대화는 필터 안 함 → 메시지가 있으면 무조건 비어있지 않음.
+          let hasVisible = messages.length > 0;
+          if (!shareContext) {
+            const respondedAgents = new Set<string>();
+            for (const m of messages) {
+              if (m.role === 'assistant' && m.agent) respondedAgents.add(m.agent);
+            }
+            const isSharedConv = respondedAgents.size > 1;
+            if (!isSharedConv) {
+              const cur = currentAgent;
+              const userTargetView = (userIdx: number): string => {
+                for (let j = userIdx + 1; j < messages.length; j++) {
+                  const mm = messages[j];
+                  if (mm.role === 'assistant') return mm.agent || 'claude';
+                  if (mm.role === 'user') break;
+                }
+                return cur;
+              };
+              hasVisible = messages.some((m, idx) => {
+                if (m.role === 'assistant') return (m.agent || 'claude') === cur;
+                if (m.agent) return m.agent === cur;
+                return userTargetView(idx) === cur;
+              });
+            }
+          }
+          if (hasVisible) return null;
+          return (
+            <div className="claude-chat-empty">
+              <p>{currentAgent === 'gemini' ? tt('askPlaceholderGemini') : currentAgent === 'codex' ? tt('askPlaceholderCodex') : tt('askPlaceholder')}</p>
+              <p>{currentAgent === 'gemini' ? tt('askEditorHintGemini') : currentAgent === 'codex' ? tt('askEditorHintCodex') : tt('askEditorHint')}</p>
+            </div>
+          );
+        })()}
+        {(() => {
+          // 컨텍스트 공유 OFF 시 — 현재 에이전트의 스레드만 보여주도록 메시지/툴 필터링.
+          // 단 이전에 공유 ON 모드에서 만들어진 '여러 에이전트가 섞인 대화' 는 그대로 두고
+          // 필터링하지 않음 (히스토리 무결성 보존, 옛 대화의 흐름 유지).
+          let viewMessages = messages;
+          let viewToolTimeline = toolTimeline;
+          if (!shareContext) {
+            // 한 conversation 안에서 응답한 assistant 의 agent 종류를 세어 본다.
+            const respondedAgents = new Set<string>();
+            for (const m of messages) {
+              if (m.role === 'assistant' && m.agent) respondedAgents.add(m.agent);
+            }
+            const isSharedConv = respondedAgents.size > 1;
+            if (!isSharedConv) {
+              const cur = currentAgent;
+              const userTargetView = (userIdx: number): string => {
+                for (let j = userIdx + 1; j < messages.length; j++) {
+                  const mm = messages[j];
+                  if (mm.role === 'assistant') return mm.agent || 'claude';
+                  if (mm.role === 'user') break;
+                }
+                return cur;
+              };
+              viewMessages = messages.filter((m, idx) => {
+                if (m.role === 'assistant') return (m.agent || 'claude') === cur;
+                if (m.agent) return m.agent === cur;
+                return userTargetView(idx) === cur;
+              });
+              // 도구 타임라인은 소유 에이전트 식별이 어려워 보수적으로 모두 숨김
+              viewToolTimeline = [];
+            }
+          }
           // 메시지 + 툴 호출을 발생 순서(seq) 로 인터리브
           type Item = { kind: 'msg'; m: Message; seq: number } | { kind: 'tool'; t: ToolTimelineItem; seq: number };
           const items: Item[] = [
-            ...messages.map((m, i) => ({ kind: 'msg' as const, m, seq: m.seq ?? i * 2 })),
-            ...toolTimeline.map((t, i) => ({ kind: 'tool' as const, t, seq: t.seq ?? (messages.length * 2 + i * 2 + 1) })),
+            ...viewMessages.map((m, i) => ({ kind: 'msg' as const, m, seq: m.seq ?? i * 2 })),
+            ...viewToolTimeline.map((t, i) => ({ kind: 'tool' as const, t, seq: t.seq ?? (viewMessages.length * 2 + i * 2 + 1) })),
           ];
           items.sort((a, b) => a.seq - b.seq);
           // 연속된 tool 항목들을 그룹으로 묶기
@@ -2936,7 +3766,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           })());
         })()}
       </div>
-      {streaming && !showHistoryPanel && (
+      {currentAgentStreaming && !showHistoryPanel && (
         <div className="claude-chat-streaming">
           <span className="claude-chat-streaming-dots">●●●</span>
           <span className="claude-chat-streaming-activity">{activity || tt('thinking')}</span>
@@ -2994,16 +3824,16 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           </div>
           );
         })()}
-        {lastRejectedPlan && !pendingPlan && (
+        {lastRejectedPlan && !pendingPlan && (shareContext || !lastRejectedPlanAgent || lastRejectedPlanAgent === currentAgent) && (
           <div className="claude-chat-rejected-plan-bar">
             <button
               className="claude-chat-rejected-plan-btn"
-              onClick={() => { setPendingPlan(lastRejectedPlan); }}
+              onClick={() => { setPendingPlan(lastRejectedPlan); setPendingPlanAgent(lastRejectedPlanAgent); }}
               title={tt('showRejectedPlanTitle')}
             >{tt('showRejectedPlan')}</button>
             <button
               className="claude-chat-rejected-plan-dismiss"
-              onClick={() => setLastRejectedPlan(null)}
+              onClick={() => { setLastRejectedPlan(null); setLastRejectedPlanAgent(null); }}
               title={tt('removeRejectedPlan')}
             >✕</button>
           </div>
@@ -3327,7 +4157,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           }}
           placeholder={tt('inputPlaceholder')}
           rows={3}
-          disabled={streaming}
+          disabled={currentAgentStreaming}
         />
         <div className="claude-chat-input-actions">
           <div
@@ -3384,7 +4214,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               );
             })()}
           </div>
-          {streaming ? (
+          {currentAgentStreaming ? (
             <button className="claude-chat-btn stop" onClick={stop}>{tt('stopShort')}</button>
           ) : (
             <button className="claude-chat-btn send" onClick={handleSend} disabled={!input.trim()}>{tt('send')}</button>
@@ -3423,12 +4253,14 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           const upToTools = toolTimeline.filter(t => (t.seq ?? Number.MAX_SAFE_INTEGER) <= cutSeq);
           const newId = `hist-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
           const sourceTitle = chatHistory.find(h => h.id === activeHistoryId)?.title || '대화';
+          const sourceHist = chatHistory.find(h => h.id === activeHistoryId);
           const newHist: ChatHistoryEntry = {
             id: newId,
             claudeSessionId: null, // 새 fork — Claude resume 끊고 새 컨텍스트 (대화 분기)
             title: `🍴 ${sourceTitle}`,
             pinned: false,
             updatedAt: Date.now(),
+            originAgent: sourceHist?.originAgent || currentAgentRef.current,
             messages: upTo,
             toolTimeline: upToTools,
           };

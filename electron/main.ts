@@ -4125,6 +4125,16 @@ ipcMain.handle('gemini:check', async () => {
   }
 });
 
+// 진단용 임시 dump — 렌더러가 sanitize 결과를 파일에 기록 (mermaid 디버그)
+ipcMain.handle('debug:dump', (_e, { name, content }: { name: string; content: string }) => {
+  try {
+    const os = require('os'), path = require('path'), fs = require('fs');
+    const safe = String(name || 'pepe-debug.txt').replace(/[^A-Za-z0-9._-]/g, '_');
+    fs.writeFileSync(path.join(os.tmpdir(), safe), String(content ?? ''), 'utf-8');
+  } catch {}
+  return { ok: true };
+});
+
 ipcMain.handle('gemini:modelInfo', async () => {
   try {
     const fs = require('fs'), path = require('path'), os = require('os'), https = require('https');
@@ -4261,9 +4271,65 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
     let geminiHadOutput = false;
     let gTextBuf = '';
     let gSegment = 0;
+    // flush 시 누적 텍스트에 대한 최종 정리. 모델이 update_topic 의 내부
+    // 파라미터(strategic_intent 등)를 평문으로 흘리는 경우가 있는데, 이 누수는
+    // 여러 델타에 걸쳐 쪼개져 오므로 per-delta 정리로는 못 잡고 flush 시 한 번 더 거른다.
+    // 'strategic_intent:' 다음부터 첫 마침표(.) 또는 줄바꿈까지를 한 단위로 제거.
+    // update_topic / save_memory 같은 메타 도구의 함수 호출 형태를 균형 잡힌 괄호 파서로 제거.
+    // (regex 만으로는 따옴표 안 ')' / unescape 된 따옴표 / 긴 multiline 값을 안정적으로 처리 못함)
+    const stripFnCall = (s: string, fnName: string): string => {
+      const re = new RegExp(`\\b${fnName}\\s*\\(`);
+      let result = s;
+      // 반복 — 같은 fnName 호출이 여러 개 있을 수 있음
+      for (let safety = 0; safety < 20; safety++) {
+        const m = re.exec(result);
+        if (!m) break;
+        const start = m.index;
+        let depth = 1;
+        let i = m.index + m[0].length;
+        let inStr: string | null = null;
+        while (i < result.length && depth > 0) {
+          const c = result[i];
+          if (inStr) {
+            if (c === '\\' && i + 1 < result.length) { i += 2; continue; }
+            if (c === inStr) inStr = null;
+          } else {
+            if (c === '"' || c === "'") inStr = c;
+            else if (c === '(') depth++;
+            else if (c === ')') depth--;
+          }
+          i++;
+        }
+        if (depth === 0) {
+          // 닫는 ')' 찾음 → 그 뒤 선행 개행 1개까지 같이 제거
+          let end = i;
+          if (result[end] === '\n') end++;
+          result = result.slice(0, start) + result.slice(end);
+        } else {
+          // 닫는 ')' 못 찾음 (모델이 미완 출력) → 줄 끝까지 잘라냄. 줄 없으면 전체.
+          const nlIdx = result.indexOf('\n', m.index);
+          if (nlIdx !== -1) result = result.slice(0, start) + result.slice(nlIdx + 1);
+          else result = result.slice(0, start);
+          break;
+        }
+      }
+      return result;
+    };
+    const finalizeGeminiText = (s: string): string => {
+      let out = s;
+      // 1) update_topic(...) / save_memory(...) 함수 호출 — 균형 괄호 파서로 안전하게 제거
+      out = stripFnCall(out, 'update_topic');
+      out = stripFnCall(out, 'save_memory');
+      // 2) bare 'strategic_intent: ...' narration 누수 — 첫 마침표/줄바꿈까지 제거
+      out = out.replace(/\bstrategic_intent\s*:[^.\n]*[.\n]?/gi, '');
+      // 3) 제거 후 선두 공백/개행 정리
+      out = out.replace(/^\s+/, '');
+      return out;
+    };
     const flushGeminiText = () => {
-      if (gTextBuf.trim()) {
-        sendStream({ type: 'assistant', message: { id: `${gIdPrefix}-m-${gSegment}`, content: [{ type: 'text', text: gTextBuf }] } });
+      const cleaned = finalizeGeminiText(gTextBuf);
+      if (cleaned.trim()) {
+        sendStream({ type: 'assistant', message: { id: `${gIdPrefix}-m-${gSegment}`, content: [{ type: 'text', text: cleaned }] } });
         gSegment++;
       }
       gTextBuf = '';
@@ -4299,7 +4365,16 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
         const out = evt.output ?? evt.content ?? evt.result ?? evt.error ?? evt.status ?? '';
         sendStream({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: `${gIdPrefix}-${evt.tool_id}`, content: typeof out === 'string' ? out : JSON.stringify(out), is_error: !!evt.status && evt.status !== 'success' }] } });
       } else if (t === 'error') {
-        sendStream({ type: 'error', text: String(evt.message || evt.error || 'gemini error') });
+        // Gemini CLI 는 응답 끝에 meta 도구(update_topic 등)가 있으면
+        // "Invalid stream: empty response or malformed tool call" 같은 거짓 에러를 종종 뿜는다.
+        // 이미 텍스트/도구 출력이 있었다면(geminiHadOutput) 응답은 정상 전달된 것이므로
+        // 보류 중인 텍스트를 먼저 flush 하고 거짓 에러는 무시한다.
+        const msg = String(evt.message || evt.error || '');
+        if (geminiHadOutput || gTextBuf.trim()) {
+          flushGeminiText();
+          if (/invalid stream|empty response|malformed tool call/i.test(msg)) return;
+        }
+        sendStream({ type: 'error', text: msg || 'gemini error' });
       } else if (t === 'result') {
         // 토큰 사용량(컨텍스트) — 렌더러 usage 표시용
         if (evt.stats) sendStream({ type: 'gemini_usage', stats: evt.stats });
