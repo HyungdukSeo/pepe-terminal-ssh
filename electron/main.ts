@@ -2741,6 +2741,30 @@ ipcMain.handle('sql:save-csv', async (_e, { defaultName, content }: { defaultNam
   }
 });
 
+// Compare 워크스페이스에서 좌/우 파일 내용을 로컬로 다운로드 (편집된 메모리 내용을 그대로 저장)
+ipcMain.handle('compare:download', async (_e, { defaultName, content, encoding }: { defaultName?: string; content: string; encoding?: string }) => {
+  if (!mainWindow) return { success: false, error: 'no window' };
+  const r = await dialog.showSaveDialog(mainWindow, {
+    title: '파일 다운로드',
+    defaultPath: defaultName || 'download.txt',
+  });
+  if (r.canceled || !r.filePath) return { success: false, canceled: true };
+  try {
+    // 인코딩 별 처리: 기본 utf-8. cp949/euc-kr 은 iconv 로.
+    const enc = (encoding || 'UTF-8').toUpperCase();
+    if (enc === 'CP949' || enc === 'EUC-KR') {
+      const iconv = require('iconv-lite');
+      const buf = iconv.encode(content, 'cp949');
+      fs.writeFileSync(r.filePath, buf);
+    } else {
+      fs.writeFileSync(r.filePath, content, 'utf-8');
+    }
+    return { success: true, path: r.filePath };
+  } catch (err: any) {
+    return { success: false, error: String(err?.message || err) };
+  }
+});
+
 // SQL Tool — 동일 SSH 연결의 exec 채널로 isql 등 임의 명령 실행
 ipcMain.handle('sql:exec', async (_e, { connId, command, timeoutMs }: { connId: string; command: string; timeoutMs?: number }) => {
   try {

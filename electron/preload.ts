@@ -347,6 +347,8 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('compare:walk', { mode, termId, basePath, maxEntries }),
   compareHash: (mode: string, filePath: string, termId?: string, maxBytes?: number, wsMode?: string) =>
     ipcRenderer.invoke('compare:hash', { mode, termId, filePath, maxBytes, wsMode }),
+  compareDownload: (defaultName: string, content: string, encoding?: string) =>
+    ipcRenderer.invoke('compare:download', { defaultName, content, encoding }),
   logWatchStart: (watchId: string, mode: string, filePath: string, termId?: string) =>
     ipcRenderer.invoke('log:watch-start', { watchId, mode, termId, filePath }),
   logWatchStop: (watchId: string) =>
