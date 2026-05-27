@@ -195,13 +195,23 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
   const [loadErr, setLoadErr] = useState<string>('');
 
   const [entries, setEntries] = useState<LogEntry[]>([]);
+  // 실시간 watch 모드 — 옵션 생성용 seed (초기 파일 내용 파싱). 화면 entries 와 분리.
+  const [seedEntries, setSeedEntries] = useState<LogEntry[]>([]);
+  const [watching, setWatching] = useState(false);
+  const watchIdRef = useRef<string>('');
+  const watchBufRef = useRef<string>('');
+  const watchSeqRef = useRef<number>(0);
+  const [watchStats, setWatchStats] = useState<{ bytes: number; chunks: number; entries: number; lastAt: number; lastChunk?: string }>({ bytes: 0, chunks: 0, entries: 0, lastAt: 0 });
   const [sourceLabel, setSourceLabel] = useState<string>('');
+  // AI 분석 프롬프트
+  const [aiPrompt, setAiPrompt] = useState<string>('이 로그에서 에러/이상 패턴을 찾아 원인과 해결책을 한국어로 요약해주세요.');
+  const [aiMaxLines, setAiMaxLines] = useState<number>(500);
 
   // 필터들 — 비어있으면 해당 필드 무시
   const [search, setSearch] = useState('');
   const [levelFilter, setLevelFilter] = useState<Set<string>>(new Set());
   const [fileFilter, setFileFilter] = useState<Set<string>>(new Set());
-  const [lineFilter, setLineFilter] = useState<Set<string>>(new Set());
+  const [tagFilter, setTagFilter] = useState<Set<string>>(new Set());
   const [fnFilter, setFnFilter] = useState<Set<string>>(new Set());
   const [hideUnparsed, setHideUnparsed] = useState(false);
 
@@ -241,7 +251,7 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
     setLoadErr('');
     setEntries([]);
     setSelectedIdx(null);
-    setLevelFilter(new Set()); setFileFilter(new Set()); setLineFilter(new Set()); setFnFilter(new Set());
+    setLevelFilter(new Set()); setFileFilter(new Set()); setTagFilter(new Set()); setFnFilter(new Set());
     if (!srcPath) { setLoadErr(t('enterPath')); return; }
     if (srcMode === 'remote' && !srcTermId) { setLoadErr(t('selectRemote')); return; }
     setLoading(true);
@@ -259,28 +269,126 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
     }
   }, [srcMode, srcTermId, srcPath]);
 
+  // 실시간 watch — 기존 파일 내용은 옵션 seed 로만 사용, 화면 entries 는 새 라인만 누적
+  const stopWatch = useCallback(async () => {
+    if (watchIdRef.current) {
+      try { await (api as any).logWatchStop?.(watchIdRef.current); } catch {}
+      watchIdRef.current = '';
+    }
+    setWatching(false);
+    watchBufRef.current = '';
+  }, []);
+  const startWatch = useCallback(async () => {
+    setLoadErr('');
+    if (!srcPath) { setLoadErr(t('enterPath')); return; }
+    if (srcMode === 'remote' && !srcTermId) { setLoadErr(t('selectRemote')); return; }
+    // 진행 중인 watch 중지
+    await stopWatch();
+    setEntries([]);
+    setSeedEntries([]);
+    setSelectedIdx(null);
+    setLevelFilter(new Set()); setFileFilter(new Set()); setTagFilter(new Set()); setFnFilter(new Set());
+    setWatchStats({ bytes: 0, chunks: 0, entries: 0, lastAt: 0 });
+    watchSeqRef.current = 0;
+    watchBufRef.current = '';
+    setLoading(true);
+    try {
+      // 1) 기존 파일 읽어 옵션 seed 만 채움 (display 는 비움)
+      const r = await api.compareRead?.(srcMode, srcPath, srcMode === 'remote' ? srcTermId : undefined, 50 * 1024 * 1024);
+      if (r?.error) throw new Error(r.error);
+      const txt: string = r?.content ?? '';
+      const parsed = parseLog(txt);
+      setSeedEntries(parsed);
+      // 2) watch 시작
+      const wid = 'lw-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+      watchIdRef.current = wid;
+      const wr: any = await (api as any).logWatchStart?.(wid, srcMode, srcPath, srcMode === 'remote' ? srcTermId : undefined);
+      if (!wr?.success) throw new Error(wr?.error || 'watch 시작 실패');
+      setWatching(true);
+      setSourceLabel(t('sourceLabel', { icon: srcMode === 'local' ? '🖥️' : '🟢', path: srcPath, count: parsed.length }) + ' · ⏱ watch');
+    } catch (err: any) {
+      setLoadErr(String(err?.message || err));
+    } finally {
+      setLoading(false);
+    }
+  }, [srcMode, srcTermId, srcPath, stopWatch]);
+  // watch-data 수신: 라인 경계 처리 + parse → entries 누적
+  useEffect(() => {
+    const onData = (p: { watchId: string; text: string }) => {
+      if (!p || p.watchId !== watchIdRef.current) return;
+      // 도착한 raw 데이터 통계 — 백엔드 → 프론트 흐름 확인용
+      setWatchStats(prev => ({ bytes: prev.bytes + (p.text?.length || 0), chunks: prev.chunks + 1, entries: prev.entries, lastAt: Date.now(), lastChunk: (p.text || '').slice(-200) }));
+      const combined = watchBufRef.current + p.text;
+      const lastNl = combined.lastIndexOf(String.fromCharCode(10));
+      let chunk = '';
+      if (lastNl >= 0) {
+        chunk = combined.slice(0, lastNl + 1);
+        watchBufRef.current = combined.slice(lastNl + 1);
+      } else {
+        watchBufRef.current = combined;
+      }
+      if (!chunk) return;
+      const newOnes = parseLog(chunk);
+      if (newOnes.length === 0) return;
+      setEntries(prev => {
+        const base = watchSeqRef.current;
+        const reIdxed = newOnes.map((e, i) => ({ ...e, idx: base + i }));
+        watchSeqRef.current = base + newOnes.length;
+        return [...prev, ...reIdxed];
+      });
+      setWatchStats(prev => ({ ...prev, entries: prev.entries + newOnes.length }));
+    };
+    const onErr = (p: { watchId: string; error: string }) => {
+      if (!p || p.watchId !== watchIdRef.current) return;
+      setLoadErr(String(p.error || ''));
+    };
+    const off1 = (api as any).onLogWatchData?.(onData);
+    const off2 = (api as any).onLogWatchError?.(onErr);
+    return () => { try { off1?.(); } catch {} try { off2?.(); } catch {} };
+  }, []);
+  // 언마운트 시 watch 중지
+  useEffect(() => () => { stopWatch(); }, [stopWatch]);
+
   // 인덱스 생성 — 각 필드의 가능한 값과 카운트
   const levelOptions = useMemo<MSOption[]>(() => {
     const m = new Map<string, number>();
-    for (const e of entries) if (e.level) m.set(e.level, (m.get(e.level) || 0) + 1);
+    for (const e of [...seedEntries, ...entries]) if (e.level) m.set(e.level, (m.get(e.level) || 0) + 1);
     return [...m.entries()].sort((a, b) => b[1] - a[1]).map(([v, c]) => ({ value: v, count: c, color: LEVEL_COLOR[v] }));
-  }, [entries]);
+  }, [entries, seedEntries]);
   const fileOptions = useMemo<MSOption[]>(() => {
     const m = new Map<string, number>();
-    for (const e of entries) if (e.file) m.set(e.file, (m.get(e.file) || 0) + 1);
+    for (const e of [...seedEntries, ...entries]) if (e.file) m.set(e.file, (m.get(e.file) || 0) + 1);
     return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([v, c]) => ({ value: v, count: c }));
-  }, [entries]);
-  const lineOptions = useMemo<MSOption[]>(() => {
+  }, [entries, seedEntries]);
+  // 메시지 내 [XXX] 형태의 태그 추출 — 대괄호 안 영숫자/언더스코어/한글/콜론/공백 등 일반 토큰
+  const tagOptions = useMemo<MSOption[]>(() => {
     const m = new Map<string, number>();
-    for (const e of entries) if (e.line) m.set(e.line, (m.get(e.line) || 0) + 1);
-    // 라인 번호는 숫자 정렬
-    return [...m.entries()].sort((a, b) => parseInt(a[0]) - parseInt(b[0])).map(([v, c]) => ({ value: v, count: c }));
-  }, [entries]);
+    // 메시지 시작 부분의 연속된 [XXX][YYY] 만 추출 — value 형태(=[123]) 는 제외 (entries+seedEntries)
+    const leadingTagRe = /^(\s*\[[^\[\]]{1,40}\])+/;
+    const singleTagRe = /\[([^\[\]]{1,40})\]/g;
+    for (const e of [...seedEntries, ...entries]) {
+      if (!e.msg) continue;
+      const lead = e.msg.match(leadingTagRe);
+      if (!lead) continue;
+      const block = lead[0];
+      let mm: RegExpExecArray | null;
+      const seen = new Set<string>();
+      while ((mm = singleTagRe.exec(block)) !== null) {
+        const tag = mm[1].trim();
+        if (!tag) continue;
+        if (seen.has(tag)) continue;
+        seen.add(tag);
+        m.set(tag, (m.get(tag) || 0) + 1);
+      }
+      singleTagRe.lastIndex = 0;
+    }
+    return [...m.entries()].sort((a, b) => b[1] - a[1]).map(([v, c]) => ({ value: v, count: c }));
+  }, [entries, seedEntries]);
   const fnOptions = useMemo<MSOption[]>(() => {
     const m = new Map<string, number>();
-    for (const e of entries) if (e.fn) m.set(e.fn, (m.get(e.fn) || 0) + 1);
+    for (const e of [...seedEntries, ...entries]) if (e.fn) m.set(e.fn, (m.get(e.fn) || 0) + 1);
     return [...m.entries()].sort((a, b) => b[1] - a[1]).map(([v, c]) => ({ value: v, count: c }));
-  }, [entries]);
+  }, [entries, seedEntries]);
 
   // 검색어 — 쉼표로 구분된 멀티 키워드 (OR 검색). 예: "A,B,C" → A 또는 B 또는 C 포함 라인 매칭.
   // 단일 키워드 안에 쉼표를 포함하려면 백슬래시 이스케이프 "\,"
@@ -301,7 +409,17 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
       if (hideUnparsed && !e.parsed) return false;
       if (levelFilter.size > 0 && (!e.level || !levelFilter.has(e.level))) return false;
       if (fileFilter.size > 0 && (!e.file || !fileFilter.has(e.file))) return false;
-      if (lineFilter.size > 0 && (!e.line || !lineFilter.has(e.line))) return false;
+      if (tagFilter.size > 0) {
+        if (!e.msg) return false;
+        // msg 의 선두 [XXX][YYY] 만 검사 — value 형태(=[123]) 는 무시
+        const lead = e.msg.match(/^(\s*\[[^\[\]]{1,40}\])+/);
+        if (!lead) return false;
+        const block = lead[0];
+        const tagRe = /\[([^\[\]]{1,40})\]/g;
+        let mm: RegExpExecArray | null; let hit = false;
+        while ((mm = tagRe.exec(block)) !== null) { if (tagFilter.has(mm[1].trim())) { hit = true; break; } }
+        if (!hit) return false;
+      }
       if (fnFilter.size > 0 && (!e.fn || !fnFilter.has(e.fn))) return false;
       if (searchTerms.length > 0) {
         // 연장 라인은 raw 에 합쳐져 있으므로 raw 까지 검색 — DUMP 본문에서 키 검색 가능
@@ -310,7 +428,7 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
       }
       return true;
     });
-  }, [entries, searchTerms, levelFilter, fileFilter, lineFilter, fnFilter, hideUnparsed]);
+  }, [entries, searchTerms, levelFilter, fileFilter, tagFilter, fnFilter, hideUnparsed]);
 
   // CSV 내보내기 — 현재 필터링된 파싱 항목만 저장. 멀티라인 message 는 quoted 셀에 줄바꿈 보존.
   const exportCsv = useCallback(async () => {
@@ -351,6 +469,35 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
     }
   }, [filtered, srcPath]);
 
+  // AI 분석 요청 — 현재 필터된 행을 텍스트 블록으로 만들어 ClaudeChat 에 prefill
+  const sendToAi = useCallback(() => {
+    if (filtered.length === 0 || !aiPrompt.trim()) return;
+    const slice = filtered.slice(-aiMaxLines); // 최근 N행 (꼬리 부분이 보통 더 유효)
+    const lines: string[] = [];
+    lines.push(aiPrompt.trim());
+    lines.push('');
+    lines.push('### 로그 컨텍스트');
+    lines.push('- 소스: ' + (srcMode === 'local' ? '🖥️ ' : '🟢 ') + srcPath);
+    lines.push('- 전체 행 수: ' + filtered.length + ' (첨부: 최근 ' + slice.length + '행)');
+    const activeFilters: string[] = [];
+    if (levelFilter.size > 0) activeFilters.push('Level=' + [...levelFilter].join(','));
+    if (fileFilter.size > 0) activeFilters.push('File=' + [...fileFilter].join(','));
+    if (tagFilter.size > 0) activeFilters.push('Tag=' + [...tagFilter].join(','));
+    if (fnFilter.size > 0) activeFilters.push('Function=' + [...fnFilter].join(','));
+    if (search) activeFilters.push('Search=' + search);
+    if (activeFilters.length > 0) lines.push('- 활성 필터: ' + activeFilters.join(' / '));
+    lines.push('');
+    lines.push('```log');
+    for (const e of slice) {
+      lines.push(e.raw);
+    }
+    lines.push('```');
+    const payload = lines.join(String.fromCharCode(10));
+    try {
+      window.dispatchEvent(new CustomEvent('claude-prefill', { detail: { text: payload } }));
+    } catch {}
+  }, [filtered, aiPrompt, aiMaxLines, srcMode, srcPath, levelFilter, fileFilter, tagFilter, fnFilter, search]);
+
   // 테이블 컨테이너 높이
   const tableWrapRef = useRef<HTMLDivElement | null>(null);
   const [tableHeight, setTableHeight] = useState(400);
@@ -386,9 +533,9 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
   };
 
   const selectedEntry = selectedIdx !== null ? filtered[selectedIdx] : null;
-  const totalActiveFilters = (levelFilter.size > 0 ? 1 : 0) + (fileFilter.size > 0 ? 1 : 0) + (lineFilter.size > 0 ? 1 : 0) + (fnFilter.size > 0 ? 1 : 0);
+  const totalActiveFilters = (levelFilter.size > 0 ? 1 : 0) + (fileFilter.size > 0 ? 1 : 0) + (tagFilter.size > 0 ? 1 : 0) + (fnFilter.size > 0 ? 1 : 0);
   const clearAllFilters = () => {
-    setLevelFilter(new Set()); setFileFilter(new Set()); setLineFilter(new Set()); setFnFilter(new Set());
+    setLevelFilter(new Set()); setFileFilter(new Set()); setTagFilter(new Set()); setFnFilter(new Set());
   };
 
   return (
@@ -423,14 +570,59 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
               }
             }}
             title={t('pickFile')} style={{ padding: '3px 10px', fontSize: 12 }}>📂</button>
-          <button className="primary" onClick={loadFile} disabled={loading} style={{ padding: '4px 14px' }}>
+          <button className="primary" onClick={loadFile} disabled={loading || watching} style={{ padding: '4px 14px' }}>
             {loading ? t('loading') : t('load')}
           </button>
+          {!watching ? (
+            <button onClick={startWatch} disabled={loading} title="실시간 감시: 기존 데이터는 옵션 생성용으로만 사용. 새로 추가되는 라인만 필터에 맞춰 표시됨." style={{ padding: '4px 12px', background: '#2b4e74', color: '#fff', border: '1px solid #3a6593', borderRadius: 3 }}>
+              ⏱ 실시간 시작
+            </button>
+          ) : (
+            <button onClick={stopWatch} title="실시간 감시 중지" style={{ padding: '4px 12px', background: '#74402b', color: '#fff', border: '1px solid #934e3a', borderRadius: 3 }}>
+              ⏹ 실시간 중지
+            </button>
+          )}
           <button onClick={exportCsv} disabled={loading || entries.length === 0} title={t('exportCsvTooltip')} style={{ padding: '4px 12px' }}>
             {t('exportCsv')}
           </button>
         </div>
+        {/* AI 분석 바 — 필터 적용된 행을 컨텍스트로 채팅창에 전달 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%' }}>
+          <span style={{ fontSize: 12, color: '#bbb', flexShrink: 0 }}>🤖 AI 분석</span>
+          <input
+            type="text"
+            value={aiPrompt}
+            onChange={e => setAiPrompt(e.target.value)}
+            onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') sendToAi(); }}
+            placeholder="분석 요청 문구 입력 (Enter 로 전송)"
+            style={{ flex: 1, minWidth: 200, fontSize: 12, padding: '3px 6px', background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 3 }}
+          />
+          <label style={{ fontSize: 11, color: '#888', display: 'flex', alignItems: 'center', gap: 4 }} title="최대 N개의 (필터된) 로그 행을 컨텍스트로 첨부">
+            최대
+            <input
+              type="number"
+              value={aiMaxLines}
+              onChange={e => setAiMaxLines(Math.max(10, Math.min(5000, Number(e.target.value) || 500)))}
+              style={{ width: 60, fontSize: 11, padding: '2px 4px', background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 3 }}
+            />행
+          </label>
+          <button
+            onClick={sendToAi}
+            disabled={filtered.length === 0 || !aiPrompt.trim()}
+            title={`현재 필터된 ${filtered.length}행 중 최대 ${aiMaxLines}행을 AI 채팅창에 전달`}
+            style={{ padding: '4px 12px', fontSize: 12, background: '#2b4e74', color: '#fff', border: '1px solid #3a6593', borderRadius: 3 }}
+          >
+            🤖 분석 요청
+          </button>
+        </div>
         {sourceLabel && !loading && <div style={{ fontSize: 11, color: '#888' }}>{sourceLabel}</div>}
+        {watching && (
+          <div style={{ fontSize: 11, color: '#aac', background: '#1a2a3a', padding: '3px 8px', borderRadius: 3, border: '1px solid #2a3a5a' }}>
+            ⏱ 수신 chunk={watchStats.chunks}, bytes={watchStats.bytes.toLocaleString()}, 파싱 항목={watchStats.entries}
+            {watchStats.lastAt > 0 && ' · 마지막=' + Math.round((Date.now() - watchStats.lastAt) / 1000) + '초 전'}
+            {watchStats.chunks === 0 && ' · (아직 데이터 수신 없음 — 파일에 새 라인이 append 되어야 표시됨)'}
+          </div>
+        )}
         {loadErr && <div style={{ color: '#e36b6b', fontSize: 12 }}>{loadErr}</div>}
 
         {/* 필터 바 — 검색 + 멀티셀렉트 드롭다운들 */}
@@ -442,7 +634,7 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
             style={{ flex: 1, minWidth: 200, fontSize: 12, padding: '3px 6px' }} />
           <MultiSelectDropdown label={t('filterLabels.level')} options={levelOptions} selected={levelFilter} onChange={setLevelFilter} width={120} popupWidth={220} />
           <MultiSelectDropdown label={t('filterLabels.file')} options={fileOptions} selected={fileFilter} onChange={setFileFilter} width={150} popupWidth={300} />
-          <MultiSelectDropdown label={t('filterLabels.line')} options={lineOptions} selected={lineFilter} onChange={setLineFilter} width={110} popupWidth={180} />
+          <MultiSelectDropdown label={t('filterLabels.tag', { defaultValue: '태그' })} options={tagOptions} selected={tagFilter} onChange={setTagFilter} width={140} popupWidth={260} />
           <MultiSelectDropdown label={t('filterLabels.function')} options={fnOptions} selected={fnFilter} onChange={setFnFilter} width={170} popupWidth={320} />
           {totalActiveFilters > 0 && (
             <button onClick={clearAllFilters} style={{ fontSize: 11, padding: '3px 8px', color: '#d8b556' }} title={t('clearFiltersTitle')}>

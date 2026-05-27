@@ -528,8 +528,17 @@ function getOrCreateTerm(termId: string): { term: Terminal; fit: FitAddon; searc
     const initFontSize = termFontSizes.get(termId) ?? defaultFontSize;
     const initScrollback = termScrollbackOverride.get(termId) ?? getTerminalSettings().scrollback;
     const savedFont = localStorage.getItem('terminalFontFamily') || '';
+    // 복제 시 cloneTermStyle 가 미리 캐시해둔 cursor blink/style 우선 적용 — 기본은 true (깜박임)
+    const initCursorBlink = termCursorBlinkCache.has(termId) ? termCursorBlinkCache.get(termId)! : true;
+    const cachedCursorStyle = termCursorStyleCache.get(termId);
+    // xterm 네이티브 cursorStyle 만 init 옵션으로 (커스텀 오버레이 스타일은 mount 이후 applyCursorStyleToTerm 가 처리)
+    const nativeCursorStyle: 'block' | 'underline' | 'bar' | undefined =
+      cachedCursorStyle === 'block' || cachedCursorStyle === 'underline' || cachedCursorStyle === 'bar'
+        ? cachedCursorStyle as any
+        : undefined;
     const term = new Terminal({
-      cursorBlink: true,
+      cursorBlink: initCursorBlink,
+      cursorStyle: nativeCursorStyle,
       fontSize: initFontSize,
       fontFamily: savedFont || "'Cascadia Mono', Consolas, monospace",
       theme: getThemeByName(initThemeName) as any,
@@ -962,6 +971,12 @@ export function cloneTermStyle(srcTermId: string, dstTermId: string) {
   // 스크롤백
   const sb = termScrollbackOverride.get(srcTermId) ?? (srcEntry?.term.options.scrollback as number | undefined);
   if (sb !== undefined) termScrollbackOverride.set(dstTermId, sb);
+  // 커서 스타일/깜박임은 dst 가 아직 생성되기 전에도 캐시에 저장 → 새 term 의 초기 옵션에 반영
+  const srcCursorStyle = termCursorStyleCache.get(srcTermId) ?? ((srcEntry?.term.options as any)?.cursorStyle as string | undefined);
+  const srcCursorBlinkRaw = (srcEntry?.term.options as any)?.cursorBlink;
+  const srcCursorBlink = typeof srcCursorBlinkRaw === 'boolean' ? srcCursorBlinkRaw : true;
+  if (srcCursorStyle) termCursorStyleCache.set(dstTermId, srcCursorStyle);
+  termCursorBlinkCache.set(dstTermId, srcCursorBlink);
   // 대상 터미널이 이미 생성되어 있으면 즉시 반영
   const dstEntry = termStore.get(dstTermId);
   if (dstEntry && srcEntry) {
@@ -992,6 +1007,8 @@ export function cloneTermStyle(srcTermId: string, dstTermId: string) {
 
 // 커스텀 커서 스타일 추적 — cloneTermStyle 등에서 참조
 const termCursorStyleCache: Map<string, string> = new Map();
+// 커서 깜박임 캐시 — 복제 시 dst 터미널이 아직 마운트되지 않았어도 초기 옵션에 반영하기 위함
+const termCursorBlinkCache: Map<string, boolean> = new Map();
 
 export function applyFontToAll(fontFamily?: string, fontSize?: number) {
   if (fontFamily) localStorage.setItem('terminalFontFamily', fontFamily);

@@ -1779,6 +1779,221 @@ function decodeFileBuffer(buf: Buffer): { text: string; encoding: string } {
   } catch {}
   return { text: utf8, encoding: 'UTF-8' };
 }
+// EOL/BOM 정규화 + whitespace 옵션 적용 후 SHA1 해시 — "size 가 달라도 내용은 동일" 검증용
+ipcMain.handle('compare:hash', async (_e, { mode, termId, filePath, maxBytes, wsMode }: { mode: string; termId?: string; filePath: string; maxBytes?: number; wsMode?: string }) => {
+  const cap = maxBytes || 256 * 1024;
+  const applyWs = (s: string): string => {
+    if (!wsMode || wsMode === 'significant') return s;
+    const lines = s.split('\n');
+    const proc = lines.map(ln => {
+      if (wsMode === 'ignoreLeading') return ln.replace(/^\s+/, '');
+      if (wsMode === 'ignoreTrailing') return ln.replace(/\s+$/, '');
+      if (wsMode === 'ignoreConsecutive') return ln.replace(/[ \t]+/g, ' ');
+      if (wsMode === 'ignoreAll') return ln.replace(/[ \t]/g, '');
+      return ln;
+    });
+    return proc.join('\n');
+  };
+  try {
+    let buf: Buffer;
+    if (mode === 'local') {
+      const stat = await fs.promises.stat(filePath);
+      if (stat.size > cap) return { skipped: true, size: stat.size };
+      buf = await fs.promises.readFile(filePath);
+    } else {
+      if (!termId) return { error: t('error.noConnectionId') };
+      const bridge = getSSHBridge();
+      buf = await bridge.handleSFTPReadFile(termId, filePath);
+      if (buf.length > cap) return { skipped: true, size: buf.length };
+    }
+    // BOM 제거 + CRLF/CR → LF 통일 (텍스트 한정 — 바이너리도 동일 정규화하지만 차이 없으면 same 으로 인식하는 것이 정상)
+    let s = buf.toString('utf-8');
+    if (s.includes('�')) {
+      // utf-8 디코딩 실패 시 raw bytes 로 정규화 (CR/LF 만 처리)
+      const bytes = Array.from(buf);
+      const out: number[] = [];
+      // BOM (EF BB BF) skip
+      let start = (bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) ? 3 : 0;
+      for (let i = start; i < bytes.length; i++) {
+        if (bytes[i] === 0x0D) { // CR
+          out.push(0x0A);
+          if (bytes[i + 1] === 0x0A) i++;
+        } else {
+          out.push(bytes[i]);
+        }
+      }
+      const norm = Buffer.from(out);
+      const sha = require('crypto').createHash('sha1').update(norm).digest('hex');
+      return { hash: sha, size: buf.length };
+    }
+    if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1);
+    s = s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    s = applyWs(s);
+    const sha = require('crypto').createHash('sha1').update(s, 'utf-8').digest('hex');
+    return { hash: sha, size: buf.length };
+  } catch (err: any) {
+    return { error: String(err?.message || err) };
+  }
+});
+
+// ── Log Watch (실시간 tail) ──
+type LogWatcher = { cleanup: () => void };
+const logWatchers: Map<string, LogWatcher> = new Map();
+ipcMain.handle('log:watch-start', async (_e, { watchId, mode, termId, filePath }: { watchId: string; mode: string; termId?: string; filePath: string }) => {
+  // 기존 watcher 정리
+  const prev = logWatchers.get(watchId);
+  if (prev) { try { prev.cleanup(); } catch {} logWatchers.delete(watchId); }
+  const send = (text: string) => {
+    try { mainWindow?.webContents.send('log:watch-data', { watchId, text }); } catch {}
+  };
+  const sendErr = (error: string) => {
+    try { mainWindow?.webContents.send('log:watch-error', { watchId, error }); } catch {}
+  };
+  try {
+    if (mode === 'local') {
+      let offset = 0;
+      try { const st = await fs.promises.stat(filePath); offset = st.size; } catch (e: any) { return { success: false, error: String(e?.message || e) }; }
+      let busy = false;
+      const pump = async () => {
+        if (busy) return;
+        busy = true;
+        try {
+          const st = await fs.promises.stat(filePath);
+          if (st.size < offset) {
+            // 파일이 잘렸음 (logrotate 등) → 처음부터 다시
+            offset = 0;
+          }
+          if (st.size > offset) {
+            const fh = await fs.promises.open(filePath, 'r');
+            try {
+              const len = st.size - offset;
+              const buf = Buffer.alloc(len);
+              await fh.read(buf, 0, len, offset);
+              offset = st.size;
+              send(buf.toString('utf-8'));
+            } finally { await fh.close(); }
+          }
+        } catch (e: any) {
+          // 일시적 read 실패는 무시
+        }
+        busy = false;
+      };
+      let watcher: fs.FSWatcher | null = null;
+      try { watcher = fs.watch(filePath, { persistent: false }, () => { pump(); }); }
+      catch (e: any) { return { success: false, error: 'fs.watch 실패: ' + (e?.message || e) }; }
+      // 안전망: 500ms polling (fs.watch 가 일부 환경/네트워크 드라이브에서 미동작)
+      const poll = setInterval(pump, 500);
+      logWatchers.set(watchId, { cleanup: () => { try { watcher?.close(); } catch {} clearInterval(poll); } });
+      return { success: true, initialSize: offset };
+    } else {
+      if (!termId) return { success: false, error: 'no termId' };
+      const bridge = getSSHBridge();
+      const conn = (bridge as any).clients?.get(termId)?.conn;
+      if (!conn) return { success: false, error: 'SSH not connected' };
+      // tail -n 0 -F : 기존 데이터 출력 안 함, 새 append 라인만.
+      // 원격 사용자 셸이 csh/tcsh 인 경우가 많아 POSIX 호환 구문을 못 씀 → /bin/sh -c 로 강제 래핑.
+      // stdbuf/unbuffer 가 없는 시스템 대비 폴백 체인.
+      const safePath = filePath.replace(/'/g, `'\\''`);
+      const inner = `(command -v stdbuf >/dev/null 2>&1 && exec stdbuf -oL -eL tail -n 0 -F '${safePath}') || (command -v unbuffer >/dev/null 2>&1 && exec unbuffer -p tail -n 0 -F '${safePath}') || exec tail -n 0 -F '${safePath}'`;
+      // /bin/sh -c "<inner>"  → inner 안의 작은따옴표는 위에서 '\\'' 로 이미 이스케이프. 외부에서 "..." 로 감싸면 sh -c 가 받음.
+      const cmd = `/bin/sh -c "${inner.replace(/"/g, '\\"').replace(/\$/g, '\\$')}"`;
+      return new Promise<{ success: boolean; error?: string }>((resolve) => {
+        conn.exec(cmd, { pty: true }, (err: any, stream: any) => {
+          if (err) {
+            // pty 옵션 실패 시 일반 exec 재시도
+            conn.exec(cmd, (err2: any, stream2: any) => {
+              if (err2) { resolve({ success: false, error: String(err2?.message || err2) }); return; }
+              stream2.on('data', (d: Buffer) => send(d.toString('utf-8')));
+              stream2.stderr?.on('data', (d: Buffer) => sendErr(d.toString('utf-8')));
+              stream2.on('close', () => { try { mainWindow?.webContents.send('log:watch-closed', { watchId }); } catch {} });
+              logWatchers.set(watchId, { cleanup: () => { try { stream2.close(); } catch {} } });
+              resolve({ success: true });
+            });
+            return;
+          }
+          stream.on('data', (d: Buffer) => send(d.toString('utf-8')));
+          stream.stderr?.on('data', (d: Buffer) => sendErr(d.toString('utf-8')));
+          stream.on('close', () => { try { mainWindow?.webContents.send('log:watch-closed', { watchId }); } catch {} });
+          logWatchers.set(watchId, { cleanup: () => { try { stream.close(); } catch {} } });
+          resolve({ success: true });
+        });
+      });
+    }
+  } catch (err: any) {
+    return { success: false, error: String(err?.message || err) };
+  }
+});
+ipcMain.handle('log:watch-stop', (_e, { watchId }: { watchId: string }) => {
+  const w = logWatchers.get(watchId);
+  if (w) { try { w.cleanup(); } catch {} logWatchers.delete(watchId); }
+  return { success: true };
+});
+
+// 양쪽 파일의 라인 diff 수 카운트 — ChangeFolder 컬럼용. 양쪽 ≤ maxBytes 일 때만 정확. LCS 기반.
+ipcMain.handle('compare:diff-count', async (_e, {
+  leftMode, leftTermId, leftPath, rightMode, rightTermId, rightPath, maxBytes, wsMode,
+}: { leftMode: string; leftTermId?: string; leftPath: string; rightMode: string; rightTermId?: string; rightPath: string; maxBytes?: number; wsMode?: string }) => {
+  const cap = maxBytes || 256 * 1024;
+  const applyWs = (s: string): string => {
+    if (!wsMode || wsMode === 'significant') return s;
+    return s.split('\n').map(ln => {
+      if (wsMode === 'ignoreLeading') return ln.replace(/^\s+/, '');
+      if (wsMode === 'ignoreTrailing') return ln.replace(/\s+$/, '');
+      if (wsMode === 'ignoreConsecutive') return ln.replace(/[ \t]+/g, ' ');
+      if (wsMode === 'ignoreAll') return ln.replace(/[ \t]/g, '');
+      return ln;
+    }).join('\n');
+  };
+  const readNorm = async (mode: string, termId: string | undefined, fp: string): Promise<string[] | null> => {
+    let buf: Buffer;
+    if (mode === 'local') {
+      const stat = await fs.promises.stat(fp);
+      if (stat.size > cap) return null;
+      buf = await fs.promises.readFile(fp);
+    } else {
+      if (!termId) return null;
+      const bridge = getSSHBridge();
+      buf = await bridge.handleSFTPReadFile(termId, fp);
+      if (buf.length > cap) return null;
+    }
+    let s = buf.toString('utf-8');
+    if (s.includes('�')) {
+      const iconv = require('iconv-lite');
+      if (iconv.encodingExists('cp949')) s = iconv.decode(buf, 'cp949');
+    }
+    if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1);
+    s = s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    s = applyWs(s);
+    return s.split('\n');
+  };
+  try {
+    const [L, R] = await Promise.all([readNorm(leftMode, leftTermId, leftPath), readNorm(rightMode, rightTermId, rightPath)]);
+    if (!L || !R) return { skipped: true };
+    // LCS 길이 계산 (Hirschberg 없이 O(n*m), 두 파일 ≤ 256KB 라인 가정)
+    const n = L.length, m = R.length;
+    // 너무 큰 라인 수는 거부 (메모리 폭발 방지) — 약 8000 라인 ^ 2 = 64M cell. 너무 크면 skip.
+    if (n * m > 4_000_000) return { skipped: true, reason: 'too-many-lines' };
+    // 1행만 보유하는 LCS DP
+    const prev = new Uint32Array(m + 1);
+    const cur = new Uint32Array(m + 1);
+    for (let i = 1; i <= n; i++) {
+      const li = L[i - 1];
+      for (let j = 1; j <= m; j++) {
+        cur[j] = li === R[j - 1]
+          ? prev[j - 1] + 1
+          : Math.max(prev[j], cur[j - 1]);
+      }
+      prev.set(cur);
+    }
+    const lcs = prev[m];
+    // 변경 라인 수 = 양쪽 unique 라인 합. 일반적으로 (n - lcs) + (m - lcs).
+    const changes = (n - lcs) + (m - lcs);
+    return { changes, leftLines: n, rightLines: m };
+  } catch (err: any) {
+    return { error: String(err?.message || err) };
+  }
+});
+
 ipcMain.handle('compare:read', async (_e, { mode, termId, filePath, maxBytes }: { mode: string; termId?: string; filePath: string; maxBytes?: number }) => {
   const cap = maxBytes || 5 * 1024 * 1024; // 기본 5MB
   try {
