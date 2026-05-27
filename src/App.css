@@ -2454,6 +2454,21 @@ body.popout-options .session-editor h3:first-child {
   white-space: nowrap;
   flex: 1;
 }
+.claude-chat-history-rename-input {
+  flex: 1;
+  min-width: 0;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.3);
+  color: inherit;
+  font: inherit;
+  padding: 2px 6px;
+  border-radius: 4px;
+  outline: none;
+}
+.claude-chat-history-rename-input:focus {
+  border-color: #4a9eff;
+  background: rgba(74,158,255,0.12);
+}
 .claude-chat-history-agent {
   display: inline-flex;
   align-items: center;
@@ -5147,6 +5162,32 @@ body.popout-options .session-editor h3:first-child {
   align-items: center;
   justify-content: center;
   line-height: 1;
+  position: relative;
+}
+/* 에이전트 탭 hover 시 플로팅 툴팁 (React 포털로 document.body 에 렌더 → overflow 클립 회피) */
+.claude-chat-agent-tooltip {
+  position: fixed;
+  background: #0f1626;
+  color: #e8e8ec;
+  font-size: 11px;
+  font-weight: normal;
+  padding: 4px 8px;
+  border: 1px solid #2a3548;
+  border-radius: 4px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 99999;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.4);
+  transform: translateX(-50%);
+}
+.claude-chat-agent-tooltip::before {
+  content: '';
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-bottom-color: #2a3548;
 }
 .claude-chat-agent-btn svg {
   display: block;

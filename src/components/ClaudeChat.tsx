@@ -730,6 +730,10 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     : null;
   const [installed, setInstalled] = useState<boolean | null>(null);
   const [version, setVersion] = useState<string>('');
+  // 에이전트별 버전 캐시 — 탭 hover 시 플로팅 툴팁에 표시
+  const [agentVersions, setAgentVersions] = useState<{ claude?: string; gemini?: string; codex?: string }>({});
+  // 에이전트 탭 툴팁 — React 포털로 document.body 에 렌더 (overflow 클립 회피)
+  const [agentTooltip, setAgentTooltip] = useState<{ text: string; x: number; y: number } | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   // Git 상태 — 현재 cwd / 활성 SSH 세션 자동 감지
   const [gitStatus, setGitStatus] = useState<{ ok: boolean; branch?: string; additions?: number; deletions?: number } | null>(null);
@@ -933,6 +937,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const [activeHistoryId, setActiveHistoryId] = useState<string | null>(null);
   const [showHistoryPanel, setShowHistoryPanel] = useState(false);
   const [deleteHistoryConfirm, setDeleteHistoryConfirm] = useState<{ id: string; title: string } | null>(null);
+  const [renamingHistory, setRenamingHistory] = useState<{ id: string; value: string } | null>(null);
   // 에이전트 간 컨텍스트 공유 — 켜져있으면 send 시 이전 transcript(다른 에이전트 답변 포함) 를 inject.
   // UIPrefs 에 영속화. 기본값 true (기존 동작 유지).
   const [shareContext, setShareContext] = useState<boolean>(true);
@@ -1308,10 +1313,10 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   }, [showSearch]);
   // ────────────────────────────────────────────────────────────────────────
 
-  // CLI 설치 확인 (currentAgent 변경 시마다 재확인)
+  // CLI 설치 확인 (currentAgent 변경 시마다 재확인) + agentVersions 캐시 갱신
   useEffect(() => {
     setInstalled(null); // 에이전트 전환 시 로딩 상태로 초기화
-    setVersion('');
+    setVersion(agentVersions[currentAgent] || '');
     (async () => {
       const res = currentAgent === 'gemini'
         ? await (window as any).api?.geminiCheck?.()
@@ -1319,9 +1324,33 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         ? await (window as any).api?.codexCheck?.()
         : await (window as any).api?.claudeCheck?.();
       setInstalled(!!res?.installed);
-      setVersion(res?.version || '');
+      const v = res?.version || '';
+      setVersion(v);
+      setAgentVersions(prev => prev[currentAgent] === v ? prev : { ...prev, [currentAgent]: v });
     })();
   }, [currentAgent]);
+
+  // 마운트 시 모든 에이전트 버전 1회 백그라운드 조회 (탭 hover 툴팁 미리 채움)
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const [c, g, cx] = await Promise.all([
+          (window as any).api?.claudeCheck?.().catch(() => null),
+          (window as any).api?.geminiCheck?.().catch(() => null),
+          (window as any).api?.codexCheck?.().catch(() => null),
+        ]);
+        if (!mounted) return;
+        setAgentVersions(prev => ({
+          claude: c?.version || prev.claude || '',
+          gemini: g?.version || prev.gemini || '',
+          codex: cx?.version || prev.codex || '',
+        }));
+      } catch {}
+    })();
+    return () => { mounted = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Hook 승인 요청 리스너
   useEffect(() => {
@@ -2976,14 +3005,14 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     return (
       <div className="claude-chat-container">
         <div className="claude-chat-header">
-          <div className="claude-chat-header-left">
+          <div className="claude-chat-header-left" />
+          <div className="claude-chat-header-center">
             <div className="claude-chat-agent-switcher">
               <button className={`claude-chat-agent-btn ${currentAgent === 'claude' ? 'active' : ''}`} title="Claude Code" onClick={() => switchAgent('claude')}><ClaudeTabIcon /></button>
               <button className={`claude-chat-agent-btn ${currentAgent === 'gemini' ? 'active' : ''}`} title="Gemini" onClick={() => switchAgent('gemini')}><GeminiTabIcon /></button>
               <button className={`claude-chat-agent-btn ${currentAgent === 'codex' ? 'active' : ''}`} title="Codex" onClick={() => switchAgent('codex')}><CodexTabIcon /></button>
             </div>
           </div>
-          <div className="claude-chat-header-center" />
           <div className="claude-chat-header-actions">
             {onClose && <button className="claude-chat-close" onClick={onClose}>×</button>}
           </div>
@@ -2997,7 +3026,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     return (
       <div className="claude-chat-container">
         <div className="claude-chat-header">
-          <div className="claude-chat-header-left">
+          <div className="claude-chat-header-left" />
+          <div className="claude-chat-header-center">
             <div className="claude-chat-agent-switcher">
               <button
                 className={`claude-chat-agent-btn ${currentAgent === 'claude' ? 'active' : ''}`}
@@ -3016,7 +3046,6 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               ><CodexTabIcon /></button>
             </div>
           </div>
-          <div className="claude-chat-header-center" />
           <div className="claude-chat-header-actions">
             {onClose && <button className="claude-chat-close" onClick={onClose}>×</button>}
           </div>
@@ -3050,26 +3079,6 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     <div className="claude-chat-container">
       <div className="claude-chat-header">
         <div className="claude-chat-header-left">
-          <div className="claude-chat-agent-switcher">
-            <button
-              className={`claude-chat-agent-btn ${currentAgent === 'claude' ? 'active' : ''}`}
-              title="Claude Code"
-              onClick={() => switchAgent('claude')}
-            ><ClaudeTabIcon /></button>
-            <button
-              className={`claude-chat-agent-btn ${currentAgent === 'gemini' ? 'active' : ''}`}
-              title="Gemini"
-              onClick={() => switchAgent('gemini')}
-            ><GeminiTabIcon /></button>
-            <button
-              className={`claude-chat-agent-btn ${currentAgent === 'codex' ? 'active' : ''}`}
-              title="Codex"
-              onClick={() => switchAgent('codex')}
-            ><CodexTabIcon /></button>
-          </div>
-          {version && <span className="claude-chat-version">{version}</span>}
-        </div>
-        <div className="claude-chat-header-center">
           {onTogglePin && (
             <button
               className={`claude-chat-pin ${pinned ? 'pinned' : ''}`}
@@ -3083,6 +3092,30 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             title={shareContext ? '에이전트 간 컨텍스트 공유 켜짐 — 클릭하여 끄기' : '에이전트 간 컨텍스트 공유 꺼짐 — 클릭하여 켜기'}
             className={`claude-chat-share-toggle ${shareContext ? 'on' : 'off'}`}
           >🔗</button>
+        </div>
+        <div className="claude-chat-header-center">
+          <div className="claude-chat-agent-switcher">
+            {(['claude', 'gemini', 'codex'] as const).map(a => {
+              const Icon = a === 'claude' ? ClaudeTabIcon : a === 'gemini' ? GeminiTabIcon : CodexTabIcon;
+              const label = a === 'claude' ? 'Claude Code' : a === 'gemini' ? 'Gemini' : 'Codex';
+              const v = agentVersions[a];
+              const tipText = v ? `${label} · ${v}` : label;
+              const showTip = (e: React.MouseEvent<HTMLButtonElement>) => {
+                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                setAgentTooltip({ text: tipText, x: rect.left + rect.width / 2, y: rect.bottom + 8 });
+              };
+              const hideTip = () => setAgentTooltip(null);
+              return (
+                <button
+                  key={a}
+                  className={`claude-chat-agent-btn ${currentAgent === a ? 'active' : ''}`}
+                  onClick={() => switchAgent(a)}
+                  onMouseEnter={showTip}
+                  onMouseLeave={hideTip}
+                ><Icon /></button>
+              );
+            })}
+          </div>
         </div>
         <div className="claude-chat-header-actions">
           <button onClick={startNewConversation} title={tt('newConversation')}>＋</button>
@@ -3469,15 +3502,47 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                 return <Ic key={`${a}-${i}`} />;
               })}
             </span>
-            <span className="claude-chat-history-title" title={h.title}>{h.title || tt('noTitle')}</span>
+            {renamingHistory && renamingHistory.id === h.id ? (
+              <input
+                className="claude-chat-history-rename-input"
+                autoFocus
+                value={renamingHistory.value}
+                onClick={e => e.stopPropagation()}
+                onChange={e => setRenamingHistory({ id: h.id, value: e.target.value })}
+                onKeyDown={e => {
+                  e.stopPropagation();
+                  if (e.key === 'Enter') {
+                    const v = renamingHistory.value.trim();
+                    if (v) renameHistory(h.id, v);
+                    setRenamingHistory(null);
+                  } else if (e.key === 'Escape') {
+                    setRenamingHistory(null);
+                  }
+                }}
+                onBlur={() => {
+                  const v = renamingHistory.value.trim();
+                  if (v && v !== h.title) renameHistory(h.id, v);
+                  setRenamingHistory(null);
+                }}
+              />
+            ) : (
+              <span className="claude-chat-history-title" title={h.title}>{h.title || tt('noTitle')}</span>
+            )}
             <div className="claude-chat-history-actions">
               <button title={h.pinned ? tt('unpinTitle') : tt('pinnedTitle')} onClick={e => { e.stopPropagation(); togglePinHistory(h.id); }}>
                 {h.pinned ? '📍' : '📌'}
               </button>
-              <button title={tt('renameTitle')} onClick={e => {
+              <button title={tt('renameTitle')} onClick={e => { e.stopPropagation(); }} onMouseDown={e => {
+                e.preventDefault();
                 e.stopPropagation();
-                const v = prompt(tt('renamePrompt'), h.title);
-                if (v && v.trim()) renameHistory(h.id, v.trim());
+                setRenamingHistory(prev => {
+                  if (prev && prev.id === h.id) {
+                    const v = prev.value.trim();
+                    if (v && v !== h.title) renameHistory(h.id, v);
+                    return null;
+                  }
+                  return { id: h.id, value: h.title || '' };
+                });
               }}>✎</button>
               <button title={tt('deleteTitle')} onClick={e => {
                 e.stopPropagation();
@@ -3776,25 +3841,21 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       <div className="claude-chat-input-area" style={showHistoryPanel ? { display: 'none' } : undefined}>
         {(() => {
           if (!gitStatus?.ok || !gitStatus.branch) return null;
-          // 엄격한 git 키워드 — 모호한 일반 단어 (push, fetch, diff, merge 등) 제외
-          // 명시적 git 관련 표현만 인정
-          const gitRe = /\bgit\s|\bgit$|`git\b|\bPR\b|\bpull request\b|\bgithub\b|\bgitlab\b|\bcommit\s|`commit`|\bbranch\s.*\b(main|master|dev|feature|release)\b|\bcheckout -b|\bgit\.exe/i;
+          // 엄격한 git 키워드 — 명시적 git/PR 표현만. "commit", 단독 "PR" 같이 일반 문장에서 흔히
+          // 등장하는 단어는 제외 (오탐 차단). 최근 4개 메시지만 확인 — 오래된 대화에 끼어 있던
+          // git 단어로 평생 git bar 가 떠 있는 문제 해결.
+          const gitRe = /\bgit\s|`git\b|\bgit commit\b|\bgit push\b|\bpull request\b|\bgithub\.com\b|\bgitlab\.com\b|\bgh pr\b|\bcheckout -b\b|\bgit\.exe/i;
           const toolHits = toolTimeline.filter(t => /\bgit[\s.]/i.test(t.label)).map(t => t.label);
-          const msgHitsDetailed = messages
+          const recentMsgs = messages.slice(-4);
+          const msgHitsDetailed = recentMsgs
             .map((m, idx) => {
               const c = typeof m.content === 'string' ? m.content : '';
               const match = c.match(gitRe);
-              return match ? { idx, role: m.role, matched: match[0], snippet: c.slice(Math.max(0, (match.index || 0) - 20), (match.index || 0) + 60) } : null;
+              return match ? { idx, role: m.role, matched: match[0] } : null;
             })
             .filter(Boolean);
           const toolMatch = toolHits.length > 0;
           const msgMatch = msgHitsDetailed.length > 0;
-          console.log('[GITBAR] check', {
-            branch: gitStatus.branch,
-            msgCount: messages.length,
-            toolMatch, toolHits,
-            msgMatch, msgHits: msgHitsDetailed,
-          });
           if (!toolMatch && !msgMatch) return null;
           return (
           <div className="claude-chat-git-bar" title={activeSshSession ? `원격 SSH (${activeSshSession.label})` : '로컬'}>
@@ -4295,6 +4356,13 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           </div>
         );
       })()}
+      {/* 에이전트 탭 hover 툴팁 — 포털로 body 에 렌더 (chat 컨테이너 overflow 영향 X) */}
+      {agentTooltip && createPortal(
+        <div className="claude-chat-agent-tooltip" style={{ left: agentTooltip.x, top: agentTooltip.y }}>
+          {agentTooltip.text}
+        </div>,
+        document.body
+      )}
       {/* 대화 이력 삭제 확인 모달 */}
       {deleteHistoryConfirm && createPortal(
         <div className="rn-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setDeleteHistoryConfirm(null); }}>
