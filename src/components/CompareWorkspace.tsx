@@ -1165,9 +1165,31 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
                   style={{ flex: 1, minWidth: 80, padding: '2px 6px', fontSize: 11, background: '#1a1a1a', color: leftDirty ? '#d8b556' : '#ddd', border: '1px solid #333', borderRadius: 3, fontFamily: 'monospace' }}
                 />
                 <button onClick={() => saveSide('left')} disabled={!leftDirty} title={t('saveSourceTitle')} style={{ padding: '2px 8px', fontSize: 11 }}>{t('saveSource')}</button>
+                <button
+                  onClick={async () => {
+                    const name = (leftFilePath.split(/[\\/]/).pop() || 'source.txt');
+                    const r: any = await (window as any).api?.compareDownload?.(name, leftContent, leftEnc);
+                    if (r?.success) setSavingMsg(`✓ 다운로드: ${r.path}`);
+                    else if (!r?.canceled) setSavingMsg(`✕ 다운로드 실패: ${r?.error || ''}`);
+                    setTimeout(() => setSavingMsg(''), 2500);
+                  }}
+                  title="Source 내용(편집된 상태 포함)을 로컬로 다운로드"
+                  style={{ padding: '2px 8px', fontSize: 11 }}
+                >⬇ 소스</button>
                 <button onClick={() => applyAll('right-to-left')} title={t('applyAllRightToLeftTitle')} style={{ padding: '2px 8px', fontSize: 11 }}>{t('applyAllToSource')}</button>
                 <button onClick={() => applyAll('left-to-right')} title={t('applyAllLeftToRightTitle')} style={{ padding: '2px 8px', fontSize: 11 }}>{t('applyAllToTarget')}</button>
                 <button onClick={() => saveSide('right')} disabled={!rightDirty} title={t('saveTargetTitle')} style={{ padding: '2px 8px', fontSize: 11 }}>{t('saveTarget')}</button>
+                <button
+                  onClick={async () => {
+                    const name = (rightFilePath.split(/[\\/]/).pop() || 'target.txt');
+                    const r: any = await (window as any).api?.compareDownload?.(name, rightContent, rightEnc);
+                    if (r?.success) setSavingMsg(`✓ 다운로드: ${r.path}`);
+                    else if (!r?.canceled) setSavingMsg(`✕ 다운로드 실패: ${r?.error || ''}`);
+                    setTimeout(() => setSavingMsg(''), 2500);
+                  }}
+                  title="Target 내용(편집된 상태 포함)을 로컬로 다운로드"
+                  style={{ padding: '2px 8px', fontSize: 11 }}
+                >⬇ 타겟</button>
                 <span style={{ color: '#888', fontSize: 11, flexShrink: 0 }}>{t('target')}{rightDirty && ' ●'}</span>
                 <input
                   type="text"
