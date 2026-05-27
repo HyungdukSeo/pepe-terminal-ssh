@@ -2058,6 +2058,14 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
         if (auth?.type === 'password' && auth.password) finish([auth.password]);
         else finish(prompts.map(() => ''));
       });
+      // 연결이 실제로 끊겼을 때 record 도 정리 — 재시도 시 새 connect 가 동작하도록.
+      const cleanupOnClose = (label: string) => {
+        log(`${label} closed — clearing record ${connId}`);
+        this.clients.delete(connId);
+        this.sftpCache.delete(connId);
+      };
+      primaryConn.on('end', () => cleanupOnClose('primary end'));
+      primaryConn.on('close', () => cleanupOnClose('primary close'));
       primaryConn.on('ready', async () => {
         log(`primary ready`);
         if (!jumpOpts?.host) {
@@ -2090,6 +2098,8 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
           const ssh2Constants = require('ssh2/lib/protocol/constants');
           const jumpConn = new Client();
           jumpConn.on('error', (e: any) => log(`jumpConn error: ${e?.message}`));
+          jumpConn.on('end', () => cleanupOnClose('jumpConn end'));
+          jumpConn.on('close', () => cleanupOnClose('jumpConn close'));
           await new Promise<void>((res, rej) => {
             const onReady = () => { cleanup(); res(); };
             const onErr = (e: any) => { cleanup(); rej(e); };
@@ -2108,6 +2118,8 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
               },
               tryKeyboard: !!jumpOpts.password,
               readyTimeout: 30000,
+              keepaliveInterval: 10000,
+              keepaliveCountMax: 3,
             } as any);
           });
           log(`jumpConn ready`);
@@ -2120,7 +2132,8 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
         }
       });
       // tryKeyboard: true 로 확장 — 비밀번호 모저장 세션 등 대비
-      const cfg: any = { host, port, username, tryKeyboard: true, readyTimeout: 15000 };
+      // keepalive — SQL Tool 등 장시간 idle 후 다시 명령 보낼 때 끊김 방지
+      const cfg: any = { host, port, username, tryKeyboard: true, readyTimeout: 15000, keepaliveInterval: 10000, keepaliveCountMax: 3 };
       if (auth?.type === 'password') {
         cfg.password = auth.password;
       } else if (auth?.type === 'key') {

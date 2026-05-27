@@ -74,6 +74,7 @@ function addBroadcastHistory(text: string) {
 function App() {
   const { t: tOpt } = useTranslation('options');
   const { t: tMenu } = useTranslation('menu');
+  const { t: tKb } = useTranslation('keybindings');
   const [tabs, setTabs] = useState<Tab[]>(() => {
     return [{ id: 'tab-1', title: 'Workspace 1', layout: createInitialLayout('tab-1') }];
   });
@@ -722,6 +723,12 @@ function App() {
     }, ms));
   }, [terminalPinned]);
   const [showClaudeChat, setShowClaudeChat] = useState(true);
+  // 외부 워크스페이스의 prefill 요청 시 채팅창 자동 열기
+  useEffect(() => {
+    const onPrefill = () => setShowClaudeChat(true);
+    window.addEventListener('claude-prefill', onPrefill);
+    return () => window.removeEventListener('claude-prefill', onPrefill);
+  }, []);
   const [claudeChatWidth, setClaudeChatWidth] = useState<number>(360);
   const [claudeChatPinned, setClaudeChatPinned] = useState<boolean>(false);
   const [claudeChatVisible, setClaudeChatVisible] = useState<boolean>(false);
@@ -2238,6 +2245,7 @@ function App() {
     if (tid) window.api?.disconnectSSH?.(tid);
   };
 
+  // 아이콘은 JSON 값에 직접 포함됨 — 코드에서 prefix 부착하지 않음
   const menuDefs: MenuDef[] = [
     {
       label: tMenu('file.title'),
@@ -2294,11 +2302,11 @@ function App() {
           setTabs(prev => [...prev, { id, title: tMenu('tools.fileTransfer'), layout: createInitialLayout(id), type: 'fileExplorer', initialTermId: getActiveTermId() ?? undefined }]);
           setActiveTabId(id);
         }},
-        { label: '🌐 ' + (tMenu('tools.browserWs', { defaultValue: '브라우저 워크스페이스' })), action: addBrowserTab },
-        { label: '🔍 ' + (tMenu('tools.compareWs', { defaultValue: '파일 비교 워크스페이스' })), action: addCompareTab },
-        { label: '📈 ' + (tMenu('tools.logAnalyzerWs', { defaultValue: '로그 분석 워크스페이스' })), action: addLogAnalyzerTab },
-        { label: '🔒 ' + (tMenu('tools.vpnWs', { defaultValue: 'VPN 워크스페이스' })), action: addVpnTab },
-        { label: '🌍 ' + (tMenu('tools.i18nWs', { defaultValue: '다국어 지원 워크스페이스' })), action: addI18nEditorTab },
+        { label: tMenu('tools.browserWs'), action: addBrowserTab },
+        { label: tMenu('tools.compareWs'), action: addCompareTab },
+        { label: tMenu('tools.logAnalyzerWs'), action: addLogAnalyzerTab },
+        { label: tMenu('tools.vpnWs'), action: addVpnTab },
+        { label: tMenu('tools.i18nWs'), action: addI18nEditorTab },
         { separator: true, label: '' },
         { label: showToolbar ? tMenu('tools.toolbarHide') : tMenu('tools.toolbarShow'), action: () => setShowToolbar(v => !v) },
         { label: showQuickConnect ? tMenu('tools.quickConnectHide') : tMenu('tools.quickConnectShow'), action: () => setShowQuickConnect(v => !v) },
@@ -3549,54 +3557,54 @@ function App() {
             {optionsTab === 'terminal' && (
               <div className="options-content">
                 <div style={{ marginBottom: 16 }}>
-                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>클립보드</div>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{tOpt('clipboard.heading')}</div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                     <label className="settings-checkbox">
                       <input type="checkbox" checked={termSettings.autoCopyOnSelect}
                         onChange={e => setTermSettings(s => ({ ...s, autoCopyOnSelect: e.target.checked }))} />
-                      <span>선택한 텍스트를 자동으로 클립보드에 복사</span>
+                      <span>{tOpt('clipboard.autoCopyOnSelect')}</span>
                     </label>
                     <label className="settings-checkbox">
                       <input type="checkbox" checked={termSettings.includeTrailingNewline}
                         onChange={e => setTermSettings(s => ({ ...s, includeTrailingNewline: e.target.checked }))} />
-                      <span>선택 영역 복사 시 마지막 줄 바꿈 문자 포함</span>
+                      <span>{tOpt('clipboard.includeTrailingNewline')}</span>
                     </label>
                     <label className="settings-checkbox">
                       <input type="checkbox" checked={termSettings.trimTrailingWhitespace}
                         onChange={e => setTermSettings(s => ({ ...s, trimTrailingWhitespace: e.target.checked }))} />
-                      <span>복사 시 문자 뒤의 공백 제거하기</span>
+                      <span>{tOpt('clipboard.trimTrailingWhitespace')}</span>
                     </label>
                   </div>
                 </div>
                 <div style={{ marginBottom: 16 }}>
-                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>붙여넣기</div>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{tOpt('paste.heading')}</div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    <div style={{ color: '#aaa', fontSize: 12, marginBottom: 2 }}>여러 줄을 붙여넣는 경우:</div>
+                    <div style={{ color: '#aaa', fontSize: 12, marginBottom: 2 }}>{tOpt('paste.multiLineNote')}</div>
                     <label className="settings-radio">
                       <input type="radio" name="multiLinePaste" checked={termSettings.multiLinePaste === 'dialog'}
                         onChange={() => setTermSettings(s => ({ ...s, multiLinePaste: 'dialog' }))} />
-                      <span>여러 줄 붙여넣기 대화 상자 열기</span>
+                      <span>{tOpt('paste.dialog')}</span>
                     </label>
                     <label className="settings-radio">
                       <input type="radio" name="multiLinePaste" checked={termSettings.multiLinePaste === 'direct'}
                         onChange={() => setTermSettings(s => ({ ...s, multiLinePaste: 'direct' }))} />
-                      <span>터미널에 바로 붙여넣기</span>
+                      <span>{tOpt('paste.direct')}</span>
                     </label>
                   </div>
                 </div>
                 <div style={{ marginBottom: 16 }}>
-                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>글꼴</div>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{tOpt('font.heading')}</div>
                   <select
                     style={{ width: '100%', background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '8px', fontSize: 14, boxSizing: 'border-box', cursor: 'pointer' }}
                     value={optFontFamily}
                     onChange={e => setOptFontFamily(e.target.value)}
                   >
-                    <option value="">기본 (Cascadia Mono)</option>
+                    <option value="">{tOpt('font.defaultLabel')}</option>
                     {availableFonts.map(f => <option key={f} value={f} style={{ fontFamily: `"${f}", monospace` }}>{f}</option>)}
                   </select>
                 </div>
                 <div style={{ marginBottom: 16 }}>
-                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>글꼴 크기</div>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{tOpt('font.size')}</div>
                   <input
                     type="number"
                     min={8}
@@ -3608,19 +3616,19 @@ function App() {
                   />
                 </div>
                 <div style={{ marginBottom: 16, borderTop: '1px solid #333', paddingTop: 12 }}>
-                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Claude 채팅창 글꼴</div>
-                  <p style={{ color: '#888', fontSize: 12, margin: '0 0 6px' }}>터미널과 독립 설정. 채팅창에서 Ctrl+휠로도 크기 조절.</p>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{tOpt('font.claudeHeading')}</div>
+                  <p style={{ color: '#888', fontSize: 12, margin: '0 0 6px' }}>{tOpt('font.claudeHint')}</p>
                   <select
                     style={{ width: '100%', background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '8px', fontSize: 14, boxSizing: 'border-box', cursor: 'pointer' }}
                     value={claudeFontFamily}
                     onChange={e => { setClaudeFontFamily(e.target.value); setClaudeFontFamilyState(e.target.value); }}
                   >
-                    <option value="">기본 (시스템 UI 폰트)</option>
+                    <option value="">{tOpt('font.claudeDefaultLabel')}</option>
                     {availableFonts.map(f => <option key={f} value={f} style={{ fontFamily: `"${f}", sans-serif` }}>{f}</option>)}
                   </select>
                 </div>
                 <div style={{ marginBottom: 16 }}>
-                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Claude 채팅창 글꼴 크기</div>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{tOpt('font.claudeSize')}</div>
                   <input
                     type="number"
                     min={9}
@@ -3636,8 +3644,8 @@ function App() {
                   />
                 </div>
                 <div style={{ marginBottom: 16 }}>
-                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>스크롤백 버퍼(줄 수)</div>
-                  <p style={{ color: '#888', fontSize: 12, margin: '0 0 6px' }}>터미널 세션이 보관할 과거 출력 라인 수 (기본: 10000)</p>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{tOpt('scrollback.heading')}</div>
+                  <p style={{ color: '#888', fontSize: 12, margin: '0 0 6px' }}>{tOpt('scrollback.hint')}</p>
                   <input
                     type="number"
                     min={1000}
@@ -3652,7 +3660,7 @@ function App() {
                   />
                 </div>
                 <div style={{ marginBottom: 16 }}>
-                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>기본 로컬 쉘</div>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{tOpt('defaultShell.heading')}</div>
                   <select
                     style={{ width: '100%', background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '8px', fontSize: 14, boxSizing: 'border-box', cursor: 'pointer' }}
                     value={optDefaultShellPath}
@@ -3662,8 +3670,8 @@ function App() {
                   </select>
                 </div>
                 <div style={{ marginBottom: 16 }}>
-                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>단어 구분 기호</div>
-                  <p style={{ color: '#888', fontSize: 12, margin: '0 0 6px' }}>더블클릭 시 단어 선택을 끊는 문자</p>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{tOpt('wordSeparator.heading')}</div>
+                  <p style={{ color: '#888', fontSize: 12, margin: '0 0 6px' }}>{tOpt('wordSeparator.hint')}</p>
                   <input
                     style={{ width: '100%', background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '8px', fontSize: 14, fontFamily: 'monospace', boxSizing: 'border-box' }}
                     value={wordSepValue}
@@ -3676,37 +3684,37 @@ function App() {
             {optionsTab === 'session' && (
               <div className="options-content">
                 <div style={{ marginBottom: 16 }}>
-                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>세션 저장 경로</div>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{tOpt('sessionsPath.heading')}</div>
                   <div style={{ background: '#111', border: '1px solid #333', borderRadius: 4, padding: '8px 10px', fontSize: 12, fontFamily: 'monospace', color: '#aaa', wordBreak: 'break-all', marginBottom: 8 }}>
-                    {sessionsPathDisplay || '(알 수 없음)'}
+                    {sessionsPathDisplay || tOpt('sessionsPath.unknown')}
                   </div>
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                    <button className="btn-add" onClick={() => (window as any).api.openSessionsFolder()}>경로 열기</button>
+                    <button className="btn-add" onClick={() => (window as any).api.openSessionsFolder()}>{tOpt('sessionsPath.open')}</button>
                     <button className="btn-add" onClick={async () => {
                       const r = await (window as any).api.setSessionsPath();
                       if (r) { setSessionsPathDisplay(r.path); window.dispatchEvent(new Event('sessions-reload')); }
-                    }}>경로 변경...</button>
+                    }}>{tOpt('sessionsPath.change')}</button>
                     <button className="btn-add" onClick={async () => {
                       const r = await (window as any).api.resetSessionsPath();
                       if (r) { setSessionsPathDisplay(r.path); window.dispatchEvent(new Event('sessions-reload')); }
-                    }}>기본값으로 초기화</button>
-                    <button className="btn-add" onClick={() => (window as any).api.openSessionsEditor()}>파일 편집</button>
+                    }}>{tOpt('sessionsPath.reset')}</button>
+                    <button className="btn-add" onClick={() => (window as any).api.openSessionsEditor()}>{tOpt('sessionsPath.editFile')}</button>
                   </div>
                 </div>
                 <div style={{ marginBottom: 16 }}>
-                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>탐색기 우클릭 메뉴</div>
-                  <p style={{ color: '#888', fontSize: 12, margin: '0 0 6px' }}>Windows 탐색기에서 우클릭 시 "Open PePe Terminal here" 메뉴를 표시합니다.</p>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{tOpt('contextMenu.heading')}</div>
+                  <p style={{ color: '#888', fontSize: 12, margin: '0 0 6px' }}>{tOpt('contextMenu.hint')}</p>
                   <div style={{ display: 'flex', gap: 6 }}>
                     <button className="btn-add" onClick={async () => {
                       const r = await (window as any).api?.registerContextMenu?.();
                       if (r?.success) { setContextMenuRegistered(true); }
-                    }}>등록</button>
+                    }}>{tOpt('contextMenu.register')}</button>
                     <button className="btn-add" onClick={async () => {
                       const r = await (window as any).api?.unregisterContextMenu?.();
                       if (r?.success) { setContextMenuRegistered(false); }
-                    }}>해제</button>
+                    }}>{tOpt('contextMenu.unregister')}</button>
                     <span style={{ color: contextMenuRegistered ? '#4caf50' : '#888', fontSize: 12, alignSelf: 'center' }}>
-                      {contextMenuRegistered ? '● 등록됨' : '○ 미등록'}
+                      {contextMenuRegistered ? tOpt('contextMenu.registered') : tOpt('contextMenu.notRegistered')}
                     </span>
                   </div>
                 </div>
@@ -3721,14 +3729,14 @@ function App() {
                     const isListening = listeningAction === actionId;
                     return (
                       <div className="keybinding-row" key={actionId}>
-                        <span className="keybinding-label">{KEYBINDING_LABELS[actionId] || actionId}</span>
+                        <span className="keybinding-label">{tKb(`labels.${actionId}`, { defaultValue: KEYBINDING_LABELS[actionId] || actionId })}</span>
                         <input
                           className={`keybinding-combo ${isListening ? 'listening' : ''}`}
                           readOnly
-                          value={isListening ? '키를 누르세요...' : draftCombo}
+                          value={isListening ? tOpt('keybindings.pressKey') : draftCombo}
                         />
                         <button className="keybinding-btn" onClick={() => setListeningAction(isListening ? null : actionId)}>
-                          {isListening ? '취소' : '변경'}
+                          {isListening ? tOpt('keybindings.cancel') : tOpt('keybindings.change')}
                         </button>
                       </div>
                     );
@@ -3742,7 +3750,7 @@ function App() {
                     setKeybindingsDraft({});
                     setListeningAction(null);
                     setKeybindingWarning(null);
-                  }}>초기화</button>
+                  }}>{tOpt('keybindings.reset')}</button>
                 </div>
               </div>
             )}
@@ -3753,7 +3761,7 @@ function App() {
               <button className="btn-cancel" onClick={() => {
                 if (isOptionsPopout) { try { (window as any).api?.optionsClose?.(); } catch {} return; }
                 setShowOptions(false); setListeningAction(null);
-              }}>취소</button>
+              }}>{tOpt('actions.cancel')}</button>
               <button className="btn-save" onClick={() => {
                 saveTerminalSettings(termSettings);
                 setWordSeparator(wordSepValue);
@@ -3775,7 +3783,7 @@ function App() {
                   // localStorage 의 디스크 flush 시간 확보 후 창 닫기 (즉시 닫으면 변경사항 유실 가능)
                   setTimeout(() => { try { (window as any).api?.optionsSaved?.(); } catch {} }, 250);
                 }
-              }}>저장</button>
+              }}>{tOpt('actions.save')}</button>
             </div>
           </div>
         </div>

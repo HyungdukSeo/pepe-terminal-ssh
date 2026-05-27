@@ -29,6 +29,8 @@ type DiffRow = {
   status: DiffStatus;
   leftSize?: number;
   rightSize?: number;
+  changes?: number;     // 변경된 라인 수 (compare:diff-count 결과)
+  changesPending?: boolean; // 계산 중
 };
 
 type Props = {
@@ -100,9 +102,20 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
   // 선택된 파일의 양쪽 절대경로 (저장용)
   const [leftFilePath, setLeftFilePath] = useState<string>('');
   const [rightFilePath, setRightFilePath] = useState<string>('');
+  // 상단 경로 input 의 편집 중 값 — Enter 누르기 전까지는 실제 경로와 분리되어 있음
+  const [leftPathDraft, setLeftPathDraft] = useState<string>('');
+  const [rightPathDraft, setRightPathDraft] = useState<string>('');
+  useEffect(() => { setLeftPathDraft(leftFilePath); }, [leftFilePath]);
+  useEffect(() => { setRightPathDraft(rightFilePath); }, [rightFilePath]);
 
   // 위/아래 영역 비율 — 사용자가 드래그로 조절
   const [topPct, setTopPct] = useState(50);
+  // Araxis Merge 스타일 diff 옵션
+  type WhitespaceMode = 'significant' | 'ignoreLeading' | 'ignoreTrailing' | 'ignoreConsecutive' | 'ignoreAll';
+  const [wsMode, setWsMode] = useState<WhitespaceMode>('significant');
+  const [showEol, setShowEol] = useState(false);
+  const [collapseUnchanged, setCollapseUnchanged] = useState(true);
+  const [wsMenuOpen, setWsMenuOpen] = useState(false);
   // 비교 모드: dir=디렉토리 vs 디렉토리, file=파일 vs 파일
   const [compareMode, setCompareMode] = useState<'dir' | 'file'>('dir');
   // 양쪽 소스 + 경로 — 디렉토리 모드 / 파일 모드 별도 관리
@@ -274,6 +287,65 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
       }
       merged.sort((a, b) => a.relPath.localeCompare(b.relPath));
       setRows(merged);
+      // 2차 검증: 크기 차이로 changed 로 분류된 작은 파일들은 EOL/BOM 정규화 해시로 재확인
+      // (양쪽 모두 ≤ 256KB 면 hash 비교, 같으면 same 으로 강등)
+      const HASH_CAP = 256 * 1024;
+      const candidates = merged.filter(r =>
+        !r.isDir && r.status === 'changed'
+        && (r.leftSize ?? 0) > 0 && (r.rightSize ?? 0) > 0
+        && (r.leftSize ?? 0) <= HASH_CAP && (r.rightSize ?? 0) <= HASH_CAP
+      );
+      if (candidates.length > 0) {
+        const sep = (m: SourceMode) => m === 'local' && navigator.platform.startsWith('Win') ? '\\' : '/';
+        const join = (base: string, mode: SourceMode, rel: string) => base.endsWith(sep(mode)) ? base + rel.replace(/\//g, sep(mode)) : base + sep(mode) + rel.replace(/\//g, sep(mode));
+        const CONCURRENCY = 6;
+        let cursor = 0;
+        const sameSet = new Set<string>();
+        const runOne = async () => {
+          while (cursor < candidates.length) {
+            const i = cursor++;
+            const row = candidates[i];
+            try {
+              const [lh, rh] = await Promise.all([
+                (window as any).api?.compareHash?.(leftSrc.mode, join(leftSrc.basePath, leftSrc.mode, row.relPath), leftSrc.termId, HASH_CAP, wsMode),
+                (window as any).api?.compareHash?.(rightSrc.mode, join(rightSrc.basePath, rightSrc.mode, row.relPath), rightSrc.termId, HASH_CAP, wsMode),
+              ]);
+              if (lh?.hash && rh?.hash && lh.hash === rh.hash) sameSet.add(row.relPath);
+            } catch {}
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(CONCURRENCY, candidates.length) }, runOne));
+        if (sameSet.size > 0) {
+          setRows(prev => prev.map(r => sameSet.has(r.relPath) && r.status === 'changed' ? { ...r, status: 'same' as DiffStatus } : r));
+        }
+        // 남은 진짜 'changed' 행에 대해 diff line count 계산 (양쪽 ≤ HASH_CAP)
+        const stillChanged = candidates.filter(r => !sameSet.has(r.relPath));
+        if (stillChanged.length > 0) {
+          setRows(prev => prev.map(r => stillChanged.find(s => s.relPath === r.relPath) ? { ...r, changesPending: true } : r));
+          let cursor2 = 0;
+          const runCount = async () => {
+            while (cursor2 < stillChanged.length) {
+              const i = cursor2++;
+              const row = stillChanged[i];
+              try {
+                const r: any = await (window as any).api?.compareDiffCount?.(
+                  leftSrc.mode, join(leftSrc.basePath, leftSrc.mode, row.relPath), leftSrc.termId,
+                  rightSrc.mode, join(rightSrc.basePath, rightSrc.mode, row.relPath), rightSrc.termId,
+                  HASH_CAP, wsMode,
+                );
+                if (typeof r?.changes === 'number') {
+                  setRows(prev => prev.map(rr => rr.relPath === row.relPath ? { ...rr, changes: r.changes, changesPending: false } : rr));
+                } else {
+                  setRows(prev => prev.map(rr => rr.relPath === row.relPath ? { ...rr, changesPending: false } : rr));
+                }
+              } catch {
+                setRows(prev => prev.map(rr => rr.relPath === row.relPath ? { ...rr, changesPending: false } : rr));
+              }
+            }
+          };
+          await Promise.all(Array.from({ length: Math.min(CONCURRENCY, stillChanged.length) }, runCount));
+        }
+      }
     } catch (err: any) {
       setScanError(String(err?.message || err));
     } finally {
@@ -341,6 +413,42 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
       setContentLoading(false);
     }
   }, [leftSrc, rightSrc]);
+
+  // 상단 경로 input 에서 Enter — 해당 쪽 파일만 새 경로로 다시 로드 (비교 즉시 갱신)
+  const reloadFileByPath = useCallback(async (side: Side, newPath: string) => {
+    if (!newPath || !newPath.trim()) return;
+    setContentErr('');
+    setSavingMsg('');
+    setSameNote('');
+    setContentLoading(true);
+    try {
+      const src = side === 'left' ? leftSrc : rightSrc;
+      const r = await api.compareRead?.(src.mode, newPath.trim(), src.termId);
+      const normEol = (s: string) => s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      if (r?.error) {
+        setContentErr(side === 'left' ? t('sourceReadFail', { error: r.error }) : t('targetReadFail', { error: r.error }));
+      } else {
+        const c = normEol(r.content ?? '');
+        if (side === 'left') {
+          setLeftEol(detectEol(r.content ?? '')); setLeftEnc(r.encoding || 'UTF-8');
+          setLeftContent(c); setLeftOriginal(c); setLeftFilePath(newPath.trim());
+        } else {
+          setRightEol(detectEol(r.content ?? '')); setRightEnc(r.encoding || 'UTF-8');
+          setRightContent(c); setRightOriginal(c); setRightFilePath(newPath.trim());
+        }
+        // 파일 비교 모드라면 source 의 basePath 도 동기화 → 이후 다시 비교 시작 시 일관
+        if (compareMode === 'file') {
+          updateSrc(side, { basePath: newPath.trim() });
+        }
+        if (!selectedRel) setSelectedRel('__file__');
+      }
+    } catch (err: any) {
+      setContentErr(String(err?.message || err));
+    } finally {
+      setContentLoading(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leftSrc, rightSrc, compareMode, selectedRel, t]);
 
   // 파일 vs 파일 직접 비교 — walk 없이 양쪽 파일 내용 로드
   const startFileCompare = useCallback(async () => {
@@ -758,6 +866,43 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
                 <input type="checkbox" checked={hideSame} onChange={e => setHideSame(e.target.checked)} />
                 {t('hideSame')}
               </label>
+              {/* 비교 옵션 — Araxis Merge 스타일 */}
+              <div style={{ position: 'relative' }}>
+                <button
+                  onClick={() => setWsMenuOpen(v => !v)}
+                  title="비교 옵션 (Whitespace / Line endings / Collapse)"
+                  style={{ padding: '4px 10px', fontSize: 12, background: wsMode !== 'significant' || showEol || !collapseUnchanged ? '#2b4e74' : undefined }}
+                >⚙ 옵션</button>
+                {wsMenuOpen && (
+                  <div
+                    onMouseLeave={() => setWsMenuOpen(false)}
+                    style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, zIndex: 100, background: '#222', border: '1px solid #444', borderRadius: 4, padding: 8, minWidth: 260, fontSize: 12, color: '#ccc', boxShadow: '0 4px 12px rgba(0,0,0,0.5)' }}
+                  >
+                    <div style={{ fontSize: 11, color: '#888', marginBottom: 4, textTransform: 'uppercase' }}>Whitespace</div>
+                    {([
+                      ['significant', 'All significant'],
+                      ['ignoreLeading', 'Ignore leading'],
+                      ['ignoreTrailing', 'Ignore trailing'],
+                      ['ignoreConsecutive', 'Ignore consecutive'],
+                      ['ignoreAll', 'Ignore all'],
+                    ] as [WhitespaceMode, string][]).map(([k, label]) => (
+                      <label key={k} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 4px', cursor: 'pointer', borderRadius: 3, background: wsMode === k ? '#2b4e74' : undefined }}>
+                        <input type="radio" name="ws" checked={wsMode === k} onChange={() => setWsMode(k)} />
+                        {label}
+                      </label>
+                    ))}
+                    <div style={{ height: 1, background: '#333', margin: '6px 0' }} />
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 4px', cursor: 'pointer' }}>
+                      <input type="checkbox" checked={showEol} onChange={e => setShowEol(e.target.checked)} />
+                      Show line endings
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 4px', cursor: 'pointer' }}>
+                      <input type="checkbox" checked={collapseUnchanged} onChange={e => setCollapseUnchanged(e.target.checked)} />
+                      Collapse unchanged regions
+                    </label>
+                  </div>
+                )}
+              </div>
               <label style={{ fontSize: 12, color: '#bbb', display: 'flex', alignItems: 'center', gap: 4 }} title={t('hideUnpairedTitle')}>
                 <input type="checkbox" checked={hideUnpaired} onChange={e => setHideUnpaired(e.target.checked)} />
                 {t('hideUnpaired')}
@@ -831,13 +976,14 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
                 <option value="same">동일</option>
               </select>
             </span>
+            {/* 좌측: Source 폴더 */}
             <span style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
               <span
                 onClick={() => toggleSort('path')}
                 style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0 }}
                 title="경로로 정렬"
               >
-                경로
+                Source
                 <span style={{ opacity: sortBy === 'path' ? 1 : 0.3 }}>{sortBy === 'path' ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}</span>
               </span>
               <input
@@ -857,22 +1003,27 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
                 <button onClick={() => setFilterText('')} style={{ padding: '0 4px', fontSize: 11, background: 'transparent', border: 'none', color: '#888', cursor: 'pointer', flexShrink: 0 }}>✕</button>
               )}
             </span>
-            <span
-              onClick={() => toggleSort('leftSize')}
-              style={{ width: 60, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 3, flexShrink: 0 }}
-              title="소스 크기로 정렬"
-            >
-              <span style={{ opacity: sortBy === 'leftSize' ? 1 : 0.3 }}>{sortBy === 'leftSize' ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}</span>
-              소스
-            </span>
-            <span style={{ width: 20, textAlign: 'center', flexShrink: 0 }}>·</span>
-            <span
-              onClick={() => toggleSort('rightSize')}
-              style={{ width: 60, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 3, flexShrink: 0 }}
-              title="타겟 크기로 정렬"
-            >
-              <span style={{ opacity: sortBy === 'rightSize' ? 1 : 0.3 }}>{sortBy === 'rightSize' ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}</span>
-              타겟
+            {/* 중앙: Δ Lines + size 정렬 (콤팩트) */}
+            <span style={{ width: 70, textAlign: 'center', flexShrink: 0, color: '#aaa' }} title="변경된 라인 수">Δ Lines</span>
+            {/* 우측: Target 폴더 */}
+            <span style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
+              <span style={{ flexShrink: 0 }}>Target</span>
+              <span
+                onClick={() => toggleSort('leftSize')}
+                style={{ marginLeft: 'auto', width: 50, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 3, flexShrink: 0, fontSize: 10, color: '#666' }}
+                title="소스 크기로 정렬"
+              >
+                <span style={{ opacity: sortBy === 'leftSize' ? 1 : 0.3 }}>{sortBy === 'leftSize' ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}</span>
+                Lsize
+              </span>
+              <span
+                onClick={() => toggleSort('rightSize')}
+                style={{ width: 50, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 3, flexShrink: 0, fontSize: 10, color: '#666' }}
+                title="타겟 크기로 정렬"
+              >
+                <span style={{ opacity: sortBy === 'rightSize' ? 1 : 0.3 }}>{sortBy === 'rightSize' ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}</span>
+                Rsize
+              </span>
             </span>
           </div>
           <VList height={Math.max(0, (listContainerH !== null ? listContainerH : listHeight) - LIST_HEADER_H)} width="100%" itemCount={filteredRows.length} itemSize={ROW_H} overscanCount={12}>
@@ -900,13 +1051,30 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
                     loadDiff(row);
                   }}
                 >
-                  <span style={{ width: 70, color: statusColor(row.status), fontSize: 11 }}>{statusLabel(row.status, t)}</span>
-                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {row.isDir ? '📁' : '📄'} {row.relPath}
+                  {/* Status badge */}
+                  <span style={{ width: 70, color: statusColor(row.status), fontSize: 11, flexShrink: 0 }}>{statusLabel(row.status, t)}</span>
+                  {/* Source side */}
+                  <span style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden', minWidth: 0, opacity: row.status === 'right-only' ? 0.25 : 1 }}>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                      {row.status === 'right-only' ? '' : `${row.isDir ? '📁' : '📄'} ${row.relPath}`}
+                    </span>
+                    <span style={{ width: 50, textAlign: 'right', color: '#888', fontSize: 11, flexShrink: 0 }}>
+                      {row.status !== 'right-only' ? formatSize(row.leftSize) : ''}
+                    </span>
                   </span>
-                  <span style={{ width: 60, textAlign: 'right', color: '#888' }}>{formatSize(row.leftSize)}</span>
-                  <span style={{ width: 20, textAlign: 'center', color: '#555' }}>·</span>
-                  <span style={{ width: 60, textAlign: 'right', color: '#888' }}>{formatSize(row.rightSize)}</span>
+                  {/* Center: Δ Lines */}
+                  <span style={{ width: 70, textAlign: 'center', color: row.changes && row.changes > 0 ? '#d8b556' : '#666', fontVariantNumeric: 'tabular-nums', flexShrink: 0, fontSize: 11 }}>
+                    {row.changesPending ? '…' : (typeof row.changes === 'number' ? row.changes.toLocaleString() : (row.status === 'changed' ? '?' : ''))}
+                  </span>
+                  {/* Target side */}
+                  <span style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden', minWidth: 0, opacity: row.status === 'left-only' ? 0.25 : 1 }}>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                      {row.status === 'left-only' ? '' : `${row.isDir ? '📁' : '📄'} ${row.relPath}`}
+                    </span>
+                    <span style={{ width: 50, textAlign: 'right', color: '#888', fontSize: 11, flexShrink: 0 }}>
+                      {row.status !== 'left-only' ? formatSize(row.rightSize) : ''}
+                    </span>
+                  </span>
                 </div>
               );
             }}
@@ -937,18 +1105,36 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
         ) : (
           <>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '4px 8px', background: '#222', borderBottom: '1px solid #333', fontSize: 11, minWidth: 0, overflow: 'hidden' }}>
-              {/* 1행: 경로 + 저장 + 전체 적용 */}
+              {/* 1행: 경로(편집 가능 input) + 저장 + 전체 적용 */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', minWidth: 0 }}>
-                <span style={{ color: leftDirty ? '#d8b556' : '#888', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={leftFilePath}>
-                  {leftDirty && '● '}{t('sourceLabelLine', { path: leftFilePath || t('noPath') })}
-                </span>
+                <span style={{ color: '#888', fontSize: 11, flexShrink: 0 }}>{leftDirty && '● '}{t('source')}</span>
+                <input
+                  type="text"
+                  value={leftPathDraft}
+                  onChange={e => setLeftPathDraft(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); reloadFileByPath('left', leftPathDraft); } }}
+                  onBlur={() => { if (leftPathDraft && leftPathDraft !== leftFilePath) reloadFileByPath('left', leftPathDraft); }}
+                  placeholder={t('noPath')}
+                  title={t('sourceLabelLine', { path: leftPathDraft || '' })}
+                  spellCheck={false}
+                  style={{ flex: 1, minWidth: 80, padding: '2px 6px', fontSize: 11, background: '#1a1a1a', color: leftDirty ? '#d8b556' : '#ddd', border: '1px solid #333', borderRadius: 3, fontFamily: 'monospace' }}
+                />
                 <button onClick={() => saveSide('left')} disabled={!leftDirty} title={t('saveSourceTitle')} style={{ padding: '2px 8px', fontSize: 11 }}>{t('saveSource')}</button>
                 <button onClick={() => applyAll('right-to-left')} title={t('applyAllRightToLeftTitle')} style={{ padding: '2px 8px', fontSize: 11 }}>{t('applyAllToSource')}</button>
                 <button onClick={() => applyAll('left-to-right')} title={t('applyAllLeftToRightTitle')} style={{ padding: '2px 8px', fontSize: 11 }}>{t('applyAllToTarget')}</button>
                 <button onClick={() => saveSide('right')} disabled={!rightDirty} title={t('saveTargetTitle')} style={{ padding: '2px 8px', fontSize: 11 }}>{t('saveTarget')}</button>
-                <span style={{ color: rightDirty ? '#d8b556' : '#888', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'right' }} title={rightFilePath}>
-                  {t('targetLabelLine', { path: rightFilePath || t('noPath') })}{rightDirty && ' ●'}
-                </span>
+                <span style={{ color: '#888', fontSize: 11, flexShrink: 0 }}>{t('target')}{rightDirty && ' ●'}</span>
+                <input
+                  type="text"
+                  value={rightPathDraft}
+                  onChange={e => setRightPathDraft(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); reloadFileByPath('right', rightPathDraft); } }}
+                  onBlur={() => { if (rightPathDraft && rightPathDraft !== rightFilePath) reloadFileByPath('right', rightPathDraft); }}
+                  placeholder={t('noPath')}
+                  title={t('targetLabelLine', { path: rightPathDraft || '' })}
+                  spellCheck={false}
+                  style={{ flex: 1, minWidth: 80, padding: '2px 6px', fontSize: 11, background: '#1a1a1a', color: rightDirty ? '#d8b556' : '#ddd', border: '1px solid #333', borderRadius: 3, fontFamily: 'monospace' }}
+                />
                 <button
                   onClick={() => setDiffExpanded(v => !v)}
                   title={diffExpanded ? '축소' : '전체 화면으로 확대'}
@@ -1025,11 +1211,15 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
                   minimap: { enabled: false },
                   fontSize: 12,
                   wordWrap: 'off',
+                  // Whitespace 무시 — Monaco 의 trim-trailing 옵션 (다른 모드는 표시 텍스트를 별도로 정규화)
+                  ignoreTrimWhitespace: wsMode === 'ignoreTrailing' || wsMode === 'ignoreAll',
+                  // Show line endings — 제어문자 렌더링으로 CR/LF 가시화
+                  renderControlCharacters: showEol,
                   // Mac 에서 우측 한 줄 밀림 증상의 근본 원인은 EOL 불일치(LF vs CRLF) — onSelect 에서 정규화 처리.
                   // 추가 UX 보조 옵션: 비슷한 라인 매칭 + 변경 없는 영역 접기.
                   diffAlgorithm: 'advanced',
                   experimental: { showMoves: true },
-                  hideUnchangedRegions: { enabled: true, contextLineCount: 3, revealLineCount: 20, minimumLineCount: 3 },
+                  hideUnchangedRegions: { enabled: collapseUnchanged, contextLineCount: 3, revealLineCount: 20, minimumLineCount: 3 },
                 }}
               />
             </div>

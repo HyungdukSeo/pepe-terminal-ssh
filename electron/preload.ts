@@ -345,6 +345,29 @@ contextBridge.exposeInMainWorld('api', {
   // 파일 비교 (CompareWorkspace)
   compareWalk: (mode: string, basePath: string, termId?: string, maxEntries?: number) =>
     ipcRenderer.invoke('compare:walk', { mode, termId, basePath, maxEntries }),
+  compareHash: (mode: string, filePath: string, termId?: string, maxBytes?: number, wsMode?: string) =>
+    ipcRenderer.invoke('compare:hash', { mode, termId, filePath, maxBytes, wsMode }),
+  logWatchStart: (watchId: string, mode: string, filePath: string, termId?: string) =>
+    ipcRenderer.invoke('log:watch-start', { watchId, mode, termId, filePath }),
+  logWatchStop: (watchId: string) =>
+    ipcRenderer.invoke('log:watch-stop', { watchId }),
+  onLogWatchData: (cb: (p: { watchId: string; text: string }) => void) => {
+    const handler = (_: any, p: any) => cb(p);
+    ipcRenderer.on('log:watch-data', handler);
+    return () => ipcRenderer.removeListener('log:watch-data', handler);
+  },
+  onLogWatchError: (cb: (p: { watchId: string; error: string }) => void) => {
+    const handler = (_: any, p: any) => cb(p);
+    ipcRenderer.on('log:watch-error', handler);
+    return () => ipcRenderer.removeListener('log:watch-error', handler);
+  },
+  compareDiffCount: (
+    leftMode: string, leftPath: string, leftTermId: string | undefined,
+    rightMode: string, rightPath: string, rightTermId: string | undefined,
+    maxBytes?: number, wsMode?: string,
+  ) => ipcRenderer.invoke('compare:diff-count', {
+    leftMode, leftTermId, leftPath, rightMode, rightTermId, rightPath, maxBytes, wsMode,
+  }),
   compareRead: (mode: string, filePath: string, termId?: string, maxBytes?: number) =>
     ipcRenderer.invoke('compare:read', { mode, termId, filePath, maxBytes }),
   compareWrite: (mode: string, filePath: string, content: string, termId?: string) =>

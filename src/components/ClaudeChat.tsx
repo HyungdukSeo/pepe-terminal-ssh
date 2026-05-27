@@ -734,6 +734,23 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   // Git 상태 — 현재 cwd / 활성 SSH 세션 자동 감지
   const [gitStatus, setGitStatus] = useState<{ ok: boolean; branch?: string; additions?: number; deletions?: number } | null>(null);
   const [input, setInput] = useState('');
+  // 외부 워크스페이스(예: LogAnalyzer)에서 prompt prefill — 'claude-prefill' window event 로 수신
+  useEffect(() => {
+    const onPrefill = (e: any) => {
+      const text = String(e?.detail?.text || '');
+      if (!text) return;
+      setInput(prev => prev ? prev + '\n\n' + text : text);
+      // 입력 textarea 포커스
+      setTimeout(() => {
+        try {
+          const ta = document.querySelector('textarea.claude-chat-input') as HTMLTextAreaElement | null;
+          ta?.focus();
+        } catch {}
+      }, 50);
+    };
+    window.addEventListener('claude-prefill', onPrefill as any);
+    return () => window.removeEventListener('claude-prefill', onPrefill as any);
+  }, []);
   const [streaming, setStreaming] = useState(false);
   // 현재 진행 중 활동(툴 이름 등) — 스트리밍 인디케이터 옆에 표시
   const [activity, setActivity] = useState<string>('');
