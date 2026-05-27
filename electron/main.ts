@@ -1,5 +1,5 @@
 ﻿// electron/main.ts
-import { app, BrowserWindow, ipcMain, dialog, Menu, shell, clipboard, nativeImage, safeStorage } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, Menu, shell, clipboard, nativeImage, safeStorage, screen } from 'electron';
 
 // 백그라운드/blur 상태에서도 렌더러가 정상 동작하도록
 // (Windows 에서 자식 프로세스 spawn 이 잠깐 foreground 를 뺏어가도 input/caret 영향 최소화)
@@ -2754,11 +2754,81 @@ ipcMain.handle('sftp:write-file', async (_e, { panelId, remotePath, content, enc
 
 // ── 창 제어 ──
 let dragStartPos: { x: number; y: number } | null = null;
+// Aero Snap — 드래그 중 마우스가 화면 가장자리에 닿으면 release 시 해당 위치로 스냅.
+// 모서리(corner) 는 1/4 분할, 위/좌/우 는 최대화·좌반·우반. 미리보기는 별도 투명 오버레이 창으로 표시.
+type SnapZone = 'top' | 'left' | 'right' | 'tl' | 'tr' | 'bl' | 'br' | null;
+let pendingSnapZone: SnapZone = null;
+let snapPreviewWin: BrowserWindow | null = null;
+const SNAP_EDGE_PX = 4; // 마우스가 디스플레이 경계에서 몇 px 이내일 때 스냅 발동
+
+function destroySnapPreview() {
+  if (snapPreviewWin && !snapPreviewWin.isDestroyed()) {
+    try { snapPreviewWin.close(); } catch {}
+  }
+  snapPreviewWin = null;
+}
+function computeSnapBounds(zone: SnapZone, workArea: { x: number; y: number; width: number; height: number }) {
+  const { x, y, width, height } = workArea;
+  const halfW = Math.floor(width / 2);
+  const halfH = Math.floor(height / 2);
+  switch (zone) {
+    case 'top':   return { x, y, width, height };
+    case 'left':  return { x, y, width: halfW, height };
+    case 'right': return { x: x + width - halfW, y, width: halfW, height };
+    case 'tl':    return { x, y, width: halfW, height: halfH };
+    case 'tr':    return { x: x + width - halfW, y, width: halfW, height: halfH };
+    case 'bl':    return { x, y: y + height - halfH, width: halfW, height: halfH };
+    case 'br':    return { x: x + width - halfW, y: y + height - halfH, width: halfW, height: halfH };
+    default:      return null;
+  }
+}
+function showSnapPreview(zone: SnapZone, workArea: { x: number; y: number; width: number; height: number }) {
+  const bounds = computeSnapBounds(zone, workArea);
+  if (!bounds) { destroySnapPreview(); return; }
+  if (!snapPreviewWin || snapPreviewWin.isDestroyed()) {
+    snapPreviewWin = new BrowserWindow({
+      ...bounds,
+      frame: false, transparent: true, hasShadow: false,
+      resizable: false, movable: false, minimizable: false, maximizable: false,
+      focusable: false, skipTaskbar: true, alwaysOnTop: true,
+      backgroundColor: '#00000000',
+      webPreferences: { nodeIntegration: false, contextIsolation: true },
+    });
+    snapPreviewWin.setIgnoreMouseEvents(true);
+    snapPreviewWin.setAlwaysOnTop(true, 'screen-saver');
+    const html = `<!doctype html><html><body style="margin:0;background:transparent;overflow:hidden;">
+      <div style="position:fixed;inset:0;border:3px solid rgba(80,160,255,0.85);
+        background:rgba(80,160,255,0.18);box-sizing:border-box;border-radius:6px;
+        box-shadow:0 0 24px rgba(80,160,255,0.55), inset 0 0 24px rgba(80,160,255,0.25);
+        pointer-events:none;"></div></body></html>`;
+    snapPreviewWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+  } else {
+    snapPreviewWin.setBounds(bounds);
+  }
+}
+function detectSnapZone(mouseX: number, mouseY: number): { zone: SnapZone; workArea: { x: number; y: number; width: number; height: number } } {
+  const display = screen.getDisplayNearestPoint({ x: mouseX, y: mouseY });
+  const wa = display.workArea;
+  const nearTop    = mouseY <= wa.y + SNAP_EDGE_PX;
+  const nearLeft   = mouseX <= wa.x + SNAP_EDGE_PX;
+  const nearRight  = mouseX >= wa.x + wa.width - SNAP_EDGE_PX - 1;
+  const nearBottom = mouseY >= wa.y + wa.height - SNAP_EDGE_PX - 1;
+  let zone: SnapZone = null;
+  if (nearTop && nearLeft) zone = 'tl';
+  else if (nearTop && nearRight) zone = 'tr';
+  else if (nearBottom && nearLeft) zone = 'bl';
+  else if (nearBottom && nearRight) zone = 'br';
+  else if (nearTop) zone = 'top';
+  else if (nearLeft) zone = 'left';
+  else if (nearRight) zone = 'right';
+  return { zone, workArea: wa };
+}
 
 ipcMain.on('window:start-drag', (_e, { mouseX, mouseY }: any) => {
   if (!mainWindow) return;
   const [wx, wy] = mainWindow.getPosition();
   dragStartPos = { x: mouseX - wx, y: mouseY - wy };
+  pendingSnapZone = null;
 });
 
 ipcMain.on('window:drag-move', (_e, { mouseX, mouseY }: any) => {
@@ -2777,9 +2847,34 @@ ipcMain.on('window:drag-move', (_e, { mouseX, mouseY }: any) => {
     return;
   }
   mainWindow.setPosition(mouseX - dragStartPos.x, mouseY - dragStartPos.y);
+  // Aero Snap 영역 검출 + 미리보기 토글
+  const { zone, workArea } = detectSnapZone(mouseX, mouseY);
+  if (zone !== pendingSnapZone) {
+    pendingSnapZone = zone;
+    if (zone) showSnapPreview(zone, workArea);
+    else destroySnapPreview();
+  }
 });
 
-ipcMain.on('window:end-drag', () => { dragStartPos = null; });
+ipcMain.on('window:end-drag', () => {
+  dragStartPos = null;
+  // 스냅 영역에서 release → 스냅 실행
+  if (pendingSnapZone && mainWindow) {
+    const cursor = screen.getCursorScreenPoint();
+    const display = screen.getDisplayNearestPoint(cursor);
+    const bounds = computeSnapBounds(pendingSnapZone, display.workArea);
+    if (bounds) {
+      if (pendingSnapZone === 'top') {
+        // 최대화는 OS native maximize 호출 — 작업표시줄 회피 + 모니터 변경 자동 대응
+        mainWindow.maximize();
+      } else {
+        mainWindow.setBounds(bounds);
+      }
+    }
+  }
+  pendingSnapZone = null;
+  destroySnapPreview();
+});
 
 ipcMain.handle('window:minimize', () => mainWindow?.minimize());
 ipcMain.handle('window:toggle-maximize', () => {
