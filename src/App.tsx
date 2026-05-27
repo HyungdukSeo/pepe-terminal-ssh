@@ -1627,7 +1627,14 @@ function App() {
     // 새 워크스페이스 생성 옵션
     if (targetTabId === '__new__') {
       const newId = `tab-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-      const newTab = { id: newId, title: `Workspace ${tabs.length + 1}`, layout: createInitialLayout(newId) } as any;
+      // createInitialLayout 은 기본 'Local Shell' 세션을 자동 생성 → 이동 직후 빈 슬롯이 아니라
+      // Local Shell + 이동된 세션 2개가 됨. 새 워크스페이스는 빈 leaf 로 만들어서 이동된 세션만 들어가게.
+      const emptyLayout: LayoutNode = {
+        id: `node-root-${Date.now().toString(36)}`,
+        type: 'leaf',
+        panel: { id: `panel-${Date.now().toString(36)}`, sessions: [], activeIdx: 0 },
+      };
+      const newTab = { id: newId, title: `Workspace ${tabs.length + 1}`, layout: emptyLayout } as any;
       setTabs(prev => [...prev, newTab]);
       // 다음 tick 에 이동 진행
       setTimeout(() => handleMoveSessionToWorkspace(fromNodeId, termId, newId), 30);
@@ -3289,7 +3296,7 @@ function App() {
                     }}
                     floatingPanelId={floatingPanelId}
                     fullscreenTermId={fullscreenTermId}
-                    workspaceList={tabs.map(t => ({ id: t.id, title: t.title }))}
+                    workspaceList={tabs.filter(t => !t.type || t.type === 'terminal').map(t => ({ id: t.id, title: t.title }))}
                     currentWorkspaceId={activeTab?.id}
                     onMoveSessionToWorkspace={handleMoveSessionToWorkspace}
                     onToggleFloat={nodeId => {

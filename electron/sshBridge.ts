@@ -1409,21 +1409,40 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
 
   // stat 1회 호출로 isDir + size + atime + mtime 를 한꺼번에 반환
   // (이전: isSrcDirectory + getSrcStat = 동일 경로 stat 2~3회 → 1회로 통합)
-  private async getSrcStatFull(src: { mode: string; termId?: string; path: string }): Promise<{ isDir: boolean; size: number; atime: number; mtime: number }> {
+  private async getSrcStatFull(src: { mode: string; termId?: string; path: string }): Promise<{ isDir: boolean; size: number; atime: number; mtime: number; permMode: number }> {
     if (src.mode === 'local') {
       const s = await fs.promises.stat(src.path);
-      return { isDir: s.isDirectory(), size: s.size, atime: Math.floor(s.atimeMs / 1000), mtime: Math.floor(s.mtimeMs / 1000) };
+      return { isDir: s.isDirectory(), size: s.size, atime: Math.floor(s.atimeMs / 1000), mtime: Math.floor(s.mtimeMs / 1000), permMode: s.mode & 0o7777 };
     } else {
       if (src.termId && this.sftpWorkers.has(src.termId)) {
         const s = await this.workerOp(src.termId, 'stat', src.path);
         const isDir = !!(s && s.mode && (s.mode & 0o170000) === 0o040000);
-        return { isDir, size: s.size || 0, atime: s.atime || 0, mtime: s.mtime || 0 };
+        return { isDir, size: s.size || 0, atime: s.atime || 0, mtime: s.mtime || 0, permMode: (s.mode || 0) & 0o7777 };
       }
       const sftp = await this.getDedicatedSftp(src.termId!);
       const s: any = await new Promise((res, rej) => sftp.stat(src.path, (e: any, st: any) => e ? rej(e) : res(st)));
       const isDir = typeof s.isDirectory === 'function' ? s.isDirectory() : !!(s.mode && (s.mode & 0o170000) === 0o040000);
-      return { isDir, size: s.size || 0, atime: s.atime || 0, mtime: s.mtime || 0 };
+      return { isDir, size: s.size || 0, atime: s.atime || 0, mtime: s.mtime || 0, permMode: (s.mode || 0) & 0o7777 };
     }
+  }
+
+  // 파일 모드 (permission bits, 0o7777) 를 destination 에 적용 — 실패해도 무시
+  private async setDstMode(dst: { mode: string; termId?: string; path: string }, permMode: number): Promise<void> {
+    if (!permMode) return;
+    try {
+      if (dst.mode === 'local') {
+        await fs.promises.chmod(dst.path, permMode & 0o7777);
+      } else {
+        if (dst.termId && this.sftpWorkers.has(dst.termId)) {
+          await this.workerOp(dst.termId, 'chmod', dst.path, { mode: permMode & 0o7777 });
+          return;
+        }
+        const sftp = await this.getDedicatedSftp(dst.termId!);
+        await new Promise<void>((res, rej) => {
+          sftp.chmod(dst.path, permMode & 0o7777, (e: any) => e ? rej(e) : res());
+        });
+      }
+    } catch { /* 권한 설정 실패해도 무시 */ }
   }
 
   private async getSrcStat(src: { mode: string; termId?: string; path: string }): Promise<{ size: number; atime: number; mtime: number }> {
@@ -1703,12 +1722,15 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
         const childDst = { ...dst, path: joinPath(dst.path, entry, dst.mode) };
         await this.handleTransfer(childSrc, childDst, entry, { ...ctx!, rel: ctx!.rel ? `${ctx!.rel}/${entry}` : entry }).catch(() => {});
       }
+      // 디렉토리 전송 완료 후 mode + atime/mtime 보존 — 자식 파일 복사로 dst 디렉토리의 mtime 이 변경되므로 마지막에 복원
+      await this.setDstTimestamp(dst, srcStatFull.atime, srcStatFull.mtime);
+      await this.setDstMode(dst, srcStatFull.permMode);
       this.emit('message', { type: 'sftp-complete', panelId: 'transfer', data: JSON.stringify({ filename, direction: 'dir-done', transferId: ctx!.transferId, rel: ctx!.rel, rootName: ctx!.rootName, workspaceId: ctx!.workspaceId, isDir: true }) });
       return;
     }
 
     // 소스 파일 속성 — getSrcStatFull 에서 이미 취득, 별도 stat 호출 불필요
-    const srcStat = { size: srcStatFull.size, atime: srcStatFull.atime, mtime: srcStatFull.mtime };
+    const srcStat = { size: srcStatFull.size, atime: srcStatFull.atime, mtime: srcStatFull.mtime, permMode: srcStatFull.permMode };
 
     // 파일 시작 알림 (size 포함)
     this.emit('message', { type: 'sftp-file-start', panelId: 'transfer', data: JSON.stringify({
@@ -1720,6 +1742,7 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
     if (srcStat.size === 0) {
       await this.createEmptyFile(dst);
       await this.setDstTimestamp(dst, srcStat.atime, srcStat.mtime);
+      await this.setDstMode(dst, srcStat.permMode);
       this.emit('message', { type: 'sftp-complete', panelId: 'transfer', data: JSON.stringify({ filename, direction: 'zero-byte', transferId: ctx!.transferId, rel: ctx!.rel, rootName: ctx!.rootName, workspaceId: ctx!.workspaceId }) });
       return;
     }
@@ -1731,6 +1754,7 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
     if (resumeFrom > 0 && resumeFrom < srcStat.size) {
       await this.resumeTransfer(src, dst, resumeFrom, srcStat.size, filename, ctx!);
       await this.setDstTimestamp(dst, srcStat.atime, srcStat.mtime);
+      await this.setDstMode(dst, srcStat.permMode);
       return;
     }
     if (resumeFrom > 0 && resumeFrom >= srcStat.size) {
@@ -1762,15 +1786,18 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
         readStream.pipe(writeStream);
       });
       await this.setDstTimestamp(dst, srcStat.atime, srcStat.mtime);
+      await this.setDstMode(dst, srcStat.permMode);
       this.emit('message', { type: 'sftp-complete', panelId: 'transfer', data: JSON.stringify({ filename, direction: 'local-copy', transferId: ctx!.transferId, rel: ctx!.rel, rootName: ctx!.rootName, workspaceId: ctx!.workspaceId }) });
     } else if (srcLocal && !dstLocal) {
       // 로컬 → 원격
       await this.handleSFTPUpload(dst.termId!, src.path, dst.path, ctx);
       await this.setDstTimestamp(dst, srcStat.atime, srcStat.mtime);
+      await this.setDstMode(dst, srcStat.permMode);
     } else if (!srcLocal && dstLocal) {
       // 원격 → 로컬
       await this.handleSFTPDownload(src.termId!, src.path, dst.path, ctx);
       await this.setDstTimestamp(dst, srcStat.atime, srcStat.mtime);
+      await this.setDstMode(dst, srcStat.permMode);
     } else {
       // 원격 → 원격 (Worker thread 에서 파이프 — 메인 이벤트 루프 보호)
       const srcTermId = src.termId!;
@@ -1795,6 +1822,7 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
           worker!.postMessage({ type: 'transfer', id: reqId, action: 'remote-remote', srcPath: src.path, dstPath: dst.path, dstSession, totalSize: srcStat.size });
         });
         await this.setDstTimestamp(dst, srcStat.atime, srcStat.mtime);
+      await this.setDstMode(dst, srcStat.permMode);
         this.emit('message', { type: 'sftp-complete', panelId: 'transfer', data: JSON.stringify({ filename, direction: 'remote-remote', ...extra }) });
         return;
       }
@@ -1816,6 +1844,7 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
         writeStream.on('error', (err: any) => reject(err));
         writeStream.on('close', async () => {
           await this.setDstTimestamp(dst, srcStat.atime, srcStat.mtime);
+      await this.setDstMode(dst, srcStat.permMode);
           this.emit('message', { type: 'sftp-complete', panelId: 'transfer', data: JSON.stringify({ filename, direction: 'remote-remote', ...extra }) });
           resolve();
         });

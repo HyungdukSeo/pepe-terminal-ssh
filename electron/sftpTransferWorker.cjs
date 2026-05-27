@@ -230,6 +230,7 @@ connectFn().then(() => {
           case 'readdir': s.readdir(path,(e, r) => e ? fail(e) : ok(r)); break;
           case 'mkdir':   s.mkdir(path,  (e)    => e ? fail(e) : ok(null)); break;
           case 'utimes':  s.utimes(path, args.atime, args.mtime, (e) => e ? fail(e) : ok(null)); break;
+          case 'chmod':   s.chmod(path,  args.mode, (e) => e ? fail(e) : ok(null)); break;
           case 'unlink':  s.unlink(path, (e) => e ? fail(e) : ok(null)); break;
           case 'rmdir':   s.rmdir(path,  (e) => e ? fail(e) : ok(null)); break;
           case 'rename':  s.rename(path, args.newPath, (e) => e ? fail(e) : ok(null)); break;

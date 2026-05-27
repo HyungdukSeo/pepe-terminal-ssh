@@ -1,5 +1,5 @@
 // src/components/FileExplorer.tsx
-import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { FilePanel, PanelSource } from './FilePanel';
 import { TransferLog } from './TransferLog';
@@ -19,14 +19,44 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
   const { t } = useTranslation('fileExplorer');
   const localLabel = t('local');
   const [sources, setSources] = useState<PanelSource[]>([{ mode: 'local', label: localLabel }]);
-  const [leftSource, setLeftSource] = useState<PanelSource>({ mode: 'local', label: localLabel });
-  const [rightSource, setRightSource] = useState<PanelSource>({ mode: 'local', label: localLabel });
-  // 초기 경로는 빈 문자열 — feGetHome 으로 home 받아오면 즉시 설정.
-  // (C:\\ 초기값이면 C:\\ → home 으로 한번 점프하는 깜빡임 발생)
-  const [leftPath, setLeftPath] = useState('');
-  const [rightPath, setRightPath] = useState('');
-  const [leftSelected, setLeftSelected] = useState<Set<string>>(new Set());
-  const [rightSelected, setRightSelected] = useState<Set<string>>(new Set());
+  // 좌·우 패널 각각 여러 폴더 탭 유지 — 각 탭은 자기 source/path/selected 상태
+  type PanelTab = { id: string; source: PanelSource; path: string; selected: Set<string> };
+  const makeTab = (source: PanelSource, path = ''): PanelTab => ({
+    id: `pt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    source, path, selected: new Set(),
+  });
+  const [leftTabs, setLeftTabs] = useState<PanelTab[]>(() => [makeTab({ mode: 'local', label: localLabel })]);
+  const [rightTabs, setRightTabs] = useState<PanelTab[]>(() => [makeTab({ mode: 'local', label: localLabel })]);
+  const [leftActive, setLeftActive] = useState(0);
+  const [rightActive, setRightActive] = useState(0);
+  const leftActiveRef = useRef(0);
+  const rightActiveRef = useRef(0);
+  useEffect(() => { leftActiveRef.current = leftActive; }, [leftActive]);
+  useEffect(() => { rightActiveRef.current = rightActive; }, [rightActive]);
+  // 활성 탭의 source/path/selected 를 derived 로 노출 — 기존 코드 호환
+  const leftTab = leftTabs[leftActive] || leftTabs[0];
+  const rightTab = rightTabs[rightActive] || rightTabs[0];
+  const leftSource = leftTab.source;
+  const rightSource = rightTab.source;
+  const leftPath = leftTab.path;
+  const rightPath = rightTab.path;
+  const leftSelected = leftTab.selected;
+  const rightSelected = rightTab.selected;
+  // 활성 탭에 대한 setter — useCallback 으로 ref 안정화 (FilePanel 자식의 loadDir useEffect 재실행 깜빡임 방지)
+  const setLeftSource = useCallback((s: PanelSource) =>
+    setLeftTabs(prev => prev.map((t, i) => i === leftActiveRef.current ? { ...t, source: s } : t)), []);
+  const setRightSource = useCallback((s: PanelSource) =>
+    setRightTabs(prev => prev.map((t, i) => i === rightActiveRef.current ? { ...t, source: s } : t)), []);
+  const setLeftPath = useCallback((p: string) =>
+    setLeftTabs(prev => prev.map((t, i) => i === leftActiveRef.current ? { ...t, path: p } : t)), []);
+  const setRightPath = useCallback((p: string) =>
+    setRightTabs(prev => prev.map((t, i) => i === rightActiveRef.current ? { ...t, path: p } : t)), []);
+  const setLeftSelected: React.Dispatch<React.SetStateAction<Set<string>>> = useCallback((v: any) =>
+    setLeftTabs(prev => prev.map((t, i) => i === leftActiveRef.current
+      ? { ...t, selected: typeof v === 'function' ? v(t.selected) : v } : t)), []);
+  const setRightSelected: React.Dispatch<React.SetStateAction<Set<string>>> = useCallback((v: any) =>
+    setRightTabs(prev => prev.map((t, i) => i === rightActiveRef.current
+      ? { ...t, selected: typeof v === 'function' ? v(t.selected) : v } : t)), []);
   const [transferring, setTransferring] = useState(false);
   const [initDone, setInitDone] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -386,8 +416,13 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
     if (src.mode !== 'remote' || !src.termId) return;
     try { await api?.feSftpDisconnect?.(src.termId); } catch {}
     setSources(prev => prev.filter(s => s.termId !== src.termId));
-    if (leftSource.termId === src.termId) { setLeftSource({ mode: 'local', label: localLabel }); setLeftPath(await getHomeWithRetry('local')); }
-    if (rightSource.termId === src.termId) { setRightSource({ mode: 'local', label: localLabel }); setRightPath(await getHomeWithRetry('local')); }
+    // 모든 좌·우 탭 중 해당 termId 를 가진 탭은 local 로 fallback
+    const localHome = await getHomeWithRetry('local');
+    const localSrc: PanelSource = { mode: 'local', label: localLabel };
+    setLeftTabs(prev => prev.map(t => t.source.termId === src.termId
+      ? { ...t, source: localSrc, path: localHome, selected: new Set() } : t));
+    setRightTabs(prev => prev.map(t => t.source.termId === src.termId
+      ? { ...t, source: localSrc, path: localHome, selected: new Set() } : t));
   };
 
   const handleSftpConnect = async () => {
@@ -473,6 +508,168 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
     setRefreshKey(k => k + 1);
   };
 
+  // 폴더 탭 추가 — 현재 활성 탭의 source/path 복제 (사용자가 현재 위치에서 가지 치기 의도)
+  const addPanelTab = (side: 'left' | 'right') => {
+    if (side === 'left') {
+      const cur = leftTabs[leftActive] || leftTabs[0];
+      const newTab = makeTab(cur.source, cur.path);
+      setLeftTabs(prev => [...prev, newTab]);
+      setLeftActive(leftTabs.length);
+    } else {
+      const cur = rightTabs[rightActive] || rightTabs[0];
+      const newTab = makeTab(cur.source, cur.path);
+      setRightTabs(prev => [...prev, newTab]);
+      setRightActive(rightTabs.length);
+    }
+  };
+  const closePanelTab = (side: 'left' | 'right', idx: number) => {
+    const tabs = side === 'left' ? leftTabs : rightTabs;
+    if (tabs.length <= 1) return; // 최소 한 탭은 유지
+    const active = side === 'left' ? leftActive : rightActive;
+    const next = tabs.filter((_, i) => i !== idx);
+    let newActive = active;
+    if (idx < active) newActive = active - 1;
+    else if (idx === active) newActive = Math.min(active, next.length - 1);
+    if (side === 'left') { setLeftTabs(next); setLeftActive(newActive); }
+    else { setRightTabs(next); setRightActive(newActive); }
+  };
+  // 탭 라벨 — path 의 basename, 빈 경로면 source label 약식
+  const tabLabel = (tab: PanelTab): string => {
+    const p = tab.path || '';
+    if (p) {
+      const m = p.match(/[^\\/]+$/);
+      if (m) return m[0];
+    }
+    const lbl = tab.source.label || '';
+    return lbl.replace(/^[🟢⚪🌐🔌🔒]\s*/, '').split(/\s+\[/)[0].slice(0, 24) || '~';
+  };
+
+  // 드래그 상태 — fromSide 와 overSide 분리: 한 패널 내 reorder + 좌↔우 이동 모두 지원
+  const [tabDrag, setTabDrag] = useState<{ fromSide: 'left' | 'right'; from: number; overSide: 'left' | 'right'; over: number } | null>(null);
+  // 같은 패널 내 reorder
+  const reorderTabs = (side: 'left' | 'right', from: number, to: number) => {
+    if (from === to) return;
+    const tabs = side === 'left' ? leftTabs : rightTabs;
+    if (from < 0 || from >= tabs.length || to < 0 || to >= tabs.length) return;
+    const next = [...tabs];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    const active = side === 'left' ? leftActive : rightActive;
+    let newActive = active;
+    if (active === from) newActive = to;
+    else if (from < active && to >= active) newActive = active - 1;
+    else if (from > active && to <= active) newActive = active + 1;
+    if (side === 'left') { setLeftTabs(next); setLeftActive(newActive); }
+    else { setRightTabs(next); setRightActive(newActive); }
+  };
+  // 좌↔우 패널 이동
+  const moveTabBetweenSides = (fromSide: 'left' | 'right', from: number, toSide: 'left' | 'right', to: number) => {
+    if (fromSide === toSide) { reorderTabs(fromSide, from, to); return; }
+    const srcTabs = fromSide === 'left' ? leftTabs : rightTabs;
+    const dstTabs = toSide === 'left' ? leftTabs : rightTabs;
+    if (from < 0 || from >= srcTabs.length) return;
+    if (srcTabs.length <= 1) return; // 마지막 탭은 이동 금지 (패널이 빈 상태가 됨)
+    const moved = srcTabs[from];
+    const nextSrc = srcTabs.filter((_, i) => i !== from);
+    const insertAt = Math.max(0, Math.min(to, dstTabs.length));
+    const nextDst = [...dstTabs];
+    nextDst.splice(insertAt, 0, moved);
+    // 활성 인덱스 보정
+    const srcActive = fromSide === 'left' ? leftActive : rightActive;
+    const dstActive = toSide === 'left' ? leftActive : rightActive;
+    let newSrcActive = srcActive;
+    if (srcActive === from) newSrcActive = Math.min(srcActive, nextSrc.length - 1);
+    else if (from < srcActive) newSrcActive = srcActive - 1;
+    let newDstActive = dstActive;
+    if (insertAt <= dstActive) newDstActive = dstActive + 1;
+    // 이동한 탭을 목적지에서 활성화 (사용자 의도)
+    newDstActive = insertAt;
+    if (fromSide === 'left') { setLeftTabs(nextSrc); setLeftActive(newSrcActive); }
+    else { setRightTabs(nextSrc); setRightActive(newSrcActive); }
+    if (toSide === 'left') { setLeftTabs(nextDst); setLeftActive(newDstActive); }
+    else { setRightTabs(nextDst); setRightActive(newDstActive); }
+  };
+
+  const renderPanelTabs = (side: 'left' | 'right') => {
+    const tabs = side === 'left' ? leftTabs : rightTabs;
+    const active = side === 'left' ? leftActive : rightActive;
+    return (
+      <div className="fe-panel-tabs">
+        {tabs.map((tab, idx) => {
+          const isDragging = tabDrag?.fromSide === side && tabDrag.from === idx;
+          const isDropTarget = tabDrag && tabDrag.overSide === side && tabDrag.over === idx
+            && !(tabDrag.fromSide === side && tabDrag.from === idx);
+          return (
+          <div
+            key={tab.id}
+            draggable
+            className={`fe-panel-tab ${idx === active ? 'active' : ''} ${isDragging ? 'dragging' : ''} ${isDropTarget ? 'drop-target' : ''}`}
+            onMouseDown={() => {
+              setSelectedSide(side);
+              if (side === 'left') setLeftActive(idx); else setRightActive(idx);
+            }}
+            onAuxClick={e => { if (e.button === 1) { e.preventDefault(); closePanelTab(side, idx); } }}
+            onDragStart={e => {
+              setTabDrag({ fromSide: side, from: idx, overSide: side, over: idx });
+              try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(idx)); } catch {}
+            }}
+            onDragOver={e => {
+              if (!tabDrag) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = 'move';
+              if (tabDrag.overSide !== side || tabDrag.over !== idx) {
+                setTabDrag({ ...tabDrag, overSide: side, over: idx });
+              }
+            }}
+            onDrop={e => {
+              if (tabDrag) {
+                e.preventDefault();
+                moveTabBetweenSides(tabDrag.fromSide, tabDrag.from, side, idx);
+              }
+              setTabDrag(null);
+            }}
+            onDragEnd={() => setTabDrag(null)}
+            title={tab.path || tab.source.label}
+          >
+            <span className="fe-panel-tab-label">{tabLabel(tab)}</span>
+            {tabs.length > 1 && (
+              <button
+                className="fe-panel-tab-close"
+                onClick={e => { e.stopPropagation(); closePanelTab(side, idx); }}
+                title="탭 닫기"
+              >×</button>
+            )}
+          </div>
+          );
+        })}
+        {/* 탭바 끝 빈 영역으로 drop → 맨 끝에 추가 */}
+        <div
+          className="fe-panel-tabs-end-drop"
+          onDragOver={e => {
+            if (!tabDrag) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            if (tabDrag.overSide !== side || tabDrag.over !== tabs.length) {
+              setTabDrag({ ...tabDrag, overSide: side, over: tabs.length });
+            }
+          }}
+          onDrop={e => {
+            if (tabDrag) {
+              e.preventDefault();
+              moveTabBetweenSides(tabDrag.fromSide, tabDrag.from, side, tabs.length);
+            }
+            setTabDrag(null);
+          }}
+        />
+        <button
+          className="fe-panel-tab-add"
+          onClick={() => addPanelTab(side)}
+          title="새 탭 (현재 위치 복제)"
+        >+</button>
+      </div>
+    );
+  };
+
   const onResizeStart = (e: React.MouseEvent) => {
     e.preventDefault();
     resizing.current = { startY: e.clientY, startH: transfersHeight };
@@ -496,6 +693,7 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
     <div className="fe-container">
       <div className="fe-dual">
         <div className={`fe-panel-wrap ${selectedSide === 'left' ? 'selected' : ''}`} onMouseDownCapture={() => setSelectedSide('left')}>
+          {renderPanelTabs('left')}
           <FilePanel panelId="left" refreshKey={refreshKey}
             source={leftSource} sources={sources} onSourceChange={handleLeftSourceChange}
             selectedFiles={leftSelected} onSelectionChange={setLeftSelected}
@@ -510,6 +708,7 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
           <button className="fe-transfer-btn" onClick={() => transferFiles('right-to-left')} disabled={transferring || rightSelected.size === 0} title={t('transferToLeft')}>←</button>
         </div>
         <div className={`fe-panel-wrap ${selectedSide === 'right' ? 'selected' : ''}`} onMouseDownCapture={() => setSelectedSide('right')}>
+          {renderPanelTabs('right')}
           <FilePanel panelId="right" refreshKey={refreshKey}
             source={rightSource} sources={sources} onSourceChange={handleRightSourceChange}
             selectedFiles={rightSelected} onSelectionChange={setRightSelected}

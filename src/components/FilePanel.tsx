@@ -432,6 +432,13 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
   }, [encoding, panelId]);
   const [encodingMenu, setEncodingMenu] = useState<{ x: number; y: number } | null>(null);
 
+  // 디렉토리 오류 메시지 — ENOENT 류는 친화적 한글로 변환 후 모달로 노출, 그 외엔 인라인.
+  const isPathNotFoundError = (err: string): boolean => {
+    if (!err) return false;
+    return /ENOENT|no such file or directory|cannot find the (file|path)|does not exist|찾을 수 없|Not.*found|디렉토리.*없/i.test(err);
+  };
+  // loadDir — currentPath 가 이미 valid 라는 전제로 동작. ENOENT 가 여기서 발생하는 경우는
+  // "이미 들어와 있던 폴더가 사라진" edge case (외부에서 삭제됨/연결 끊김 등) → 모달만 띄우고 경로는 그대로 둠.
   const loadDir = useCallback(async (dir: string) => {
     if (!dir) return;
     setLoading(true);
@@ -439,9 +446,26 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
     try {
       if (typeof api.feListDir !== 'function') { setError(t('apiUnavailable')); setFiles([]); setLoading(false); return; }
       const result = await api.feListDir(source.mode, dir, source.termId, encoding);
-      if (result?.error) { setError(result.error); setFiles([]); }
-      else { setFiles(result?.files || []); }
-    } catch (e: any) { setError(String(e)); setFiles([]); }
+      if (result?.error) {
+        const errStr = String(result.error);
+        setFiles([]);
+        if (isPathNotFoundError(errStr)) {
+          setErrorMessage(`경로를 찾을 수 없습니다.\n\n${dir}`);
+        } else {
+          setError(errStr);
+        }
+      } else {
+        setFiles(result?.files || []);
+      }
+    } catch (e: any) {
+      const errStr = String(e?.message || e);
+      setFiles([]);
+      if (isPathNotFoundError(errStr)) {
+        setErrorMessage(`경로를 찾을 수 없습니다.\n\n${dir}`);
+      } else {
+        setError(errStr);
+      }
+    }
     setLoading(false);
   }, [source.mode, source.termId, encoding]);
 
@@ -478,8 +502,32 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
     forceHistoryTick(t => t + 1);
   }, [currentPath]);
 
-  const navigate = (dir: string) => {
-    onPathChange(dir);
+  // navigate — 경로 이동 전 사전 검증. 못 찾으면 모달만 띄우고 경로는 그대로 둠 (currentPath 변경 X).
+  // .lnk 단축 (`lnk:...`) 은 main 이 resolvedPath 로 실제 target 을 반환 → 경로바에는 그 실제 경로 사용.
+  const navigate = async (dir: string) => {
+    if (!dir) return;
+    if (typeof api.feListDir !== 'function') { onPathChange(dir); return; }
+    try {
+      const result: any = await api.feListDir(source.mode, dir, source.termId, encoding);
+      if (result?.error) {
+        const errStr = String(result.error);
+        if (isPathNotFoundError(errStr)) {
+          setErrorMessage(`경로를 찾을 수 없습니다.\n\n${dir}`);
+          return; // 경로 미변경
+        }
+        // 다른 종류 에러는 일단 경로 이동 후 loadDir 가 inline 에러 표시
+      }
+      // shortcut 해석 결과가 있으면 그 실제 경로로 currentPath 갱신 → "lnk:..." 같은 raw 표기 회피
+      const finalPath = (result && typeof result.resolvedPath === 'string' && result.resolvedPath) ? result.resolvedPath : dir;
+      onPathChange(finalPath);
+    } catch (e: any) {
+      const errStr = String(e?.message || e);
+      if (isPathNotFoundError(errStr)) {
+        setErrorMessage(`경로를 찾을 수 없습니다.\n\n${dir}`);
+        return;
+      }
+      onPathChange(dir);
+    }
   };
 
   const canGoBack = historyIdxRef.current > 0;
@@ -929,8 +977,6 @@ export const FilePanel: React.FC<Props> = ({ source, sources, onSourceChange, se
             onClick={e => { const r = (e.currentTarget as HTMLElement).getBoundingClientRect(); setHistoryMenu({ x: r.left, y: r.bottom, direction: 'forward' }); }}
           >▾</button>
         </div>
-        <button className="fe-path-btn" onClick={goUp} title={t('parentFolder')}>⬆</button>
-        <button className="fe-path-btn" onClick={() => loadDir(currentPath)} title={t('refresh')}>🔄</button>
         {editingPath ? (
           <input className="fe-path-input" value={editPath} onChange={e => setEditPath(e.target.value)}
             onBlur={() => { setEditingPath(false); const resolved = resolveShellLabel(editPath); navigate(resolved || editPath); }}

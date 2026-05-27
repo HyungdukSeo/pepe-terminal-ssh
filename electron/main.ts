@@ -1634,16 +1634,52 @@ if ($ok -and $folder) {
       // .lnk 단축 — 파싱해서 target 으로 리다이렉트
       if (dirPath.startsWith('lnk:')) {
         const lnk = dirPath.slice(4);
+        // 1) Electron shell.readShortcutLink — 일반 .lnk 의 target 을 가장 빠르고 안정적으로 읽음
+        let target = '';
         try {
-          const { execFileSync } = require('child_process');
-          const out: string = execFileSync('powershell', [
-            '-NoProfile', '-NonInteractive', '-Command',
-            `(New-Object -ComObject WScript.Shell).CreateShortcut('${lnk.replace(/'/g, "''")}').TargetPath`,
-          ], { windowsHide: true, timeout: 5000 }).toString('utf-8').trim();
-          if (out) {
-            return { files: await bridge.handleLocalListDir(out), resolvedPath: out };
-          }
+          const info = shell.readShortcutLink(lnk);
+          if (info?.target) target = String(info.target).trim();
         } catch {}
+        // 2) 네트워크 단축 (\\server\share 가리키는 .lnk) — WScript.Shell.TargetPath 가 비어 올 수 있음.
+        //    PowerShell 백업 경로 — TargetPath 와 Arguments 둘 다 시도.
+        if (!target) {
+          try {
+            const { execFileSync } = require('child_process');
+            const out: string = execFileSync('powershell', [
+              '-NoProfile', '-NonInteractive', '-Command',
+              // TargetPath 가 비어있으면 .lnk 파일 내부 LinkInfo 의 NetName 을 시도하는 대체 명령
+              `$s=(New-Object -ComObject WScript.Shell).CreateShortcut('${lnk.replace(/'/g, "''")}');`
+              + `if($s.TargetPath){$s.TargetPath}else{$s.Arguments}`,
+            ], { windowsHide: true, timeout: 5000 }).toString('utf-8').trim();
+            if (out) target = out;
+          } catch {}
+        }
+        // 3) 그래도 안 되면 .lnk 바이너리에서 직접 UNC 추출 — 네트워크 단축에 자주 효과적.
+        if (!target) {
+          try {
+            const buf = fs.readFileSync(lnk);
+            // .lnk 파일 안에는 표시용 string 으로 \\server\share 가 보통 UTF-16LE 또는 ASCII 로 포함됨.
+            const asUtf16 = buf.toString('utf16le');
+            const asAscii = buf.toString('binary');
+            const uncMatch = /\\\\[^\x00<>:"/|?*]+\\[^\x00<>:"/|?*]+/g;
+            const m1 = asUtf16.match(uncMatch);
+            const m2 = asAscii.match(uncMatch);
+            const candidates = [...(m1 || []), ...(m2 || [])]
+              // null/제어문자 제거 + 길이순 정렬
+              .map(s => s.replace(/\x00/g, '').trim())
+              .filter(s => s.length >= 5)
+              .sort((a, b) => b.length - a.length);
+            if (candidates.length > 0) target = candidates[0];
+          } catch {}
+        }
+        if (target) {
+          try {
+            const files = await bridge.handleLocalListDir(target);
+            return { files, resolvedPath: target };
+          } catch (e: any) {
+            return { files: [], error: `shortcut 대상 접근 실패: ${target}` };
+          }
+        }
         return { files: [], error: 'shortcut 해석 실패' };
       }
       // 일반 로컬 디렉토리 — 물리 파일만 (가상 항목은 shell:Desktop 경로에서만)
