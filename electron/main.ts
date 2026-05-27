@@ -115,7 +115,11 @@ function createWindow() {
   });
 
   // 콘텐츠 렌더링 완료 후 창 표시 (빈 화면 방지)
-  mainWindow.once('ready-to-show', () => { mainWindow?.show(); });
+  mainWindow.once('ready-to-show', () => {
+    mainWindow?.show();
+    // Aero Snap 미리보기 창 사전 생성 + 로드 — 첫 드래그 시 BrowserWindow 생성 지연(수백ms) 제거
+    setTimeout(() => ensureSnapPreview(), 500);
+  });
 
   const devServerUrl = process.env['ELECTRON_RENDERER_URL'] || process.env['VITE_DEV_SERVER_URL'];
   if (!app.isPackaged && devServerUrl) {
@@ -2759,13 +2763,37 @@ let dragStartPos: { x: number; y: number } | null = null;
 type SnapZone = 'top' | 'left' | 'right' | 'tl' | 'tr' | 'bl' | 'br' | null;
 let pendingSnapZone: SnapZone = null;
 let snapPreviewWin: BrowserWindow | null = null;
-const SNAP_EDGE_PX = 4; // 마우스가 디스플레이 경계에서 몇 px 이내일 때 스냅 발동
+const SNAP_EDGE_PX = 10; // 마우스가 디스플레이 경계에서 몇 px 이내일 때 스냅 발동 (반응 즉시성을 위해 넉넉히)
+const SNAP_CORNER_PX = 80; // 모서리 영역 판정 — 가장자리에 닿은 상태에서 코너 80px 이내면 1/4 분할
 
-function destroySnapPreview() {
-  if (snapPreviewWin && !snapPreviewWin.isDestroyed()) {
-    try { snapPreviewWin.close(); } catch {}
+// 시작 시 미리 빈 BrowserWindow 를 만들어 두면 첫 호출 시 BrowserWindow 생성 + HTML 로드로 인한
+// 첫 표시 지연 (수백 ms) 이 사라짐. 이후엔 hide/show + setBounds 로만 토글.
+function ensureSnapPreview(): BrowserWindow | null {
+  if (snapPreviewWin && !snapPreviewWin.isDestroyed()) return snapPreviewWin;
+  try {
+    snapPreviewWin = new BrowserWindow({
+      x: 0, y: 0, width: 200, height: 200,
+      frame: false, transparent: true, hasShadow: false,
+      resizable: false, movable: false, minimizable: false, maximizable: false,
+      focusable: false, skipTaskbar: true, alwaysOnTop: true, show: false,
+      backgroundColor: '#00000000',
+      webPreferences: { nodeIntegration: false, contextIsolation: true },
+    });
+    snapPreviewWin.setIgnoreMouseEvents(true);
+    snapPreviewWin.setAlwaysOnTop(true, 'screen-saver');
+    const html = `<!doctype html><html><body style="margin:0;background:transparent;overflow:hidden;">
+      <div style="position:fixed;inset:0;border:3px solid rgba(80,160,255,0.85);
+        background:rgba(80,160,255,0.18);box-sizing:border-box;border-radius:6px;
+        box-shadow:0 0 24px rgba(80,160,255,0.55), inset 0 0 24px rgba(80,160,255,0.25);
+        pointer-events:none;"></div></body></html>`;
+    snapPreviewWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+  } catch { return null; }
+  return snapPreviewWin;
+}
+function hideSnapPreview() {
+  if (snapPreviewWin && !snapPreviewWin.isDestroyed() && snapPreviewWin.isVisible()) {
+    try { snapPreviewWin.hide(); } catch {}
   }
-  snapPreviewWin = null;
 }
 function computeSnapBounds(zone: SnapZone, workArea: { x: number; y: number; width: number; height: number }) {
   const { x, y, width, height } = workArea;
@@ -2784,27 +2812,13 @@ function computeSnapBounds(zone: SnapZone, workArea: { x: number; y: number; wid
 }
 function showSnapPreview(zone: SnapZone, workArea: { x: number; y: number; width: number; height: number }) {
   const bounds = computeSnapBounds(zone, workArea);
-  if (!bounds) { destroySnapPreview(); return; }
-  if (!snapPreviewWin || snapPreviewWin.isDestroyed()) {
-    snapPreviewWin = new BrowserWindow({
-      ...bounds,
-      frame: false, transparent: true, hasShadow: false,
-      resizable: false, movable: false, minimizable: false, maximizable: false,
-      focusable: false, skipTaskbar: true, alwaysOnTop: true,
-      backgroundColor: '#00000000',
-      webPreferences: { nodeIntegration: false, contextIsolation: true },
-    });
-    snapPreviewWin.setIgnoreMouseEvents(true);
-    snapPreviewWin.setAlwaysOnTop(true, 'screen-saver');
-    const html = `<!doctype html><html><body style="margin:0;background:transparent;overflow:hidden;">
-      <div style="position:fixed;inset:0;border:3px solid rgba(80,160,255,0.85);
-        background:rgba(80,160,255,0.18);box-sizing:border-box;border-radius:6px;
-        box-shadow:0 0 24px rgba(80,160,255,0.55), inset 0 0 24px rgba(80,160,255,0.25);
-        pointer-events:none;"></div></body></html>`;
-    snapPreviewWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
-  } else {
-    snapPreviewWin.setBounds(bounds);
-  }
+  if (!bounds) { hideSnapPreview(); return; }
+  const w = ensureSnapPreview();
+  if (!w) return;
+  try {
+    w.setBounds(bounds);
+    if (!w.isVisible()) w.showInactive();
+  } catch {}
 }
 function detectSnapZone(mouseX: number, mouseY: number): { zone: SnapZone; workArea: { x: number; y: number; width: number; height: number } } {
   const display = screen.getDisplayNearestPoint({ x: mouseX, y: mouseY });
@@ -2813,11 +2827,16 @@ function detectSnapZone(mouseX: number, mouseY: number): { zone: SnapZone; workA
   const nearLeft   = mouseX <= wa.x + SNAP_EDGE_PX;
   const nearRight  = mouseX >= wa.x + wa.width - SNAP_EDGE_PX - 1;
   const nearBottom = mouseY >= wa.y + wa.height - SNAP_EDGE_PX - 1;
+  // 모서리 판정 — 한쪽 가장자리에 닿은 상태 + 다른 축이 모서리 코너 80px 이내
+  const yNearTopCorner    = mouseY <= wa.y + SNAP_CORNER_PX;
+  const yNearBottomCorner = mouseY >= wa.y + wa.height - SNAP_CORNER_PX;
+  const xNearLeftCorner   = mouseX <= wa.x + SNAP_CORNER_PX;
+  const xNearRightCorner  = mouseX >= wa.x + wa.width - SNAP_CORNER_PX;
   let zone: SnapZone = null;
-  if (nearTop && nearLeft) zone = 'tl';
-  else if (nearTop && nearRight) zone = 'tr';
-  else if (nearBottom && nearLeft) zone = 'bl';
-  else if (nearBottom && nearRight) zone = 'br';
+  if ((nearTop && xNearLeftCorner) || (nearLeft && yNearTopCorner)) zone = 'tl';
+  else if ((nearTop && xNearRightCorner) || (nearRight && yNearTopCorner)) zone = 'tr';
+  else if ((nearBottom && xNearLeftCorner) || (nearLeft && yNearBottomCorner)) zone = 'bl';
+  else if ((nearBottom && xNearRightCorner) || (nearRight && yNearBottomCorner)) zone = 'br';
   else if (nearTop) zone = 'top';
   else if (nearLeft) zone = 'left';
   else if (nearRight) zone = 'right';
@@ -2852,7 +2871,7 @@ ipcMain.on('window:drag-move', (_e, { mouseX, mouseY }: any) => {
   if (zone !== pendingSnapZone) {
     pendingSnapZone = zone;
     if (zone) showSnapPreview(zone, workArea);
-    else destroySnapPreview();
+    else hideSnapPreview();
   }
 });
 
@@ -2873,7 +2892,7 @@ ipcMain.on('window:end-drag', () => {
     }
   }
   pendingSnapZone = null;
-  destroySnapPreview();
+  hideSnapPreview();
 });
 
 ipcMain.handle('window:minimize', () => mainWindow?.minimize());
