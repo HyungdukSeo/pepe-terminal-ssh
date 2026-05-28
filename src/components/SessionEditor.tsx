@@ -29,6 +29,8 @@ export type Session = {
   initialPath?: string;
   fileTreeEnabled?: boolean;
   autoTrackPwd?: boolean;
+  backspaceKeyMode?: 'vt220' | 'ascii127' | 'backspace';
+  deleteKeyMode?: 'vt220' | 'ascii127' | 'backspace';
   // 워크스페이스 자동 입력용 경로 — 비어있으면 사용 안 함
   logPath?: string;      // LogAnalyzer 가 이 세션 선택 시 기본 경로
   codePath?: string;     // CompareWorkspace 가 이 세션 선택 시 기본 base 디렉토리
@@ -84,6 +86,9 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
   const [initialPath, setInitialPath] = useState(session?.initialPath ?? '');
   const [fileTreeEnabled, setFileTreeEnabled] = useState<boolean>(session?.fileTreeEnabled ?? false);
   const [autoTrackPwd, setAutoTrackPwd] = useState<boolean>(!!session?.autoTrackPwd);
+  type KeySeqMode = 'vt220' | 'ascii127' | 'backspace';
+  const [backspaceKeyMode, setBackspaceKeyMode] = useState<KeySeqMode>((session?.backspaceKeyMode as KeySeqMode) || 'ascii127');
+  const [deleteKeyMode, setDeleteKeyMode] = useState<KeySeqMode>((session?.deleteKeyMode as KeySeqMode) || 'vt220');
   const [logPath, setLogPath] = useState(session?.logPath ?? '');
   const [codePath, setCodePath] = useState(session?.codePath ?? '');
   const [x11Forward, setX11Forward] = useState<boolean>(!!session?.x11Forward);
@@ -125,6 +130,8 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
     setInitialPath(session?.initialPath ?? '');
     setFileTreeEnabled(session?.fileTreeEnabled ?? false);
     setAutoTrackPwd(!!session?.autoTrackPwd);
+    setBackspaceKeyMode((session?.backspaceKeyMode as KeySeqMode) || 'ascii127');
+    setDeleteKeyMode((session?.deleteKeyMode as KeySeqMode) || 'vt220');
     setLogPath(session?.logPath ?? '');
     setCodePath(session?.codePath ?? '');
     setX11Forward(!!session?.x11Forward);
@@ -178,7 +185,7 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
     const dbms = dbmsEnabled && dbmsUser.trim()
       ? { type: 'altibase' as const, port: dbmsPort || 20300, user: dbmsUser.trim(), password: dbmsPassword, host: dbmsHost.trim() || '127.0.0.1' }
       : undefined;
-    return { id, name, host: normalizeHost(host), port, username, auth, encoding, folderId: folderId || undefined, loginScript: script.length > 0 ? script : undefined, theme: theme || undefined, fontFamily: fontFamily || undefined, fontSize: fontSize || undefined, scrollback: scrollback || undefined, icon: icon || undefined, initialPath: initialPath.trim() || undefined, fileTreeEnabled: fileTreeEnabled || undefined, autoTrackPwd: (fileTreeEnabled && autoTrackPwd) ? true : undefined, logPath: logPath.trim() || undefined, codePath: codePath.trim() || undefined, x11Forward: x11Forward || undefined, x11Display: x11Forward ? x11Display : undefined, jumpTargetHost: jumpTargetHost.trim() || undefined, jumpTargetUser: jumpTargetUser.trim() || undefined, jumpTargetPort: typeof jumpTargetPort === 'number' && jumpTargetPort > 0 ? jumpTargetPort : undefined, jumpTargetPassword: jumpTargetPassword || undefined, cursorStyle: cursorStyle !== 'block' ? cursorStyle : undefined, cursorBlink: !!cursorBlink, dbms } as Session;
+    return { id, name, host: normalizeHost(host), port, username, auth, encoding, folderId: folderId || undefined, loginScript: script.length > 0 ? script : undefined, theme: theme || undefined, fontFamily: fontFamily || undefined, fontSize: fontSize || undefined, scrollback: scrollback || undefined, icon: icon || undefined, initialPath: initialPath.trim() || undefined, fileTreeEnabled: fileTreeEnabled || undefined, autoTrackPwd: (fileTreeEnabled && autoTrackPwd) ? true : undefined, backspaceKeyMode, deleteKeyMode, logPath: logPath.trim() || undefined, codePath: codePath.trim() || undefined, x11Forward: x11Forward || undefined, x11Display: x11Forward ? x11Display : undefined, jumpTargetHost: jumpTargetHost.trim() || undefined, jumpTargetUser: jumpTargetUser.trim() || undefined, jumpTargetPort: typeof jumpTargetPort === 'number' && jumpTargetPort > 0 ? jumpTargetPort : undefined, jumpTargetPassword: jumpTargetPassword || undefined, cursorStyle: cursorStyle !== 'block' ? cursorStyle : undefined, cursorBlink: !!cursorBlink, dbms } as Session;
   };
   const save = () => {
     const s = buildSession();
@@ -221,6 +228,7 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
     { id: 'login-script', label: t('categories.loginScript'), depth: 1 },
     { id: 'terminal', label: t('categories.terminal'), depth: 0 },
     { id: 'appearance', label: t('categories.appearance'), depth: 1 },
+    { id: 'keys', label: '키 시퀀스', depth: 1 },
     { id: 'advanced', label: t('categories.advanced'), depth: 0 },
     { id: 'filetree', label: t('categories.filetree'), depth: 1 },
     { id: 'x11', label: t('categories.x11'), depth: 1 },
@@ -453,6 +461,39 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
                     </div>
                   </div>
                 </>
+              );
+            })()}
+            {category === 'keys' && (() => {
+              const opts: { value: KeySeqMode; label: string }[] = [
+                { value: 'vt220', label: 'VT220 Del (Esc[3~)' },
+                { value: 'ascii127', label: 'ASCII 127 (Ctrl+?)' },
+                { value: 'backspace', label: 'Backspace (Ctrl+H)' },
+              ];
+              return (
+                <div style={{ display: 'flex', gap: 20, padding: '8px 4px' }}>
+                  <fieldset style={{ flex: 1, border: '1px solid #444', borderRadius: 4, padding: '8px 12px' }}>
+                    <legend style={{ padding: '0 6px', color: '#bbb', fontSize: 12 }}>Delete 키 시퀀스</legend>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      {opts.map(o => (
+                        <label key={o.value} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 12 }}>
+                          <input type="radio" name="deleteKeyMode" value={o.value} checked={deleteKeyMode === o.value} onChange={() => setDeleteKeyMode(o.value)} />
+                          {o.label}
+                        </label>
+                      ))}
+                    </div>
+                  </fieldset>
+                  <fieldset style={{ flex: 1, border: '1px solid #444', borderRadius: 4, padding: '8px 12px' }}>
+                    <legend style={{ padding: '0 6px', color: '#bbb', fontSize: 12 }}>Backspace 키 시퀀스</legend>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      {opts.map(o => (
+                        <label key={o.value} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 12 }}>
+                          <input type="radio" name="backspaceKeyMode" value={o.value} checked={backspaceKeyMode === o.value} onChange={() => setBackspaceKeyMode(o.value)} />
+                          {o.label}
+                        </label>
+                      ))}
+                    </div>
+                  </fieldset>
+                </div>
               );
             })()}
             {category === 'advanced' && (

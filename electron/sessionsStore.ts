@@ -27,6 +27,9 @@ export type Session = {
   initialPath?: string; // SSH 연결 시 파일 트리 초기 경로 (없으면 홈 디렉토리)
   fileTreeEnabled?: boolean; // 세션 연결 즉시 파일트리(SFTP) 자동 연결. false 면 사용자가 버튼으로 명시 연결할 때까지 SFTP 안 열림.
   autoTrackPwd?: boolean; // 터미널에서 cd 하면 파일 트리 경로 자동 갱신 (파일트리가 연결되어 있을 때만 의미 있음)
+  // 터미널 키 시퀀스 (stty-like) — 세션별 설정. 미설정이면 xterm 기본.
+  backspaceKeyMode?: 'vt220' | 'ascii127' | 'backspace'; // VT220 Del(Esc[3~) / ASCII 127(0x7F) / Backspace(0x08)
+  deleteKeyMode?: 'vt220' | 'ascii127' | 'backspace';
   logPath?: string;  // LogAnalyzer 가 이 세션 선택 시 자동으로 채울 로그 파일 경로
   codePath?: string; // CompareWorkspace 가 이 세션 선택 시 자동으로 채울 base 디렉토리
   x11Forward?: boolean; // X11 forwarding 활성화 (원격 GUI 앱 → 로컬 X 서버)

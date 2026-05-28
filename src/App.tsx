@@ -21,7 +21,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { RemoteFileTree } from './components/RemoteFileTree';
 import { QuickConnectBar, QuickConnectResult } from './components/QuickConnectDialog';
 import { StatusBar } from './components/StatusBar';
-import { resetTermConnectState, clearScrollbackInTerm, clearScreenInTerm, clearAllInTerm, applyThemeToAll, applyThemeToTerm, applyFontToTerm, applyFontToAll, getCurrentThemeName, registerTermSession, getTermSessionInfo, getWordSeparator, setWordSeparator, refitAllTerms, applyScrollbackToAll, applyScrollbackToTerm, cloneTermStyle, isTermConnected, isTermConnecting, isTermPty, subscribeConnectedChange, focusTerm, pasteToTerm, getSelectionFromTerm, selectAllInTerm, promptPasswordAndConnect, startInitialConnectWatchdog, getCurrentPwdForTerm, refitTerm, searchInTerm, searchNextInTerm, searchPrevInTerm, clearSearchInTerm, highlightAllMatches, clearHighlights, searchFromTop, getAllTermIds, applyCursorStyleToTerm, markQuickConnectPending, clearQuickConnectPending, writeToTerm, termStore, setTermFocusBlocked } from './components/TerminalPanel';
+import { resetTermConnectState, clearScrollbackInTerm, clearScreenInTerm, clearAllInTerm, applyThemeToAll, applyThemeToTerm, applyFontToTerm, applyFontToAll, getCurrentThemeName, registerTermSession, getTermSessionInfo, getWordSeparator, setWordSeparator, refitAllTerms, applyScrollbackToAll, applyScrollbackToTerm, cloneTermStyle, isTermConnected, isTermConnecting, isTermPty, subscribeConnectedChange, focusTerm, pasteToTerm, getSelectionFromTerm, selectAllInTerm, promptPasswordAndConnect, startInitialConnectWatchdog, getCurrentPwdForTerm, refitTerm, searchInTerm, searchNextInTerm, searchPrevInTerm, clearSearchInTerm, highlightAllMatches, clearHighlights, searchFromTop, getAllTermIds, applyCursorStyleToTerm, markQuickConnectPending, clearQuickConnectPending, writeToTerm, termStore, setTermFocusBlocked, setTermBackspaceMode, setTermDeleteMode } from './components/TerminalPanel';
 import { marked } from 'marked';
 // @ts-ignore — vite ?raw 로 docs/MANUAL.md 를 번들 문자열로 임베드
 import manualMd from '../docs/MANUAL.md?raw';
@@ -929,6 +929,8 @@ function App() {
       if (s.fontFamily || s.fontSize) applyFontToTerm(termId, s.fontFamily, s.fontSize);
       if (typeof s.scrollback === 'number') applyScrollbackToTerm(termId, s.scrollback);
       applyCursorStyleToTerm(termId, s.cursorStyle || 'block', !!s.cursorBlink);
+      setTermBackspaceMode(termId, s.backspaceKeyMode);
+      setTermDeleteMode(termId, s.deleteKeyMode);
     } catch (e) { console.error('[applySessionToTerm]', e); }
   };
 
@@ -1923,6 +1925,8 @@ function App() {
           if (session.theme) setTimeout(() => applyThemeToTerm(emptySess.termId, session.theme), 200);
           if (session.fontFamily || session.fontSize) setTimeout(() => applyFontToTerm(emptySess.termId, session.fontFamily, session.fontSize), 200);
           if (session.scrollback) applyScrollbackToTerm(emptySess.termId, session.scrollback);
+          setTermBackspaceMode(emptySess.termId, session.backspaceKeyMode);
+          setTermDeleteMode(emptySess.termId, session.deleteKeyMode);
           registerTermSession(emptySess.termId, sessionId, displayName, session.host ?? '');
         } else {
           // 빈 미니탭 없으면 기존 흐름
