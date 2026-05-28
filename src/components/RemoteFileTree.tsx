@@ -516,7 +516,24 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
         return (
         <div
           className="remote-file-ctx-menu"
-          style={{ left: ctxMenu.x, top: ctxMenu.y }}
+          style={{ left: ctxMenu.x, top: ctxMenu.y, visibility: 'hidden' }}
+          ref={(el) => {
+            if (!el) return;
+            // 다음 paint 에서 측정 + 화면 밖이면 위로/왼쪽으로 플립
+            requestAnimationFrame(() => {
+              const rect = el.getBoundingClientRect();
+              const vh = window.innerHeight;
+              const vw = window.innerWidth;
+              const margin = 8;
+              let left = ctxMenu.x;
+              let top = ctxMenu.y;
+              if (top + rect.height > vh - margin) top = Math.max(margin, vh - rect.height - margin);
+              if (left + rect.width > vw - margin) left = Math.max(margin, vw - rect.width - margin);
+              el.style.left = left + 'px';
+              el.style.top = top + 'px';
+              el.style.visibility = 'visible';
+            });
+          }}
           onClick={e => e.stopPropagation()}
           onContextMenu={e => e.preventDefault()}
         >

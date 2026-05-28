@@ -739,23 +739,42 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const [gitStatus, setGitStatus] = useState<{ ok: boolean; branch?: string; additions?: number; deletions?: number } | null>(null);
   const [input, setInput] = useState('');
   // 외부 워크스페이스(예: LogAnalyzer)에서 prompt prefill — 'claude-prefill' window event 로 수신.
-  // detail: { text?: string, attachments?: { name, content }[], newConversation?: boolean }
+  // detail: { text?: string, attachments?: { name, content }[], newConversation?: boolean, agent?: 'claude'|'gemini'|'codex' }
   useEffect(() => {
     const onPrefill = (e: any) => {
       const d = e?.detail || {};
       const text: string = String(d.text || '');
       const attachments: { name: string; content: string }[] = Array.isArray(d.attachments) ? d.attachments : [];
       const newConv = !!d.newConversation;
+      const reqAgent = (d.agent === 'gemini' || d.agent === 'codex' || d.agent === 'claude') ? d.agent : null;
       if (!text && attachments.length === 0) return;
+      // 새 대화 모드일 때 — 에이전트 전환이 일으키는 "최근 대화 자동 선택" 이 clear() 를 덮어쓰지 않도록
+      // 플래그 먼저 세팅 (auto-select effect 가 이 플래그 보면 자동 로드 skip).
+      if (newConv) prefillNewConvRef.current = true;
+      // 지정 에이전트로 전환
+      if (reqAgent && reqAgent !== currentAgentRef.current) {
+        switchAgent(reqAgent);
+      }
       // 새 대화 모드 — UI 만 리셋 (백그라운드 진행 중 응답은 유지)
       if (newConv) {
         clear();
       }
       if (text) {
-        setInput(prev => (newConv || !prev) ? text : prev + '\n\n' + text);
+        // 현재 대화 이어가기에서 동일 프롬프트가 이미 입력란에 있으면 중복 추가 안 함 (에이전트 바꿔 재요청 케이스)
+        setInput(prev => {
+          if (newConv || !prev) return text;
+          if (prev === text || prev.endsWith(text)) return prev;
+          return prev + '\n\n' + text;
+        });
       }
       if (attachments.length > 0) {
-        setLocalFileAttachments(prev => newConv ? attachments : [...prev, ...attachments]);
+        setLocalFileAttachments(prev => {
+          if (newConv) return attachments;
+          // 현재 대화에 이어붙이되 같은 이름은 최신 내용으로 교체 (에이전트 바꿔 재요청 시 중복 누적 방지)
+          const map = new Map(prev.map(f => [f.name, f]));
+          for (const a of attachments) map.set(a.name, a);
+          return Array.from(map.values());
+        });
       }
       // 입력 textarea 포커스
       setTimeout(() => {
@@ -2743,9 +2762,17 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   // 가장 최근 대화 자동 선택 — 초기 마운트 / 에이전트 전환 / 공유모드 전환 시 트리거.
   // 현재 view 의 이력이 비어있으면 새 대화 상태 유지 (공유 OFF + 그 에이전트 첫 사용 시 등).
   const autoSelectViewRef = useRef<string | null>(null);
+  // prefill(외부 분석 요청) 로 새 대화를 시작한 직후엔 자동 선택을 건너뛴다 (clear() 가 덮어쓰이는 문제 방지)
+  const prefillNewConvRef = useRef(false);
   useEffect(() => {
     if (!chatHistoryLoadedRef.current) return;
     const viewKey = `${currentAgent}_${shareContext}`;
+    if (prefillNewConvRef.current) {
+      // 이번 view 변경은 prefill 새 대화에 의한 것 — 자동 로드 skip, 처리됨으로 마킹
+      prefillNewConvRef.current = false;
+      autoSelectViewRef.current = viewKey;
+      return;
+    }
     if (autoSelectViewRef.current === viewKey) return; // 이 view 에선 이미 자동선택 처리됨
     autoSelectViewRef.current = viewKey;
     // 현재 view 에서 보이는 이력 목록 계산
@@ -3942,7 +3969,25 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               {mountEntries.map(m => (
                 <div key={`${m.termId}:${m.remotePath}`} className="claude-chat-attachment">
                   {m.isDir ? '📁' : '📄'}
-                  <span className="claude-chat-attachment-path" title={`${m.remotePath}\n↓ UNC:\n${m.uncPath}`}>{m.remotePath}</span>
+                  <span
+                    className="claude-chat-attachment-path"
+                    title={m.isDir ? `${m.remotePath}\n(폴더 - 미리보기 불가)` : `${m.remotePath}\n클릭하여 내용 보기`}
+                    onClick={async () => {
+                      if (m.isDir) return;
+                      try {
+                        const result: any = await (window as any).api?.sftpReadFile?.(m.termId, m.remotePath);
+                        if (result?.success) {
+                          const fname = m.remotePath.match(/[^\\/]+$/)?.[0] || m.remotePath;
+                          setAttachmentPreview({ name: fname, content: result.text || '' });
+                        } else {
+                          setAttachmentPreview({ name: m.remotePath, content: `(읽기 실패: ${result?.error || '알 수 없음'})` });
+                        }
+                      } catch (err: any) {
+                        setAttachmentPreview({ name: m.remotePath, content: `(읽기 실패: ${err?.message || err})` });
+                      }
+                    }}
+                    style={{ cursor: m.isDir ? 'default' : 'pointer', textDecoration: m.isDir ? 'none' : 'underline dotted', textUnderlineOffset: 2 }}
+                  >{m.remotePath}</span>
                   {onRemoveMountedEntry && <button className="claude-chat-attachment-remove" onClick={() => onRemoveMountedEntry(m.remotePath, m.termId)} title={tt('remove')}>×</button>}
                 </div>
               ))}
@@ -3958,7 +4003,12 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             <div className="claude-chat-attachments-list">
               {attachments.map(a => (
                 <div key={a.remotePath} className="claude-chat-attachment">
-                  📄 <span className="claude-chat-attachment-path" title={a.remotePath}>{a.remotePath}</span>
+                  📄 <span
+                    className="claude-chat-attachment-path"
+                    title={a.remotePath}
+                    onClick={() => setAttachmentPreview({ name: a.fileName || a.remotePath, content: a.content })}
+                    style={{ cursor: 'pointer', textDecoration: 'underline dotted', textUnderlineOffset: 2 }}
+                  >{a.remotePath}</span>
                   <button className="claude-chat-attachment-remove" onClick={() => removeAttachment(a.remotePath)} title={tt('remove')}>×</button>
                 </div>
               ))}

@@ -1995,7 +1995,7 @@ ipcMain.handle('compare:diff-count', async (_e, {
 });
 
 ipcMain.handle('compare:read', async (_e, { mode, termId, filePath, maxBytes }: { mode: string; termId?: string; filePath: string; maxBytes?: number }) => {
-  const cap = maxBytes || 5 * 1024 * 1024; // 기본 5MB
+  const cap = maxBytes || 100 * 1024 * 1024; // 기본 100MB
   try {
     if (mode === 'local') {
       const stat = await fs.promises.stat(filePath);
@@ -2928,7 +2928,15 @@ ipcMain.handle('sftp:list-dir', async (_e, { panelId, remotePath }: { panelId: s
 ipcMain.handle('sftp:read-file', async (_e, { panelId, remotePath, encoding }: { panelId: string; remotePath: string; encoding?: string }) => {
   try {
     const bridge = getSSHBridge();
-    const buf = await bridge.handleSFTPReadFile(panelId, remotePath);
+    let buf: Buffer;
+    try {
+      buf = await bridge.handleSFTPReadFile(panelId, remotePath);
+    } catch (e: any) {
+      // 로컬 PTY (SSH 연결 없는 미니탭) — 로컬 fs 로 폴백
+      if (/연결되지 않음|not connected/i.test(String(e?.message || e))) {
+        buf = await fs.promises.readFile(remotePath);
+      } else throw e;
+    }
     const iconv = require('iconv-lite');
     const enc = (encoding || 'utf-8').toLowerCase();
     let text: string;
@@ -2962,7 +2970,14 @@ ipcMain.handle('sftp:write-file', async (_e, { panelId, remotePath, content, enc
     } else {
       buf = Buffer.from(content, 'utf-8');
     }
-    await bridge.handleSFTPWriteFile(panelId, remotePath, buf);
+    try {
+      await bridge.handleSFTPWriteFile(panelId, remotePath, buf);
+    } catch (e: any) {
+      // 로컬 PTY 폴백
+      if (/연결되지 않음|not connected/i.test(String(e?.message || e))) {
+        await fs.promises.writeFile(remotePath, buf);
+      } else throw e;
+    }
     return { success: true };
   } catch (err: any) {
     return { success: false, error: String(err) };
