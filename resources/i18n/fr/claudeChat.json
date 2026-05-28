@@ -26,6 +26,7 @@
   "removeRejectedPlan": "Supprimer ce plan",
   "sshContext": "🔗 Contexte SSH :",
   "sessionNone": "(aucune)",
+  "sessionCount": "{{count}} sessions",
   "mounted": "✓ Monté — chemins Unix utilisables directement",
   "mounting": "⏳ Montage...",
   "noActiveSession": "Aucune session SSH connectée",

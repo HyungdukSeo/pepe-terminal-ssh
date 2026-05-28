@@ -4075,7 +4075,7 @@ ipcMain.handle('claude:get-mount-path', async (_e, { panelId, remotePath }: { pa
 });
 
 // claude CLI 실행 + 스트리밍 응답 (print 모드)
-ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowBash, sshTermId, resumeSessionId, permissionMode, model, perToolApproval, requestId, effort }: { sessionId: string; prompt: string; addDirs?: string[]; disallowBash?: boolean; sshTermId?: string; resumeSessionId?: string | null; permissionMode?: string; model?: string; perToolApproval?: boolean; requestId?: string; effort?: string }) => {
+ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowBash, sshTermId, resumeSessionId, permissionMode, model, perToolApproval, requestId, effort, sshSessions }: { sessionId: string; prompt: string; addDirs?: string[]; disallowBash?: boolean; sshTermId?: string; resumeSessionId?: string | null; permissionMode?: string; model?: string; perToolApproval?: boolean; requestId?: string; effort?: string; sshSessions?: { id: string; label: string }[] }) => {
   try {
     const { spawn } = require('child_process');
     // requestId 가 있으면 그걸 프로세스 키로 사용 — 동일 sessionId 안에서 여러 대화가 동시에 진행될 수 있음.
@@ -4143,6 +4143,8 @@ ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowB
               PEPE_CTRL_PORT: String(mcpControlPort),
               PEPE_CTRL_TOKEN: mcpControlToken,
               PEPE_TERM_ID: sshTermId,
+              // 멀티 SSH 세션 — JSON [{id,label}] (MCP 가 session 인자로 선택). 없으면 단일 PEPE_TERM_ID.
+              PEPE_TERM_IDS: JSON.stringify(Array.isArray(sshSessions) && sshSessions.length > 0 ? sshSessions : [{ id: sshTermId, label: sshTermId }]),
               PEPE_LOG_PATH: mcpLogPath,
               ELECTRON_RUN_AS_NODE: '1',
             },
@@ -4592,7 +4594,7 @@ ipcMain.handle('gemini:modelInfo', async () => {
   }
 });
 
-ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, yolo, addDirs, sshTermId }: { sessionId: string; prompt: string; requestId?: string; model?: string; yolo?: boolean; addDirs?: string[]; sshTermId?: string }) => {
+ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, yolo, addDirs, sshTermId, sshSessions }: { sessionId: string; prompt: string; requestId?: string; model?: string; yolo?: boolean; addDirs?: string[]; sshTermId?: string; sshSessions?: { id: string; label: string }[] }) => {
   try {
     // 같은 sessionId로 실행 중인 Codex 프로세스 정리
     const prevCodex = codexProcesses.get(sessionId);
@@ -4639,6 +4641,7 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
                 PEPE_CTRL_PORT: String(mcpControlPort),
                 PEPE_CTRL_TOKEN: mcpControlToken,
                 PEPE_TERM_ID: sshTermId,
+                PEPE_TERM_IDS: JSON.stringify(Array.isArray(sshSessions) && sshSessions.length > 0 ? sshSessions : [{ id: sshTermId, label: sshTermId }]),
                 ELECTRON_RUN_AS_NODE: '1',
               },
               trust: true,

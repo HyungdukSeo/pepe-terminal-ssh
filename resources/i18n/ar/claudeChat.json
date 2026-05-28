@@ -26,6 +26,7 @@
   "removeRejectedPlan": "إزالة هذه الخطة",
   "sshContext": "🔗 سياق SSH:",
   "sessionNone": "(لا يوجد)",
+  "sessionCount": "{{count}} جلسات",
   "mounted": "✓ تم التحميل — مسارات Unix قابلة للاستخدام مباشرة",
   "mounting": "⏳ جارٍ التحميل...",
   "noActiveSession": "لا توجد جلسة SSH متصلة",

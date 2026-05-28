@@ -26,6 +26,7 @@
   "removeRejectedPlan": "이 계획 제거",
   "sshContext": "🔗 SSH 컨텍스트:",
   "sessionNone": "(선택 안 함)",
+  "sessionCount": "세션 {{count}}개",
   "mounted": "✓ 마운트됨 — Unix 경로 직접 사용 가능",
   "mounting": "⏳ 마운트 준비 중...",
   "noActiveSession": "연결된 SSH 세션 없음",

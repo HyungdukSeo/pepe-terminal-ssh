@@ -239,8 +239,8 @@ contextBridge.exposeInMainWorld('api', {
 
   // Claude Code CLI
   claudeCheck: () => ipcRenderer.invoke('claude:check'),
-  claudeSend: (sessionId: string, prompt: string, addDirs?: string[], disallowBash?: boolean, sshTermId?: string, resumeSessionId?: string | null, permissionMode?: string, model?: string, perToolApproval?: boolean, requestId?: string, effort?: string) =>
-    ipcRenderer.invoke('claude:send', { sessionId, prompt, addDirs, disallowBash, sshTermId, resumeSessionId, permissionMode, model, perToolApproval, requestId, effort }),
+  claudeSend: (sessionId: string, prompt: string, addDirs?: string[], disallowBash?: boolean, sshTermId?: string, resumeSessionId?: string | null, permissionMode?: string, model?: string, perToolApproval?: boolean, requestId?: string, effort?: string, sshSessions?: { id: string; label: string }[]) =>
+    ipcRenderer.invoke('claude:send', { sessionId, prompt, addDirs, disallowBash, sshTermId, resumeSessionId, permissionMode, model, perToolApproval, requestId, effort, sshSessions }),
   claudeHookRespond: (approvalId: string, decision: 'allow' | 'deny', reason?: string) =>
     ipcRenderer.invoke('claude:hook-respond', { approvalId, decision, reason }),
   onClaudeHookApprovalRequest: (cb: (p: any) => void) => {
@@ -258,8 +258,8 @@ contextBridge.exposeInMainWorld('api', {
   geminiCheck: () => ipcRenderer.invoke('gemini:check'),
   geminiModelInfo: () => ipcRenderer.invoke('gemini:modelInfo'),
   debugDump: (name: string, content: string) => ipcRenderer.invoke('debug:dump', { name, content }),
-  geminiSend: (sessionId: string, prompt: string, requestId?: string, model?: string, yolo?: boolean, addDirs?: string[], sshTermId?: string) =>
-    ipcRenderer.invoke('gemini:send', { sessionId, prompt, requestId, model, yolo, addDirs, sshTermId }),
+  geminiSend: (sessionId: string, prompt: string, requestId?: string, model?: string, yolo?: boolean, addDirs?: string[], sshTermId?: string, sshSessions?: { id: string; label: string }[]) =>
+    ipcRenderer.invoke('gemini:send', { sessionId, prompt, requestId, model, yolo, addDirs, sshTermId, sshSessions }),
   geminiStop: (sessionId: string, requestId?: string) => ipcRenderer.invoke('gemini:stop', { sessionId, requestId }),
   codexCheck: () => ipcRenderer.invoke('codex:check'),
   codexRateLimits: () => ipcRenderer.invoke('codex:rateLimits'),

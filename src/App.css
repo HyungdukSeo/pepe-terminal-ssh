@@ -6120,13 +6120,27 @@ mark.claude-search-hit.current {
   flex-wrap: wrap;
 }
 .claude-chat-session-select {
-  background: #0a1825;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: linear-gradient(180deg, #11212f 0%, #0a1825 100%);
   color: #cde;
   border: 1px solid #2e4a5a;
-  border-radius: 3px;
-  padding: 2px 4px;
+  border-radius: 5px;
+  padding: 3px 8px;
   font-size: 12px;
-  max-width: 180px;
+  max-width: 220px;
+  min-width: 90px;
+  height: 24px;
+  box-sizing: border-box;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: border-color 0.15s, background 0.15s;
+}
+.claude-chat-session-select:hover {
+  border-color: #3e6a85;
+  background: linear-gradient(180deg, #16293a 0%, #0d1d2c 100%);
 }
 .claude-chat-active-session-hint {
   color: #6a8;

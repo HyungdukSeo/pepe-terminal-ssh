@@ -711,23 +711,46 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     setCodexApprovalPolicy(saved?.codexApprovalPolicy ?? 'suggest');
   }, [aiAgent]); // eslint-disable-line react-hooks/exhaustive-deps
   const { t: tt } = useTranslation('claudeChat');
-  // 사용자가 선택한 활성 SSH 세션 (드롭다운). 처음엔 defaultSshSession.
-  const [selectedSshTermId, setSelectedSshTermId] = useState<string | null>(defaultSshSession?.termId || null);
+  // 사용자가 선택한 활성 SSH 세션들 (멀티). 처음엔 defaultSshSession 하나.
+  const [selectedSshTermIds, setSelectedSshTermIds] = useState<Set<string>>(
+    () => defaultSshSession?.termId ? new Set([defaultSshSession.termId]) : new Set()
+  );
+  const sshInitRef = useRef(false);
   useEffect(() => {
-    // defaultSshSession 변경 시 선택된 적 없으면 반영
-    if (defaultSshSession && !selectedSshTermId) {
-      setSelectedSshTermId(defaultSshSession.termId);
+    // defaultSshSession 최초 1회 반영 (선택이 비어있을 때만)
+    if (defaultSshSession && !sshInitRef.current && selectedSshTermIds.size === 0) {
+      sshInitRef.current = true;
+      setSelectedSshTermIds(new Set([defaultSshSession.termId]));
     }
   }, [defaultSshSession?.termId]);
-  // 실제로 selected termId 가 connectedSessions 에 존재하는지 확인 (세션 종료 시 리셋)
+  // 연결 종료된 세션은 선택에서 제거
   useEffect(() => {
-    if (selectedSshTermId && !connectedSessions.find(s => s.termId === selectedSshTermId)) {
-      setSelectedSshTermId(connectedSessions[0]?.termId || null);
-    }
+    const live = new Set(connectedSessions.map(s => s.termId));
+    setSelectedSshTermIds(prev => {
+      const next = new Set([...prev].filter(id => live.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
   }, [connectedSessions.map(s => s.termId).join(',')]);
-  const activeSshSession = selectedSshTermId
-    ? (connectedSessions.find(s => s.termId === selectedSshTermId) || null)
-    : null;
+  const toggleSshSession = (termId: string) => {
+    setSelectedSshTermIds(prev => {
+      const next = new Set(prev);
+      next.has(termId) ? next.delete(termId) : next.add(termId);
+      return next;
+    });
+  };
+  // SSH 세션 선택 드롭다운
+  const [sshPickerOpen, setSshPickerOpen] = useState(false);
+  const sshPickerWrapRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!sshPickerOpen) return;
+    const h = (e: MouseEvent) => { if (sshPickerWrapRef.current && !sshPickerWrapRef.current.contains(e.target as Node)) setSshPickerOpen(false); };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, [sshPickerOpen]);
+  // 선택된 세션 목록 (connectedSessions 순서 유지)
+  const selectedSshSessions = connectedSessions.filter(s => selectedSshTermIds.has(s.termId));
+  // 대표 세션 (git bar 등 단일 참조용) — 첫 번째 선택
+  const activeSshSession = selectedSshSessions[0] || null;
   const [installed, setInstalled] = useState<boolean | null>(null);
   const [version, setVersion] = useState<string>('');
   // 에이전트별 버전 캐시 — 탭 hover 시 플로팅 툴팁에 표시
@@ -979,7 +1002,10 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   // 사용자가 전송 버튼을 누를 때까지 파일 컨텍스트를 로컬에서 보관 (다중 첨부)
   const [attachments, setAttachments] = useState<FileContextItem[]>([]);
   // 활성 SSH 세션의 WebDAV 마운트 루트 (세션 전체 파일시스템 접근용)
-  const [activeMount, setActiveMount] = useState<{ termId: string; mountRoot: string; label: string } | null>(null);
+  // 선택된 SSH 세션별 WebDAV 마운트 (멀티)
+  const [activeMounts, setActiveMounts] = useState<{ termId: string; mountRoot: string; label: string }[]>([]);
+  // 대표 마운트 (단일 참조 호환용)
+  const activeMount = activeMounts[0] || null;
   // Claude CLI 대화 세션 ID (이전 대화 컨텍스트 유지용 --resume)
   const claudeSessionIdRef = useRef<string | null>(null);
   // 대화 이력 목록 (UIPrefs 영속화)
@@ -1412,24 +1438,25 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     return () => { if (dispose) dispose(); };
   }, []);
 
-  // 활성 SSH 세션이 변경되면 WebDAV 마운트 등록 + 루트 경로 저장
+  // 선택된 SSH 세션들이 바뀌면 각각 WebDAV 마운트 등록 + 루트 경로 저장 (멀티)
   useEffect(() => {
     (async () => {
-      if (!activeSshSession) { setActiveMount(null); return; }
-      if (activeMount?.termId === activeSshSession.termId) return; // 이미 등록됨
-      try {
-        const reg: any = await (window as any).api?.claudeRegisterMount?.(activeSshSession.termId, activeSshSession.label);
-        if (!reg?.success) { setActiveMount(null); return; }
-        const pathRes: any = await (window as any).api?.claudeGetMountPath?.(activeSshSession.termId, '/');
-        if (!pathRes?.success) { setActiveMount(null); return; }
-        // "/" 에 대한 uncPath 가 세션 루트
-        setActiveMount({ termId: activeSshSession.termId, mountRoot: pathRes.uncPath.replace(/\\$/, ''), label: activeSshSession.label });
-      } catch (err) {
-        console.error('[ClaudeChat] auto-mount failed:', err);
-        setActiveMount(null);
+      if (selectedSshSessions.length === 0) { setActiveMounts([]); return; }
+      const results: { termId: string; mountRoot: string; label: string }[] = [];
+      for (const sess of selectedSshSessions) {
+        try {
+          const reg: any = await (window as any).api?.claudeRegisterMount?.(sess.termId, sess.label);
+          if (!reg?.success) continue;
+          const pathRes: any = await (window as any).api?.claudeGetMountPath?.(sess.termId, '/');
+          if (!pathRes?.success) continue;
+          results.push({ termId: sess.termId, mountRoot: pathRes.uncPath.replace(/\\$/, ''), label: sess.label });
+        } catch (err) {
+          console.error('[ClaudeChat] auto-mount failed:', sess.label, err);
+        }
       }
+      setActiveMounts(results);
     })();
-  }, [activeSshSession?.termId, activeSshSession?.label]);
+  }, [selectedSshSessions.map(s => s.termId).join(',')]);
 
   // 스트리밍 응답 리스너
   useEffect(() => {
@@ -2334,8 +2361,16 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       ).join('\n');
       contextLines.push('', '[명시적으로 첨부된 파일/폴더]', pathMap);
       attachBadge = `📂 첨부 ${mountEntries.length}개:\n${mountEntries.slice(0, 5).map(m => `• ${m.remotePath}${m.isDir ? '/' : ''}`).join('\n')}${mountEntries.length > 5 ? `\n외 ${mountEntries.length - 5}개` : ''}\n\n`;
-    } else if (activeMount) {
-      attachBadge = `🔗 활성 SSH: ${activeMount.label}\n\n`;
+    } else if (activeMounts.length > 0) {
+      // 멀티 SSH 컨텍스트 — 각 세션의 WebDAV 루트를 addDirs 에 추가 + 매핑 안내
+      for (const m of activeMounts) addDirsSet.add(m.mountRoot);
+      if (activeMounts.length > 1) {
+        const mapLines = activeMounts.map(m => `- ${m.label}: \`${m.mountRoot}\` (이 세션 원격 루트 \`/\`)`).join('\n');
+        contextLines.push('', '[연결된 여러 SSH 세션 — 각 루트로 파일 접근 가능]', mapLines);
+        attachBadge = `🔗 활성 SSH ${activeMounts.length}개: ${activeMounts.map(m => m.label).join(', ')}\n\n`;
+      } else {
+        attachBadge = `🔗 활성 SSH: ${activeMounts[0].label}\n\n`;
+      }
     }
 
     // 0.6) 공유 OFF + Gemini — Gemini CLI 의 영구 메모리(save_memory 저장 분)는
@@ -2517,8 +2552,12 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
 
     const addDirs = addDirsSet.size > 0 ? Array.from(addDirsSet) : undefined;
     // 활성 SSH 세션이 선택되어 있으면 Bash 금지 + MCP ssh_exec 툴 제공
-    // (activeMount 가 아직 준비 전이라도 MCP 는 사용 가능해야 함)
-    const sshTermId = activeSshSession?.termId || activeMount?.termId;
+    // 멀티 세션: 대표(첫)는 sshTermId, 전체 목록은 sshSessions 로 전달 (MCP 가 session 인자로 선택)
+    const selForSend = selectedSshSessions.length > 0
+      ? selectedSshSessions.map(s => ({ id: s.termId, label: s.label }))
+      : (activeMounts.length > 0 ? activeMounts.map(m => ({ id: m.termId, label: m.label })) : []);
+    const sshTermId = selForSend[0]?.id;
+    const sshSessions = selForSend.length > 0 ? selForSend : undefined;
     // 전송 후 로컬 파일 첨부는 해제
     setLocalFileAttachments([]);
     try {
@@ -2542,7 +2581,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           geminiPlanRequestsRef.current.add(requestId);
         }
         // sshTermId 전달 → gemini 에 SSH MCP(pepe_ssh) 제공 (원격 파일/명령)
-        await (window as any).api?.geminiSend?.(sessionId, geminiPrompt, requestId, geminiModel, geminiYolo, addDirs, sshTermId);
+        await (window as any).api?.geminiSend?.(sessionId, geminiPrompt, requestId, geminiModel, geminiYolo, addDirs, sshTermId, sshSessions);
       } else if (currentAgentRef.current === 'codex') {
         // codex 는 비대화형(exec)이라 실행 중 승인이 불가 → claude 처럼 "계획 먼저 보여주고 승인" 2단계로 처리.
         // plan 모드(또는 default + 승인성 발화 아님)면 계획 단계로 전송.
@@ -2584,7 +2623,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             ``,
           );
         }
-        await (window as any).api?.claudeSend?.(sessionId, prompt, addDirs, disallowBash, sshTermId, resumeSessionId, effectivePermMode, model, perToolApproval, requestId, effort);
+        await (window as any).api?.claudeSend?.(sessionId, prompt, addDirs, disallowBash, sshTermId, resumeSessionId, effectivePermMode, model, perToolApproval, requestId, effort, sshSessions);
       }
     } catch (err: any) {
       setMessages(prev => [...prev, { role: 'assistant', content: `❌ ${err}`, id: `err-${Date.now()}`, seq: nextSeq() }]);
@@ -3495,21 +3534,55 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           )}
         </div>
       )}
-      <div className="claude-chat-active-session">
+      <div className="claude-chat-active-session" ref={sshPickerWrapRef} style={{ position: 'relative' }}>
         {tt('sshContext')}
-        <select
+        {/* 멀티 SSH 세션 선택 — 체크박스 드롭다운 */}
+        <button
           className="claude-chat-session-select"
-          value={selectedSshTermId || ''}
-          onChange={e => setSelectedSshTermId(e.target.value || null)}
+          onClick={() => setSshPickerOpen(v => !v)}
+          style={{ cursor: 'pointer' }}
+          title={selectedSshSessions.map(s => s.label).join(', ') || tt('sessionNone')}
         >
-          <option value="">{tt('sessionNone')}</option>
-          {connectedSessions.map(s => (
-            <option key={s.termId} value={s.termId}>{s.label}</option>
-          ))}
-        </select>
-        {activeMount ? (
-          <span className="claude-chat-active-session-hint" title={`WebDAV mount: ${activeMount.mountRoot}`}>{tt('mounted')}</span>
-        ) : selectedSshTermId ? (
+          {selectedSshSessions.length > 0 && (
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#5cd97a', flexShrink: 0 }} />
+          )}
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>
+            {selectedSshSessions.length === 0
+              ? tt('sessionNone')
+              : selectedSshSessions.length === 1
+                ? selectedSshSessions[0].label
+                : tt('sessionCount', { count: selectedSshSessions.length, defaultValue: `세션 ${selectedSshSessions.length}개` })}
+          </span>
+          <span style={{ flexShrink: 0, opacity: 0.6, fontSize: 10 }}>▾</span>
+        </button>
+        {sshPickerOpen && (
+          <div
+            className="claude-chat-session-dropdown"
+            style={{
+              position: 'absolute', top: '100%', left: 0, marginTop: 4, zIndex: 1000,
+              background: '#1a1a2e', border: '1px solid #3a3a5a', borderRadius: 6,
+              boxShadow: '0 6px 20px rgba(0,0,0,0.5)', minWidth: 220, maxHeight: 280,
+              overflow: 'auto', padding: 4,
+            }}
+            onClick={e => e.stopPropagation()}
+          >
+            {connectedSessions.length === 0 ? (
+              <div style={{ padding: '6px 10px', color: '#888', fontSize: 12 }}>{tt('noActiveSession')}</div>
+            ) : connectedSessions.map(s => (
+              <label key={s.termId} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 8px', cursor: 'pointer', fontSize: 12, borderRadius: 4 }}
+                onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.06)')}
+                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+              >
+                <input type="checkbox" checked={selectedSshTermIds.has(s.termId)} onChange={() => toggleSshSession(s.termId)} style={{ margin: 0 }} />
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.label}</span>
+                {activeMounts.find(m => m.termId === s.termId) && <span style={{ marginLeft: 'auto', color: '#5cd97a', fontSize: 10 }}>●</span>}
+              </label>
+            ))}
+          </div>
+        )}
+        {selectedSshTermIds.size > 0 && activeMounts.length === selectedSshTermIds.size ? (
+          <span className="claude-chat-active-session-hint" title={activeMounts.map(m => `${m.label}: ${m.mountRoot}`).join('\n')}>{tt('mounted')}</span>
+        ) : selectedSshTermIds.size > 0 ? (
           <span className="claude-chat-active-session-hint" style={{ color: '#fa6' }}>{tt('mounting')}</span>
         ) : connectedSessions.length === 0 ? (
           <span className="claude-chat-active-session-hint" style={{ color: '#a66' }}>{tt('noActiveSession')}</span>
