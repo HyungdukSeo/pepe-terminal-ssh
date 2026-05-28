@@ -1377,6 +1377,11 @@ body.popout-options .session-editor h3:first-child {
   background: rgba(43, 107, 155, 0.25);
   border: 1px dashed #2b6b9b;
 }
+/* 세션 순서 이동 — 드롭 시 그 항목 "앞"에 삽입됨을 상단 라인으로 표시 */
+.session-item.drag-over-before {
+  box-shadow: inset 0 2px 0 #2b6b9b;
+  background: rgba(43, 107, 155, 0.12);
+}
 
 .session-item.selected {
   color: #fff;

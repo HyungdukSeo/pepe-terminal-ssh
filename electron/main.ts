@@ -981,7 +981,44 @@ ipcMain.handle('sessions:reorder', (_e, { id, type, direction }: { id: string; t
 ipcMain.handle('sessions:move-to-folder', (_e, { sessionId, targetFolderId }: { sessionId: string; targetFolderId: string | null }) => {
   const sess = sessionsData.sessions.find(s => s.id === sessionId);
   if (!sess) return sessionsData;
+  const oldParent = sess.folderId;
   sess.folderId = targetFolderId ?? undefined;
+  // childOrder 갱신 — 옛 부모에서 제거, 새 부모 맨 뒤에 추가
+  removeFromChildOrder(oldParent, sessionId);
+  addToChildOrder(targetFolderId ?? undefined, sessionId, 'last');
+  saveSessionsData(sessionsData);
+  return sessionsData;
+});
+
+// 드래그앤드롭 위치 지정 이동 — 항목을 target 부모로 옮기고 beforeId 앞 / 없으면 맨 뒤로 삽입.
+// type='session' 이면 folderId, 'folder' 면 parentId 갱신. (폴더의 자기 자손으로 이동 금지)
+ipcMain.handle('sessions:drop-reorder', (_e, { id, type, targetParentId, beforeId }: { id: string; type: 'session' | 'folder'; targetParentId: string | null; beforeId?: string | null }) => {
+  const newParent = targetParentId ?? undefined;
+  if (type === 'session') {
+    const sess = sessionsData.sessions.find(s => s.id === id);
+    if (!sess) return sessionsData;
+    const oldParent = sess.folderId;
+    sess.folderId = newParent;
+    removeFromChildOrder(oldParent, id);
+    addToChildOrder(newParent, id, beforeId ? { before: beforeId } : 'last');
+  } else {
+    const folder = sessionsData.folders.find(f => f.id === id);
+    if (!folder) return sessionsData;
+    // 자기 자신 또는 자손 폴더로는 이동 금지 (순환 방지)
+    const isDescendant = (candidate: string | undefined): boolean => {
+      let cur = candidate;
+      while (cur) {
+        if (cur === id) return true;
+        cur = sessionsData.folders.find(f => f.id === cur)?.parentId;
+      }
+      return false;
+    };
+    if (isDescendant(newParent)) return sessionsData;
+    const oldParent = folder.parentId;
+    folder.parentId = newParent;
+    removeFromChildOrder(oldParent, id);
+    addToChildOrder(newParent, id, beforeId ? { before: beforeId } : 'last');
+  }
   saveSessionsData(sessionsData);
   return sessionsData;
 });
