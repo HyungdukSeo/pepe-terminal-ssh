@@ -188,8 +188,37 @@ app.on('certificate-error', (event, _webContents, url, error, _certificate, call
   callback(true);
 });
 
+// 시작 시 %TEMP% 의 오래된 잔여 임시파일 정리 — 작업마다 timestamp 로 생성되어 누적되는 것들.
+// 30분 이상 된 것만 삭제 (동시 실행 중인 다른 인스턴스의 활성 파일 보호).
+function cleanupStaleTempFiles() {
+  try {
+    const dir = os.tmpdir();
+    const now = Date.now();
+    const MAX_AGE = 30 * 60 * 1000; // 30분
+    // 우리 앱이 만드는 임시 파일/폴더 패턴 (timestamp 접미)
+    const patterns = [
+      /^pepe-gemini-\d+/, /^pepe-xshell-import-\d+/, /^pepe-desktop-\d+/,
+      /^pepe-mypc-\d+/, /^pepe-shell-\d+/, /^pepe-drives-\d+/,
+      /^pepe-ext-icon-list-\d+/, /^pepe-ext-icons-\d+/, /^pepe-icon-list-\d+/,
+      /^pepe-icons-batch-\d+/, /^pepe-shellicon-\d+/, /^pepe-icon-\d+/,
+      /^pepe-mermaid-src\.txt$/, /^pepe-autotrack-/, /^pepe-pwd-/, /^pepe-mcp-\d+/,
+      /^gemini-prompt-\d+/, /^gemini-mcp-\d+/, /^claude-mcp-\d+/,
+    ];
+    for (const name of fs.readdirSync(dir)) {
+      if (!patterns.some(re => re.test(name))) continue;
+      const full = path.join(dir, name);
+      try {
+        const st = fs.statSync(full);
+        if (now - st.mtimeMs < MAX_AGE) continue; // 최근 것은 보존
+        fs.rmSync(full, { recursive: true, force: true });
+      } catch {}
+    }
+  } catch {}
+}
+
 app.whenReady().then(() => {
   sessionsData = loadSessionsData();
+  cleanupStaleTempFiles();
   createWindow();
   installX11DisplayHook();
 

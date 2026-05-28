@@ -1847,10 +1847,6 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         // 특수문자 라벨을 따옴표로 감싸 mermaid 파서 에러 방지 (codex 다이어그램 대응)
         const renderSrc = sanitizeMermaidLabels(source);
         try {
-          (window as any).api?.debugDump?.('pepe-mermaid-src.txt',
-            `=====SOURCE=====\n${source}\n\n=====SANITIZED=====\n${renderSrc}\n`);
-        } catch {}
-        try {
           const { svg } = await Promise.race([
             mermaid.render(id, renderSrc),
             new Promise<never>((_, reject) =>
