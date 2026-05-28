@@ -482,8 +482,9 @@ class SSHBridge extends EventEmitter {
 
       this.clients.set(panelId, { conn, stream, encoding: initialEncoding, primaryConn });
 
-      // 세션 옵션 autoTrackPwd 가 켜져 있으면 백그라운드 PID 탐지 + cwd 폴링 시작 — 셸에 명령 안 보냄.
-      if (session.autoTrackPwd) {
+      // 세션 옵션 autoTrackPwd — fileTreeEnabled 가 켜져 있을 때만 의미가 있어 의존성 강제.
+      // 켜져 있으면 즉시 UI 인디케이터 ON + 프롬프트 파싱 활성 (PID 탐지는 백그라운드).
+      if (session.autoTrackPwd && session.fileTreeEnabled) {
         this.autoTrackOn.add(panelId);
         // UI 인디케이터 즉시 ON — 프롬프트 파싱은 PID 탐지 없이도 바로 동작하므로 지연 없이 활성 표시
         this.emit('message', { type: 'auto-track', panelId, enabled: true });
@@ -938,12 +939,18 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
         this._installOsc7Hook(panelId, '');
       }
     } else {
-      // 폴링 + 프롬프트 파싱 모두 중지
+      // PWD 자동추적 OFF — 폴링 + 프롬프트 파싱 모두 중지. SFTP/파일트리 연결은 별도 옵션이라 건드리지 않음.
       this.autoTrackOn.delete(panelId);
       this._stopCwdPolling(panelId);
       this.emit('message', { type: 'auto-track', panelId, enabled: false });
     }
     return { success: true };
+  }
+
+  // 외부에서 명시적으로 panel 의 dedicated SFTP 만 종료 (SSH 메인 연결은 유지) — 파일트리 unmount 등에서 호출
+  public releaseDedicatedSftp(panelId: string) {
+    try { this._cleanupDedicatedSftp(panelId); } catch {}
+    try { const s = this.sftpCache.get(panelId); if (s) { s.end?.(); this.sftpCache.delete(panelId); } } catch {}
   }
 
   handleResize(panelId: string, cols: number, rows: number) {

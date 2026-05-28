@@ -210,6 +210,19 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
   const [srcMode, setSrcMode] = useState<'local' | 'remote'>('local');
   const [srcTermId, setSrcTermId] = useState<string>('');
   const [srcPath, setSrcPath] = useState<string>('');
+  // sessions.json 메타데이터 캐시 — 세션 선택 시 logPath 자동 입력용
+  const sessionMetaRef = useRef<Map<string, any>>(new Map());
+  useEffect(() => {
+    (async () => {
+      try {
+        const data: any = await (window as any).api?.listSessions?.();
+        const list: any[] = data?.sessions || [];
+        const m = new Map<string, any>();
+        for (const sess of list) m.set(sess.id, sess);
+        sessionMetaRef.current = m;
+      } catch {}
+    })();
+  }, []);
   const [loading, setLoading] = useState(false);
   const [loadErr, setLoadErr] = useState<string>('');
 
@@ -621,7 +634,17 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
             onChange={e => {
               const v = e.target.value;
               if (v === 'local') { setSrcMode('local'); setSrcTermId(''); }
-              else { setSrcMode('remote'); setSrcTermId(v); }
+              else {
+                setSrcMode('remote'); setSrcTermId(v);
+                // 세션의 logPath 가 지정되어 있고 현재 path 가 비어있거나 다른 자동값이면 자동 입력
+                try {
+                  const sess = sessions.find(x => x.termId === v);
+                  if (sess && sess.sessionId) {
+                    const meta = sessionMetaRef.current.get(sess.sessionId);
+                    if (meta?.logPath) setSrcPath(meta.logPath);
+                  }
+                } catch {}
+              }
             }}
             style={{ width: 220, fontSize: 12 }}>
             <option value="local">{t('local')}</option>

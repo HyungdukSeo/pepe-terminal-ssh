@@ -1533,7 +1533,25 @@ function App() {
     setActiveTabId(id);
   };
 
+  // 단일 termId 의 모든 백엔드 리소스 해제 — close 경로 어디서든 일관되게 호출
+  const releaseTermResources = useCallback((termId: string) => {
+    if (!termId) return;
+    try { (window as any).api?.disconnectSSH?.(termId); } catch {}
+    try { (window as any).api?.feReleaseSftp?.(termId); } catch {}
+    try { (window as any).api?.claudeUnregisterMount?.(termId); } catch {}
+    // ClaudeChat 의 mounted entries 정리
+    setClaudeMountEntries(prev => prev.filter(e => e.termId !== termId));
+  }, []);
+
   const closeTab = (id: TabId) => {
+    // 닫히는 탭이 들고 있는 모든 세션의 백엔드 리소스 해제
+    const tab = tabs.find(t => t.id === id);
+    if (tab) {
+      try {
+        const sessions = collectAllSessions(tab.layout);
+        for (const s of sessions) if (s.termId) releaseTermResources(s.termId);
+      } catch {}
+    }
     setTabs(prev => { const f = prev.filter(t => t.id !== id); return f.length === 0 ? prev : f; });
     setActiveTabId(prev => {
       if (prev !== id) return prev;
@@ -1620,10 +1638,18 @@ function App() {
   const closePanel = (tabId: TabId, targetNodeId: string) => {
     const tab = tabs.find(t => t.id === tabId);
     if (!tab) return;
+    // 닫히는 leaf 의 모든 세션 termId 수집 후 백엔드 리소스 해제
+    const collectLeafSessions = (node: LayoutNode): PanelSession[] => {
+      if (node.type === 'leaf') return node.id === targetNodeId ? [...node.panel.sessions] : [];
+      return node.children.flatMap(collectLeafSessions);
+    };
     if (countLeaves(tab.layout) === 1) {
-      if (tab.layout.type === 'leaf') tab.layout.panel.sessions.forEach(s => window.api?.disconnectSSH?.(s.termId));
+      // 마지막 leaf — layout 은 유지하되 세션 종료
+      if (tab.layout.type === 'leaf') tab.layout.panel.sessions.forEach(s => { if (s.termId) releaseTermResources(s.termId); });
       return;
     }
+    const sessionsToClose = collectLeafSessions(tab.layout);
+    for (const s of sessionsToClose) if (s.termId) releaseTermResources(s.termId);
     updateLayout(tabId, layout => removeLeafNode(layout, targetNodeId));
   };
 
@@ -1910,6 +1936,8 @@ function App() {
 
   const handleCloseSession = (nodeId: string, termId: string) => {
     if (!activeTab) return;
+    // 미니탭 X 버튼 — 해당 session 의 백엔드 리소스도 즉시 해제
+    if (termId) releaseTermResources(termId);
     updateLayout(activeTab.id, layout => {
       let updated = removeSessionFromPanel(layout, nodeId, termId);
       updated = cleanEmptyLeaf(updated, nodeId);
@@ -2262,7 +2290,7 @@ function App() {
       return null;
     };
     const tid = findTerm(activeTab.layout);
-    if (tid) window.api?.disconnectSSH?.(tid);
+    if (tid) releaseTermResources(tid);
   };
 
   // 아이콘은 JSON 값에 직접 포함됨 — 코드에서 prefix 부착하지 않음

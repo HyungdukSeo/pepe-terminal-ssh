@@ -94,6 +94,8 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
   }, [termId, sessionId]);
   // 세션 initialPath 조회 상태 (null=조회중, string=경로, ''=없음/홈사용)
   const [resolvedInitialPath, setResolvedInitialPath] = useState<string | null>(initialPathProp ?? null);
+  // 세션의 fileTreeEnabled / initialPath 조회 — 자동 로드 결정용. autoTrackPwd 는 여기서 게이트로 안 씀 (cwd 동기화 전용)
+  const [sessionFileTreeEnabled, setSessionFileTreeEnabled] = useState<boolean>(false);
   useEffect(() => {
     if (initialPathProp) { setResolvedInitialPath(initialPathProp); return; }
     if (!sessionId) { setResolvedInitialPath(''); return; }
@@ -105,11 +107,26 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
         const list = Array.isArray(data) ? data : (data?.sessions || []);
         const sess = list.find((s: any) => s.id === sessionId);
         setResolvedInitialPath(sess?.initialPath || '');
+        setSessionFileTreeEnabled(!!sess?.fileTreeEnabled);
       } catch { if (!cancelled) setResolvedInitialPath(''); }
     })();
     return () => { cancelled = true; };
   }, [sessionId, initialPathProp, mode]);
   const initialPath = resolvedInitialPath;
+  // 사용자가 명시적으로 "파일트리 연결" 클릭한 경우 표식 — 자동 게이트 우회
+  const [userLoaded, setUserLoaded] = useState<boolean>(false);
+  // 자동 로드 허용 조건: initialPath 있음 OR fileTreeEnabled 켜짐 OR 사용자가 명시 로드 OR 로컬 모드
+  const allowAutoLoad = mode === 'local' || userLoaded || !!initialPathProp || (typeof resolvedInitialPath === 'string' && resolvedInitialPath.length > 0) || sessionFileTreeEnabled;
+  // 언마운트 / 비활성 전환 시 dedicated SFTP 해제
+  useEffect(() => {
+    return () => {
+      if (mode === 'remote') {
+        try { (window as any).api?.feReleaseSftp?.(termId); } catch {}
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [termId]);
+  // PWD 자동추적 토글은 트리의 연결 상태와 무관 (cwd 동기화 ON/OFF 만 담당). 별도 핸들러 불필요.
   const cached = treeStateCache.get(termId);
   const [root, setRoot] = useState<TreeNode | null>(cached?.root || null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set(cached?.collapsed || []));
@@ -220,9 +237,11 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
   useEffect(() => {
     // null 이면 아직 조회 중 — 대기
     if (initialPath === null) return;
+    // 자동 로드 게이트: fileTreeEnabled/initialPath/사용자 명시 로드 전까지 SFTP 안 열기
+    if (!allowAutoLoad) return;
     let startTargetPath = (initialPath || '').trim();
     // initialPath 가 비어 있어도 자동추적으로 이미 알려진 현재 pwd 가 있으면 그걸 사용
-    // (홈 fetch 가 비동기로 늦게 끝나 구독의 /vobs navigate 를 덮어쓰는 문제 방지)
+    // (홈 fetch 가 비동기로 늦게 끝나 구독의 navigate(/vobs 등)를 덮어쓰는 문제 방지)
     if (!startTargetPath) {
       const livePwd = getCurrentPwdForTerm(termId);
       if (livePwd) startTargetPath = livePwd;
@@ -276,7 +295,7 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
         console.error('[RemoteFileTree] init error', err);
       }
     })();
-  }, [termId, initialPath, loadChildren, mode]);
+  }, [termId, initialPath, loadChildren, mode, allowAutoLoad]);
 
   const toggleFolder = async (node: TreeNode) => {
     if (!node.isDir) return;
@@ -426,7 +445,25 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
     );
   };
 
-  if (!root) return <div className="remote-file-loading">{t('loading')}</div>;
+  if (!root) {
+    // 자동 로드가 막혔으면 (autoTrackPwd 꺼지고 initialPath 없음) 사용자에게 명시적 로드 버튼 제공 — 불필요한 SFTP 연결 방지
+    if (!allowAutoLoad) {
+      return (
+        <div className="remote-file-loading" style={{ padding: 14, fontSize: 12, color: '#aac', lineHeight: 1.6 }}>
+          <div style={{ marginBottom: 8 }}>📁 파일트리는 자동으로 열리지 않습니다.</div>
+          <div style={{ marginBottom: 12, color: '#888', fontSize: 11 }}>
+            세션의 <b>PWD 자동추적</b> 또는 <b>초기 경로</b> 가 설정되어 있으면 자동 연결됩니다.
+            <br/>그렇지 않으면 아래 버튼으로 SFTP 연결을 시작하세요.
+          </div>
+          <button
+            onClick={() => setUserLoaded(true)}
+            style={{ padding: '6px 12px', fontSize: 12, background: '#2b4e74', color: '#fff', border: '1px solid #3a6593', borderRadius: 3, cursor: 'pointer' }}
+          >🔌 파일트리 연결</button>
+        </div>
+      );
+    }
+    return <div className="remote-file-loading">{t('loading')}</div>;
+  }
 
   const openFilePrompt = () => {
     setPromptModal({

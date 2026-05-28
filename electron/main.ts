@@ -2844,6 +2844,13 @@ ipcMain.handle('fe:sftp-disconnect', (_e, { connId }: any) => {
   bridge.handleSFTPDisconnect(connId);
 });
 
+// 파일트리/Compare 등에서 사용한 dedicated SFTP 만 종료. 터미널 SSH 연결은 유지.
+ipcMain.handle('fe:release-sftp', (_e, { panelId }: { panelId: string }) => {
+  const bridge = getSSHBridge();
+  bridge.releaseDedicatedSftp(panelId);
+  return { success: true };
+});
+
 // SQL Tool — CSV 파일 저장 다이얼로그
 ipcMain.handle('sql:save-csv', async (_e, { defaultName, content }: { defaultName?: string; content: string }) => {
   if (!mainWindow) return { success: false, error: 'no window' };

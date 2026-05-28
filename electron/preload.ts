@@ -74,6 +74,7 @@ contextBridge.exposeInMainWorld('api', {
   pickFiles: (multi?: boolean) => ipcRenderer.invoke('dialog:pick-files', { multi }),
   pickFolder: () => ipcRenderer.invoke('dialog:pick-folder'),
   feSftpDisconnect: (connId: string) => ipcRenderer.invoke('fe:sftp-disconnect', { connId }),
+  feReleaseSftp: (panelId: string) => ipcRenderer.invoke('fe:release-sftp', { panelId }),
   sqlExec: (connId: string, command: string, timeoutMs?: number) => ipcRenderer.invoke('sql:exec', { connId, command, timeoutMs }),
   sqlSaveCsv: (defaultName: string, content: string) => ipcRenderer.invoke('sql:save-csv', { defaultName, content }),
   feConnectedSessions: () => ipcRenderer.invoke('fe:connected-sessions'),

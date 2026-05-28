@@ -27,7 +27,11 @@ export type Session = {
   scrollback?: number;
   icon?: string;
   initialPath?: string;
+  fileTreeEnabled?: boolean;
   autoTrackPwd?: boolean;
+  // 워크스페이스 자동 입력용 경로 — 비어있으면 사용 안 함
+  logPath?: string;      // LogAnalyzer 가 이 세션 선택 시 기본 경로
+  codePath?: string;     // CompareWorkspace 가 이 세션 선택 시 기본 base 디렉토리
   x11Forward?: boolean;
   x11Display?: number;
   jumpTargetHost?: string;
@@ -78,7 +82,10 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
   const [scrollback, setScrollback] = useState(session?.scrollback ?? 0);
   const [icon, setIcon] = useState(session?.icon ?? '🖥️');
   const [initialPath, setInitialPath] = useState(session?.initialPath ?? '');
+  const [fileTreeEnabled, setFileTreeEnabled] = useState<boolean>(session?.fileTreeEnabled ?? false);
   const [autoTrackPwd, setAutoTrackPwd] = useState<boolean>(!!session?.autoTrackPwd);
+  const [logPath, setLogPath] = useState(session?.logPath ?? '');
+  const [codePath, setCodePath] = useState(session?.codePath ?? '');
   const [x11Forward, setX11Forward] = useState<boolean>(!!session?.x11Forward);
   const [x11Display, setX11Display] = useState<number>(session?.x11Display ?? 0);
   const [jumpTargetHost, setJumpTargetHost] = useState(session?.jumpTargetHost ?? '');
@@ -116,7 +123,10 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
     setScrollback(session?.scrollback ?? 0);
     setIcon(session?.icon ?? '🖥️');
     setInitialPath(session?.initialPath ?? '');
+    setFileTreeEnabled(session?.fileTreeEnabled ?? false);
     setAutoTrackPwd(!!session?.autoTrackPwd);
+    setLogPath(session?.logPath ?? '');
+    setCodePath(session?.codePath ?? '');
     setX11Forward(!!session?.x11Forward);
     setX11Display(session?.x11Display ?? 0);
     setJumpTargetHost(session?.jumpTargetHost ?? '');
@@ -168,7 +178,7 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
     const dbms = dbmsEnabled && dbmsUser.trim()
       ? { type: 'altibase' as const, port: dbmsPort || 20300, user: dbmsUser.trim(), password: dbmsPassword, host: dbmsHost.trim() || '127.0.0.1' }
       : undefined;
-    return { id, name, host: normalizeHost(host), port, username, auth, encoding, folderId: folderId || undefined, loginScript: script.length > 0 ? script : undefined, theme: theme || undefined, fontFamily: fontFamily || undefined, fontSize: fontSize || undefined, scrollback: scrollback || undefined, icon: icon || undefined, initialPath: initialPath.trim() || undefined, autoTrackPwd: autoTrackPwd || undefined, x11Forward: x11Forward || undefined, x11Display: x11Forward ? x11Display : undefined, jumpTargetHost: jumpTargetHost.trim() || undefined, jumpTargetUser: jumpTargetUser.trim() || undefined, jumpTargetPort: typeof jumpTargetPort === 'number' && jumpTargetPort > 0 ? jumpTargetPort : undefined, jumpTargetPassword: jumpTargetPassword || undefined, cursorStyle: cursorStyle !== 'block' ? cursorStyle : undefined, cursorBlink: !!cursorBlink, dbms } as Session;
+    return { id, name, host: normalizeHost(host), port, username, auth, encoding, folderId: folderId || undefined, loginScript: script.length > 0 ? script : undefined, theme: theme || undefined, fontFamily: fontFamily || undefined, fontSize: fontSize || undefined, scrollback: scrollback || undefined, icon: icon || undefined, initialPath: initialPath.trim() || undefined, fileTreeEnabled: fileTreeEnabled || undefined, autoTrackPwd: (fileTreeEnabled && autoTrackPwd) ? true : undefined, logPath: logPath.trim() || undefined, codePath: codePath.trim() || undefined, x11Forward: x11Forward || undefined, x11Display: x11Forward ? x11Display : undefined, jumpTargetHost: jumpTargetHost.trim() || undefined, jumpTargetUser: jumpTargetUser.trim() || undefined, jumpTargetPort: typeof jumpTargetPort === 'number' && jumpTargetPort > 0 ? jumpTargetPort : undefined, jumpTargetPassword: jumpTargetPassword || undefined, cursorStyle: cursorStyle !== 'block' ? cursorStyle : undefined, cursorBlink: !!cursorBlink, dbms } as Session;
   };
   const save = () => {
     const s = buildSession();
@@ -446,16 +456,55 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
               );
             })()}
             {category === 'advanced' && (
-              <div style={{ color: '#888', padding: 12 }}>{t('advancedHint')}</div>
+              <div className="session-editor-grid">
+                <label title="LogAnalyzer 에서 이 세션 선택 시 자동으로 채울 로그 파일 경로">로그 위치</label>
+                <input
+                  type="text"
+                  value={logPath}
+                  onChange={e => setLogPath(e.target.value)}
+                  placeholder="예: /var/log/myapp/app.log"
+                />
+                <label title="파일 비교 워크스페이스에서 이 세션 선택 시 자동으로 채울 base 디렉토리">코드 위치</label>
+                <input
+                  type="text"
+                  value={codePath}
+                  onChange={e => setCodePath(e.target.value)}
+                  placeholder="예: /home/user/project/src"
+                />
+              </div>
             )}
             {category === 'filetree' && (
               <div className="session-editor-grid">
                 <label>{t('fields.initialPath')}</label>
                 <input type="text" value={initialPath} onChange={e => setInitialPath(e.target.value)} placeholder={t('placeholders.initialPath')} />
-                <label>{t('fields.autoTrack')}</label>
-                <label className="autotrack-checkbox-label" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', justifySelf: 'start' }}>
-                  <input type="checkbox" checked={autoTrackPwd} onChange={e => setAutoTrackPwd(e.target.checked)} style={{ margin: 0 }} />
-                  <span className="autotrack-info-icon" title={t('tooltips.autoTrackInfo')}>ⓘ</span>
+                <label>파일트리 보여주기</label>
+                <label style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer', justifySelf: 'start' }}>
+                  <input
+                    type="checkbox"
+                    checked={fileTreeEnabled}
+                    onChange={e => {
+                      const v = e.target.checked;
+                      setFileTreeEnabled(v);
+                      if (!v) setAutoTrackPwd(false);
+                    }}
+                    style={{ margin: 0 }}
+                  />
+                </label>
+                <label
+                  style={{ opacity: fileTreeEnabled ? 1 : 0.45, cursor: fileTreeEnabled ? 'pointer' : 'not-allowed' }}
+                  title={!fileTreeEnabled ? '파일트리 보여주기가 켜져 있어야 사용 가능' : '터미널에서 cd 시 파일트리 경로 자동 갱신'}
+                >파일트리 자동추적</label>
+                <label
+                  style={{ display: 'inline-flex', alignItems: 'center', cursor: fileTreeEnabled ? 'pointer' : 'not-allowed', justifySelf: 'start', opacity: fileTreeEnabled ? 1 : 0.45 }}
+                  title={!fileTreeEnabled ? '파일트리 보여주기가 켜져 있어야 사용 가능' : '터미널에서 cd 시 파일트리 경로 자동 갱신'}
+                >
+                  <input
+                    type="checkbox"
+                    checked={autoTrackPwd && fileTreeEnabled}
+                    disabled={!fileTreeEnabled}
+                    onChange={e => setAutoTrackPwd(e.target.checked)}
+                    style={{ margin: 0 }}
+                  />
                 </label>
               </div>
             )}

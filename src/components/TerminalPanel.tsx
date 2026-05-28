@@ -1376,49 +1376,17 @@ export function applyCursorStyleToTerm(termId: string, style?: 'block' | 'underl
       });
       return;
     } else if (style === 'bar' && blink) {
-      // xterm 의 bar+blink 가 시각적으로 안보이는 케이스 → 커스텀 오버레이로 깜박임 구현
+      // 네이티브 bar 렌더는 유지 (셀 텍스트 보존). xterm 자체 blink 가 시각적으로 안 보이는 경우가 있어
+      // .xterm-bar-blink-css 클래스를 터미널 root 에 부여 → CSS keyframe 으로 cursor element 만 깜박이게 함.
       const term: any = entry.term;
       try { term.options.cursorStyle = 'bar'; } catch {}
-      try { term.options.cursorBlink = false; } catch {}
+      try { term.options.cursorBlink = false; } catch {} // xterm 자체 blink 비활성 → CSS 가 단독으로 깜박임 제어
       const elem = term.element as HTMLElement | undefined;
-      if (elem) {
-        // xterm 자체 커서 layer 숨김 (정적 bar 와 오버레이 겹침 방지)
-        elem.classList.add('hide-xterm-cursor');
-        const overlay = document.createElement('div');
-        overlay.className = 'xterm-custom-cursor xterm-bar-blink';
-        overlay.style.cssText = 'position:absolute;pointer-events:none;z-index:5;background:currentColor;animation:blink 1s step-end infinite;';
-        const screen = elem.querySelector('.xterm-screen') as HTMLElement | null;
-        const host = (screen && screen.parentElement) || elem;
-        host.appendChild(overlay);
-        const updatePos = () => {
-          try {
-            const buf = term.buffer.active;
-            const rs = term._core?._renderService;
-            const cellW = rs?.dimensions?.css?.cell?.width ?? rs?.dimensions?.actualCellWidth ?? 9;
-            const cellH = rs?.dimensions?.css?.cell?.height ?? rs?.dimensions?.actualCellHeight ?? 17;
-            const w = 2;
-            // 글자 뒤(다음 셀 왼쪽 가장자리)에 위치 — 겹침 방지
-            overlay.style.left = ((buf.cursorX + 1) * cellW) + 'px';
-            overlay.style.top = (buf.cursorY * cellH) + 'px';
-            overlay.style.width = w + 'px';
-            overlay.style.height = cellH + 'px';
-            // 테마 전경색 동기화
-            const fg = (term.options as any)?.theme?.foreground || '#e6e1cf';
-            overlay.style.color = fg;
-          } catch {}
-        };
-        updatePos();
-        const off1 = entry.term.onCursorMove(updatePos);
-        const off2 = entry.term.onRender(updatePos);
-        const off3 = entry.term.onResize(updatePos);
-        flameOverlayCleanup.set(termId, () => {
-          try { off1.dispose(); } catch {}
-          try { off2.dispose(); } catch {}
-          try { off3.dispose(); } catch {}
-          try { overlay.remove(); } catch {}
-          try { elem.classList.remove('hide-xterm-cursor'); } catch {}
-        });
-      }
+      if (elem) elem.classList.add('xterm-bar-blink-css');
+      try { term.refresh?.(0, term.rows - 1); } catch {}
+      flameOverlayCleanup.set(termId, () => {
+        try { elem?.classList.remove('xterm-bar-blink-css'); } catch {}
+      });
     } else if (style) {
       const term: any = entry.term;
       // 깜박임 재시작을 위해 false 로 강제 후 다음 tick 에 원하는 값 적용
@@ -3388,6 +3356,8 @@ export const TerminalPanel: React.FC<Props> = ({
             setAutoTrackOn(newVal);
             setTermAutoTrack(activeTermId, newVal);
             try { await (window as any).api?.setSSHAutoTrack?.(activeTermId, newVal); } catch {}
+            // 파일트리에 알림 — OFF 시 즉시 SFTP 연결 해제하도록
+            try { window.dispatchEvent(new CustomEvent('autoTrack-change', { detail: { panelId: activeTermId, enabled: newVal } })); } catch {}
           }}
           title={autoTrackOn ? t('ui.autoTrackOn') : t('ui.autoTrackOff')}
         >
