@@ -439,6 +439,9 @@ export function subscribePwdChange(termId: string, fn: (pwd: string) => void): (
   let set = pwdChangeListeners.get(termId);
   if (!set) { set = new Set(); pwdChangeListeners.set(termId, set); }
   set.add(fn);
+  // 구독 즉시 현재 알려진 pwd 를 1회 전달 — 마운트가 pwd 이벤트보다 늦어 놓치는 race 방지
+  const cur = termCurrentPwd.get(termId);
+  if (cur) { try { fn(cur); } catch {} }
   return () => { set?.delete(fn); };
 }
 function notifyPwdChange(termId: string, pwd: string) {
@@ -2169,6 +2172,16 @@ if (typeof window !== 'undefined') {
   if (api?.onSSHAutoTrack) {
     api.onSSHAutoTrack((p: any) => {
       if (p && p.panelId) setTermAutoTrack(p.panelId, !!p.enabled);
+    });
+  }
+  // 브리지가 직접 보내는 pwd — xterm OSC7 파싱/포커스에 의존하지 않고 파일트리 즉시 갱신
+  if (api?.onSSHPwd) {
+    api.onSSHPwd((p: { panelId: string; pwd: string }) => {
+      if (!p?.panelId || !p?.pwd) return;
+      const prev = termCurrentPwd.get(p.panelId);
+      if (prev === p.pwd) return;
+      termCurrentPwd.set(p.panelId, p.pwd);
+      notifyPwdChange(p.panelId, p.pwd);
     });
   }
 }

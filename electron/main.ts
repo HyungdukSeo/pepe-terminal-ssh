@@ -258,6 +258,9 @@ app.whenReady().then(() => {
       case 'auto-track':
         mainWindow.webContents.send('ssh:auto-track', { panelId: msg.panelId, enabled: msg.enabled });
         break;
+      case 'pwd':
+        mainWindow.webContents.send('ssh:pwd', { panelId: msg.panelId, pwd: (msg as any).data });
+        break;
       case 'x11-log':
         // x11 관련 로그를 renderer 콘솔로 — DevTools 에서 확인
         mainWindow.webContents.executeJavaScript(`console.log('[X11]', ${JSON.stringify(msg.data)})`).catch(() => {});
@@ -4120,7 +4123,6 @@ ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowB
     // MCP 서버 설정 (원격 SSH 명령 실행용) — sshTermId 가 있을 때만 활성화
     let mcpConfigArg = '';
     let mcpCfgTmp = '';
-    let mcpLogPath = '';
     if (sshTermId) {
       await startMcpControl();
       // 임베드된 스크립트를 임시 파일로 추출 (dev/prod 모두 작동)
@@ -4133,7 +4135,6 @@ ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowB
       } catch (err) {
         console.error('[claude] MCP script extract failed:', err);
       }
-      mcpLogPath = path.join(os.tmpdir(), `pepe-mcp-${Date.now()}.log`);
       const mcpCfg = {
         mcpServers: {
           pepe_ssh: {
@@ -4145,7 +4146,6 @@ ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowB
               PEPE_TERM_ID: sshTermId,
               // 멀티 SSH 세션 — JSON [{id,label}] (MCP 가 session 인자로 선택). 없으면 단일 PEPE_TERM_ID.
               PEPE_TERM_IDS: JSON.stringify(Array.isArray(sshSessions) && sshSessions.length > 0 ? sshSessions : [{ id: sshTermId, label: sshTermId }]),
-              PEPE_LOG_PATH: mcpLogPath,
               ELECTRON_RUN_AS_NODE: '1',
             },
           },

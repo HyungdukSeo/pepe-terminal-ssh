@@ -37,7 +37,7 @@ interface ClientRecord {
 }
 
 interface BridgeMessage {
-  type: 'data' | 'connected' | 'closed' | 'error' | 'auth-prompt' | 'sftp-progress' | 'sftp-complete' | 'sftp-error' | 'sftp-transfer-start' | 'sftp-file-start' | 'sftp-dir-list' | 'sftp-conflict' | 'auto-track' | 'x11-log' | 'sftp-delete-start' | 'sftp-delete-progress' | 'sftp-delete-complete';
+  type: 'data' | 'connected' | 'closed' | 'error' | 'auth-prompt' | 'sftp-progress' | 'sftp-complete' | 'sftp-error' | 'sftp-transfer-start' | 'sftp-file-start' | 'sftp-dir-list' | 'sftp-conflict' | 'auto-track' | 'pwd' | 'x11-log' | 'sftp-delete-start' | 'sftp-delete-progress' | 'sftp-delete-complete';
   panelId: string;
   data?: string;
   error?: string;
@@ -447,6 +447,11 @@ class SSHBridge extends EventEmitter {
 
           this.emit('message', { type: 'data', panelId, data: str });
 
+          // ── 프롬프트에서 cwd + ClearCase 뷰 파싱 ──
+          // /proc 기반 추적이 불가한 환경(setview 서브셸 reparent/탈tty/SSH_CONNECTION 미상속, 공유서버)을 위해
+          // 프롬프트에 노출된 경로를 직접 읽음. 예) [dev@host(ghj_view):/vobs/REL/SSW_70A ]
+          this._parsePromptCwd(panelId, str);
+
           const runner = this.scriptRunners.get(panelId);
           if (runner && runner.isRunning()) {
             runner.feed(str);
@@ -479,6 +484,9 @@ class SSHBridge extends EventEmitter {
 
       // 세션 옵션 autoTrackPwd 가 켜져 있으면 백그라운드 PID 탐지 + cwd 폴링 시작 — 셸에 명령 안 보냄.
       if (session.autoTrackPwd) {
+        this.autoTrackOn.add(panelId);
+        // UI 인디케이터 즉시 ON — 프롬프트 파싱은 PID 탐지 없이도 바로 동작하므로 지연 없이 활성 표시
+        this.emit('message', { type: 'auto-track', panelId, enabled: true });
         const injectDelay = session.loginScript && session.loginScript.length > 0 ? 3500 : 800;
         setTimeout(() => {
           this._installOsc7Hook(panelId, '');
@@ -545,8 +553,133 @@ class SSHBridge extends EventEmitter {
   private termCols: Map<string, number> = new Map();
   // panel → 인터랙티브 셸 PID (백그라운드 cwd 폴링용)
   private shellPids: Map<string, number> = new Map();
+  // panel → ClearCase 뷰 루트 (CLEARCASE_ROOT, 예: /view/ghj_view). 없으면 ''. undefined=미조회
+  private ccViewRoots: Map<string, string> = new Map();
+  // panel → 현재 활성 셸 PID (cwd 폴링이 선택한 최신 셸 = setview 서브셸 등). CLEARCASE_ROOT 조회에 사용.
+  private activeShellPids: Map<string, number> = new Map();
+
+  // CLEARCASE_ROOT 환경변수 조회 — dynamic view 의 /vobs 경로를 실경로로 변환하기 위함.
+  // setview 서브셸에만 CLEARCASE_ROOT=/view/<tag> 가 설정되므로 cwd 폴링이 선택한 활성 셸 PID 의 environ 을 읽음.
+  private async getCcViewRoot(panelId: string): Promise<string> {
+    if (this.ccViewRoots.has(panelId)) return this.ccViewRoots.get(panelId) || '';
+    // 프롬프트 버퍼에서 뷰태그 즉석 추출 — _detectAndApplyPromptCwd 타이밍을 못 기다린 SFTP 호출 보강
+    const tail = this.promptTail.get(panelId) || '';
+    const tm = tail.match(/@[A-Za-z0-9_.\-]+\(([A-Za-z0-9_.\-]+)\):\//);
+    if (tm) {
+      const root = `/view/${tm[1]}`;
+      this.ccViewRoots.set(panelId, root);
+      console.log(`[clearcase-${panelId.slice(-6)}] view root from prompt(on-demand): ${root}`);
+      return root;
+    }
+    const pid = this.activeShellPids.get(panelId) || this.shellPids.get(panelId);
+    if (!pid) return '';
+    try {
+      const out = await this.execCommand(panelId,
+        `cat /proc/${pid}/environ 2>/dev/null | tr '\\0' '\\n' | grep '^CLEARCASE_ROOT='`, 5000);
+      const m = out.match(/^CLEARCASE_ROOT=(.+)$/m);
+      const root = m ? m[1].trim().replace(/\/+$/, '') : '';
+      // 빈 결과는 캐시하지 않음 — 뷰 설정 전 조회됐을 수 있어 다음에 재시도 (찾으면 그때 캐시)
+      if (root) {
+        this.ccViewRoots.set(panelId, root);
+        console.log(`[clearcase-${panelId.slice(-6)}] view root: ${root} (fg pid ${pid})`);
+      }
+      return root;
+    } catch {
+      return '';
+    }
+  }
+
+  // /vobs/... 같은 뷰-상대 경로를 /view/<tag>/vobs/... 실경로로 변환 (SFTP 접근용).
+  // 이미 /view/ 로 시작하거나 뷰 루트가 없으면 그대로 둠.
+  private async resolveCcPath(panelId: string, p: string): Promise<string> {
+    if (!p || p.startsWith('/view/')) return p;
+    // /vobs 계열만 변환 (다른 경로는 일반 파일시스템이라 그대로 접근 가능)
+    if (!(p === '/vobs' || p.startsWith('/vobs/'))) return p;
+    const root = await this.getCcViewRoot(panelId);
+    if (!root) return p;
+    if (p.startsWith(root)) return p;
+    return root + p;
+  }
   // panel → 마지막으로 알려진 cwd (변경 감지용)
   private lastCwd: Map<string, string> = new Map();
+  // panel → 프롬프트 파싱용 tail 버퍼 (chunk 경계로 프롬프트가 잘리는 것 방지)
+  private promptTail: Map<string, string> = new Map();
+  // 프롬프트에서 cwd 를 성공적으로 파싱한 패널 — /proc 폴러가 이 패널의 cwd 를 덮어쓰지 않게 함
+  private promptCwdActive: Set<string> = new Set();
+  // PWD 자동추적이 켜진 패널 — 꺼지면 /proc 폴링 + 프롬프트 파싱 모두 중지
+  private autoTrackOn: Set<string> = new Set();
+
+  // 터미널 출력에서 프롬프트의 cwd(및 ClearCase 뷰태그)를 추출 → /proc 추적이 불가한 환경 보조.
+  // 지원 패턴: "(viewtag):/path " (ClearCase) 및 일반 ":/path " / "/path $" / "/path #" 등 프롬프트 말미 경로.
+  private _parsePromptCwd(panelId: string, chunk: string): void {
+    // 버퍼는 자동추적 on/off 와 무관하게 항상 갱신 (꺼진 동안 이동한 경로도 보존 → 재활성화 시 즉시 반영).
+    // ANSI escape 제거 + tail 버퍼 누적 (마지막 2KB만 유지)
+    // eslint-disable-next-line no-control-regex
+    const clean = chunk.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, '');
+    let buf = (this.promptTail.get(panelId) || '') + clean;
+    if (buf.length > 2048) buf = buf.slice(-2048);
+    this.promptTail.set(panelId, buf);
+    // emit 은 자동추적이 켜진 경우에만
+    if (this.autoTrackOn.has(panelId)) this._detectAndApplyPromptCwd(panelId);
+  }
+
+  // 현재 promptTail 버퍼에서 cwd/뷰태그를 추출해 적용 (emit). 재활성화 시에도 호출.
+  private _detectAndApplyPromptCwd(panelId: string): void {
+    const buf = this.promptTail.get(panelId) || '';
+    if (!buf) return;
+    const lines = buf.split(/\r?\n/);
+    for (let i = lines.length - 1; i >= 0 && i >= lines.length - 3; i--) {
+      const line = lines[i];
+      const mm = line.match(/@[A-Za-z0-9_.\-]+(?:\(([A-Za-z0-9_.\-]+)\))?:(~?\/[^\s\]>$#)]*|~)\s*[\]$#>]/);
+      if (!mm) continue;
+      const viewTag = mm[1] || '';
+      let p = mm[2];
+      if (viewTag) {
+        const newRoot = `/view/${viewTag}`;
+        if (this.ccViewRoots.get(panelId) !== newRoot) {
+          this.ccViewRoots.set(panelId, newRoot);
+          console.log(`[clearcase-${panelId.slice(-6)}] view root from prompt: ${newRoot}`);
+        }
+      }
+      if (p === '~' || p.startsWith('~/')) {
+        const home = this.homeDirs.get(panelId);
+        if (!home) { this._fetchHomeDir(panelId); continue; }
+        p = p === '~' ? home : home.replace(/\/$/, '') + p.slice(1);
+      }
+      if (p.startsWith('/')) {
+        const wasActive = this.promptCwdActive.has(panelId);
+        this.promptCwdActive.add(panelId);
+        // 프롬프트 파싱이 cwd 를 제공하므로 무거운 /proc 폴링(400+ 프로세스 environ grep)은 중단 — SSH 채널 절약
+        if (!wasActive) this._stopCwdPolling(panelId);
+        this._applyTrackedCwd(panelId, p);
+        return;
+      }
+    }
+  }
+
+  // panel → 홈 디렉토리 캐시 ("~" 프롬프트 해석용)
+  private homeDirs: Map<string, string> = new Map();
+  private homeFetching: Set<string> = new Set();
+  private _fetchHomeDir(panelId: string): void {
+    if (this.homeDirs.has(panelId) || this.homeFetching.has(panelId)) return;
+    this.homeFetching.add(panelId);
+    this.execCommand(panelId, 'printf %s "$HOME"', 5000)
+      .then(out => { const h = out.trim(); if (h.startsWith('/')) this.homeDirs.set(panelId, h); })
+      .catch(() => {})
+      .finally(() => this.homeFetching.delete(panelId));
+  }
+
+  // 추적된 cwd 를 lastCwd 에 반영하고 OSC7 emit (auto-track 과 동일 동작)
+  private _applyTrackedCwd(panelId: string, p: string): void {
+    if (!p || !p.startsWith('/')) return;
+    const last = this.lastCwd.get(panelId);
+    if (p === last) return;
+    this.lastCwd.set(panelId, p);
+    const oscSeq = `\x1b]7;file://localhost${p}\x1b\\`;
+    this.emit('message', { type: 'data', panelId, data: oscSeq });
+    // xterm 파싱/포커스에 의존하지 않는 직접 경로 — 파일트리가 즉시 반영하도록
+    this.emit('message', { type: 'pwd', panelId, data: p });
+  }
   // panel → 폴링 timer
   private cwdPollers: Map<string, ReturnType<typeof setInterval>> = new Map();
 
@@ -560,6 +693,8 @@ class SSHBridge extends EventEmitter {
   private _installOsc7Hook(panelId: string, shellPath: string) {
     const rec = this.clients.get(panelId);
     if (!rec?.conn) return;
+    // 프롬프트 파싱이 이미 cwd 를 처리 중이면 무거운 PID 탐지(/proc environ 전체 grep)를 건너뜀 — SFTP 채널 경쟁 회피
+    if (this.promptCwdActive.has(panelId)) return;
     this.detectedShells.set(panelId, shellPath || '');
     // SSH_CONNECTION env 로 우리 연결의 셸 후보들을 모두 찾고, 그 중 가장 큰 PID 선택
     // (= 가장 최근 = 사용자의 foreground 셸. nested shell 케이스도 정확히 추적).
@@ -634,6 +769,8 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
   // 셸에 일체 명령 보내지 않음. cwd 변경되면 fake OSC 7 emit.
   // ★ 채널 동시 개수 제한 + 연속 에러 시 백오프 — 서버의 MaxSessions 한계 회피
   private _startCwdPolling(panelId: string): void {
+    // 프롬프트 파싱이 cwd 를 처리 중인 패널은 무거운 /proc 폴링을 시작하지 않음 (SSH 채널 절약)
+    if (this.promptCwdActive.has(panelId)) return;
     this._stopCwdPolling(panelId); // 중복 방지
     const baseInterval = 400;
     const maxInterval = 30_000; // 최대 30초까지 백오프
@@ -654,7 +791,23 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
       if (!curPid) { scheduleNext(); return; }
       if (inFlight) { scheduleNext(); return; } // 이전 호출 응답 대기 중 — 채널 누적 방지
       inFlight = true;
-      const cmd = `/bin/sh -c 'printf "<<PEPE>>"; readlink /proc/${curPid}/cwd 2>/dev/null; printf "<<END>>"'`;
+      // ClearCase setview 처럼 로그인 셸이 자식 서브셸을 띄우면 추적 PID(로그인 셸, cwd=/user1/dev)가 아니라
+      // 실제 사용자가 있는 자손 셸의 cwd 를 따라가야 함. 로그인 셸 tpgid(포그라운드 pgrp) + 전체 프로세스의
+      // pid/ppid/cwd 를 받아 JS 에서 "포그라운드 또는 최심 자손" 의 cwd 를 선택.
+      // 출력 형식: "TPGID:<n>" 한 줄 + 이후 "pid ppid cwd" 줄들.
+      // 공유 개발서버(수백 프로세스 + 다중 사용자)에서 우리 세션의 셸만 정확히 식별하려면 SSH_CONNECTION
+      // 환경변수로 필터해야 함 (우리 TCP 연결 고유값. setview 가 셸을 reparent/탈tty 해도 자식이 env 상속).
+      // 로그인 셸(curPid) environ 에서 SSH_CONNECTION 을 읽어 그 값을 가진 프로세스만 출력.
+      // 출력: "pid ppid tty comm cwd". comm 은 stat 의 (괄호) 에서 추출 (구버전 커널 /proc/pid/comm 빈 문제 회피).
+      const cmd = `/bin/sh -c 'printf "<<PEPE>>\\n"; `
+        + `CONN=$(tr "\\000" "\\n" < /proc/${curPid}/environ 2>/dev/null | grep "^SSH_CONNECTION="); `
+        + `[ -z "$CONN" ] && { printf "<<END>>"; exit 0; }; `
+        + `for d in /proc/[0-9]*; do grep -aqz "$CONN" $d/environ 2>/dev/null || continue; `
+        + `st=$(cat $d/stat 2>/dev/null) || continue; `
+        + `c=\${st#*(}; cm=\${c%%)*}; rr=\${st#*) }; set -- $rr; `
+        + `cw=$(readlink $d/cwd 2>/dev/null); `
+        + `echo "\${d#/proc/} $2 $5 $cm $cw"; done; `
+        + `printf "<<END>>"'`;
       rec.conn.exec(cmd, (err: any, stream: any) => {
         if (err) {
           consecutiveErrors++;
@@ -693,21 +846,55 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
           inFlight = false;
           const m = out.match(/<<PEPE>>([\s\S]*?)<<END>>/);
           const inner = (m ? m[1] : out).trim();
-          let path = '';
-          if (inner === '/') {
-            path = '/';
-          } else {
-            const pathMatch = inner.match(/\/[A-Za-z0-9_\-./~]+/);
-            if (pathMatch) path = pathMatch[0];
+          // 파싱: "pid ppid tty comm cwd" 줄들
+          const SHELLS = new Set(['csh', 'tcsh', 'bash', 'zsh', 'sh', 'ksh', 'dash', 'fish']);
+          const procs = new Map<number, { ppid: number; tty: number; comm: string; cwd: string }>();
+          for (const line of inner.split('\n')) {
+            const tl = line.trim();
+            if (!tl) continue;
+            const parts = tl.split(/\s+/);
+            if (parts.length < 4) continue; // pid ppid tty comm (cwd 없을 수 있음)
+            const pid = parseInt(parts[0], 10);
+            const ppid = parseInt(parts[1], 10);
+            const tty = parseInt(parts[2], 10);
+            const comm = parts[3] || '';
+            const cwd = parts.length >= 5 ? parts.slice(4).join(' ') : '';
+            if (pid) procs.set(pid, { ppid, tty, comm, cwd });
           }
-          if (path) {
-            const last = this.lastCwd.get(panelId);
-            if (path !== last) {
-              console.log(`[autotrack-${panelId.slice(-6)}] cwd changed: ${last} → ${path}`);
-              this.lastCwd.set(panelId, path);
-              const oscSeq = `\x1b]7;file://localhost${path}\x1b\\`;
-              this.emit('message', { type: 'data', panelId, data: oscSeq });
+          let path = '';
+          let chosenPid = 0;
+          if (procs.size > 0) {
+            // SSH_CONNECTION 으로 이미 우리 세션 프로세스만 추려졌음 → 셸 중 최신(최대 pid)의 cwd 가 현재 활성 셸.
+            // (로그인 셸 → setview 서브셸 → 그 안의 cd 등, 최신 셸이 사용자가 있는 곳)
+            const shellCands = [...procs.entries()]
+              .filter(([, v]) => SHELLS.has(v.comm) && v.cwd && v.cwd.startsWith('/'))
+              .map(([pid, v]) => ({ pid, cwd: v.cwd }))
+              .sort((a, b) => b.pid - a.pid);
+            if (shellCands.length > 0) {
+              path = shellCands[0].cwd; chosenPid = shellCands[0].pid;
+            } else {
+              // 셸이 없으면(드묾) 우리 세션 프로세스 중 cwd 있는 최신
+              const any = [...procs.entries()]
+                .filter(([, v]) => v.cwd && v.cwd.startsWith('/'))
+                .map(([pid, v]) => ({ pid, cwd: v.cwd }))
+                .sort((a, b) => b.pid - a.pid);
+              if (any.length > 0) { path = any[0].cwd; chosenPid = any[0].pid; }
             }
+          }
+          // 활성 셸 PID 기록 — getCcViewRoot(CLEARCASE_ROOT 조회)가 이 PID 의 environ 을 읽음.
+          // 새 셸(setview 등)로 바뀌면 뷰 루트 캐시도 무효화.
+          if (chosenPid && this.activeShellPids.get(panelId) !== chosenPid) {
+            this.activeShellPids.set(panelId, chosenPid);
+            this.ccViewRoots.delete(panelId);
+          }
+          // 폴백: 기존 단일 경로 추출
+          if (!path) {
+            if (inner === '/') path = '/';
+            else { const pm = inner.match(/\/[A-Za-z0-9_\-./~]+/); if (pm) path = pm[0]; }
+          }
+          // 프롬프트 파싱이 cwd 를 제공하는 패널(ClearCase 등)에서는 /proc 추적값으로 덮어쓰지 않음
+          if (path && !this.promptCwdActive.has(panelId)) {
+            this._applyTrackedCwd(panelId, path);
           }
           scheduleNext();
         };
@@ -737,6 +924,9 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
     const rec = this.clients.get(panelId);
     if (!rec?.conn) return { success: false, error: 'not connected' };
     if (enabled) {
+      this.autoTrackOn.add(panelId);
+      // 재활성화 — 꺼져 있는 동안 쌓인 최신 프롬프트로 cwd 즉시 반영
+      this._detectAndApplyPromptCwd(panelId);
       if (this.shellPids.has(panelId)) {
         // PID 이미 알려짐 — 폴링만 시작
         this._startCwdPolling(panelId);
@@ -746,7 +936,8 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
         this._installOsc7Hook(panelId, '');
       }
     } else {
-      // 폴링만 중지
+      // 폴링 + 프롬프트 파싱 모두 중지
+      this.autoTrackOn.delete(panelId);
       this._stopCwdPolling(panelId);
       this.emit('message', { type: 'auto-track', panelId, enabled: false });
     }
@@ -783,6 +974,13 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
     this._stopCwdPolling(panelId);
     this.shellPids.delete(panelId);
     this.lastCwd.delete(panelId);
+    this.ccViewRoots.delete(panelId);
+    this.activeShellPids.delete(panelId);
+    this.promptTail.delete(panelId);
+    this.promptCwdActive.delete(panelId);
+    this.autoTrackOn.delete(panelId);
+    this.homeDirs.delete(panelId);
+    this.homeFetching.delete(panelId);
   }
 
   // 앱 종료 시 — 모든 SSH 연결을 일괄 종료. 비차단(fire-and-forget).
@@ -1105,6 +1303,7 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
 
   async handleSFTPListDir(panelId: string, remotePath: string): Promise<any[]> {
     const sftp = await this.getSftp(panelId);
+    remotePath = await this.resolveCcPath(panelId, remotePath);
     return new Promise((resolve, reject) => {
       sftp.readdir(remotePath, (err: any, list: any[]) => {
         if (err) return reject(err);
@@ -1376,6 +1575,7 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
 
   async handleSFTPReadFile(panelId: string, remotePath: string): Promise<Buffer> {
     const sftp = await this.getSftp(panelId);
+    remotePath = await this.resolveCcPath(panelId, remotePath);
     return new Promise((resolve, reject) => {
       sftp.readFile(remotePath, (err: any, data: Buffer) => {
         if (err) return reject(err);
@@ -1386,6 +1586,7 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
 
   async handleSFTPWriteFile(panelId: string, remotePath: string, content: Buffer | string): Promise<void> {
     const sftp = await this.getSftp(panelId);
+    remotePath = await this.resolveCcPath(panelId, remotePath);
     const buf = typeof content === 'string' ? Buffer.from(content, 'utf-8') : content;
     return new Promise((resolve, reject) => {
       sftp.writeFile(remotePath, buf, (err: any) => err ? reject(err) : resolve());

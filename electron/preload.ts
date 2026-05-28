@@ -226,6 +226,11 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('ssh:auto-track', handler);
     return () => ipcRenderer.removeListener('ssh:auto-track', handler);
   },
+  onSSHPwd: (cb: (p: { panelId: string; pwd: string }) => void) => {
+    const handler = (_: any, p: any) => cb(p);
+    ipcRenderer.on('ssh:pwd', handler);
+    return () => ipcRenderer.removeListener('ssh:pwd', handler);
+  },
   onSSHAuthPrompt: (cb: (p: any) => void) => {
     const handler = (_: any, p: any) => cb(p);
     ipcRenderer.on('ssh:auth-prompt', handler);
