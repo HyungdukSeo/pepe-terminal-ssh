@@ -657,6 +657,49 @@ function getOrCreateTerm(termId: string): { term: Terminal; fit: FitAddon; searc
       if (e.type !== 'keydown') return true;
       // 단축키 변경 중이면 모든 키 통과
       if (isKeybindingListening()) return true;
+      // Backspace / Delete 키 시퀀스 커스터마이즈 (세션 옵션) — 기본값은 xterm 기본 시퀀스
+      // Ctrl+Backspace / Ctrl+Delete 도 동일하게 세션 설정 시퀀스로 전송 (xterm 기본은 ^H 만 보냄)
+      {
+        const send = (seq: string) => {
+          try {
+            if (ptyConnected.has(termId)) (window as any).api?.ptyInput?.(termId, seq);
+            else (window as any).api?.sendSSHInput?.(termId, seq);
+          } catch {}
+        };
+        const plain = !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey;
+        const ctrlOnly = e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey;
+        // Xshell/PuTTY 호환: Ctrl 누르면 설정의 "반대" 시퀀스를 보냄
+        // ascii127 ↔ backspace(^H) 토글, vt220 은 그대로 유지
+        const flipBs = (m: KeySeqMode | undefined): KeySeqMode | undefined => {
+          if (m === 'ascii127') return 'backspace';
+          if (m === 'backspace') return 'ascii127';
+          if (m === undefined) return 'backspace'; // 기본 ASCII 127 가정 → 반대는 ^H
+          return m;
+        };
+        const flipDel = (m: KeySeqMode | undefined): KeySeqMode | undefined => {
+          if (m === 'vt220') return 'ascii127';
+          if (m === 'ascii127') return 'vt220';
+          if (m === 'backspace') return 'vt220';
+          return 'ascii127';
+        };
+        const seqOf = (m: KeySeqMode | undefined): string | null => {
+          if (m === 'vt220') return '\x1b[3~';
+          if (m === 'ascii127') return '\x7f';
+          if (m === 'backspace') return '\x08';
+          return null;
+        };
+        if ((plain || ctrlOnly) && (e.code === 'Backspace' || e.key === 'Backspace')) {
+          const base = termBackspaceMode.get(termId) ?? 'ascii127'; // Xshell/PuTTY 기본
+          const mode = ctrlOnly ? flipBs(base) : base;
+          const s = seqOf(mode);
+          if (s !== null) { send(s); return false; }
+        } else if ((plain || ctrlOnly) && (e.code === 'Delete' || e.key === 'Delete')) {
+          const base = termDeleteMode.get(termId) ?? 'vt220';
+          const mode = ctrlOnly ? flipDel(base) : base;
+          const s = seqOf(mode);
+          if (s !== null) { send(s); return false; }
+        }
+      }
       // Alt+1..9: 미니탭 전환 (앱 전역 핸들러로 위임) — 범위이므로 커스터마이즈 대상 아님
       if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && /^Digit[1-9]$/.test(e.code)) return false;
       // 전체화면 토글 (앱 전역 핸들러)
@@ -1009,6 +1052,18 @@ export function cloneTermStyle(srcTermId: string, dstTermId: string) {
 const termCursorStyleCache: Map<string, string> = new Map();
 // 커서 깜박임 캐시 — 복제 시 dst 터미널이 아직 마운트되지 않았어도 초기 옵션에 반영하기 위함
 const termCursorBlinkCache: Map<string, boolean> = new Map();
+// Backspace / Delete 키 시퀀스 — 세션별 설정. undefined = xterm 기본
+export type KeySeqMode = 'vt220' | 'ascii127' | 'backspace';
+const termBackspaceMode: Map<string, KeySeqMode> = new Map();
+const termDeleteMode: Map<string, KeySeqMode> = new Map();
+export function setTermBackspaceMode(termId: string, mode: KeySeqMode | undefined) {
+  if (mode) termBackspaceMode.set(termId, mode);
+  else termBackspaceMode.delete(termId);
+}
+export function setTermDeleteMode(termId: string, mode: KeySeqMode | undefined) {
+  if (mode) termDeleteMode.set(termId, mode);
+  else termDeleteMode.delete(termId);
+}
 
 export function applyFontToAll(fontFamily?: string, fontSize?: number) {
   if (fontFamily) localStorage.setItem('terminalFontFamily', fontFamily);
