@@ -163,7 +163,12 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
           if (v === 'local') updateSrc(side, { mode: 'local', termId: undefined, sessionId: undefined, label: t('local') });
           else {
             const opt = sourceOptions.find(o => o.termId === v);
-            if (opt) updateSrc(side, { mode: 'remote', termId: opt.termId, sessionId: opt.sessionId, label: opt.label });
+            if (opt) {
+              const codeDir = autoFillCodePath(opt.sessionId);
+              const patch: Partial<Source> = { mode: 'remote', termId: opt.termId, sessionId: opt.sessionId, label: opt.label };
+              if (codeDir) patch.basePath = codeDir;
+              updateSrc(side, patch);
+            }
           }
         }}
         style={{ width: 130, minWidth: 80, flexShrink: 1, fontSize: 12 }}
@@ -696,6 +701,25 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
     window.addEventListener('mouseup', onUp);
   };
 
+  // sessions.json 메타 캐시 — codePath 자동 입력용
+  const sessionMetaRef = useRef<Map<string, any>>(new Map());
+  useEffect(() => {
+    (async () => {
+      try {
+        const data: any = await (window as any).api?.listSessions?.();
+        const list: any[] = data?.sessions || [];
+        const m = new Map<string, any>();
+        for (const sess of list) m.set(sess.id, sess);
+        sessionMetaRef.current = m;
+      } catch {}
+    })();
+  }, []);
+  const autoFillCodePath = (sessionId?: string): string | undefined => {
+    if (!sessionId) return undefined;
+    const meta = sessionMetaRef.current.get(sessionId);
+    return meta?.codePath;
+  };
+
   // 소스 변경 시 basePath 보존
   const updateSrc = (side: Side, patch: Partial<Source>) => {
     if (compareMode === 'dir') {
@@ -717,7 +741,12 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
           if (v === 'local') updateSrc(side, { mode: 'local', termId: undefined, sessionId: undefined, label: t('local') });
           else {
             const opt = sourceOptions.find(o => o.termId === v);
-            if (opt) updateSrc(side, { mode: 'remote', termId: opt.termId, sessionId: opt.sessionId, label: opt.label });
+            if (opt) {
+              const codeDir = autoFillCodePath(opt.sessionId);
+              const patch: Partial<Source> = { mode: 'remote', termId: opt.termId, sessionId: opt.sessionId, label: opt.label };
+              if (codeDir) patch.basePath = codeDir;
+              updateSrc(side, patch);
+            }
           }
         }}
         style={{ width: 130, minWidth: 80, flexShrink: 1, fontSize: 12 }}

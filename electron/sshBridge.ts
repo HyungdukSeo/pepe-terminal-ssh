@@ -477,8 +477,8 @@ class SSHBridge extends EventEmitter {
 
       this.clients.set(panelId, { conn, stream, encoding: initialEncoding, primaryConn });
 
-      // 세션 옵션 autoTrackPwd 가 켜져 있으면 백그라운드 PID 탐지 + cwd 폴링 시작 — 셸에 명령 안 보냄.
-      if (session.autoTrackPwd) {
+      // 세션 옵션: autoTrackPwd 는 fileTreeEnabled 가 켜져 있을 때만 의미가 있다. 의존성 강제.
+      if (session.autoTrackPwd && session.fileTreeEnabled) {
         const injectDelay = session.loginScript && session.loginScript.length > 0 ? 3500 : 800;
         setTimeout(() => {
           this._installOsc7Hook(panelId, '');
@@ -746,11 +746,17 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
         this._installOsc7Hook(panelId, '');
       }
     } else {
-      // 폴링만 중지
+      // PWD 자동추적 OFF — cwd 폴링만 중지. SFTP/파일트리 연결은 별도 옵션이므로 건드리지 않음.
       this._stopCwdPolling(panelId);
       this.emit('message', { type: 'auto-track', panelId, enabled: false });
     }
     return { success: true };
+  }
+
+  // 외부에서 명시적으로 panel 의 dedicated SFTP 만 종료 (SSH 메인 연결은 유지) — 파일트리 unmount 등에서 호출
+  public releaseDedicatedSftp(panelId: string) {
+    try { this._cleanupDedicatedSftp(panelId); } catch {}
+    try { const s = this.sftpCache.get(panelId); if (s) { s.end?.(); this.sftpCache.delete(panelId); } } catch {}
   }
 
   handleResize(panelId: string, cols: number, rows: number) {

@@ -2324,8 +2324,10 @@ body.popout-options .session-editor h3:first-child {
   margin: 0 4px;
   display: inline-block;
 }
-.hide-xterm-cursor .xterm-cursor-layer { display: none !important; }
-.hide-xterm-cursor .xterm-cursor { display: none !important; opacity: 0 !important; }
+/* bar+blink: 네이티브 bar 렌더는 유지하고 CSS 로만 cursor 엘리먼트를 깜박이게 함 (셀 텍스트 안 가림) */
+@keyframes pepe-bar-blink { 50% { opacity: 0; } }
+.xterm-bar-blink-css .xterm-cursor-layer .xterm-cursor-bar,
+.xterm-bar-blink-css .xterm-cursor-bar { animation: pepe-bar-blink 1s step-end infinite !important; }
 @keyframes flame-flicker {
   0%   { filter: brightness(1) hue-rotate(0deg); transform: scaleY(1); }
   25%  { filter: brightness(1.2) hue-rotate(-5deg); transform: scaleY(1.05); }
