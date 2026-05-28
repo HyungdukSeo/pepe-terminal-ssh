@@ -617,43 +617,45 @@ class SSHBridge extends EventEmitter {
     // eslint-disable-next-line no-control-regex
     const clean = chunk.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, '');
     let buf = (this.promptTail.get(panelId) || '') + clean;
-    if (buf.length > 2048) buf = buf.slice(-2048);
+    if (buf.length > 4096) buf = buf.slice(-4096);
     this.promptTail.set(panelId, buf);
     // emit 은 자동추적이 켜진 경우에만
     if (this.autoTrackOn.has(panelId)) this._detectAndApplyPromptCwd(panelId);
   }
 
-  // 현재 promptTail 버퍼에서 cwd/뷰태그를 추출해 적용 (emit). 재활성화 시에도 호출.
+  // 현재 promptTail 버퍼 전체에서 "마지막" 프롬프트 매치를 찾아 cwd/뷰태그 적용.
+  // (마지막 3줄만 보면 프롬프트 뒤에 빈 줄/커서 이동 출력이 끼었을 때 놓침 → 전체에서 가장 마지막 매치 사용)
   private _detectAndApplyPromptCwd(panelId: string): void {
     const buf = this.promptTail.get(panelId) || '';
     if (!buf) return;
-    const lines = buf.split(/\r?\n/);
-    for (let i = lines.length - 1; i >= 0 && i >= lines.length - 3; i--) {
-      const line = lines[i];
-      const mm = line.match(/@[A-Za-z0-9_.\-]+(?:\(([A-Za-z0-9_.\-]+)\))?:(~?\/[^\s\]>$#)]*|~)\s*[\]$#>]/);
-      if (!mm) continue;
-      const viewTag = mm[1] || '';
-      let p = mm[2];
-      if (viewTag) {
-        const newRoot = `/view/${viewTag}`;
-        if (this.ccViewRoots.get(panelId) !== newRoot) {
-          this.ccViewRoots.set(panelId, newRoot);
-          console.log(`[clearcase-${panelId.slice(-6)}] view root from prompt: ${newRoot}`);
-        }
+    const re = /@[A-Za-z0-9_.\-]+(?:\(([A-Za-z0-9_.\-]+)\))?:(~?\/[^\s\]>$#)]*|~)\s*[\]$#>]/g;
+    let m: RegExpExecArray | null;
+    let lastViewTag = '';
+    let lastPath = '';
+    while ((m = re.exec(buf)) !== null) {
+      lastViewTag = m[1] || lastViewTag; // 뷰태그는 최근 것 유지
+      lastPath = m[2];
+    }
+    if (!lastPath) return;
+    if (lastViewTag) {
+      const newRoot = `/view/${lastViewTag}`;
+      if (this.ccViewRoots.get(panelId) !== newRoot) {
+        this.ccViewRoots.set(panelId, newRoot);
+        console.log(`[clearcase-${panelId.slice(-6)}] view root from prompt: ${newRoot}`);
       }
-      if (p === '~' || p.startsWith('~/')) {
-        const home = this.homeDirs.get(panelId);
-        if (!home) { this._fetchHomeDir(panelId); continue; }
-        p = p === '~' ? home : home.replace(/\/$/, '') + p.slice(1);
-      }
-      if (p.startsWith('/')) {
-        const wasActive = this.promptCwdActive.has(panelId);
-        this.promptCwdActive.add(panelId);
-        // 프롬프트 파싱이 cwd 를 제공하므로 무거운 /proc 폴링(400+ 프로세스 environ grep)은 중단 — SSH 채널 절약
-        if (!wasActive) this._stopCwdPolling(panelId);
-        this._applyTrackedCwd(panelId, p);
-        return;
-      }
+    }
+    let p = lastPath;
+    if (p === '~' || p.startsWith('~/')) {
+      const home = this.homeDirs.get(panelId);
+      if (!home) { this._fetchHomeDir(panelId); return; }
+      p = p === '~' ? home : home.replace(/\/$/, '') + p.slice(1);
+    }
+    if (p.startsWith('/')) {
+      const wasActive = this.promptCwdActive.has(panelId);
+      this.promptCwdActive.add(panelId);
+      // 프롬프트 파싱이 cwd 를 제공하므로 무거운 /proc 폴링은 중단 — SSH 채널 절약
+      if (!wasActive) this._stopCwdPolling(panelId);
+      this._applyTrackedCwd(panelId, p);
     }
   }
 

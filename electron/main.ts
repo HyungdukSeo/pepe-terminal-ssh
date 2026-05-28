@@ -166,6 +166,14 @@ function createWindow() {
     try { if (histDropdownWindow && !histDropdownWindow.isDestroyed()) histDropdownWindow.close(); } catch {}
     // 페이스트 모달 창들도 정리
     for (const [, pw] of pasteWindows) { try { if (!pw.isDestroyed()) pw.close(); } catch {} }
+    // 메인 창이 닫히면 앱 종료 — Aero Snap 미리보기창/플로팅창 등 보조 BrowserWindow 가 남아있으면
+    // window-all-closed 가 안 떠서 app.quit() 이 호출되지 않는 문제 방지. 모든 잔여 창을 파괴 후 quit.
+    try {
+      for (const w of BrowserWindow.getAllWindows()) {
+        try { w.destroy(); } catch {}
+      }
+    } catch {}
+    app.quit();
   });
 }
 
@@ -290,6 +298,9 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   try { stopAllBundledX11(); } catch {}
   try { getSSHBridge().disconnectAll(); } catch {}
+  // 강제 종료 보장 — PTY/ssh/webdav/소켓 등이 이벤트 루프를 잡고 있어도 확실히 프로세스 종료.
+  // (dev 모드에서 electron 이 안 죽으면 vite-plugin-electron 이 process.exit 를 못 해 npm run dev 가 안 끝남)
+  setTimeout(() => { try { process.exit(0); } catch {} }, 600);
 });
 
 // 앱 시작 5초 후 비동기로 과거 session-* 폴더 정리 (현재 더 이상 안 만드는데 기존 orphan 잔존 가능)
