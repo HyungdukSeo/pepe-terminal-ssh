@@ -738,12 +738,25 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   // Git 상태 — 현재 cwd / 활성 SSH 세션 자동 감지
   const [gitStatus, setGitStatus] = useState<{ ok: boolean; branch?: string; additions?: number; deletions?: number } | null>(null);
   const [input, setInput] = useState('');
-  // 외부 워크스페이스(예: LogAnalyzer)에서 prompt prefill — 'claude-prefill' window event 로 수신
+  // 외부 워크스페이스(예: LogAnalyzer)에서 prompt prefill — 'claude-prefill' window event 로 수신.
+  // detail: { text?: string, attachments?: { name, content }[], newConversation?: boolean }
   useEffect(() => {
     const onPrefill = (e: any) => {
-      const text = String(e?.detail?.text || '');
-      if (!text) return;
-      setInput(prev => prev ? prev + '\n\n' + text : text);
+      const d = e?.detail || {};
+      const text: string = String(d.text || '');
+      const attachments: { name: string; content: string }[] = Array.isArray(d.attachments) ? d.attachments : [];
+      const newConv = !!d.newConversation;
+      if (!text && attachments.length === 0) return;
+      // 새 대화 모드 — UI 만 리셋 (백그라운드 진행 중 응답은 유지)
+      if (newConv) {
+        clear();
+      }
+      if (text) {
+        setInput(prev => (newConv || !prev) ? text : prev + '\n\n' + text);
+      }
+      if (attachments.length > 0) {
+        setLocalFileAttachments(prev => newConv ? attachments : [...prev, ...attachments]);
+      }
       // 입력 textarea 포커스
       setTimeout(() => {
         try {
@@ -754,6 +767,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     };
     window.addEventListener('claude-prefill', onPrefill as any);
     return () => window.removeEventListener('claude-prefill', onPrefill as any);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [streaming, setStreaming] = useState(false);
   // 현재 진행 중 활동(툴 이름 등) — 스트리밍 인디케이터 옆에 표시
@@ -1186,6 +1200,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const folderUploadRef = useRef<HTMLInputElement | null>(null);
   // 로컬 파일 첨부 (사용자 PC 파일 내용)
   const [localFileAttachments, setLocalFileAttachments] = useState<{ name: string; content: string }[]>([]);
+  // 첨부 파일 미리보기 모달
+  const [attachmentPreview, setAttachmentPreview] = useState<{ name: string; content: string } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   // ClaudeChat 은 installed 상태에 따라 여러 return 분기를 가져서 ref 부착 시점이 변함.
   // 안정적으로 listener 를 붙이기 위해 document 전체에서 target 이 claude-chat-container 내부인지
@@ -3958,7 +3974,12 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             <div className="claude-chat-attachments-list">
               {localFileAttachments.map((f, i) => (
                 <div key={`${f.name}-${i}`} className="claude-chat-attachment">
-                  📄 <span className="claude-chat-attachment-path">{f.name}</span>
+                  📄 <span
+                    className="claude-chat-attachment-path"
+                    onClick={() => setAttachmentPreview({ name: f.name, content: f.content })}
+                    style={{ cursor: 'pointer', textDecoration: 'underline dotted', textUnderlineOffset: 2 }}
+                    title="클릭하여 내용 보기"
+                  >{f.name}</span>
                   <span style={{ color: '#888', fontSize: 10 }}>{(f.content.length / 1024).toFixed(1)}KB</span>
                   <button className="claude-chat-attachment-remove" onClick={() => setLocalFileAttachments(prev => prev.filter((_, x) => x !== i))}>×</button>
                 </div>
@@ -4377,6 +4398,58 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       {agentTooltip && createPortal(
         <div className="claude-chat-agent-tooltip" style={{ left: agentTooltip.x, top: agentTooltip.y }}>
           {agentTooltip.text}
+        </div>,
+        document.body
+      )}
+      {/* 첨부 파일 미리보기 모달 */}
+      {attachmentPreview && createPortal(
+        <div
+          className="rn-backdrop"
+          onMouseDown={e => { if (e.target === e.currentTarget) setAttachmentPreview(null); }}
+          onKeyDown={e => { if (e.key === 'Escape') setAttachmentPreview(null); }}
+        >
+          <div
+            className="rn-dialog"
+            onMouseDown={e => e.stopPropagation()}
+            style={{
+              width: 'min(900px, 90vw)', height: 'min(700px, 85vh)',
+              minWidth: 360, minHeight: 240,
+              maxWidth: '95vw', maxHeight: '92vh',
+              display: 'flex', flexDirection: 'column',
+              resize: 'both', overflow: 'hidden',
+            }}
+          >
+            <div className="rn-title" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>📄 {attachmentPreview.name}</span>
+              <span style={{ fontSize: 11, fontWeight: 400, color: '#888' }}>
+                {(attachmentPreview.content.length / 1024).toFixed(1)} KB · {attachmentPreview.content.split('\n').length} 줄
+              </span>
+            </div>
+            <div className="rn-body" style={{ flex: 1, minHeight: 0, padding: 0 }}>
+              <pre style={{
+                margin: 0, padding: '12px 14px',
+                height: '100%', overflow: 'auto',
+                background: '#0d1117', color: '#cdd9e5',
+                fontFamily: 'Consolas, "Courier New", monospace',
+                fontSize: 12, lineHeight: 1.5,
+                whiteSpace: 'pre', tabSize: 4,
+              }}>{attachmentPreview.content}</pre>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, padding: '10px 14px', borderTop: '1px solid #2a2a2a' }}>
+              <button
+                className="rn-btn"
+                onClick={() => {
+                  try { navigator.clipboard.writeText(attachmentPreview.content); } catch {}
+                }}
+                title="내용 클립보드 복사"
+              >📋 복사</button>
+              <button
+                className="rn-btn rn-btn-primary"
+                onClick={() => setAttachmentPreview(null)}
+                autoFocus
+              >닫기</button>
+            </div>
+          </div>
         </div>,
         document.body
       )}

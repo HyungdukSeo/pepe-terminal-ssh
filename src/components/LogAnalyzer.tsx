@@ -469,32 +469,50 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
     }
   }, [filtered, srcPath]);
 
-  // AI 분석 요청 — 현재 필터된 행을 텍스트 블록으로 만들어 ClaudeChat 에 prefill
+  // AI 분석 요청 — 현재 필터된 행을 별도 파일로 첨부 + 사용자 프롬프트 + 메타 컨텍스트 텍스트.
+  // ClaudeChat 측은 newConversation:true 면 새 대화로 시작 (이전 컨텍스트 섞임 방지).
   const sendToAi = useCallback(() => {
     if (filtered.length === 0 || !aiPrompt.trim()) return;
     const slice = filtered.slice(-aiMaxLines); // 최근 N행 (꼬리 부분이 보통 더 유효)
-    const lines: string[] = [];
-    lines.push(aiPrompt.trim());
-    lines.push('');
-    lines.push('### 로그 컨텍스트');
-    lines.push('- 소스: ' + (srcMode === 'local' ? '🖥️ ' : '🟢 ') + srcPath);
-    lines.push('- 전체 행 수: ' + filtered.length + ' (첨부: 최근 ' + slice.length + '행)');
+    const NL = String.fromCharCode(10);
+    // 첨부 파일 이름 — 소스 경로의 basename + timestamp
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const base = (srcPath.match(/[^\\/]+$/)?.[0] || 'log').replace(/\.[^.]*$/, '');
+    const fileName = `${base}-${ts}.log`;
+    // 활성 필터 요약
     const activeFilters: string[] = [];
     if (levelFilter.size > 0) activeFilters.push('Level=' + [...levelFilter].join(','));
     if (fileFilter.size > 0) activeFilters.push('File=' + [...fileFilter].join(','));
     if (tagFilter.size > 0) activeFilters.push('Tag=' + [...tagFilter].join(','));
     if (fnFilter.size > 0) activeFilters.push('Function=' + [...fnFilter].join(','));
     if (search) activeFilters.push('Search=' + search);
-    if (activeFilters.length > 0) lines.push('- 활성 필터: ' + activeFilters.join(' / '));
-    lines.push('');
-    lines.push('```log');
-    for (const e of slice) {
-      lines.push(e.raw);
-    }
-    lines.push('```');
-    const payload = lines.join(String.fromCharCode(10));
+    // 첨부 파일 본문 — 헤더 메타 + 원본 행들. 이걸 통째로 파일로 첨부.
+    const fileLines: string[] = [];
+    fileLines.push('# Log Excerpt');
+    fileLines.push('# source: ' + (srcMode === 'local' ? 'local ' : 'remote ') + srcPath);
+    fileLines.push('# total filtered lines: ' + filtered.length + ' (attached: last ' + slice.length + ')');
+    if (activeFilters.length > 0) fileLines.push('# active filters: ' + activeFilters.join(' / '));
+    fileLines.push('# generated: ' + new Date().toISOString());
+    fileLines.push('');
+    for (const e of slice) fileLines.push(e.raw);
+    const fileContent = fileLines.join(NL);
+    // prompt 본문 — 사용자 질문 + 간단한 컨텍스트만. 본문은 첨부 파일에 있음.
+    const promptLines: string[] = [];
+    promptLines.push(aiPrompt.trim());
+    promptLines.push('');
+    promptLines.push('첨부된 로그 파일 `' + fileName + '` 을 분석해줘.');
+    promptLines.push('- 소스: ' + srcPath);
+    promptLines.push('- 라인 수: ' + slice.length + ' (전체 필터 결과 ' + filtered.length + '행 중 최근)');
+    if (activeFilters.length > 0) promptLines.push('- 활성 필터: ' + activeFilters.join(' / '));
+    const promptText = promptLines.join(NL);
     try {
-      window.dispatchEvent(new CustomEvent('claude-prefill', { detail: { text: payload } }));
+      window.dispatchEvent(new CustomEvent('claude-prefill', {
+        detail: {
+          text: promptText,
+          attachments: [{ name: fileName, content: fileContent }],
+          newConversation: true,
+        },
+      }));
     } catch {}
   }, [filtered, aiPrompt, aiMaxLines, srcMode, srcPath, levelFilter, fileFilter, tagFilter, fnFilter, search]);
 

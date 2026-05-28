@@ -95,6 +95,8 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
   const [contentLoading, setContentLoading] = useState(false);
   const [savingMsg, setSavingMsg] = useState<string>('');
   const [sameNote, setSameNote]   = useState<string>(''); // 크기 달라도 내용 동일 안내
+  // All match 모달 — 두 파일이 완전히 일치할 때 띄움. 사용자가 X 닫기 전까지 유지.
+  const [allMatchModal, setAllMatchModal] = useState<{ left: string; right: string } | null>(null);
   const [leftEol,  setLeftEol]    = useState('');
   const [rightEol, setRightEol]   = useState('');
   const [leftEnc,  setLeftEnc]    = useState('');
@@ -403,9 +405,14 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
         setRightEol(detectEol(r.content ?? '')); setRightEnc(r.encoding || 'UTF-8');
         rightC = normEol(r.content ?? ''); setRightContent(rightC); setRightOriginal(rightC);
       }
-      // 크기 휴리스틱 오탐 안내 — 내용이 동일할 때 (카운트는 변경하지 않음)
-      if (!leftErr && !rightErr && leftC === rightC && row.status === 'changed') {
-        setSameNote('내용이 동일합니다 (개행 방식만 다름)');
+      // 내용 동일 안내 — 크기 휴리스틱 오탐(EOL 차이) 케이스 + 진짜 동일 케이스 모두
+      if (!leftErr && !rightErr && leftC === rightC) {
+        if (row.status === 'changed') {
+          setSameNote('내용이 동일합니다 (개행 방식만 다름)');
+        } else {
+          setSameNote('두 파일이 완전히 일치합니다 (All match)');
+          setAllMatchModal({ left: row.relPath || '', right: row.relPath || '' });
+        }
       }
     } catch (err: any) {
       setContentErr(String(err?.message || err));
@@ -441,6 +448,14 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
           updateSrc(side, { basePath: newPath.trim() });
         }
         if (!selectedRel) setSelectedRel('__file__');
+        // 양쪽 내용 비교 — 동일하면 안내
+        const otherC = side === 'left' ? rightContent : leftContent;
+        if (c === otherC) {
+          setSameNote('두 파일이 완전히 일치합니다 (All match)');
+          const lp = side === 'left' ? newPath.trim() : leftFilePath;
+          const rp = side === 'right' ? newPath.trim() : rightFilePath;
+          setAllMatchModal({ left: lp, right: rp });
+        }
       }
     } catch (err: any) {
       setContentErr(String(err?.message || err));
@@ -472,15 +487,21 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
         api.compareRead?.(rightSrc.mode, rightSrc.basePath, rightSrc.termId),
       ]);
       const normEol = (s: string) => s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      let lC = '', rC = '', lOK = false, rOK = false;
       if (l?.error) setContentErr(t('sourceReadFail', { error: l.error }));
       else {
         setLeftEol(detectEol(l.content ?? '')); setLeftEnc(l.encoding || 'UTF-8');
-        const c = normEol(l.content ?? ''); setLeftContent(c); setLeftOriginal(c);
+        lC = normEol(l.content ?? ''); setLeftContent(lC); setLeftOriginal(lC); lOK = true;
       }
       if (r?.error) setContentErr(p => p ? p + ' / ' + t('targetReadFail', { error: r.error }) : t('targetReadFail', { error: r.error }));
       else {
         setRightEol(detectEol(r.content ?? '')); setRightEnc(r.encoding || 'UTF-8');
-        const c = normEol(r.content ?? ''); setRightContent(c); setRightOriginal(c);
+        rC = normEol(r.content ?? ''); setRightContent(rC); setRightOriginal(rC); rOK = true;
+      }
+      // 양쪽 모두 성공 + 내용 동일 → 안내 + 모달
+      if (lOK && rOK && lC === rC) {
+        setSameNote('두 파일이 완전히 일치합니다 (All match)');
+        setAllMatchModal({ left: leftSrc.basePath, right: rightSrc.basePath });
       }
     } catch (err: any) {
       setContentErr(String(err?.message || err));
@@ -1237,6 +1258,54 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
           onPick={(p) => updateSrc(pickerSide!, { basePath: p })}
           onClose={() => setPickerSide(null)}
         />
+      )}
+      {/* All match 안내 모달 — 두 파일 내용이 완전히 일치할 때 */}
+      {allMatchModal && (
+        <div
+          onClick={() => setAllMatchModal(null)}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 5000,
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              background: 'linear-gradient(180deg, #1f2e1f 0%, #182518 100%)',
+              border: '1px solid #4caf50',
+              borderRadius: 10,
+              padding: '22px 28px',
+              minWidth: 360, maxWidth: 560,
+              boxShadow: '0 12px 40px rgba(0,0,0,0.6), 0 0 24px rgba(76,175,80,0.25)',
+              color: '#e0f0e0',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+              <span style={{ fontSize: 28, color: '#7fcf6e', textShadow: '0 0 12px rgba(127,207,110,0.7)' }}>✓</span>
+              <span style={{ fontSize: 16, fontWeight: 600 }}>All match — 두 파일이 완전히 일치합니다</span>
+            </div>
+            <div style={{ fontSize: 12, color: '#a0c8a0', marginBottom: 4 }}>비교 결과 차이가 없습니다.</div>
+            {(allMatchModal.left || allMatchModal.right) && (
+              <div style={{ marginTop: 12, padding: '10px 12px', background: 'rgba(0,0,0,0.3)', borderRadius: 6, fontSize: 11, fontFamily: 'monospace', lineHeight: 1.5 }}>
+                {allMatchModal.left && <div><span style={{ color: '#7a9' }}>L</span> {allMatchModal.left}</div>}
+                {allMatchModal.right && <div><span style={{ color: '#7a9' }}>R</span> {allMatchModal.right}</div>}
+              </div>
+            )}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 18 }}>
+              <button
+                onClick={() => setAllMatchModal(null)}
+                autoFocus
+                style={{
+                  background: '#3b6e3b', color: '#fff', border: 0,
+                  padding: '7px 18px', borderRadius: 5, cursor: 'pointer',
+                  fontSize: 13, fontWeight: 500,
+                }}
+                onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') setAllMatchModal(null); }}
+              >확인</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
