@@ -752,7 +752,6 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   // 대표 세션 (git bar 등 단일 참조용) — 첫 번째 선택
   const activeSshSession = selectedSshSessions[0] || null;
   const [installed, setInstalled] = useState<boolean | null>(null);
-  const [version, setVersion] = useState<string>('');
   // 에이전트별 버전 캐시 — 탭 hover 시 플로팅 툴팁에 표시
   const [agentVersions, setAgentVersions] = useState<{ claude?: string; gemini?: string; codex?: string }>({});
   // 에이전트 탭 툴팁 — React 포털로 document.body 에 렌더 (overflow 클립 회피)
@@ -1394,7 +1393,6 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   // CLI 설치 확인 (currentAgent 변경 시마다 재확인) + agentVersions 캐시 갱신
   useEffect(() => {
     setInstalled(null); // 에이전트 전환 시 로딩 상태로 초기화
-    setVersion(agentVersions[currentAgent] || '');
     (async () => {
       const res = currentAgent === 'gemini'
         ? await (window as any).api?.geminiCheck?.()
@@ -1403,7 +1401,6 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         : await (window as any).api?.claudeCheck?.();
       setInstalled(!!res?.installed);
       const v = res?.version || '';
-      setVersion(v);
       setAgentVersions(prev => prev[currentAgent] === v ? prev : { ...prev, [currentAgent]: v });
     })();
   }, [currentAgent]);
