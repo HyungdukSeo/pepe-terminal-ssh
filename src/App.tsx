@@ -49,7 +49,6 @@ import {
   collectAllSessions,
   findFirstLeafId,
   findEmptyLeafId,
-  countSessionInTree,
   createInitialLayout,
   resetLayoutSizes,
 } from './utils/layoutUtils';
@@ -1351,7 +1350,8 @@ function App() {
         const sessInfo = tid ? getTermSessionInfo(tid) : null;
         if (sessInfo && sessInfo.sessionId) {
           const newTermId = `term-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-          const newSess: PanelSession = { termId: newTermId, sessionId: sessInfo.sessionId, sessionName: sessInfo.sessionName || 'Session' };
+          const cloneName = makeUniqueDisplayName(sessInfo.sessionId, sessInfo.sessionName || 'Session');
+          const newSess: PanelSession = { termId: newTermId, sessionId: sessInfo.sessionId, sessionName: cloneName };
           updateLayout(activeTab.id, layout => splitNodeWithSessions(layout, selectedPanelId, dir, [newSess], false));
           setTimeout(async () => {
             if (tid) cloneTermStyle(tid, newTermId);
@@ -1359,7 +1359,7 @@ function App() {
               const r = await (window as any).api.connectSSH(newTermId, sessInfo.sessionId);
               if (r === 'need-password') promptPasswordAndConnect(newTermId, sessInfo.sessionId);
             } catch {}
-            registerTermSession(newTermId, sessInfo.sessionId, sessInfo.sessionName, sessInfo.host);
+            registerTermSession(newTermId, sessInfo.sessionId, cloneName, sessInfo.host);
             setTimeout(() => { refitAllTerms(); focusTerm(newTermId); }, 100);
           }, 100);
         } else {
@@ -1611,7 +1611,8 @@ function App() {
     if (!activeTab || !splitSessionPicker) return;
     const { dir, targetNodeId } = splitSessionPicker;
     const newTermId = `term-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const newSess: PanelSession = { termId: newTermId, sessionId: target.sessionId, sessionName: target.sessionName };
+    const splitName = makeUniqueDisplayName(target.sessionId, target.sessionName);
+    const newSess: PanelSession = { termId: newTermId, sessionId: target.sessionId, sessionName: splitName };
     // 세션 데이터에서 theme/font 가져오기
     let fullSess: any = null;
     try {
@@ -1631,7 +1632,7 @@ function App() {
         const r = await (window as any).api.connectSSH(newTermId, target.sessionId);
         if (r === 'need-password') promptPasswordAndConnect(newTermId, target.sessionId);
       } catch {}
-      registerTermSession(newTermId, target.sessionId, target.sessionName, target.host);
+      registerTermSession(newTermId, target.sessionId, splitName, target.host);
       setTimeout(() => { refitAllTerms(); focusTerm(newTermId); }, 100);
     }, 100);
     setSplitSessionPicker(null);
@@ -1881,6 +1882,27 @@ function App() {
     });
   };
 
+  // 같은 sessionId 가 이미 열려있을 때 "이름 #N" 형식으로 고유 displayName 생성.
+  // 이미 사용 중인 #N 은 건너뛰고 빈 번호를 채워 넣음.
+  const makeUniqueDisplayName = (sessionId: string, baseName: string): string => {
+    const stripMatch = baseName.match(/^(.*) #\d+$/);
+    const root = stripMatch ? stripMatch[1] : baseName;
+    const used = new Set<number>();
+    let plainSeen = false;
+    for (const t of tabs) {
+      for (const s of collectAllSessions(t.layout)) {
+        if (s.sessionId !== sessionId) continue;
+        const m = s.sessionName.match(/^(.*) #(\d+)$/);
+        if (m && m[1] === root) used.add(parseInt(m[2], 10));
+        else if (s.sessionName === root) plainSeen = true;
+      }
+    }
+    if (!plainSeen && used.size === 0) return `${root} #1`;
+    let n = 1;
+    while (used.has(n)) n++;
+    return `${root} #${n}`;
+  };
+
   const handleConnectDrop = (nodeId: string, sessionId: string) => {
     if (!activeTab) return;
     const doConnect = async () => {
@@ -1890,9 +1912,7 @@ function App() {
         const session = allSessions.find((s: any) => s.id === sessionId);
         if (!session) return;
 
-        let existingCount = 0;
-        for (const t of tabs) existingCount += countSessionInTree(t.layout, sessionId);
-        const displayName = `${session.name} #${existingCount + 1}`;
+        const displayName = makeUniqueDisplayName(sessionId, session.name);
 
         // 해당 패널의 활성 미니탭이 빈(sessionId='') 세션이면 교체
         const findEmpty = (node: LayoutNode): PanelSession | null => {
@@ -2048,20 +2068,19 @@ function App() {
         })();
       }, 200);
     };
-    const registerTerm = async (termId: string) => {
+    const registerTerm = async (termId: string, nameOverride?: string) => {
       // 세션 이름/호스트 정보도 전달
+      const name = nameOverride ?? displayName;
       try {
         const data = await (window as any).api.listSessions();
         const sessions = data?.sessions ?? data ?? [];
         const sess = sessions.find((s: any) => s.id === sessionId);
-        registerTermSession(termId, sessionId, displayName, sess?.host ?? '');
+        registerTermSession(termId, sessionId, name, sess?.host ?? '');
       } catch {
-        registerTermSession(termId, sessionId, displayName, '');
+        registerTermSession(termId, sessionId, name, '');
       }
     };
-    let existingCount = 0;
-    for (const t of tabs) existingCount += countSessionInTree(t.layout, sessionId);
-    const displayName = `${sessionName} #${existingCount + 1}`;
+    const displayName = makeUniqueDisplayName(sessionId, sessionName);
 
     // 선택된 패널의 활성 미니탭 확인
     if (selectedPanelId) {
@@ -2098,12 +2117,16 @@ function App() {
             applySessionTheme(termId); registerTerm(termId);
           } else {
             // 끊겨있으면 → 기존 termId 유지, 세션 정보만 교체 후 재연결
+            // 같은 sessionId 였다면 기존 이름(#N) 유지, 아니면 새 unique 이름
+            const reuseName = (activeSess.sessionId === sessionId && activeSess.sessionName)
+              ? activeSess.sessionName
+              : displayName;
             resetTermConnectState(activeSess.termId);
             updateLayout(activeTab.id, layout => {
               function walk(node: LayoutNode): LayoutNode {
                 if (node.type === 'leaf' && node.id === selectedPanelId) {
                   const sessions = node.panel.sessions.map((s, i) =>
-                    i === node.panel.activeIdx ? { ...s, sessionId, sessionName: displayName } : s
+                    i === node.panel.activeIdx ? { ...s, sessionId, sessionName: reuseName } : s
                   );
                   return { ...node, panel: { ...node.panel, sessions } };
                 }
@@ -2118,7 +2141,7 @@ function App() {
                 promptPasswordAndConnect(activeSess.termId, sessionId);
               }
             }, 100);
-            applySessionTheme(activeSess.termId); registerTerm(activeSess.termId);
+            applySessionTheme(activeSess.termId); registerTerm(activeSess.termId, reuseName);
           }
         };
         checkAndConnect();
