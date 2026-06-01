@@ -1,0 +1,2 @@
+pepe-jdbc.jar 가 빌드 시 이 디렉토리에 생성됩니다 (scripts/build-sidecar.js).
+git 추적에서는 제외됩니다. .gitignore 참고.

@@ -41,7 +41,12 @@ export type Session = {
   jumpTargetPort?: number;
   jumpTargetPassword?: string;
   dbms?: {
-    type: 'altibase';
+    type: 'altibase' | 'mysql' | 'postgres' | 'oracle' | 'mssql' | 'sqlite';
+    driverId?: string;
+    database?: string;
+    useSshTunnel?: boolean;
+    urlOverride?: string;
+    props?: Record<string, string>;
     port: number;
     user: string;
     password: string;
@@ -103,7 +108,24 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
   const [dbmsUser, setDbmsUser] = useState<string>(session?.dbms?.user ?? '');
   const [dbmsPassword, setDbmsPassword] = useState<string>(session?.dbms?.password ?? '');
   const [dbmsHost, setDbmsHost] = useState<string>(session?.dbms?.host ?? '127.0.0.1');
+  const [dbmsDatabase, setDbmsDatabase] = useState<string>(session?.dbms?.database ?? '');
+  const [dbmsDriverId, setDbmsDriverId] = useState<string>(session?.dbms?.driverId ?? 'altibase-builtin');
+  const [dbmsUseSshTunnel, setDbmsUseSshTunnel] = useState<boolean>(!!session?.dbms?.useSshTunnel);
+  const [dbmsUrlEditMode, setDbmsUrlEditMode] = useState<boolean>(!!session?.dbms?.urlOverride);
+  const [dbmsUrlOverride, setDbmsUrlOverride] = useState<string>(session?.dbms?.urlOverride ?? '');
   const [showDbmsPassword, setShowDbmsPassword] = useState(false);
+  // 등록된 JDBC 드라이버 목록 (Driver Manager 와 동일 소스)
+  const [jdbcDrivers, setJdbcDrivers] = useState<any[]>([]);
+  useEffect(() => {
+    (async () => {
+      try {
+        const list = await (window as any).api?.jdbcListDrivers?.();
+        if (Array.isArray(list)) setJdbcDrivers(list);
+      } catch {}
+    })();
+  }, []);
+  const [dbmsTestResult, setDbmsTestResult] = useState<string>('');
+  const [dbmsTesting, setDbmsTesting] = useState<boolean>(false);
   const [showIconPicker, setShowIconPicker] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [saveError, setSaveError] = useState('');
@@ -145,6 +167,12 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
     setDbmsUser(session?.dbms?.user ?? '');
     setDbmsPassword(session?.dbms?.password ?? '');
     setDbmsHost(session?.dbms?.host ?? '127.0.0.1');
+    setDbmsDatabase(session?.dbms?.database ?? '');
+    setDbmsDriverId(session?.dbms?.driverId ?? 'altibase-builtin');
+    setDbmsUseSshTunnel(!!session?.dbms?.useSshTunnel);
+    setDbmsUrlEditMode(!!session?.dbms?.urlOverride);
+    setDbmsUrlOverride(session?.dbms?.urlOverride ?? '');
+    setDbmsTestResult('');
   }, [session]);
 
   const getFolderPath = (f: Folder): string => {
@@ -182,8 +210,23 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
     setSaveError('');
     const auth = authType === 'password' ? { type: 'password', password } : { type: 'key', keyPath };
     const script = loginScript.filter(r => r.expect.trim() !== '' || r.send.trim() !== '');
-    const dbms = dbmsEnabled && dbmsUser.trim()
-      ? { type: 'altibase' as const, port: dbmsPort || 20300, user: dbmsUser.trim(), password: dbmsPassword, host: dbmsHost.trim() || '127.0.0.1' }
+    // SQL Tool 활성화 체크가 켜져 있으면 user 미입력이어도 dbms 를 저장 — 우클릭 메뉴 노출 보장.
+    // (user 가 비면 SqlToolWorkspace 가 연결 시점에 안내)
+    // dialect 는 선택된 driverId 에서 추론 (E-6).
+    const selectedDriver = jdbcDrivers.find(d => d.id === dbmsDriverId);
+    const dialect = (selectedDriver?.dialect || 'altibase') as 'altibase' | 'mysql' | 'postgres' | 'oracle' | 'mssql' | 'sqlite';
+    const dbms = dbmsEnabled
+      ? {
+          type: dialect,
+          driverId: dbmsDriverId || undefined,
+          port: dbmsPort || (selectedDriver?.defaultPort || 20300),
+          user: dbmsUser.trim(),
+          password: dbmsPassword,
+          host: dbmsHost.trim() || '127.0.0.1',
+          database: dbmsDatabase.trim() || undefined,
+          useSshTunnel: dbmsUseSshTunnel || undefined,
+          urlOverride: dbmsUrlEditMode && dbmsUrlOverride.trim() ? dbmsUrlOverride.trim() : undefined,
+        }
       : undefined;
     return { id, name, host: normalizeHost(host), port, username, auth, encoding, folderId: folderId || undefined, loginScript: script.length > 0 ? script : undefined, theme: theme || undefined, fontFamily: fontFamily || undefined, fontSize: fontSize || undefined, scrollback: scrollback || undefined, icon: icon || undefined, initialPath: initialPath.trim() || undefined, fileTreeEnabled: fileTreeEnabled || undefined, autoTrackPwd: (fileTreeEnabled && autoTrackPwd) ? true : undefined, backspaceKeyMode, deleteKeyMode, logPath: logPath.trim() || undefined, codePath: codePath.trim() || undefined, x11Forward: x11Forward || undefined, x11Display: x11Forward ? x11Display : undefined, jumpTargetHost: jumpTargetHost.trim() || undefined, jumpTargetUser: jumpTargetUser.trim() || undefined, jumpTargetPort: typeof jumpTargetPort === 'number' && jumpTargetPort > 0 ? jumpTargetPort : undefined, jumpTargetPassword: jumpTargetPassword || undefined, cursorStyle: cursorStyle !== 'block' ? cursorStyle : undefined, cursorBlink: !!cursorBlink, dbms } as Session;
   };
@@ -565,26 +608,119 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
                 </div>
               </div>
             )}
-            {category === 'dbms' && (
-              <div className="session-editor-grid">
-                <label>{t('fields.altibaseUse')}</label>
-                <label className="dbms-checkbox-label">
+            {category === 'dbms' && (() => {
+              const selectedDriver = jdbcDrivers.find(d => d.id === dbmsDriverId);
+              // URL 자동 합성: 템플릿의 {host}/{port}/{database} 치환. 직접 편집 모드면 override 우선.
+              const composedUrl = selectedDriver?.urlTemplate
+                ? selectedDriver.urlTemplate
+                    .replace('{host}', dbmsHost || '127.0.0.1')
+                    .replace('{port}', String(dbmsPort || selectedDriver.defaultPort || 0))
+                    .replace('{database}', dbmsDatabase || '')
+                : '';
+              const effectiveUrl = dbmsUrlEditMode && dbmsUrlOverride ? dbmsUrlOverride : composedUrl;
+              const driverUsable = selectedDriver?.diag?.usable;
+              const runTest = async () => {
+                if (!selectedDriver) { setDbmsTestResult('❌ 드라이버 미선택'); return; }
+                if (!driverUsable) { setDbmsTestResult('❌ 드라이버 JAR 누락 — 드라이버 관리자에서 JAR 추가 필요'); return; }
+                setDbmsTesting(true);
+                setDbmsTestResult('테스트 중...');
+                const cid = `test-${Date.now().toString(36)}`;
+                try {
+                  const api: any = (window as any).api || {};
+                  const cr = await api.jdbcConnect?.({
+                    connectionId: cid,
+                    driver: selectedDriver,
+                    url: effectiveUrl,
+                    user: dbmsUser,
+                    password: dbmsPassword,
+                  });
+                  if (!cr?.success) { setDbmsTestResult(`❌ ${cr?.error || '?'}`); return; }
+                  const info = cr.result || {};
+                  setDbmsTestResult(`✅ ${info.productName || ''} ${info.productVersion || ''} (driver: ${info.driverName || '?'})`);
+                  await api.jdbcDisconnect?.(cid);
+                } catch (e: any) {
+                  setDbmsTestResult(`❌ 예외: ${e?.message || e}`);
+                } finally { setDbmsTesting(false); }
+              };
+              return (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <label className="dbms-checkbox-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <input type="checkbox" checked={dbmsEnabled} onChange={e => setDbmsEnabled(e.target.checked)} />
                   <span>{t('fields.sqlToolEnable')}</span>
                 </label>
-                <label>{t('fields.dbPort')}</label>
-                <input type="number" value={dbmsPort} onChange={e => setDbmsPort(Number(e.target.value) || 20300)} placeholder="20300" disabled={!dbmsEnabled} min={1} max={65535} />
-                <label>{t('fields.dbHost')}</label>
-                <input type="text" value={dbmsHost} onChange={e => setDbmsHost(e.target.value)} placeholder="127.0.0.1" disabled={!dbmsEnabled} />
-                <label>{t('fields.dbUser')}</label>
-                <input type="text" value={dbmsUser} onChange={e => setDbmsUser(e.target.value)} placeholder="ipageon" disabled={!dbmsEnabled} autoComplete="off" />
-                <label>{t('fields.dbPassword')}</label>
-                <div style={{ display: 'flex', gap: 4 }}>
-                  <input type={showDbmsPassword ? 'text' : 'password'} value={dbmsPassword} onChange={e => setDbmsPassword(e.target.value)} disabled={!dbmsEnabled} style={{ flex: 1 }} autoComplete="off" />
-                  <button type="button" onClick={() => setShowDbmsPassword(v => !v)} disabled={!dbmsEnabled}>{showDbmsPassword ? '🙈' : '👁'}</button>
+                <div className="session-editor-grid">
+                  <label>JDBC 드라이버</label>
+                  <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                    <select
+                      value={dbmsDriverId}
+                      onChange={e => {
+                        const next = e.target.value;
+                        setDbmsDriverId(next);
+                        // 새 드라이버 선택 시 기본 포트 채택 (사용자가 직접 바꿨으면 유지)
+                        const d = jdbcDrivers.find(x => x.id === next);
+                        if (d?.defaultPort && d.defaultPort > 0) setDbmsPort(d.defaultPort);
+                      }}
+                      disabled={!dbmsEnabled}
+                      style={{ flex: 1 }}
+                    >
+                      {jdbcDrivers.length === 0 && <option value="">(로딩...)</option>}
+                      {jdbcDrivers.map(d => (
+                        <option key={d.id} value={d.id}>
+                          {d.diag?.usable ? '✓' : '⚠'} {d.name} [{d.dialect}]
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <label>호스트</label>
+                  <input type="text" value={dbmsHost} onChange={e => setDbmsHost(e.target.value)} placeholder="127.0.0.1" disabled={!dbmsEnabled} />
+                  <label>포트</label>
+                  <input type="number" value={dbmsPort} onChange={e => setDbmsPort(Number(e.target.value) || 0)} placeholder={String(selectedDriver?.defaultPort || 0)} disabled={!dbmsEnabled} min={1} max={65535} />
+                  <label>Database</label>
+                  <input type="text" value={dbmsDatabase} onChange={e => setDbmsDatabase(e.target.value)} placeholder={selectedDriver?.dialect === 'sqlite' ? '/path/to/file.db' : 'mydb'} disabled={!dbmsEnabled} />
+                  <label>사용자</label>
+                  <input type="text" value={dbmsUser} onChange={e => setDbmsUser(e.target.value)} placeholder="ipageon" disabled={!dbmsEnabled} autoComplete="off" />
+                  <label>비밀번호</label>
+                  <div style={{ display: 'flex', gap: 4 }}>
+                    <input type={showDbmsPassword ? 'text' : 'password'} value={dbmsPassword} onChange={e => setDbmsPassword(e.target.value)} disabled={!dbmsEnabled} style={{ flex: 1 }} autoComplete="off" />
+                    <button type="button" onClick={() => setShowDbmsPassword(v => !v)} disabled={!dbmsEnabled}>{showDbmsPassword ? '🙈' : '👁'}</button>
+                  </div>
+                  <label>SSH 터널</label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#bbb', fontSize: 12 }}>
+                    <input type="checkbox" checked={dbmsUseSshTunnel} onChange={e => setDbmsUseSshTunnel(e.target.checked)} disabled={!dbmsEnabled} />
+                    <span>SSH 세션 위에 포트 포워딩 후 로컬에서 JDBC 접속</span>
+                  </label>
+                </div>
+
+                <div style={{ background: '#1e1e1e', border: '1px solid #333', borderRadius: 3, padding: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <span style={{ fontWeight: 600, fontSize: 12, color: '#9cdcfe' }}>JDBC URL</span>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#aaa', fontSize: 11 }}>
+                      <input type="checkbox" checked={dbmsUrlEditMode} onChange={e => { setDbmsUrlEditMode(e.target.checked); if (e.target.checked && !dbmsUrlOverride) setDbmsUrlOverride(composedUrl); }} disabled={!dbmsEnabled} />
+                      <span>직접 입력</span>
+                    </label>
+                    {!dbmsUrlEditMode && composedUrl && (
+                      <button type="button" onClick={() => navigator.clipboard.writeText(composedUrl)} style={{ marginLeft: 'auto', background: 'transparent', color: '#aaa', border: '1px solid #444', padding: '1px 6px', borderRadius: 2, cursor: 'pointer', fontSize: 11 }}>복사</button>
+                    )}
+                  </div>
+                  {dbmsUrlEditMode ? (
+                    <input type="text" value={dbmsUrlOverride} onChange={e => setDbmsUrlOverride(e.target.value)} disabled={!dbmsEnabled} style={{ width: '100%', boxSizing: 'border-box', fontFamily: 'monospace', fontSize: 12 }} />
+                  ) : (
+                    <code style={{ color: '#d4d4d4', fontSize: 12, fontFamily: 'monospace', wordBreak: 'break-all' }}>{composedUrl || '(드라이버 선택 필요)'}</code>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <button type="button" onClick={runTest} disabled={!dbmsEnabled || dbmsTesting || !selectedDriver} style={{ background: '#3a7d3a', color: '#fff', border: 0, padding: '5px 12px', borderRadius: 3, cursor: dbmsTesting ? 'wait' : 'pointer', fontSize: 12 }}>
+                    {dbmsTesting ? '...' : '🔌 테스트 연결'}
+                  </button>
+                  {dbmsTestResult && (
+                    <span style={{ color: dbmsTestResult.startsWith('✅') ? '#5fb55f' : (dbmsTestResult.startsWith('테스트') ? '#bbb' : '#fcc'), fontSize: 12, fontFamily: 'monospace' }}>{dbmsTestResult}</span>
+                  )}
                 </div>
               </div>
-            )}
+              );
+            })()}
           </div>
         </div>
 

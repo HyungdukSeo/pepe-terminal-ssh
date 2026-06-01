@@ -14,6 +14,9 @@ import * as pty from 'node-pty';
 import { fileURLToPath } from 'url';
 import { loadSessionsData, saveSessionsData, getSessionsPath, saveCustomPath, loadUIPrefs, saveUIPrefs, Session, Folder, SessionsData } from './sessionsStore';
 import { getSSHBridge } from './sshBridge';
+import { getSharedJdbcSidecar, shutdownAllJdbcSidecars, findSidecarJar, findJavaExecutable } from './jdbcBridge';
+import { listDrivers, upsertUserDriver, removeUserDriver, diagnoseDriver, getBundledDriversRoot, getUserJdbcDriversRoot, resolveDriverJarsExisting, JdbcDriverDef } from './driversStore';
+import { getSessionState as getSqlToolState, setSessionState as setSqlToolState, SqlToolSessionState } from './sqlToolStore';
 import { createWebDAVBridge } from './webdavBridge';
 import { installX11DisplayHook } from './x11Display';
 import { startBundledX11, stopBundledX11, stopAllBundledX11, listRunningX11 } from './x11Bundled';
@@ -327,6 +330,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   try { stopAllBundledX11(); } catch {}
   try { getSSHBridge().disconnectAll(); } catch {}
+  try { shutdownAllJdbcSidecars(); } catch {}
   // 강제 종료 보장 — PTY/ssh/webdav/소켓 등이 이벤트 루프를 잡고 있어도 확실히 프로세스 종료.
   // (dev 모드에서 electron 이 안 죽으면 vite-plugin-electron 이 process.exit 를 못 해 npm run dev 가 안 끝남)
   setTimeout(() => { try { process.exit(0); } catch {} }, 600);
@@ -2851,18 +2855,187 @@ ipcMain.handle('fe:release-sftp', (_e, { panelId }: { panelId: string }) => {
   return { success: true };
 });
 
-// SQL Tool — CSV 파일 저장 다이얼로그
+// SQL Tool — 결과 파일 저장 다이얼로그 (확장자에 따라 CSV/JSON/TSV/TXT)
 ipcMain.handle('sql:save-csv', async (_e, { defaultName, content }: { defaultName?: string; content: string }) => {
   if (!mainWindow) return { success: false, error: 'no window' };
+  const name = defaultName || 'query-result.csv';
+  const ext = (name.match(/\.([A-Za-z0-9]+)$/)?.[1] || 'csv').toLowerCase();
+  const filterByExt: Record<string, { name: string; extensions: string[] }> = {
+    csv: { name: 'CSV', extensions: ['csv'] },
+    json: { name: 'JSON', extensions: ['json'] },
+    tsv: { name: 'TSV', extensions: ['tsv'] },
+    txt: { name: 'Text', extensions: ['txt'] },
+  };
+  const primaryFilter = filterByExt[ext] || filterByExt.csv;
   const r = await dialog.showSaveDialog(mainWindow, {
     title: t('dialog.saveCsv'),
-    defaultPath: defaultName || 'query-result.csv',
-    filters: [{ name: 'CSV', extensions: ['csv'] }, { name: 'All Files', extensions: ['*'] }],
+    defaultPath: name,
+    filters: [primaryFilter, { name: 'All Files', extensions: ['*'] }],
   });
   if (r.canceled || !r.filePath) return { success: false, canceled: true };
   try {
-    fs.writeFileSync(r.filePath, '﻿' + content, 'utf8'); // BOM for Excel
+    // CSV 만 Excel 호환 BOM. 나머지는 순수 UTF-8.
+    const payload = ext === 'csv' ? ('﻿' + content) : content;
+    fs.writeFileSync(r.filePath, payload, 'utf8');
     return { success: true, path: r.filePath };
+  } catch (err: any) {
+    return { success: false, error: String(err?.message || err) };
+  }
+});
+
+// JDBC 사이드카 진단 — Java 프로세스 spawn + ping 라운드트립.
+// E-2.2 단계: Driver Manager UI 의 "사이드카 확인" 버튼이 이걸 호출.
+ipcMain.handle('jdbc:ping', async () => {
+  const jar = findSidecarJar();
+  const java = findJavaExecutable();
+  if (!jar) {
+    return { success: false, error: 'pepe-jdbc.jar 누락 — `npm run build:sidecar` 실행 필요', jar: null, java };
+  }
+  try {
+    const result = await getSharedJdbcSidecar().call('ping', null, 8000);
+    return { success: true, result, jar, java };
+  } catch (e: any) {
+    return { success: false, error: String(e?.message || e), jar, java };
+  }
+});
+
+// JDBC Driver Manager IPC — 등록된 드라이버 목록 조회/저장/삭제.
+ipcMain.handle('jdbc:list-drivers', async () => {
+  const drivers = listDrivers();
+  // 진단 정보(누락된 JAR) 포함 — UI 가 "JAR 없음" 표시할 때 사용.
+  return drivers.map(d => ({ ...d, diag: diagnoseDriver(d) }));
+});
+ipcMain.handle('jdbc:save-driver', async (_e, def: JdbcDriverDef) => {
+  try {
+    if (!def || !def.id) return { success: false, error: 'id 필수' };
+    const next = upsertUserDriver(def);
+    return { success: true, drivers: next };
+  } catch (err: any) {
+    return { success: false, error: String(err?.message || err) };
+  }
+});
+ipcMain.handle('jdbc:remove-driver', async (_e, id: string) => {
+  try {
+    if (!id) return { success: false, error: 'id 필수' };
+    const next = removeUserDriver(id);
+    return { success: true, drivers: next };
+  } catch (err: any) {
+    return { success: false, error: String(err?.message || err) };
+  }
+});
+ipcMain.handle('jdbc:driver-roots', async () => ({
+  bundled: getBundledDriversRoot(),
+  user: getUserJdbcDriversRoot(),
+}));
+// 사용자가 JAR 파일을 골라 ${userJdbc}/ 디렉토리로 복사 — Driver Manager 의 "JAR 추가" 버튼이 호출.
+ipcMain.handle('jdbc:pick-and-import-jar', async () => {
+  if (!mainWindow) return { success: false, error: 'no window' };
+  const r = await dialog.showOpenDialog(mainWindow, {
+    title: 'JDBC 드라이버 JAR 선택',
+    properties: ['openFile', 'multiSelections'],
+    filters: [{ name: 'JAR', extensions: ['jar'] }],
+  });
+  if (r.canceled || r.filePaths.length === 0) return { success: false, canceled: true };
+  const userRoot = getUserJdbcDriversRoot();
+  const imported: string[] = [];
+  try {
+    for (const src of r.filePaths) {
+      const name = path.basename(src);
+      const dst = path.join(userRoot, name);
+      fs.copyFileSync(src, dst);
+      imported.push(`\${userJdbc}/${name}`);
+    }
+    return { success: true, imported };
+  } catch (err: any) {
+    return { success: false, error: String(err?.message || err) };
+  }
+});
+// 사이드카에 전달할 수 있는 드라이버의 "절대 JAR 경로" 해석 — 미리보기/디버그용.
+ipcMain.handle('jdbc:resolve-jars', async (_e, def: JdbcDriverDef) => {
+  return resolveDriverJarsExisting(def?.jars || []);
+});
+
+// 사이드카 정식 RPC 메서드 IPC. 모두 jdbcBridge.getSharedJdbcSidecar().call(method, params) 로 위임.
+ipcMain.handle('jdbc:load-driver', async (_e, def: JdbcDriverDef) => {
+  try {
+    const jars = resolveDriverJarsExisting(def?.jars || []);
+    if (jars.length === 0) return { success: false, error: 'JAR 없음(드라이버 정의 확인)' };
+    const result = await getSharedJdbcSidecar().call('loadDriver', {
+      driverId: def.id, className: def.className, jars,
+    }, 30000);
+    return { success: true, result };
+  } catch (e: any) {
+    return { success: false, error: String(e?.message || e) };
+  }
+});
+ipcMain.handle('jdbc:connect', async (_e, args: {
+  connectionId: string;
+  driver: JdbcDriverDef;
+  url: string;
+  user?: string;
+  password?: string;
+  props?: Record<string, string>;
+}) => {
+  try {
+    // loadDriver 가 idempotent 라 자동 호출 — UI 가 신경 안 써도 됨.
+    const jars = resolveDriverJarsExisting(args.driver?.jars || []);
+    if (jars.length === 0) return { success: false, error: 'JAR 없음(드라이버 정의 확인)' };
+    await getSharedJdbcSidecar().call('loadDriver', {
+      driverId: args.driver.id, className: args.driver.className, jars,
+    }, 30000);
+    const result = await getSharedJdbcSidecar().call('connect', {
+      connectionId: args.connectionId,
+      driverId: args.driver.id,
+      url: args.url,
+      user: args.user,
+      password: args.password,
+      props: args.props,
+    }, 60000);
+    return { success: true, result };
+  } catch (e: any) {
+    return { success: false, error: String(e?.message || e) };
+  }
+});
+ipcMain.handle('jdbc:disconnect', async (_e, connectionId: string) => {
+  try {
+    const result = await getSharedJdbcSidecar().call('disconnect', { connectionId }, 8000);
+    return { success: true, result };
+  } catch (e: any) {
+    return { success: false, error: String(e?.message || e) };
+  }
+});
+ipcMain.handle('jdbc:exec', async (_e, args: { connectionId: string; sql: string; maxRows?: number }) => {
+  try {
+    const result = await getSharedJdbcSidecar().call('exec', args, 120000);
+    return { success: true, result };
+  } catch (e: any) {
+    return { success: false, error: String(e?.message || e) };
+  }
+});
+ipcMain.handle('jdbc:meta-tables', async (_e, args: { connectionId: string; catalog?: string; schema?: string; types?: string[] }) => {
+  try { return { success: true, result: await getSharedJdbcSidecar().call('meta.tables', args, 30000) }; }
+  catch (e: any) { return { success: false, error: String(e?.message || e) }; }
+});
+ipcMain.handle('jdbc:meta-columns', async (_e, args: { connectionId: string; catalog?: string; schema?: string; table: string }) => {
+  try { return { success: true, result: await getSharedJdbcSidecar().call('meta.columns', args, 30000) }; }
+  catch (e: any) { return { success: false, error: String(e?.message || e) }; }
+});
+ipcMain.handle('jdbc:meta-primary-keys', async (_e, args: { connectionId: string; catalog?: string; schema?: string; table: string }) => {
+  try { return { success: true, result: await getSharedJdbcSidecar().call('meta.primaryKeys', args, 30000) }; }
+  catch (e: any) { return { success: false, error: String(e?.message || e) }; }
+});
+
+// SQL Tool 세션 상태 영속화 (history / favorites / editorTabs).
+// renderer 는 localStorage 대신 이 IPC 쌍을 통해 main 의 JSON 파일과 통신.
+ipcMain.handle('sql-tool:get-state', async (_e, sessionId: string) => {
+  if (!sessionId) return {};
+  return getSqlToolState(sessionId);
+});
+ipcMain.handle('sql-tool:set-state', async (_e, args: { sessionId: string; partial: SqlToolSessionState }) => {
+  if (!args?.sessionId) return { success: false, error: 'sessionId 누락' };
+  try {
+    const next = setSqlToolState(args.sessionId, args.partial || {});
+    return { success: true, state: next };
   } catch (err: any) {
     return { success: false, error: String(err?.message || err) };
   }

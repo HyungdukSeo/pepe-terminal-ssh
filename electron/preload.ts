@@ -77,6 +77,30 @@ contextBridge.exposeInMainWorld('api', {
   feReleaseSftp: (panelId: string) => ipcRenderer.invoke('fe:release-sftp', { panelId }),
   sqlExec: (connId: string, command: string, timeoutMs?: number) => ipcRenderer.invoke('sql:exec', { connId, command, timeoutMs }),
   sqlSaveCsv: (defaultName: string, content: string) => ipcRenderer.invoke('sql:save-csv', { defaultName, content }),
+  // JDBC 사이드카 진단 — Java 프로세스 ping. 성공 시 { success, result:{version,javaVersion,...}, jar, java }
+  jdbcPing: () => ipcRenderer.invoke('jdbc:ping'),
+  // Driver Manager (DBeaver 스타일).
+  jdbcListDrivers: () => ipcRenderer.invoke('jdbc:list-drivers'),
+  jdbcSaveDriver: (def: any) => ipcRenderer.invoke('jdbc:save-driver', def),
+  jdbcRemoveDriver: (id: string) => ipcRenderer.invoke('jdbc:remove-driver', id),
+  jdbcDriverRoots: () => ipcRenderer.invoke('jdbc:driver-roots'),
+  jdbcPickAndImportJar: () => ipcRenderer.invoke('jdbc:pick-and-import-jar'),
+  jdbcResolveJars: (def: any) => ipcRenderer.invoke('jdbc:resolve-jars', def),
+  // 사이드카 정식 RPC 래퍼. 모두 { success, result|error } 반환.
+  jdbcLoadDriver: (def: any) => ipcRenderer.invoke('jdbc:load-driver', def),
+  jdbcConnect: (args: { connectionId: string; driver: any; url: string; user?: string; password?: string; props?: Record<string,string> }) =>
+    ipcRenderer.invoke('jdbc:connect', args),
+  jdbcDisconnect: (connectionId: string) => ipcRenderer.invoke('jdbc:disconnect', connectionId),
+  jdbcExec: (args: { connectionId: string; sql: string; maxRows?: number }) => ipcRenderer.invoke('jdbc:exec', args),
+  jdbcMetaTables: (args: { connectionId: string; catalog?: string; schema?: string; types?: string[] }) =>
+    ipcRenderer.invoke('jdbc:meta-tables', args),
+  jdbcMetaColumns: (args: { connectionId: string; catalog?: string; schema?: string; table: string }) =>
+    ipcRenderer.invoke('jdbc:meta-columns', args),
+  jdbcMetaPrimaryKeys: (args: { connectionId: string; catalog?: string; schema?: string; table: string }) =>
+    ipcRenderer.invoke('jdbc:meta-primary-keys', args),
+  // SQL Tool 세션 상태 영속화 (localStorage 대체)
+  sqlToolGetState: (sessionId: string) => ipcRenderer.invoke('sql-tool:get-state', sessionId),
+  sqlToolSetState: (sessionId: string, partial: any) => ipcRenderer.invoke('sql-tool:set-state', { sessionId, partial }),
   feConnectedSessions: () => ipcRenderer.invoke('fe:connected-sessions'),
 
   // SFTP

@@ -1,0 +1,54 @@
+package com.pepe.jdbc;
+
+import java.io.File;
+import java.net.URL;
+import java.net.URLClassLoader;
+import java.sql.Driver;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * Holds JDBC {@link Driver} instances keyed by driver id (the one we coined in
+ * the Renderer's drivers.json — e.g. "postgres-builtin"). Each driver gets its
+ * own {@link URLClassLoader} so multiple drivers (even with conflicting
+ * dependencies) coexist without polluting the system class loader.
+ *
+ * <p>{@link java.sql.DriverManager} is intentionally NOT used: it requires the
+ * driver class to be loaded by the system class loader, which is incompatible
+ * with isolated class loaders. We instead instantiate the driver directly and
+ * pass connection requests straight to {@link Driver#connect(String, java.util.Properties)}.
+ */
+public final class DriverRegistry {
+  private final Map<String, Driver> drivers = new HashMap<>();
+
+  public synchronized Driver getDriver(String id) {
+    return drivers.get(id);
+  }
+
+  public synchronized void loadDriver(String id, String className, List<String> jars) {
+    if (drivers.containsKey(id)) return; // already loaded
+
+    URL[] urls = new URL[jars.size()];
+    for (int i = 0; i < jars.size(); i++) {
+      File f = new File(jars.get(i));
+      if (!f.isFile()) {
+        throw new RpcError("DRIVER_NOT_FOUND", "JAR missing: " + f.getAbsolutePath());
+      }
+      try { urls[i] = f.toURI().toURL(); }
+      catch (Exception e) { throw new RpcError("DRIVER_NOT_FOUND", "bad JAR url: " + f + " (" + e.getMessage() + ")"); }
+    }
+
+    // parent = current ClassLoader so the driver can still see the JDK + Jackson.
+    URLClassLoader cl = new URLClassLoader(urls, DriverRegistry.class.getClassLoader());
+    Class<?> c;
+    try { c = Class.forName(className, true, cl); }
+    catch (ClassNotFoundException e) { throw new RpcError("DRIVER_NOT_FOUND", "class not found in JARs: " + className); }
+
+    Driver d;
+    try { d = (Driver) c.getDeclaredConstructor().newInstance(); }
+    catch (Throwable t) { throw new RpcError("DRIVER_NOT_FOUND", "cannot instantiate driver: " + className + " — " + t.getMessage()); }
+
+    drivers.put(id, d);
+  }
+}

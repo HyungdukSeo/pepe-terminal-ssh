@@ -24,7 +24,12 @@ type Session = {
   fontSize?: number;
   scrollback?: number;
   icon?: string;
-  dbms?: { type: 'altibase'; port: number; user: string; password: string; host?: string };
+  dbms?: {
+    type: 'altibase' | 'mysql' | 'postgres' | 'oracle' | 'mssql' | 'sqlite';
+    port: number; user: string; password: string; host?: string;
+    driverId?: string; database?: string; useSshTunnel?: boolean; urlOverride?: string;
+    props?: Record<string, string>;
+  };
   x11Forward?: boolean;
   x11Display?: number;
 };
