@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { FixedSizeList as VList, ListChildComponentProps } from 'react-window';
-import { subscribePwdChange, isTermPty, subscribeConnectedChange } from './TerminalPanel';
+import { subscribePwdChange, isTermPty, subscribeConnectedChange, getCurrentPwdForTerm } from './TerminalPanel';
 
 const ROW_HEIGHT = 22; // App.css 의 .remote-file-item height 와 동기
 
@@ -221,17 +221,14 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
     setCollapsed(new Set());
   }, [loadChildren]);
 
-  // 터미널에서 cd 발생 시 (OSC 7 hook) 자동으로 해당 경로로 네비게이트
+  // 터미널에서 cd 발생 시 (OSC 7 hook / 프롬프트 파싱) 자동으로 해당 경로로 네비게이트
+  const lastNavPathRef = useRef<string>('');
   useEffect(() => {
     const dispose = subscribePwdChange(termId, (pwd) => {
       if (!pwd) return;
-      // 현재 표시된 root.path 와 다를 때만 navigate
-      setRoot(r => {
-        if (r?.path === pwd) return r;
-        // 비동기 navigate 실행
-        navigateTo(pwd).catch(() => {});
-        return r;
-      });
+      if (lastNavPathRef.current === pwd) return; // 같은 경로 중복 navigate 방지
+      lastNavPathRef.current = pwd;
+      navigateTo(pwd).catch(() => {});
     });
     return () => { dispose(); };
   }, [termId, navigateTo]);
@@ -240,9 +237,17 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
   useEffect(() => {
     // null 이면 아직 조회 중 — 대기
     if (initialPath === null) return;
-    // 자동 로드 게이트: autoTrackPwd 도 꺼져있고 initialPath 도 없으면 사용자가 명시적으로 로드할 때까지 SFTP 안 열기
+    // 자동 로드 게이트: fileTreeEnabled/initialPath/사용자 명시 로드 전까지 SFTP 안 열기
     if (!allowAutoLoad) return;
-    const startTargetPath = (initialPath || '').trim();
+    let startTargetPath = (initialPath || '').trim();
+    // initialPath 가 비어 있어도 자동추적으로 이미 알려진 현재 pwd 가 있으면 그걸 사용
+    // (홈 fetch 가 비동기로 늦게 끝나 구독의 navigate(/vobs 등)를 덮어쓰는 문제 방지)
+    if (!startTargetPath) {
+      const livePwd = getCurrentPwdForTerm(termId);
+      if (livePwd) startTargetPath = livePwd;
+    }
+    // 구독이 이미 어떤 경로로 navigate 했으면(자동추적) 초기 로드는 건너뜀 — 덮어쓰기 방지
+    if (lastNavPathRef.current) return;
     // 이미 캐시 있고 원하는 경로와 일치하면 스킵
     const cached = treeStateCache.get(termId);
     if (cached?.root && startTargetPath && cached.root.path === startTargetPath) return;
@@ -256,6 +261,8 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
         if (!startPath) {
           let home: any = null;
           for (let i = 0; i < retries; i++) {
+            // 비동기 홈 조회 도중 자동추적 구독이 navigate 했으면 즉시 중단 (홈으로 덮어쓰기 방지)
+            if (lastNavPathRef.current) return;
             home = await (window as any).api?.feHomeDir?.(mode, termId);
             if (home && typeof home === 'string' && home !== '/') break;
             if (i < retries - 1) await new Promise(r => setTimeout(r, 500));
@@ -271,8 +278,11 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
             await new Promise(r => setTimeout(r, 500));
           }
         }
+        // 최종 반영 직전 재확인 — 구독이 이미 다른 경로로 navigate 했으면 홈 로드 결과로 덮어쓰지 않음
+        if (lastNavPathRef.current && lastNavPathRef.current !== startPath) return;
         setPathInput(startPath);
         const children = await loadChildren(startPath, 5);
+        if (lastNavPathRef.current && lastNavPathRef.current !== startPath) return;
         setRoot({
           name: startPath,
           path: startPath,
@@ -553,7 +563,24 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
         return (
         <div
           className="remote-file-ctx-menu"
-          style={{ left: ctxMenu.x, top: ctxMenu.y }}
+          style={{ left: ctxMenu.x, top: ctxMenu.y, visibility: 'hidden' }}
+          ref={(el) => {
+            if (!el) return;
+            // 다음 paint 에서 측정 + 화면 밖이면 위로/왼쪽으로 플립
+            requestAnimationFrame(() => {
+              const rect = el.getBoundingClientRect();
+              const vh = window.innerHeight;
+              const vw = window.innerWidth;
+              const margin = 8;
+              let left = ctxMenu.x;
+              let top = ctxMenu.y;
+              if (top + rect.height > vh - margin) top = Math.max(margin, vh - rect.height - margin);
+              if (left + rect.width > vw - margin) left = Math.max(margin, vw - rect.width - margin);
+              el.style.left = left + 'px';
+              el.style.top = top + 'px';
+              el.style.visibility = 'visible';
+            });
+          }}
           onClick={e => e.stopPropagation()}
           onContextMenu={e => e.preventDefault()}
         >

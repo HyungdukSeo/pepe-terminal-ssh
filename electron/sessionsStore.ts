@@ -117,14 +117,30 @@ export function getSessionsPath(): string {
   }
 }
 
+// fileTreeEnabled/autoTrackPwd 옵션 분리 이전에 만든 세션 마이그레이션.
+// 과거엔 autoTrackPwd 만으로 파일트리 자동연결+추적이 동작했으므로,
+// autoTrackPwd=true 이고 fileTreeEnabled 가 미설정(undefined)이면 fileTreeEnabled 도 true 로 본다.
+// (안 하면 신규 게이트 `autoTrackPwd && fileTreeEnabled` 에서 추적이 꺼져 /vobs 등 cwd 추적이 안 됨)
+function migrateSessions(sessions: Session[]): Session[] {
+  // 신규 UI 는 fileTreeEnabled 가 꺼지면 autoTrackPwd 체크박스를 비활성화하므로
+  // {autoTrackPwd:true, fileTreeEnabled:false/undefined} 조합은 과거 데이터(또는 전환기)에서만 발생.
+  // autoTrack 이 켜져 있으면 파일트리도 켜진 것으로 정규화한다.
+  for (const s of sessions) {
+    if (s && s.autoTrackPwd === true && s.fileTreeEnabled !== true) {
+      s.fileTreeEnabled = true;
+    }
+  }
+  return sessions;
+}
+
 export function loadSessionsData(): SessionsData {
   const filePath = getSessionsPath();
   if (!fs.existsSync(filePath)) return { folders: [], sessions: [] };
   try {
     const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     // 기존 flat array 마이그레이션
-    if (Array.isArray(raw)) return { folders: [], sessions: raw };
-    return { folders: raw.folders ?? [], sessions: raw.sessions ?? [], childOrder: raw.childOrder ?? undefined };
+    if (Array.isArray(raw)) return { folders: [], sessions: migrateSessions(raw) };
+    return { folders: raw.folders ?? [], sessions: migrateSessions(raw.sessions ?? []), childOrder: raw.childOrder ?? undefined };
   } catch {
     return { folders: [], sessions: [] };
   }

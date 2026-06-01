@@ -74,7 +74,7 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
   // 다중 선택 시 연결할 워크스페이스 — 'current' / 'new' / 특정 탭 id
   const [multiTargetWs, setMultiTargetWs] = useState<string>('current');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [folderPicker, setFolderPicker] = useState<{ sessionId: string } | null>(null);
+  const [folderPicker, setFolderPicker] = useState<{ sessionIds: string[] } | null>(null);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const dragging = useRef<{ startX: number; startWidth: number } | null>(null);
@@ -366,11 +366,19 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
     setTimeout(() => { try { handleConnect(s); } catch (e) { console.error('[saveAndConnect] connect failed:', e); } }, 50);
   };
 
-  // 드래그로 세션을 폴더에 이동
+  // 드래그로 세션을 폴더에 이동 (맨 뒤)
   const handleSessionDrop = async (sessionId: string, targetFolderId: string | undefined) => {
     const s = sessions.find(x => x.id === sessionId);
     if (!s) return;
-    await (window as any).api.saveSession({ ...s, folderId: targetFolderId });
+    await (window as any).api.dropReorderSession(sessionId, 'session', targetFolderId ?? null, null);
+    await reload();
+  };
+  // 드래그로 세션을 특정 세션 앞 위치로 이동 (순서 변경) — beforeId 와 같은 부모로
+  const handleSessionDropBefore = async (sessionId: string, beforeSessionId: string) => {
+    if (sessionId === beforeSessionId) return;
+    const target = sessions.find(x => x.id === beforeSessionId);
+    if (!target) return;
+    await (window as any).api.dropReorderSession(sessionId, 'session', target.folderId ?? null, beforeSessionId);
     await reload();
   };
 
@@ -456,7 +464,7 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
             return (
               <div key={s.id}
                 data-session-id={s.id}
-                className={`session-item ${(selectedId === s.id && selectedType === 'session') || selectedIds.has(s.id) ? 'selected' : ''}`}
+                className={`session-item ${(selectedId === s.id && selectedType === 'session') || selectedIds.has(s.id) ? 'selected' : ''} ${dragOverId === s.id ? 'drag-over-before' : ''}`}
                 style={{ paddingLeft: 8 + depth * 16 }}
                 onClick={e => {
                   if (e.shiftKey) {
@@ -486,6 +494,15 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
                 onContextMenu={e => { e.preventDefault(); setSelectedId(s.id); setSelectedType('session'); setContextMenu({ x: e.clientX, y: e.clientY, id: s.id, type: 'session', name: s.name }); }}
                 draggable={renamingId !== s.id}
                 onDragStart={e => { e.dataTransfer.setData('text/session-id', s.id); e.dataTransfer.effectAllowed = 'move'; const el = e.currentTarget as HTMLElement; e.dataTransfer.setDragImage(el, el.offsetWidth / 2, el.offsetHeight / 2); }}
+                onDragOver={e => { if (e.dataTransfer.types.includes('text/session-id')) { e.preventDefault(); e.stopPropagation(); setDragOverId(s.id); } }}
+                onDragLeave={e => { e.stopPropagation(); setDragOverId(null); }}
+                onDrop={e => {
+                  // 세션 위에 드롭 → 그 세션 앞 위치로 순서 이동 (같은 부모). root 버블링 차단.
+                  e.stopPropagation();
+                  const sid = e.dataTransfer.getData('text/session-id');
+                  if (sid && sid !== s.id) { e.preventDefault(); handleSessionDropBefore(sid, s.id); }
+                  setDragOverId(null);
+                }}
                 onDragEnd={() => setDragOverId(null)}
               >
                 {renamingId === s.id ? (
@@ -698,11 +715,12 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
           const children = folders.filter(f => (f.parentId ?? undefined) === parentId);
           const nodes: React.ReactNode[] = [];
           for (const f of children) {
-            const sess = sessions.find(s => s.id === folderPicker.sessionId);
-            if (sess && (sess.folderId ?? undefined) === f.id) continue;
             nodes.push(
               <div key={f.id} className="folder-picker-item" style={{ paddingLeft: 12 + depth * 16 }} onClick={() => {
-                (async () => { await (window as any).api.moveToFolder(folderPicker.sessionId, f.id); await reload(); })();
+                (async () => {
+                  for (const sid of folderPicker.sessionIds) await (window as any).api.moveToFolder(sid, f.id);
+                  await reload();
+                })();
                 setFolderPicker(null);
               }}>
                 📁 {f.name}
@@ -718,7 +736,10 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
               <div className="folder-picker-title">{t('folderPickerTitle')}</div>
               <div className="folder-picker-list">
                 <div className="folder-picker-item" onClick={() => {
-                  (async () => { await (window as any).api.moveToFolder(folderPicker.sessionId, null); await reload(); })();
+                  (async () => {
+                    for (const sid of folderPicker.sessionIds) await (window as any).api.moveToFolder(sid, null);
+                    await reload();
+                  })();
                   setFolderPicker(null);
                 }}>
                   {t('folderRoot')}
@@ -790,6 +811,15 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
                   </>
                 );
               })()}
+              {folders.length > 0 && (
+                <div className="context-menu-item" onClick={() => {
+                  const sessIds = [...selectedIds].filter(id => sessions.some(s => s.id === id));
+                  if (sessIds.length > 0) setFolderPicker({ sessionIds: sessIds });
+                  setContextMenu(null);
+                }}>
+                  {t('ctxMoveToFolder')}
+                </div>
+              )}
               <div className="context-menu-item" onClick={() => { setContextMenu(null); handleDelete(); }}>
                 {t('ctxDeleteSelected')}
               </div>
@@ -877,7 +907,11 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
             <>
               <div className="context-menu-separator" />
               <div className="context-menu-item" onClick={() => {
-                setFolderPicker({ sessionId: contextMenu.id });
+                // 우클릭 항목이 다중선택에 포함돼 있으면 선택된 세션 전부, 아니면 그 하나만
+                const ids = selectedIds.has(contextMenu.id) ? [...selectedIds] : [contextMenu.id];
+                // 세션만 필터 (폴더 id 제외)
+                const sessIds = ids.filter(id => sessions.some(s => s.id === id));
+                setFolderPicker({ sessionIds: sessIds.length > 0 ? sessIds : [contextMenu.id] });
                 setContextMenu(null);
               }}>
                 {t('ctxMoveToFolder')}

@@ -4,12 +4,31 @@
 // 파싱 포맷 (제시된 로그 전용):
 //   MMDD HH:MM:SS.ffff TID (file, line) LEVEL <function> message
 import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { FixedSizeList as VList, ListChildComponentProps } from 'react-window';
 import type { PanelSession } from '../utils/layoutUtils';
 import { RemotePathPicker } from './RemotePathPicker';
 
 const api = (window as any).api || {};
+
+// AI 에이전트 브랜드 아이콘 (ClaudeChat 탭과 동일)
+const ClaudeIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+    <path d="m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z" fill="#D97757"/>
+  </svg>
+);
+const GeminiIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+    <defs><linearGradient id="laGeminiGrad" x1="12" y1="0" x2="12" y2="24" gradientUnits="userSpaceOnUse"><stop offset="0%" stopColor="#4285F4"/><stop offset="100%" stopColor="#00BFA5"/></linearGradient></defs>
+    <path d="M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81" fill="url(#laGeminiGrad)"/>
+  </svg>
+);
+const CodexIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+    <path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z" fill="#b0b0b0"/>
+  </svg>
+);
 
 type Props = {
   sessions: PanelSession[];
@@ -250,6 +269,16 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
     window.addEventListener('mouseup', onUp);
   };
   const rootRef = useRef<HTMLDivElement | null>(null);
+  // AI 에이전트 선택 드롭다운 — overflow 클리핑 회피 위해 portal + fixed 좌표
+  const [aiAgentMenu, setAiAgentMenu] = useState<{ x: number; y: number } | null>(null);
+  // 분석 요청 시 새 대화로 시작할지 (false=현재 대화에 추가)
+  const [aiNewConversation, setAiNewConversation] = useState(true);
+  useEffect(() => {
+    if (!aiAgentMenu) return;
+    const close = () => setAiAgentMenu(null);
+    window.addEventListener('click', close);
+    return () => window.removeEventListener('click', close);
+  }, [aiAgentMenu]);
 
   const sourceOptions = useMemo(() => {
     const opts: { termId: string; label: string }[] = [];
@@ -482,64 +511,109 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
     }
   }, [filtered, srcPath]);
 
-  // AI 분석 요청 — 현재 필터된 행을 텍스트 블록으로 만들어 ClaudeChat 에 prefill
-  const sendToAi = useCallback(() => {
+  // AI 분석 요청 — 현재 필터된 행을 별도 파일로 첨부 + 사용자 프롬프트 + 메타 컨텍스트 텍스트.
+  // ClaudeChat 측은 newConversation:true 면 새 대화로 시작 (이전 컨텍스트 섞임 방지).
+  const sendToAi = useCallback((agent: 'claude' | 'gemini' | 'codex' = 'claude') => {
     if (filtered.length === 0 || !aiPrompt.trim()) return;
     const slice = filtered.slice(-aiMaxLines); // 최근 N행 (꼬리 부분이 보통 더 유효)
-    const lines: string[] = [];
-    lines.push(aiPrompt.trim());
-    lines.push('');
-    lines.push('### 로그 컨텍스트');
-    lines.push('- 소스: ' + (srcMode === 'local' ? '🖥️ ' : '🟢 ') + srcPath);
-    lines.push('- 전체 행 수: ' + filtered.length + ' (첨부: 최근 ' + slice.length + '행)');
+    const NL = String.fromCharCode(10);
+    // 첨부 파일 이름 — 소스 경로의 basename + timestamp
+    // 파일명은 소스 기준 안정값 — timestamp 미포함. 현재 대화 이어가기에서 같은 소스 재요청 시
+    // 이름이 같아야 첨부가 중복 누적되지 않고 최신 내용으로 교체됨.
+    const base = (srcPath.match(/[^\\/]+$/)?.[0] || 'log').replace(/\.[^.]*$/, '');
+    const fileName = `${base}.log`;
+    // 활성 필터 요약
     const activeFilters: string[] = [];
     if (levelFilter.size > 0) activeFilters.push('Level=' + [...levelFilter].join(','));
     if (fileFilter.size > 0) activeFilters.push('File=' + [...fileFilter].join(','));
     if (tagFilter.size > 0) activeFilters.push('Tag=' + [...tagFilter].join(','));
     if (fnFilter.size > 0) activeFilters.push('Function=' + [...fnFilter].join(','));
     if (search) activeFilters.push('Search=' + search);
-    if (activeFilters.length > 0) lines.push('- 활성 필터: ' + activeFilters.join(' / '));
-    lines.push('');
-    lines.push('```log');
-    for (const e of slice) {
-      lines.push(e.raw);
-    }
-    lines.push('```');
-    const payload = lines.join(String.fromCharCode(10));
+    // 첨부 파일 본문 — 헤더 메타 + 원본 행들. 이걸 통째로 파일로 첨부.
+    const fileLines: string[] = [];
+    fileLines.push('# Log Excerpt');
+    fileLines.push('# source: ' + (srcMode === 'local' ? 'local ' : 'remote ') + srcPath);
+    fileLines.push('# total filtered lines: ' + filtered.length + ' (attached: last ' + slice.length + ')');
+    if (activeFilters.length > 0) fileLines.push('# active filters: ' + activeFilters.join(' / '));
+    fileLines.push('# generated: ' + new Date().toISOString());
+    fileLines.push('');
+    for (const e of slice) fileLines.push(e.raw);
+    const fileContent = fileLines.join(NL);
+    // prompt 본문 — 사용자 질문 + 간단한 컨텍스트만. 본문은 첨부 파일에 있음.
+    const promptLines: string[] = [];
+    promptLines.push(aiPrompt.trim());
+    promptLines.push('');
+    promptLines.push('첨부된 로그 파일 `' + fileName + '` 을 분석해줘.');
+    promptLines.push('- 소스: ' + srcPath);
+    promptLines.push('- 라인 수: ' + slice.length + ' (전체 필터 결과 ' + filtered.length + '행 중 최근)');
+    if (activeFilters.length > 0) promptLines.push('- 활성 필터: ' + activeFilters.join(' / '));
+    const promptText = promptLines.join(NL);
     try {
-      window.dispatchEvent(new CustomEvent('claude-prefill', { detail: { text: payload } }));
+      window.dispatchEvent(new CustomEvent('claude-prefill', {
+        detail: {
+          text: promptText,
+          attachments: [{ name: fileName, content: fileContent }],
+          newConversation: aiNewConversation,
+          agent,
+        },
+      }));
     } catch {}
-  }, [filtered, aiPrompt, aiMaxLines, srcMode, srcPath, levelFilter, fileFilter, tagFilter, fnFilter, search]);
+  }, [filtered, aiPrompt, aiMaxLines, srcMode, srcPath, levelFilter, fileFilter, tagFilter, fnFilter, search, aiNewConversation]);
 
-  // 테이블 컨테이너 높이
-  const tableWrapRef = useRef<HTMLDivElement | null>(null);
-  const [tableHeight, setTableHeight] = useState(400);
-  const tableRoRef = useRef<ResizeObserver | null>(null);
-  const setTableWrapRef = useCallback((el: HTMLDivElement | null) => {
-    tableWrapRef.current = el;
-    if (tableRoRef.current) { tableRoRef.current.disconnect(); tableRoRef.current = null; }
+  // 테이블+상세 를 함께 담는 split 컨테이너 높이 측정 — 픽셀 단위로 두 영역을 명확히 분할
+  const splitWrapRef = useRef<HTMLDivElement | null>(null);
+  const [splitH, setSplitH] = useState(500);
+  const splitRoRef = useRef<ResizeObserver | null>(null);
+  const setSplitWrapRef = useCallback((el: HTMLDivElement | null) => {
+    splitWrapRef.current = el;
+    if (splitRoRef.current) { splitRoRef.current.disconnect(); splitRoRef.current = null; }
     if (!el) return;
-    const update = () => setTableHeight(el.clientHeight || 400);
+    const update = () => setSplitH(el.clientHeight || 500);
     const ro = new ResizeObserver(update);
     ro.observe(el);
-    tableRoRef.current = ro;
+    splitRoRef.current = ro;
     update();
   }, []);
-  useEffect(() => () => { tableRoRef.current?.disconnect(); }, []);
+  useEffect(() => () => { splitRoRef.current?.disconnect(); }, []);
+  const RESIZER_H = 4;
+  // VList 하단 앵커 — 스크롤이 맨 밑이면 테이블 높이 줄어들 때도 맨 밑 유지
+  const vlistRef = useRef<any>(null);
+  const atBottomRef = useRef(false);
+  // 상세 패널 높이 = (split - 리사이저) * bottomPct/100. 테이블 최소 60 보장하도록 cap → 합이 split 초과 안 함.
+  const avail = Math.max(0, splitH - RESIZER_H);
+  const detailH = Math.min(Math.max(60, avail - 60), Math.max(60, Math.round(avail * bottomPct / 100)));
+  const tableHeight = Math.max(60, avail - detailH);
+  // 테이블 높이 변경 시 — 선택 항목이 있으면 그 항목을 계속 보이게, 없고 맨 밑이었으면 맨 밑 유지
+  useEffect(() => {
+    if (!vlistRef.current || filtered.length === 0) return;
+    try {
+      if (selectedIdx !== null && selectedIdx >= 0 && selectedIdx < filtered.length) {
+        vlistRef.current.scrollToItem(selectedIdx, 'smart');
+      } else if (atBottomRef.current) {
+        vlistRef.current.scrollToItem(filtered.length - 1, 'end');
+      }
+    } catch {}
+  }, [tableHeight]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onResizeStart = (e: React.MouseEvent) => {
+    e.preventDefault(); // 드래그 중 텍스트 선택 방지
     const startY = e.clientY;
-    const rect = rootRef.current?.getBoundingClientRect();
+    // dPct 는 split 컨테이너 높이 기준으로 계산해야 마우스 이동과 1:1 로 맞음 (root 기준이면 헤더만큼 어긋남)
+    const baseH = (splitWrapRef.current?.clientHeight || splitH) - RESIZER_H;
     const startPct = bottomPct;
+    const prevUserSelect = document.body.style.userSelect;
+    document.body.style.userSelect = 'none';
     const onMove = (ev: MouseEvent) => {
-      if (!rect) return;
-      const dy = startY - ev.clientY;
-      const dPct = (dy / rect.height) * 100;
-      setBottomPct(Math.max(10, Math.min(70, startPct + dPct)));
+      if (baseH <= 0) return;
+      ev.preventDefault();
+      const dy = startY - ev.clientY; // 위로 끌면 + (상세 패널 커짐)
+      const dPct = (dy / baseH) * 100;
+      setBottomPct(Math.max(8, Math.min(92, startPct + dPct)));
     };
     const onUp = () => {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
+      document.body.style.userSelect = prevUserSelect;
     };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
@@ -552,7 +626,7 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
   };
 
   return (
-    <div ref={rootRef} style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, background: '#1a1a1a' }}>
+    <div ref={rootRef} style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, minWidth: 0, overflow: 'hidden', background: '#1a1a1a' }}>
       {/* 헤더 — 소스 + 로드 */}
       <div style={{ padding: '8px 10px', background: '#222', borderBottom: '1px solid #333', display: 'flex', flexDirection: 'column', gap: 6 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%' }}>
@@ -629,13 +703,23 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
               style={{ width: 60, fontSize: 11, padding: '2px 4px', background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 3 }}
             />행
           </label>
+          <label style={{ fontSize: 11, color: '#aac', display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0, cursor: 'pointer' }} title="체크: 새 대화로 시작 / 해제: 현재 대화창에 이어서">
+            <input type="checkbox" checked={aiNewConversation} onChange={e => setAiNewConversation(e.target.checked)} style={{ margin: 0 }} />
+            새 대화
+          </label>
           <button
-            onClick={sendToAi}
+            onClick={e => {
+              e.stopPropagation();
+              if (aiAgentMenu) { setAiAgentMenu(null); return; }
+              const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+              // 메뉴를 버튼 아래쪽에 띄움 (우측 정렬)
+              setAiAgentMenu({ x: r.right, y: r.bottom });
+            }}
             disabled={filtered.length === 0 || !aiPrompt.trim()}
             title={`현재 필터된 ${filtered.length}행 중 최대 ${aiMaxLines}행을 AI 채팅창에 전달`}
             style={{ padding: '4px 12px', fontSize: 12, background: '#2b4e74', color: '#fff', border: '1px solid #3a6593', borderRadius: 3 }}
           >
-            🤖 분석 요청
+            🤖 분석 요청 ▾
           </button>
         </div>
         {sourceLabel && !loading && <div style={{ fontSize: 11, color: '#888' }}>{sourceLabel}</div>}
@@ -674,8 +758,10 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
         </div>
       </div>
 
-      {/* 테이블 */}
-      <div ref={setTableWrapRef} style={{ flex: 1, minHeight: 0, position: 'relative', overflow: 'hidden' }}>
+      {/* 테이블 + 상세 를 함께 담는 split 컨테이너 — 남은 공간 전체 차지, 내부를 픽셀로 분할 */}
+      <div ref={setSplitWrapRef} style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      {/* 테이블 — 픽셀 높이 (split * (100-bottomPct)/100) */}
+      <div style={{ height: tableHeight, flexShrink: 0, position: 'relative', overflow: 'hidden' }}>
         <div style={{ display: 'flex', padding: '0 8px', background: '#1c1c1c', borderBottom: '1px solid #333', fontSize: 11, color: '#888', height: 24, boxSizing: 'border-box', alignItems: 'center' }}>
           {/* 컬럼 헤더 + 우측 리사이저 (마지막 message 제외) */}
           {([
@@ -692,11 +778,16 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
           <div style={{ flex: 1, paddingLeft: 6 }}>{t('columns.message')}</div>
         </div>
         <VList
+          ref={vlistRef}
           height={tableHeight - 24}
           width="100%"
           itemCount={filtered.length}
           itemSize={ROW_H}
           overscanCount={15}
+          onScroll={({ scrollOffset }: { scrollOffset: number }) => {
+            const max = filtered.length * ROW_H - (tableHeight - 24);
+            atBottomRef.current = scrollOffset >= max - 4;
+          }}
         >
           {({ index, style }: ListChildComponentProps) => {
             const e = filtered[index];
@@ -725,10 +816,10 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
         </VList>
       </div>
 
-      <div onMouseDown={onResizeStart} style={{ height: 4, cursor: 'row-resize', background: '#333', flexShrink: 0 }} />
+      <div onMouseDown={onResizeStart} style={{ height: RESIZER_H, cursor: 'row-resize', background: '#333', flexShrink: 0 }} />
 
-      {/* 상세 패널 */}
-      <div style={{ height: `${bottomPct}%`, minHeight: 80, background: '#1e1e1e', borderTop: '1px solid #333', overflow: 'auto', padding: 8, fontSize: 11, fontFamily: 'monospace' }}>
+      {/* 상세 패널 — 픽셀 높이 (split * bottomPct/100). 테이블과 합쳐 split 높이를 정확히 채움 */}
+      <div style={{ height: detailH, flexShrink: 0, background: '#1e1e1e', borderTop: '1px solid #333', overflow: 'auto', padding: 8, fontSize: 11, fontFamily: 'monospace', boxSizing: 'border-box' }}>
         {!selectedEntry ? (
           <div style={{ color: '#666', textAlign: 'center', padding: 16 }}>{t('selectLineHint')}</div>
         ) : (
@@ -757,6 +848,7 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
           </div>
         )}
       </div>
+      </div>{/* split 컨테이너 끝 */}
 
       {filePickerOpen && srcMode === 'remote' && srcTermId && (
         <RemotePathPicker
@@ -768,6 +860,41 @@ export const LogAnalyzer: React.FC<Props> = ({ sessions }) => {
           onPick={(p) => setSrcPath(p)}
           onClose={() => setFilePickerOpen(false)}
         />
+      )}
+      {/* AI 에이전트 선택 메뉴 — portal 로 body 에 렌더 (overflow 클리핑 회피). 버튼 위쪽 정렬. */}
+      {aiAgentMenu && createPortal(
+        <div
+          style={{
+            position: 'fixed', left: aiAgentMenu.x, top: aiAgentMenu.y,
+            transform: 'translateX(-100%)', marginTop: 4,
+            background: '#1a1a2e', border: '1px solid #3a3a5a', borderRadius: 6,
+            boxShadow: '0 6px 20px rgba(0,0,0,0.5)', zIndex: 99999,
+            minWidth: 160, padding: 4, display: 'flex', flexDirection: 'column', gap: 2,
+          }}
+          onClick={e => e.stopPropagation()}
+        >
+          {([
+            { id: 'claude' as const, label: 'Claude', Icon: ClaudeIcon, color: '#a070ff' },
+            { id: 'gemini' as const, label: 'Gemini', Icon: GeminiIcon, color: '#4a9eff' },
+            { id: 'codex'  as const, label: 'Codex',  Icon: CodexIcon,  color: '#5cd97a' },
+          ]).map(a => (
+            <button
+              key={a.id}
+              onClick={() => { setAiAgentMenu(null); sendToAi(a.id); }}
+              style={{
+                background: 'transparent', color: '#ddd', border: 0,
+                padding: '6px 10px', textAlign: 'left', cursor: 'pointer',
+                borderRadius: 4, fontSize: 12, display: 'flex', alignItems: 'center', gap: 8,
+              }}
+              onMouseEnter={e => (e.currentTarget.style.background = a.color + '22')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+            >
+              <a.Icon />
+              <span>{a.label} 로 분석</span>
+            </button>
+          ))}
+        </div>,
+        document.body
       )}
     </div>
   );

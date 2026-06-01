@@ -14,6 +14,24 @@ const net = require('net');
 const CTRL_PORT = parseInt(process.env.PEPE_CTRL_PORT || '0', 10);
 const CTRL_TOKEN = process.env.PEPE_CTRL_TOKEN || '';
 const DEFAULT_TERM_ID = process.env.PEPE_TERM_ID || '';
+// 멀티 SSH 세션 — [{id,label}]. 없으면 DEFAULT_TERM_ID 하나.
+let SESSIONS = [];
+try {
+  const parsed = JSON.parse(process.env.PEPE_TERM_IDS || '[]');
+  if (Array.isArray(parsed)) SESSIONS = parsed.filter(s => s && s.id);
+} catch {}
+if (SESSIONS.length === 0 && DEFAULT_TERM_ID) SESSIONS = [{ id: DEFAULT_TERM_ID, label: DEFAULT_TERM_ID }];
+// session 인자(라벨 또는 id) → termId 해석. 미지정/미매칭 시 첫 세션.
+function resolveTermId(sessionArg) {
+  if (!sessionArg) return SESSIONS[0]?.id || DEFAULT_TERM_ID;
+  const q = String(sessionArg).toLowerCase();
+  const byId = SESSIONS.find(s => String(s.id).toLowerCase() === q);
+  if (byId) return byId.id;
+  const byLabel = SESSIONS.find(s => String(s.label || '').toLowerCase() === q);
+  if (byLabel) return byLabel.id;
+  const partial = SESSIONS.find(s => String(s.label || '').toLowerCase().includes(q));
+  return partial ? partial.id : (SESSIONS[0]?.id || DEFAULT_TERM_ID);
+}
 
 const fs = require('fs');
 const LOG_PATH = process.env.PEPE_LOG_PATH || '';
@@ -77,42 +95,56 @@ function sendMsg(msg) {
 // 원격 경로를 셸에 안전하게 넣기 (단일따옴표 escape)
 function shq(p) { return "'" + String(p).replace(/'/g, "'\\''") + "'"; }
 
+const MULTI = SESSIONS.length > 1;
+const sessionHint = MULTI
+  ? ` Multiple SSH sessions are connected: ${SESSIONS.map(s => s.label).join(', ')}. Use the "session" argument (label or id) to pick which host; omit to use the first (${SESSIONS[0] && SESSIONS[0].label}). Call ssh_list_sessions to see all.`
+  : '';
+const sessionProp = { session: { type: 'string', description: 'Which SSH session to target — its label or id. Omit to use the first/default session.' } };
+
 const TOOLS = [
   {
     name: 'ssh_exec',
-    description: 'Execute a shell command on the remote SSH server and return stdout/stderr/exit code. Use for commands that must run on the remote Linux host (cleartool, git, make, grep, find, ls, sed, awk, etc.).',
+    description: 'Execute a shell command on the remote SSH server and return stdout/stderr/exit code. Use for commands that must run on the remote Linux host (cleartool, git, make, grep, find, ls, sed, awk, etc.).' + sessionHint,
     inputSchema: {
       type: 'object',
       properties: {
         command: { type: 'string', description: 'Shell command to execute on remote SSH. Example: "ctco /view/.../file.c" or "ls -la /tmp"' },
         timeout_ms: { type: 'number', description: 'Max wait in milliseconds (default 60000)' },
+        ...sessionProp,
       },
       required: ['command'],
     },
   },
   {
     name: 'ssh_read_file',
-    description: 'Read the full contents of a file on the remote SSH server. Use this to read remote files (binary-safe via base64 transport).',
+    description: 'Read the full contents of a file on the remote SSH server. Use this to read remote files (binary-safe via base64 transport).' + sessionHint,
     inputSchema: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Absolute path of the file on the remote host. Example: "/view/.../TraceJob.c"' },
+        ...sessionProp,
       },
       required: ['path'],
     },
   },
   {
     name: 'ssh_write_file',
-    description: 'Write (create or overwrite) a file on the remote SSH server with the given text content. Use this to save edits to remote files.',
+    description: 'Write (create or overwrite) a file on the remote SSH server with the given text content. Use this to save edits to remote files.' + sessionHint,
     inputSchema: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Absolute path of the file on the remote host.' },
         content: { type: 'string', description: 'Full text content to write to the file.' },
+        ...sessionProp,
       },
       required: ['path', 'content'],
     },
   },
+  ...(MULTI ? [{
+    name: 'ssh_list_sessions',
+    description: 'List the connected SSH sessions available for ssh_exec/ssh_read_file/ssh_write_file. Returns each session label and id; pass label/id as the "session" argument to target a specific host.',
+    inputSchema: { type: 'object', properties: {} },
+  }] : []),
 ];
 
 function handleMessage(msg) {
@@ -146,12 +178,20 @@ function handleMessage(msg) {
     }
     const ok = (text, isError) => sendMsg({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }], isError: !!isError } });
     const fail = (msg2) => sendMsg({ jsonrpc: '2.0', id, error: { code: -32000, message: String(msg2) } });
+    // 이 호출의 대상 termId — session 인자(라벨/id) 로 해석
+    const termId = resolveTermId(args.session);
+
+    if (name === 'ssh_list_sessions') {
+      const text = SESSIONS.map((s, i) => `${i + 1}. ${s.label}${i === 0 ? ' (default)' : ''}`).join('\n') || '(none)';
+      ok('Connected SSH sessions:\n' + text);
+      return;
+    }
 
     if (name === 'ssh_exec') {
       const command = String(args.command || '');
       const timeoutMs = Number(args.timeout_ms) || 60000;
       if (!command.trim()) { sendMsg({ jsonrpc: '2.0', id, error: { code: -32602, message: 'command is required' } }); return; }
-      callExec(DEFAULT_TERM_ID, command, timeoutMs)
+      callExec(termId, command, timeoutMs)
         .then(result => {
           const text = `$ ${command}\n\n[stdout]\n${result.stdout || '(empty)'}\n\n[stderr]\n${result.stderr || '(empty)'}\n\n[exit code] ${result.exitCode}`;
           ok(text, result.exitCode !== 0 && result.exitCode !== null);
@@ -164,7 +204,7 @@ function handleMessage(msg) {
       const p = String(args.path || '');
       if (!p.trim()) { sendMsg({ jsonrpc: '2.0', id, error: { code: -32602, message: 'path is required' } }); return; }
       // base64 로 전송 → 인코딩/바이너리 안전
-      callExec(DEFAULT_TERM_ID, `base64 ${shq(p)}`, 60000)
+      callExec(termId, `base64 ${shq(p)}`, 60000)
         .then(result => {
           if (result.exitCode !== 0 && result.exitCode !== null) {
             ok(`Failed to read ${p}:\n${result.stderr || '(no stderr)'}`, true);
@@ -186,7 +226,7 @@ function handleMessage(msg) {
       const b64 = Buffer.from(content, 'utf-8').toString('base64');
       // heredoc 으로 base64 전달 → base64 -d 로 디코드해 파일에 기록 (셸 escape 안전)
       const cmd = `base64 -d > ${shq(p)} <<'PEPE_B64_EOF'\n${b64}\nPEPE_B64_EOF`;
-      callExec(DEFAULT_TERM_ID, cmd, 60000)
+      callExec(termId, cmd, 60000)
         .then(result => {
           if (result.exitCode !== 0 && result.exitCode !== null) {
             ok(`Failed to write ${p}:\n${result.stderr || '(no stderr)'}`, true);

@@ -26,6 +26,7 @@
   "removeRejectedPlan": "移除此计划",
   "sshContext": "🔗 SSH 上下文:",
   "sessionNone": "(无)",
+  "sessionCount": "{{count}} 个会话",
   "mounted": "✓ 已挂载——可直接使用 Unix 路径",
   "mounting": "⏳ 挂载中...",
   "noActiveSession": "无已连接的 SSH 会话",

@@ -750,14 +750,18 @@ function App() {
       refitAllTerms();
     }, ms));
   }, [claudeChatPinned]);
-  // 너비/표시 변경 시에도 터미널 리핏
+  // 사이드바 너비 드래그 중인지 — 드래그 중엔 매 픽셀 refit 을 건너뛰어 버벅임 방지 (종료 시 1회만 refit)
+  const chatResizingRef = useRef(false);
+  // 너비/표시 변경 시에도 터미널 리핏 — 드래그 중이면 skip
   useEffect(() => {
+    if (chatResizingRef.current) return;
     [50, 200].forEach(ms => setTimeout(() => {
       window.dispatchEvent(new Event('resize'));
       refitAllTerms();
     }, ms));
   }, [claudeChatWidth, showClaudeChat]);
   const [claudeFileContext, setClaudeFileContext] = useState<{ fileName: string; remotePath: string; content: string }[] | null>(null);
+  const [aiAgent, setAiAgent] = useState<'claude' | 'gemini' | 'codex'>('claude');
   // WebDAV 마운트 첨부 엔트리
   const [claudeMountEntries, setClaudeMountEntries] = useState<{ termId: string; remotePath: string; uncPath: string; isDir: boolean }[]>([]);
   const [claudeAttaching, setClaudeAttaching] = useState<{ message: string; progress: number; total: number } | null>(null);
@@ -1380,6 +1384,15 @@ function App() {
         }, ms));
         return;
       }
+      // 입력 가능한 요소(프롬프트 textarea, input, contenteditable)에 포커스가 있으면
+      // 터미널 텍스트 조작 단축키(전체선택/복사/붙여넣기/클리어)는 건너뜀 → 네이티브 동작 보장
+      const ae = document.activeElement as HTMLElement | null;
+      const isEditable = !!ae && (
+        ae.tagName === 'INPUT' ||
+        ae.tagName === 'TEXTAREA' ||
+        ae.isContentEditable
+      );
+      if (isEditable) return;
       const termId = getActiveTermId();
       if (!termId) return;
       if (matchKeybinding(e, 'clearScrollback')) { e.preventDefault(); clearScrollbackInTerm(termId); }
@@ -1680,7 +1693,14 @@ function App() {
     // 새 워크스페이스 생성 옵션
     if (targetTabId === '__new__') {
       const newId = `tab-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-      const newTab = { id: newId, title: `Workspace ${tabs.length + 1}`, layout: createInitialLayout(newId) } as any;
+      // createInitialLayout 은 기본 'Local Shell' 세션을 자동 생성 → 이동 직후 빈 슬롯이 아니라
+      // Local Shell + 이동된 세션 2개가 됨. 새 워크스페이스는 빈 leaf 로 만들어서 이동된 세션만 들어가게.
+      const emptyLayout: LayoutNode = {
+        id: `node-root-${Date.now().toString(36)}`,
+        type: 'leaf',
+        panel: { id: `panel-${Date.now().toString(36)}`, sessions: [], activeIdx: 0 },
+      };
+      const newTab = { id: newId, title: `Workspace ${tabs.length + 1}`, layout: emptyLayout } as any;
       setTabs(prev => [...prev, newTab]);
       // 다음 tick 에 이동 진행
       setTimeout(() => handleMoveSessionToWorkspace(fromNodeId, termId, newId), 30);
@@ -3074,20 +3094,139 @@ function App() {
           </div>
         ))}
 
-        {/* FileEditor 탭들 - 마운트 유지 */}
-        {tabs.filter(t => t.type === 'fileEditor' && t.editor).map(t => (
-          <div key={t.id} style={{ display: activeTab?.id === t.id ? 'flex' : 'none', flex: 1, minHeight: 0 }}>
-            <FileEditor
-              termId={t.editor!.termId}
-              remotePath={t.editor!.remotePath}
-              fileName={t.editor!.fileName}
-              onAnalyzeWithClaude={(ctx) => {
-                setClaudeFileContext([ctx]);
-                setShowClaudeChat(true);
-              }}
-            />
-          </div>
-        ))}
+        {/* FileEditor 탭들 - 마운트 유지. 파일트리 사이드바 동반 (해당 editor termId 기준). */}
+        {tabs.filter(t => t.type === 'fileEditor' && t.editor).map(t => {
+          // editor termId 로 세션 정보 찾기 — 터미널 탭에서 검색 → fallback to termSessionMap
+          let sess: any = null;
+          const target = t.editor!.termId;
+          const findByTermId = (n: any): any => {
+            if (n.type === 'leaf') {
+              return n.panel?.sessions?.find((x: any) => x.termId === target) || null;
+            }
+            for (const c of n.children) { const r = findByTermId(c); if (r) return r; }
+            return null;
+          };
+          for (const tt of tabs) {
+            if (tt.type === 'fileEditor' || tt.type === 'fileExplorer') continue;
+            const found = findByTermId(tt.layout);
+            if (found) { sess = found; break; }
+          }
+          if (!sess) {
+            const info = getTermSessionInfo(target);
+            if (info) sess = { termId: target, sessionId: info.sessionId, sessionName: info.sessionName };
+          }
+          const sessInfo = sess ? getTermSessionInfo(sess.termId) : null;
+          const showFileTree = !!sess && (
+            ((sess.sessionId || sessInfo?.quickSession) && isTermConnected(sess.termId))
+            || isTermPty(sess.termId)
+          );
+          const onClickTrigger = () => {
+            if (remoteTreePinned) return;
+            if (remoteTreeHideTimer.current) { clearTimeout(remoteTreeHideTimer.current); remoteTreeHideTimer.current = null; }
+            if (remoteTreeHoverShowTimer.current) { clearTimeout(remoteTreeHoverShowTimer.current); remoteTreeHoverShowTimer.current = null; }
+            setRemoteTreeVisible(v => !v);
+            setTopPanel('filetree');
+          };
+          const onEnterTrigger = () => {
+            if (remoteTreePinned) return;
+            if (remoteTreeHideTimer.current) { clearTimeout(remoteTreeHideTimer.current); remoteTreeHideTimer.current = null; }
+            if (remoteTreeHoverShowTimer.current) clearTimeout(remoteTreeHoverShowTimer.current);
+            remoteTreeHoverShowTimer.current = setTimeout(() => { setRemoteTreeVisible(true); setTopPanel('filetree'); }, 2500);
+          };
+          const onEnterTree = () => {
+            if (remoteTreePinned) return;
+            if (remoteTreeHideTimer.current) { clearTimeout(remoteTreeHideTimer.current); remoteTreeHideTimer.current = null; }
+            setTopPanel('filetree');
+          };
+          const onLeaveTree = () => {
+            if (remoteTreePinned) return;
+            if (remoteTreeHideTimer.current) clearTimeout(remoteTreeHideTimer.current);
+            remoteTreeHideTimer.current = setTimeout(() => setRemoteTreeVisible(false), 500);
+          };
+          const onLeaveTrigger = () => {
+            if (remoteTreePinned) return;
+            if (remoteTreeHoverShowTimer.current) { clearTimeout(remoteTreeHoverShowTimer.current); remoteTreeHoverShowTimer.current = null; }
+          };
+          return (
+            <div key={t.id} style={{ display: activeTab?.id === t.id ? 'flex' : 'none', flex: 1, minHeight: 0, minWidth: 0, overflow: 'hidden', flexDirection: 'row', position: 'relative' }}>
+              {showFileTree && !remoteTreePinned && (
+                <div
+                  className="workspace-file-tree-trigger"
+                  style={{ ['--file-tree-trigger-top' as any]: `${fileTreeTriggerTop}px` }}
+                >
+                  <div className="workspace-file-tree-trigger-top" onClick={onClickTrigger} onMouseEnter={onEnterTrigger} onMouseLeave={onLeaveTrigger} style={{ cursor: 'pointer' }} title="클릭=토글 / 2.5초 오버=자동 열림">
+                    <span className="workspace-file-tree-trigger-text">📁 파일 트리</span>
+                  </div>
+                  <div className="workspace-file-tree-trigger-bottom" />
+                </div>
+              )}
+              {showFileTree && (
+                <div
+                  className={`workspace-file-tree ${!remoteTreePinned ? 'auto-hide' : ''} ${!remoteTreePinned && !remoteTreeVisible ? 'hidden' : ''} ${topPanel === 'filetree' ? 'top' : ''}`}
+                  style={{ width: `${remoteTreeWidth}px`, flexShrink: 0 }}
+                  onMouseEnter={onEnterTree}
+                  onMouseLeave={onLeaveTree}
+                >
+                  <div className="workspace-file-tree-toolbar">
+                    <button
+                      className={`workspace-file-tree-pin ${remoteTreePinned ? 'pinned' : ''}`}
+                      onClick={() => setRemoteTreePinned(p => !p)}
+                      title={remoteTreePinned ? 'Unpin (자동 숨김)' : 'Pin (고정)'}
+                    >📌</button>
+                  </div>
+                  <RemoteFileTree
+                    key={sess.termId}
+                    termId={sess.termId}
+                    sessionName={sess.sessionName}
+                    sessionId={sess.sessionId}
+                    initialPath={getCurrentPwdForTerm(sess.termId)}
+                    onOpenFile={handleOpenRemoteFile}
+                    onAttachToClaude={handleAttachToClaude}
+                  />
+                  <div
+                    className="workspace-file-tree-resizer"
+                    title="드래그=폭 조절, 더블클릭=기본값(240)"
+                    onMouseDown={e => {
+                      e.preventDefault();
+                      const startX = e.clientX;
+                      const startW = remoteTreeWidth;
+                      const onMove = (ev: MouseEvent) => {
+                        const dx = ev.clientX - startX;
+                        const next = Math.max(160, Math.min(720, startW + dx));
+                        setRemoteTreeWidth(next);
+                      };
+                      const onUp = () => {
+                        window.removeEventListener('mousemove', onMove);
+                        window.removeEventListener('mouseup', onUp);
+                        setRemoteTreeWidth(curW => {
+                          if (remoteTreeWidthLoadedRef.current) { try { (window as any).api?.setUIPrefs?.({ remoteTreeWidth: curW }); } catch {} }
+                          return curW;
+                        });
+                        window.dispatchEvent(new Event('resize'));
+                      };
+                      window.addEventListener('mousemove', onMove);
+                      window.addEventListener('mouseup', onUp);
+                    }}
+                    onDoubleClick={() => {
+                      setRemoteTreeWidth(240);
+                      try { (window as any).api?.setUIPrefs?.({ remoteTreeWidth: 240 }); } catch {}
+                    }}
+                  />
+                </div>
+              )}
+              <FileEditor
+                termId={t.editor!.termId}
+                remotePath={t.editor!.remotePath}
+                fileName={t.editor!.fileName}
+                onAnalyzeWithAI={(ctx, agent) => {
+                  setClaudeFileContext([ctx]);
+                  setAiAgent(agent);
+                  setShowClaudeChat(true);
+                }}
+              />
+            </div>
+          );
+        })}
 
         {/* 특수 워크스페이스 탭들 — ErrorBoundary 로 격리 (한 컴포넌트 크래시가 전체 앱 죽이지 않도록) */}
         {tabs.filter(t => t.type === 'browser').map(t => (
@@ -3356,7 +3495,7 @@ function App() {
                     }}
                     floatingPanelId={floatingPanelId}
                     fullscreenTermId={fullscreenTermId}
-                    workspaceList={tabs.map(t => ({ id: t.id, title: t.title }))}
+                    workspaceList={tabs.filter(t => !t.type || t.type === 'terminal').map(t => ({ id: t.id, title: t.title }))}
                     currentWorkspaceId={activeTab?.id}
                     onMoveSessionToWorkspace={handleMoveSessionToWorkspace}
                     onToggleFloat={nodeId => {
@@ -3917,20 +4056,31 @@ function App() {
                 e.preventDefault();
                 const startX = e.clientX;
                 const startWidth = claudeChatWidth;
+                chatResizingRef.current = true;
+                let rafId = 0;
+                let pendingW = startWidth;
                 const onMove = (ev: MouseEvent) => {
                   const dx = startX - ev.clientX;
-                  const w = Math.max(280, Math.min(1200, startWidth + dx));
-                  setClaudeChatWidth(w);
+                  pendingW = Math.max(280, Math.min(1200, startWidth + dx));
+                  // rAF 스로틀 — 프레임당 1회만 상태 갱신 (드래그 중 refit 은 effect 에서 skip)
+                  if (rafId) return;
+                  rafId = requestAnimationFrame(() => {
+                    rafId = 0;
+                    setClaudeChatWidth(pendingW);
+                  });
                 };
                 const onUp = () => {
                   window.removeEventListener('mousemove', onMove);
                   window.removeEventListener('mouseup', onUp);
-                  // 드래그 종료 시 prefs 저장
-                  setClaudeChatWidth(curW => {
-                    try { (window as any).api?.setUIPrefs?.({ claudeChatWidth: curW }); } catch {}
-                    return curW;
-                  });
-                  window.dispatchEvent(new Event('resize'));
+                  if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+                  chatResizingRef.current = false;
+                  // 최종 너비 확정 + prefs 저장 + refit 1회
+                  setClaudeChatWidth(pendingW);
+                  try { (window as any).api?.setUIPrefs?.({ claudeChatWidth: pendingW }); } catch {}
+                  [0, 60, 180].forEach(ms => setTimeout(() => {
+                    window.dispatchEvent(new Event('resize'));
+                    refitAllTerms();
+                  }, ms));
                 };
                 window.addEventListener('mousemove', onMove);
                 window.addEventListener('mouseup', onUp);
@@ -3951,6 +4101,8 @@ function App() {
               defaultSshSession={defaultSsh}
               pinned={claudeChatPinned}
               onTogglePin={() => setClaudeChatPinned(p => !p)}
+              aiAgent={aiAgent}
+              onAgentChange={setAiAgent}
             />
             </div>
           </>

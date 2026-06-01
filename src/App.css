@@ -1377,6 +1377,11 @@ body.popout-options .session-editor h3:first-child {
   background: rgba(43, 107, 155, 0.25);
   border: 1px dashed #2b6b9b;
 }
+/* 세션 순서 이동 — 드롭 시 그 항목 "앞"에 삽입됨을 상단 라인으로 표시 */
+.session-item.drag-over-before {
+  box-shadow: inset 0 2px 0 #2b6b9b;
+  background: rgba(43, 107, 155, 0.12);
+}
 
 .session-item.selected {
   color: #fff;
@@ -1695,6 +1700,12 @@ body.popout-options .session-editor h3:first-child {
   color: #fff;
   background: #2a2a3e;
   border-color: #2b6b9b;
+}
+.panel-session-tab.dragging-preview {
+  color: #fff !important;
+  background: #2b6b9b !important;
+  border: 1px solid #5aa9d8 !important;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
 }
 
 
@@ -2090,6 +2101,61 @@ body.popout-options .session-editor h3:first-child {
   color: #d6e2ff;
   filter: drop-shadow(0 0 2px rgba(88, 166, 255, 0.7));
 }
+.panel-controls-toggle.has-active {
+  border-color: rgba(180, 210, 255, 0.55);
+  box-shadow: 0 0 0 1px rgba(140, 190, 255, 0.25);
+}
+.panel-controls-active-dots {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  display: inline-flex;
+  gap: 2px;
+  pointer-events: none;
+  z-index: 5;
+  /* 마스터 펄스 — scale/glint 를 컨테이너에서 한 번에 구동해 모든 닷이 같은 위상으로 동작 */
+  animation: panel-ctl-master-pulse 1s ease-in-out infinite;
+  transform-origin: center;
+}
+.panel-controls-active-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  position: relative;
+  /* 강철 스테인 베이스 — 광택 + 표면에서 비치는 코어 컬러 */
+  background:
+    radial-gradient(circle at 35% 28%, rgba(255,255,255,0.7) 0%, rgba(255,255,255,0) 38%),
+    radial-gradient(circle at 50% 65%, currentColor 0%, rgba(0,0,0,0) 55%),
+    linear-gradient(145deg, #e3e7ec 0%, #9aa3ad 45%, #4a525c 100%);
+  border: 1px solid rgba(30, 38, 50, 0.95);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.7),
+    inset 0 -1px 0 rgba(0,0,0,0.45),
+    0 0 4px currentColor,
+    0 0 8px currentColor;
+  /* 후광 진동은 닷 단위지만 컨테이너 펄스와 같은 1s 주기로 시작 → 모든 닷이 동일 위상 */
+  animation: panel-ctl-dot-glow 1s ease-in-out infinite;
+}
+@keyframes panel-ctl-master-pulse {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.12); }
+}
+@keyframes panel-ctl-dot-glow {
+  0%, 100% {
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.6),
+      inset 0 -1px 0 rgba(0,0,0,0.45),
+      0 0 3px currentColor,
+      0 0 6px currentColor;
+  }
+  50% {
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.95),
+      inset 0 -1px 0 rgba(0,0,0,0.55),
+      0 0 7px currentColor,
+      0 0 14px currentColor;
+  }
+}
 .panel-controls-wrap {
   position: relative;
   display: inline-flex;
@@ -2455,6 +2521,21 @@ body.popout-options .session-editor h3:first-child {
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+}
+.claude-chat-history-rename-input {
+  flex: 1;
+  min-width: 0;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.3);
+  color: inherit;
+  font: inherit;
+  padding: 2px 6px;
+  border-radius: 4px;
+  outline: none;
+}
+.claude-chat-history-rename-input:focus {
+  border-color: #4a9eff;
+  background: rgba(74,158,255,0.12);
 }
 .claude-chat-history-agent {
   display: inline-flex;
@@ -2943,8 +3024,90 @@ body.popout-options .session-editor h3:first-child {
 .fe-panel-wrap {
   flex: 1;
   display: flex;
+  flex-direction: column;
   min-width: 0;
   position: relative;
+}
+.fe-panel-tabs {
+  display: flex;
+  align-items: stretch;
+  background: rgba(255,255,255,0.03);
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  min-height: 26px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  flex-shrink: 0;
+}
+.fe-panel-tabs::-webkit-scrollbar { height: 4px; }
+.fe-panel-tabs::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 2px; }
+.fe-panel-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px 3px 10px;
+  font-size: 12px;
+  color: rgba(255,255,255,0.7);
+  background: transparent;
+  border-right: 1px solid rgba(255,255,255,0.08);
+  cursor: pointer;
+  max-width: 200px;
+  user-select: none;
+  white-space: nowrap;
+}
+.fe-panel-tab:hover {
+  background: rgba(255,255,255,0.06);
+  color: rgba(255,255,255,0.9);
+}
+.fe-panel-tab.active {
+  background: rgba(74,158,255,0.15);
+  color: #fff;
+  box-shadow: inset 0 -2px 0 #4a9eff;
+}
+.fe-panel-tab.dragging {
+  opacity: 0.4;
+}
+.fe-panel-tab.drop-target {
+  box-shadow: inset 2px 0 0 #4a9eff;
+}
+.fe-panel-tabs-end-drop {
+  flex: 1;
+  min-width: 12px;
+  align-self: stretch;
+}
+.fe-panel-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 170px;
+}
+.fe-panel-tab-close {
+  width: 16px;
+  height: 16px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  opacity: 0.5;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+  border-radius: 3px;
+}
+.fe-panel-tab-close:hover {
+  opacity: 1;
+  background: rgba(255, 80, 80, 0.3);
+}
+.fe-panel-tab-add {
+  width: 24px;
+  border: 0;
+  background: transparent;
+  color: rgba(255,255,255,0.5);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0;
+}
+.fe-panel-tab-add:hover {
+  background: rgba(255,255,255,0.1);
+  color: #fff;
 }
 .fe-panel-wrap.selected::after {
   content: '';
@@ -4703,6 +4866,9 @@ body.popout-options .session-editor h3:first-child {
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  width: 100%;
+  overflow: hidden;
 }
 .file-editor-header {
   display: flex;
@@ -4757,6 +4923,9 @@ body.popout-options .session-editor h3:first-child {
 .file-editor-body {
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  width: 100%;
+  overflow: hidden;
 }
 .file-editor-loading,
 .file-editor-error {
@@ -5149,6 +5318,32 @@ body.popout-options .session-editor h3:first-child {
   align-items: center;
   justify-content: center;
   line-height: 1;
+  position: relative;
+}
+/* 에이전트 탭 hover 시 플로팅 툴팁 (React 포털로 document.body 에 렌더 → overflow 클립 회피) */
+.claude-chat-agent-tooltip {
+  position: fixed;
+  background: #0f1626;
+  color: #e8e8ec;
+  font-size: 11px;
+  font-weight: normal;
+  padding: 4px 8px;
+  border: 1px solid #2a3548;
+  border-radius: 4px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 99999;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.4);
+  transform: translateX(-50%);
+}
+.claude-chat-agent-tooltip::before {
+  content: '';
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-bottom-color: #2a3548;
 }
 .claude-chat-agent-btn svg {
   display: block;
@@ -5927,13 +6122,27 @@ mark.claude-search-hit.current {
   flex-wrap: wrap;
 }
 .claude-chat-session-select {
-  background: #0a1825;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: linear-gradient(180deg, #11212f 0%, #0a1825 100%);
   color: #cde;
   border: 1px solid #2e4a5a;
-  border-radius: 3px;
-  padding: 2px 4px;
+  border-radius: 5px;
+  padding: 3px 8px;
   font-size: 12px;
-  max-width: 180px;
+  max-width: 220px;
+  min-width: 90px;
+  height: 24px;
+  box-sizing: border-box;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: border-color 0.15s, background 0.15s;
+}
+.claude-chat-session-select:hover {
+  border-color: #3e6a85;
+  background: linear-gradient(180deg, #16293a 0%, #0d1d2c 100%);
 }
 .claude-chat-active-session-hint {
   color: #6a8;

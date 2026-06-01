@@ -439,6 +439,9 @@ export function subscribePwdChange(termId: string, fn: (pwd: string) => void): (
   let set = pwdChangeListeners.get(termId);
   if (!set) { set = new Set(); pwdChangeListeners.set(termId, set); }
   set.add(fn);
+  // 구독 즉시 현재 알려진 pwd 를 1회 전달 — 마운트가 pwd 이벤트보다 늦어 놓치는 race 방지
+  const cur = termCurrentPwd.get(termId);
+  if (cur) { try { fn(cur); } catch {} }
   return () => { set?.delete(fn); };
 }
 function notifyPwdChange(termId: string, pwd: string) {
@@ -2194,6 +2197,16 @@ if (typeof window !== 'undefined') {
       if (p && p.panelId) setTermAutoTrack(p.panelId, !!p.enabled);
     });
   }
+  // 브리지가 직접 보내는 pwd — xterm OSC7 파싱/포커스에 의존하지 않고 파일트리 즉시 갱신
+  if (api?.onSSHPwd) {
+    api.onSSHPwd((p: { panelId: string; pwd: string }) => {
+      if (!p?.panelId || !p?.pwd) return;
+      const prev = termCurrentPwd.get(p.panelId);
+      if (prev === p.pwd) return;
+      termCurrentPwd.set(p.panelId, p.pwd);
+      notifyPwdChange(p.panelId, p.pwd);
+    });
+  }
 }
 
 export function getTermSessionInfo(termId: string) {
@@ -3155,6 +3168,25 @@ export const TerminalPanel: React.FC<Props> = ({
                   e.stopPropagation();
                   e.dataTransfer.setData('text/mini-session', JSON.stringify({ nodeId, termId: sess.termId, idx }));
                   e.dataTransfer.effectAllowed = 'move';
+                  // 깔끔한 드래그 이미지 — 툴팁(absolute 자식)이 탭 아래 영역까지 차지해 기본 drag image
+                  // 가 터미널 내용까지 포함하던 문제 해결. 탭 본체만 클론 후 setDragImage.
+                  try {
+                    const orig = e.currentTarget as HTMLElement;
+                    const rect = orig.getBoundingClientRect();
+                    const clone = orig.cloneNode(true) as HTMLElement;
+                    clone.querySelectorAll('.panel-session-tab-tooltip').forEach(n => n.remove());
+                    // 비활성 탭도 드래그 중엔 활성처럼 보이게 강제 — 어두운 배경에 묻히는 문제 해결
+                    clone.classList.add('active', 'dragging-preview');
+                    clone.style.position = 'absolute';
+                    clone.style.top = '-10000px';
+                    clone.style.left = '-10000px';
+                    clone.style.width = rect.width + 'px';
+                    clone.style.height = rect.height + 'px';
+                    clone.style.pointerEvents = 'none';
+                    document.body.appendChild(clone);
+                    e.dataTransfer.setDragImage(clone, e.clientX - rect.left, e.clientY - rect.top);
+                    setTimeout(() => { try { clone.remove(); } catch {} }, 0);
+                  } catch {}
                 }}
                 onDragOver={e => {
                   if (e.dataTransfer.types.includes('text/mini-session')) { e.preventDefault(); e.stopPropagation(); }
@@ -3241,20 +3273,37 @@ export const TerminalPanel: React.FC<Props> = ({
         )}
 
         <div className="panel-controls-wrap" ref={panelControlsWrapRef}>
-        <button
-          className={`panel-controls-toggle ${showPanelControls ? 'open' : ''}`}
-          onClick={e => { e.stopPropagation(); setShowPanelControls(v => !v); }}
-          title={showPanelControls ? t('ui.controlHide') : t('ui.panelControls')}
-        >
-          <svg className="panel-controls-toggle-icon" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
-            <line x1="2" y1="3.5" x2="12" y2="3.5" />
-            <circle cx="9" cy="3.5" r="1.5" fill="currentColor" stroke="none" />
-            <line x1="2" y1="7" x2="12" y2="7" />
-            <circle cx="5" cy="7" r="1.5" fill="currentColor" stroke="none" />
-            <line x1="2" y1="10.5" x2="12" y2="10.5" />
-            <circle cx="10" cy="10.5" r="1.5" fill="currentColor" stroke="none" />
-          </svg>
-        </button>
+        {(() => {
+          const recOn = !!activeTermId && isRecording(activeTermId);
+          const activeStates: { color: string; title: string }[] = [];
+          if (isFloating) activeStates.push({ color: '#4a9eff', title: t('ui.floatRestore') });
+          if (autoTrackOn) activeStates.push({ color: '#5cd97a', title: t('ui.autoTrackOn') });
+          if (recOn) activeStates.push({ color: '#e74c3c', title: t('ui.recordStopTitle') });
+          const titleSuffix = activeStates.length > 0 && !showPanelControls
+            ? ` · ${activeStates.map(s => s.title).join(' / ')}`
+            : '';
+          return (
+            <button
+              className={`panel-controls-toggle ${showPanelControls ? 'open' : ''} ${activeStates.length > 0 && !showPanelControls ? 'has-active' : ''}`}
+              onClick={e => { e.stopPropagation(); setShowPanelControls(v => !v); }}
+              title={(showPanelControls ? t('ui.controlHide') : t('ui.panelControls')) + titleSuffix}
+            >
+              <svg className="panel-controls-toggle-icon" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+                <line x1="2" y1="3.5" x2="12" y2="3.5" />
+                <circle cx="9" cy="3.5" r="1.5" fill="currentColor" stroke="none" />
+                <line x1="2" y1="7" x2="12" y2="7" />
+                <circle cx="5" cy="7" r="1.5" fill="currentColor" stroke="none" />
+                <line x1="2" y1="10.5" x2="12" y2="10.5" />
+                <circle cx="10" cy="10.5" r="1.5" fill="currentColor" stroke="none" />
+              </svg>
+              {!showPanelControls && activeStates.length > 0 && (
+                <span className="panel-controls-active-dots">
+                  <span className="panel-controls-active-dot" style={{ color: activeStates[0].color }} />
+                </span>
+              )}
+            </button>
+          );
+        })()}
         {showPanelControls && (
           <div className="panel-controls-popup" onClick={e => e.stopPropagation()}>
         {(() => {

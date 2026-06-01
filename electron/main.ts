@@ -1,5 +1,5 @@
 ﻿// electron/main.ts
-import { app, BrowserWindow, ipcMain, dialog, Menu, shell, clipboard, nativeImage, safeStorage } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, Menu, shell, clipboard, nativeImage, safeStorage, screen } from 'electron';
 
 // 백그라운드/blur 상태에서도 렌더러가 정상 동작하도록
 // (Windows 에서 자식 프로세스 spawn 이 잠깐 foreground 를 뺏어가도 input/caret 영향 최소화)
@@ -115,7 +115,11 @@ function createWindow() {
   });
 
   // 콘텐츠 렌더링 완료 후 창 표시 (빈 화면 방지)
-  mainWindow.once('ready-to-show', () => { mainWindow?.show(); });
+  mainWindow.once('ready-to-show', () => {
+    mainWindow?.show();
+    // Aero Snap 미리보기 창 사전 생성 + 로드 — 첫 드래그 시 BrowserWindow 생성 지연(수백ms) 제거
+    setTimeout(() => ensureSnapPreview(), 500);
+  });
 
   const devServerUrl = process.env['ELECTRON_RENDERER_URL'] || process.env['VITE_DEV_SERVER_URL'];
   if (!app.isPackaged && devServerUrl) {
@@ -162,6 +166,14 @@ function createWindow() {
     try { if (histDropdownWindow && !histDropdownWindow.isDestroyed()) histDropdownWindow.close(); } catch {}
     // 페이스트 모달 창들도 정리
     for (const [, pw] of pasteWindows) { try { if (!pw.isDestroyed()) pw.close(); } catch {} }
+    // 메인 창이 닫히면 앱 종료 — Aero Snap 미리보기창/플로팅창 등 보조 BrowserWindow 가 남아있으면
+    // window-all-closed 가 안 떠서 app.quit() 이 호출되지 않는 문제 방지. 모든 잔여 창을 파괴 후 quit.
+    try {
+      for (const w of BrowserWindow.getAllWindows()) {
+        try { w.destroy(); } catch {}
+      }
+    } catch {}
+    app.quit();
   });
 }
 
@@ -176,8 +188,37 @@ app.on('certificate-error', (event, _webContents, url, error, _certificate, call
   callback(true);
 });
 
+// 시작 시 %TEMP% 의 오래된 잔여 임시파일 정리 — 작업마다 timestamp 로 생성되어 누적되는 것들.
+// 30분 이상 된 것만 삭제 (동시 실행 중인 다른 인스턴스의 활성 파일 보호).
+function cleanupStaleTempFiles() {
+  try {
+    const dir = os.tmpdir();
+    const now = Date.now();
+    const MAX_AGE = 30 * 60 * 1000; // 30분
+    // 우리 앱이 만드는 임시 파일/폴더 패턴 (timestamp 접미)
+    const patterns = [
+      /^pepe-gemini-\d+/, /^pepe-xshell-import-\d+/, /^pepe-desktop-\d+/,
+      /^pepe-mypc-\d+/, /^pepe-shell-\d+/, /^pepe-drives-\d+/,
+      /^pepe-ext-icon-list-\d+/, /^pepe-ext-icons-\d+/, /^pepe-icon-list-\d+/,
+      /^pepe-icons-batch-\d+/, /^pepe-shellicon-\d+/, /^pepe-icon-\d+/,
+      /^pepe-mermaid-src\.txt$/, /^pepe-autotrack-/, /^pepe-pwd-/, /^pepe-mcp-\d+/,
+      /^gemini-prompt-\d+/, /^gemini-mcp-\d+/, /^claude-mcp-\d+/,
+    ];
+    for (const name of fs.readdirSync(dir)) {
+      if (!patterns.some(re => re.test(name))) continue;
+      const full = path.join(dir, name);
+      try {
+        const st = fs.statSync(full);
+        if (now - st.mtimeMs < MAX_AGE) continue; // 최근 것은 보존
+        fs.rmSync(full, { recursive: true, force: true });
+      } catch {}
+    }
+  } catch {}
+}
+
 app.whenReady().then(() => {
   sessionsData = loadSessionsData();
+  cleanupStaleTempFiles();
   createWindow();
   installX11DisplayHook();
 
@@ -254,6 +295,9 @@ app.whenReady().then(() => {
       case 'auto-track':
         mainWindow.webContents.send('ssh:auto-track', { panelId: msg.panelId, enabled: msg.enabled });
         break;
+      case 'pwd':
+        mainWindow.webContents.send('ssh:pwd', { panelId: msg.panelId, pwd: (msg as any).data });
+        break;
       case 'x11-log':
         // x11 관련 로그를 renderer 콘솔로 — DevTools 에서 확인
         mainWindow.webContents.executeJavaScript(`console.log('[X11]', ${JSON.stringify(msg.data)})`).catch(() => {});
@@ -283,6 +327,9 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   try { stopAllBundledX11(); } catch {}
   try { getSSHBridge().disconnectAll(); } catch {}
+  // 강제 종료 보장 — PTY/ssh/webdav/소켓 등이 이벤트 루프를 잡고 있어도 확실히 프로세스 종료.
+  // (dev 모드에서 electron 이 안 죽으면 vite-plugin-electron 이 process.exit 를 못 해 npm run dev 가 안 끝남)
+  setTimeout(() => { try { process.exit(0); } catch {} }, 600);
 });
 
 // 앱 시작 5초 후 비동기로 과거 session-* 폴더 정리 (현재 더 이상 안 만드는데 기존 orphan 잔존 가능)
@@ -977,7 +1024,44 @@ ipcMain.handle('sessions:reorder', (_e, { id, type, direction }: { id: string; t
 ipcMain.handle('sessions:move-to-folder', (_e, { sessionId, targetFolderId }: { sessionId: string; targetFolderId: string | null }) => {
   const sess = sessionsData.sessions.find(s => s.id === sessionId);
   if (!sess) return sessionsData;
+  const oldParent = sess.folderId;
   sess.folderId = targetFolderId ?? undefined;
+  // childOrder 갱신 — 옛 부모에서 제거, 새 부모 맨 뒤에 추가
+  removeFromChildOrder(oldParent, sessionId);
+  addToChildOrder(targetFolderId ?? undefined, sessionId, 'last');
+  saveSessionsData(sessionsData);
+  return sessionsData;
+});
+
+// 드래그앤드롭 위치 지정 이동 — 항목을 target 부모로 옮기고 beforeId 앞 / 없으면 맨 뒤로 삽입.
+// type='session' 이면 folderId, 'folder' 면 parentId 갱신. (폴더의 자기 자손으로 이동 금지)
+ipcMain.handle('sessions:drop-reorder', (_e, { id, type, targetParentId, beforeId }: { id: string; type: 'session' | 'folder'; targetParentId: string | null; beforeId?: string | null }) => {
+  const newParent = targetParentId ?? undefined;
+  if (type === 'session') {
+    const sess = sessionsData.sessions.find(s => s.id === id);
+    if (!sess) return sessionsData;
+    const oldParent = sess.folderId;
+    sess.folderId = newParent;
+    removeFromChildOrder(oldParent, id);
+    addToChildOrder(newParent, id, beforeId ? { before: beforeId } : 'last');
+  } else {
+    const folder = sessionsData.folders.find(f => f.id === id);
+    if (!folder) return sessionsData;
+    // 자기 자신 또는 자손 폴더로는 이동 금지 (순환 방지)
+    const isDescendant = (candidate: string | undefined): boolean => {
+      let cur = candidate;
+      while (cur) {
+        if (cur === id) return true;
+        cur = sessionsData.folders.find(f => f.id === cur)?.parentId;
+      }
+      return false;
+    };
+    if (isDescendant(newParent)) return sessionsData;
+    const oldParent = folder.parentId;
+    folder.parentId = newParent;
+    removeFromChildOrder(oldParent, id);
+    addToChildOrder(newParent, id, beforeId ? { before: beforeId } : 'last');
+  }
   saveSessionsData(sessionsData);
   return sessionsData;
 });
@@ -1634,16 +1718,52 @@ if ($ok -and $folder) {
       // .lnk 단축 — 파싱해서 target 으로 리다이렉트
       if (dirPath.startsWith('lnk:')) {
         const lnk = dirPath.slice(4);
+        // 1) Electron shell.readShortcutLink — 일반 .lnk 의 target 을 가장 빠르고 안정적으로 읽음
+        let target = '';
         try {
-          const { execFileSync } = require('child_process');
-          const out: string = execFileSync('powershell', [
-            '-NoProfile', '-NonInteractive', '-Command',
-            `(New-Object -ComObject WScript.Shell).CreateShortcut('${lnk.replace(/'/g, "''")}').TargetPath`,
-          ], { windowsHide: true, timeout: 5000 }).toString('utf-8').trim();
-          if (out) {
-            return { files: await bridge.handleLocalListDir(out), resolvedPath: out };
-          }
+          const info = shell.readShortcutLink(lnk);
+          if (info?.target) target = String(info.target).trim();
         } catch {}
+        // 2) 네트워크 단축 (\\server\share 가리키는 .lnk) — WScript.Shell.TargetPath 가 비어 올 수 있음.
+        //    PowerShell 백업 경로 — TargetPath 와 Arguments 둘 다 시도.
+        if (!target) {
+          try {
+            const { execFileSync } = require('child_process');
+            const out: string = execFileSync('powershell', [
+              '-NoProfile', '-NonInteractive', '-Command',
+              // TargetPath 가 비어있으면 .lnk 파일 내부 LinkInfo 의 NetName 을 시도하는 대체 명령
+              `$s=(New-Object -ComObject WScript.Shell).CreateShortcut('${lnk.replace(/'/g, "''")}');`
+              + `if($s.TargetPath){$s.TargetPath}else{$s.Arguments}`,
+            ], { windowsHide: true, timeout: 5000 }).toString('utf-8').trim();
+            if (out) target = out;
+          } catch {}
+        }
+        // 3) 그래도 안 되면 .lnk 바이너리에서 직접 UNC 추출 — 네트워크 단축에 자주 효과적.
+        if (!target) {
+          try {
+            const buf = fs.readFileSync(lnk);
+            // .lnk 파일 안에는 표시용 string 으로 \\server\share 가 보통 UTF-16LE 또는 ASCII 로 포함됨.
+            const asUtf16 = buf.toString('utf16le');
+            const asAscii = buf.toString('binary');
+            const uncMatch = /\\\\[^\x00<>:"/|?*]+\\[^\x00<>:"/|?*]+/g;
+            const m1 = asUtf16.match(uncMatch);
+            const m2 = asAscii.match(uncMatch);
+            const candidates = [...(m1 || []), ...(m2 || [])]
+              // null/제어문자 제거 + 길이순 정렬
+              .map(s => s.replace(/\x00/g, '').trim())
+              .filter(s => s.length >= 5)
+              .sort((a, b) => b.length - a.length);
+            if (candidates.length > 0) target = candidates[0];
+          } catch {}
+        }
+        if (target) {
+          try {
+            const files = await bridge.handleLocalListDir(target);
+            return { files, resolvedPath: target };
+          } catch (e: any) {
+            return { files: [], error: `shortcut 대상 접근 실패: ${target}` };
+          }
+        }
         return { files: [], error: 'shortcut 해석 실패' };
       }
       // 일반 로컬 디렉토리 — 물리 파일만 (가상 항목은 shell:Desktop 경로에서만)
@@ -1955,7 +2075,7 @@ ipcMain.handle('compare:diff-count', async (_e, {
 });
 
 ipcMain.handle('compare:read', async (_e, { mode, termId, filePath, maxBytes }: { mode: string; termId?: string; filePath: string; maxBytes?: number }) => {
-  const cap = maxBytes || 5 * 1024 * 1024; // 기본 5MB
+  const cap = maxBytes || 100 * 1024 * 1024; // 기본 100MB
   try {
     if (mode === 'local') {
       const stat = await fs.promises.stat(filePath);
@@ -2919,7 +3039,15 @@ ipcMain.handle('sftp:list-dir', async (_e, { panelId, remotePath }: { panelId: s
 ipcMain.handle('sftp:read-file', async (_e, { panelId, remotePath, encoding }: { panelId: string; remotePath: string; encoding?: string }) => {
   try {
     const bridge = getSSHBridge();
-    const buf = await bridge.handleSFTPReadFile(panelId, remotePath);
+    let buf: Buffer;
+    try {
+      buf = await bridge.handleSFTPReadFile(panelId, remotePath);
+    } catch (e: any) {
+      // 로컬 PTY (SSH 연결 없는 미니탭) — 로컬 fs 로 폴백
+      if (/연결되지 않음|not connected/i.test(String(e?.message || e))) {
+        buf = await fs.promises.readFile(remotePath);
+      } else throw e;
+    }
     const iconv = require('iconv-lite');
     const enc = (encoding || 'utf-8').toLowerCase();
     let text: string;
@@ -2953,7 +3081,14 @@ ipcMain.handle('sftp:write-file', async (_e, { panelId, remotePath, content, enc
     } else {
       buf = Buffer.from(content, 'utf-8');
     }
-    await bridge.handleSFTPWriteFile(panelId, remotePath, buf);
+    try {
+      await bridge.handleSFTPWriteFile(panelId, remotePath, buf);
+    } catch (e: any) {
+      // 로컬 PTY 폴백
+      if (/연결되지 않음|not connected/i.test(String(e?.message || e))) {
+        await fs.promises.writeFile(remotePath, buf);
+      } else throw e;
+    }
     return { success: true };
   } catch (err: any) {
     return { success: false, error: String(err) };
@@ -2964,11 +3099,96 @@ ipcMain.handle('sftp:write-file', async (_e, { panelId, remotePath, content, enc
 
 // ── 창 제어 ──
 let dragStartPos: { x: number; y: number } | null = null;
+// Aero Snap — 드래그 중 마우스가 화면 가장자리에 닿으면 release 시 해당 위치로 스냅.
+// 모서리(corner) 는 1/4 분할, 위/좌/우 는 최대화·좌반·우반. 미리보기는 별도 투명 오버레이 창으로 표시.
+type SnapZone = 'top' | 'left' | 'right' | 'tl' | 'tr' | 'bl' | 'br' | null;
+let pendingSnapZone: SnapZone = null;
+let snapPreviewWin: BrowserWindow | null = null;
+const SNAP_EDGE_PX = 10; // 마우스가 디스플레이 경계에서 몇 px 이내일 때 스냅 발동 (반응 즉시성을 위해 넉넉히)
+const SNAP_CORNER_PX = 80; // 모서리 영역 판정 — 가장자리에 닿은 상태에서 코너 80px 이내면 1/4 분할
+
+// 시작 시 미리 빈 BrowserWindow 를 만들어 두면 첫 호출 시 BrowserWindow 생성 + HTML 로드로 인한
+// 첫 표시 지연 (수백 ms) 이 사라짐. 이후엔 hide/show + setBounds 로만 토글.
+function ensureSnapPreview(): BrowserWindow | null {
+  if (snapPreviewWin && !snapPreviewWin.isDestroyed()) return snapPreviewWin;
+  try {
+    snapPreviewWin = new BrowserWindow({
+      x: 0, y: 0, width: 200, height: 200,
+      frame: false, transparent: true, hasShadow: false,
+      resizable: false, movable: false, minimizable: false, maximizable: false,
+      focusable: false, skipTaskbar: true, alwaysOnTop: true, show: false,
+      backgroundColor: '#00000000',
+      webPreferences: { nodeIntegration: false, contextIsolation: true },
+    });
+    snapPreviewWin.setIgnoreMouseEvents(true);
+    snapPreviewWin.setAlwaysOnTop(true, 'screen-saver');
+    const html = `<!doctype html><html><body style="margin:0;background:transparent;overflow:hidden;">
+      <div style="position:fixed;inset:0;border:3px solid rgba(80,160,255,0.85);
+        background:rgba(80,160,255,0.18);box-sizing:border-box;border-radius:6px;
+        box-shadow:0 0 24px rgba(80,160,255,0.55), inset 0 0 24px rgba(80,160,255,0.25);
+        pointer-events:none;"></div></body></html>`;
+    snapPreviewWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+  } catch { return null; }
+  return snapPreviewWin;
+}
+function hideSnapPreview() {
+  if (snapPreviewWin && !snapPreviewWin.isDestroyed() && snapPreviewWin.isVisible()) {
+    try { snapPreviewWin.hide(); } catch {}
+  }
+}
+function computeSnapBounds(zone: SnapZone, workArea: { x: number; y: number; width: number; height: number }) {
+  const { x, y, width, height } = workArea;
+  const halfW = Math.floor(width / 2);
+  const halfH = Math.floor(height / 2);
+  switch (zone) {
+    case 'top':   return { x, y, width, height };
+    case 'left':  return { x, y, width: halfW, height };
+    case 'right': return { x: x + width - halfW, y, width: halfW, height };
+    case 'tl':    return { x, y, width: halfW, height: halfH };
+    case 'tr':    return { x: x + width - halfW, y, width: halfW, height: halfH };
+    case 'bl':    return { x, y: y + height - halfH, width: halfW, height: halfH };
+    case 'br':    return { x: x + width - halfW, y: y + height - halfH, width: halfW, height: halfH };
+    default:      return null;
+  }
+}
+function showSnapPreview(zone: SnapZone, workArea: { x: number; y: number; width: number; height: number }) {
+  const bounds = computeSnapBounds(zone, workArea);
+  if (!bounds) { hideSnapPreview(); return; }
+  const w = ensureSnapPreview();
+  if (!w) return;
+  try {
+    w.setBounds(bounds);
+    if (!w.isVisible()) w.showInactive();
+  } catch {}
+}
+function detectSnapZone(mouseX: number, mouseY: number): { zone: SnapZone; workArea: { x: number; y: number; width: number; height: number } } {
+  const display = screen.getDisplayNearestPoint({ x: mouseX, y: mouseY });
+  const wa = display.workArea;
+  const nearTop    = mouseY <= wa.y + SNAP_EDGE_PX;
+  const nearLeft   = mouseX <= wa.x + SNAP_EDGE_PX;
+  const nearRight  = mouseX >= wa.x + wa.width - SNAP_EDGE_PX - 1;
+  const nearBottom = mouseY >= wa.y + wa.height - SNAP_EDGE_PX - 1;
+  // 모서리 판정 — 한쪽 가장자리에 닿은 상태 + 다른 축이 모서리 코너 80px 이내
+  const yNearTopCorner    = mouseY <= wa.y + SNAP_CORNER_PX;
+  const yNearBottomCorner = mouseY >= wa.y + wa.height - SNAP_CORNER_PX;
+  const xNearLeftCorner   = mouseX <= wa.x + SNAP_CORNER_PX;
+  const xNearRightCorner  = mouseX >= wa.x + wa.width - SNAP_CORNER_PX;
+  let zone: SnapZone = null;
+  if ((nearTop && xNearLeftCorner) || (nearLeft && yNearTopCorner)) zone = 'tl';
+  else if ((nearTop && xNearRightCorner) || (nearRight && yNearTopCorner)) zone = 'tr';
+  else if ((nearBottom && xNearLeftCorner) || (nearLeft && yNearBottomCorner)) zone = 'bl';
+  else if ((nearBottom && xNearRightCorner) || (nearRight && yNearBottomCorner)) zone = 'br';
+  else if (nearTop) zone = 'top';
+  else if (nearLeft) zone = 'left';
+  else if (nearRight) zone = 'right';
+  return { zone, workArea: wa };
+}
 
 ipcMain.on('window:start-drag', (_e, { mouseX, mouseY }: any) => {
   if (!mainWindow) return;
   const [wx, wy] = mainWindow.getPosition();
   dragStartPos = { x: mouseX - wx, y: mouseY - wy };
+  pendingSnapZone = null;
 });
 
 ipcMain.on('window:drag-move', (_e, { mouseX, mouseY }: any) => {
@@ -2987,9 +3207,34 @@ ipcMain.on('window:drag-move', (_e, { mouseX, mouseY }: any) => {
     return;
   }
   mainWindow.setPosition(mouseX - dragStartPos.x, mouseY - dragStartPos.y);
+  // Aero Snap 영역 검출 + 미리보기 토글
+  const { zone, workArea } = detectSnapZone(mouseX, mouseY);
+  if (zone !== pendingSnapZone) {
+    pendingSnapZone = zone;
+    if (zone) showSnapPreview(zone, workArea);
+    else hideSnapPreview();
+  }
 });
 
-ipcMain.on('window:end-drag', () => { dragStartPos = null; });
+ipcMain.on('window:end-drag', () => {
+  dragStartPos = null;
+  // 스냅 영역에서 release → 스냅 실행
+  if (pendingSnapZone && mainWindow) {
+    const cursor = screen.getCursorScreenPoint();
+    const display = screen.getDisplayNearestPoint(cursor);
+    const bounds = computeSnapBounds(pendingSnapZone, display.workArea);
+    if (bounds) {
+      if (pendingSnapZone === 'top') {
+        // 최대화는 OS native maximize 호출 — 작업표시줄 회피 + 모니터 변경 자동 대응
+        mainWindow.maximize();
+      } else {
+        mainWindow.setBounds(bounds);
+      }
+    }
+  }
+  pendingSnapZone = null;
+  hideSnapPreview();
+});
 
 ipcMain.handle('window:minimize', () => mainWindow?.minimize());
 ipcMain.handle('window:toggle-maximize', () => {
@@ -3904,7 +4149,7 @@ ipcMain.handle('claude:get-mount-path', async (_e, { panelId, remotePath }: { pa
 });
 
 // claude CLI 실행 + 스트리밍 응답 (print 모드)
-ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowBash, sshTermId, resumeSessionId, permissionMode, model, perToolApproval, requestId, effort }: { sessionId: string; prompt: string; addDirs?: string[]; disallowBash?: boolean; sshTermId?: string; resumeSessionId?: string | null; permissionMode?: string; model?: string; perToolApproval?: boolean; requestId?: string; effort?: string }) => {
+ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowBash, sshTermId, resumeSessionId, permissionMode, model, perToolApproval, requestId, effort, sshSessions }: { sessionId: string; prompt: string; addDirs?: string[]; disallowBash?: boolean; sshTermId?: string; resumeSessionId?: string | null; permissionMode?: string; model?: string; perToolApproval?: boolean; requestId?: string; effort?: string; sshSessions?: { id: string; label: string }[] }) => {
   try {
     const { spawn } = require('child_process');
     // requestId 가 있으면 그걸 프로세스 키로 사용 — 동일 sessionId 안에서 여러 대화가 동시에 진행될 수 있음.
@@ -3949,7 +4194,6 @@ ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowB
     // MCP 서버 설정 (원격 SSH 명령 실행용) — sshTermId 가 있을 때만 활성화
     let mcpConfigArg = '';
     let mcpCfgTmp = '';
-    let mcpLogPath = '';
     if (sshTermId) {
       await startMcpControl();
       // 임베드된 스크립트를 임시 파일로 추출 (dev/prod 모두 작동)
@@ -3962,7 +4206,6 @@ ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowB
       } catch (err) {
         console.error('[claude] MCP script extract failed:', err);
       }
-      mcpLogPath = path.join(os.tmpdir(), `pepe-mcp-${Date.now()}.log`);
       const mcpCfg = {
         mcpServers: {
           pepe_ssh: {
@@ -3972,7 +4215,8 @@ ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowB
               PEPE_CTRL_PORT: String(mcpControlPort),
               PEPE_CTRL_TOKEN: mcpControlToken,
               PEPE_TERM_ID: sshTermId,
-              PEPE_LOG_PATH: mcpLogPath,
+              // 멀티 SSH 세션 — JSON [{id,label}] (MCP 가 session 인자로 선택). 없으면 단일 PEPE_TERM_ID.
+              PEPE_TERM_IDS: JSON.stringify(Array.isArray(sshSessions) && sshSessions.length > 0 ? sshSessions : [{ id: sshTermId, label: sshTermId }]),
               ELECTRON_RUN_AS_NODE: '1',
             },
           },
@@ -4421,7 +4665,7 @@ ipcMain.handle('gemini:modelInfo', async () => {
   }
 });
 
-ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, yolo, addDirs, sshTermId }: { sessionId: string; prompt: string; requestId?: string; model?: string; yolo?: boolean; addDirs?: string[]; sshTermId?: string }) => {
+ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, yolo, addDirs, sshTermId, sshSessions }: { sessionId: string; prompt: string; requestId?: string; model?: string; yolo?: boolean; addDirs?: string[]; sshTermId?: string; sshSessions?: { id: string; label: string }[] }) => {
   try {
     // 같은 sessionId로 실행 중인 Codex 프로세스 정리
     const prevCodex = codexProcesses.get(sessionId);
@@ -4468,6 +4712,7 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
                 PEPE_CTRL_PORT: String(mcpControlPort),
                 PEPE_CTRL_TOKEN: mcpControlToken,
                 PEPE_TERM_ID: sshTermId,
+                PEPE_TERM_IDS: JSON.stringify(Array.isArray(sshSessions) && sshSessions.length > 0 ? sshSessions : [{ id: sshTermId, label: sshTermId }]),
                 ELECTRON_RUN_AS_NODE: '1',
               },
               trust: true,

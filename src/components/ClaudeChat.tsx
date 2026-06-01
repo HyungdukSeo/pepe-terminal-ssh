@@ -711,35 +711,93 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     setCodexApprovalPolicy(saved?.codexApprovalPolicy ?? 'suggest');
   }, [aiAgent]); // eslint-disable-line react-hooks/exhaustive-deps
   const { t: tt } = useTranslation('claudeChat');
-  // 사용자가 선택한 활성 SSH 세션 (드롭다운). 처음엔 defaultSshSession.
-  const [selectedSshTermId, setSelectedSshTermId] = useState<string | null>(defaultSshSession?.termId || null);
+  // 사용자가 선택한 활성 SSH 세션들 (멀티). 처음엔 defaultSshSession 하나.
+  const [selectedSshTermIds, setSelectedSshTermIds] = useState<Set<string>>(
+    () => defaultSshSession?.termId ? new Set([defaultSshSession.termId]) : new Set()
+  );
+  const sshInitRef = useRef(false);
   useEffect(() => {
-    // defaultSshSession 변경 시 선택된 적 없으면 반영
-    if (defaultSshSession && !selectedSshTermId) {
-      setSelectedSshTermId(defaultSshSession.termId);
+    // defaultSshSession 최초 1회 반영 (선택이 비어있을 때만)
+    if (defaultSshSession && !sshInitRef.current && selectedSshTermIds.size === 0) {
+      sshInitRef.current = true;
+      setSelectedSshTermIds(new Set([defaultSshSession.termId]));
     }
   }, [defaultSshSession?.termId]);
-  // 실제로 selected termId 가 connectedSessions 에 존재하는지 확인 (세션 종료 시 리셋)
+  // 연결 종료된 세션은 선택에서 제거
   useEffect(() => {
-    if (selectedSshTermId && !connectedSessions.find(s => s.termId === selectedSshTermId)) {
-      setSelectedSshTermId(connectedSessions[0]?.termId || null);
-    }
+    const live = new Set(connectedSessions.map(s => s.termId));
+    setSelectedSshTermIds(prev => {
+      const next = new Set([...prev].filter(id => live.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
   }, [connectedSessions.map(s => s.termId).join(',')]);
-  const activeSshSession = selectedSshTermId
-    ? (connectedSessions.find(s => s.termId === selectedSshTermId) || null)
-    : null;
+  const toggleSshSession = (termId: string) => {
+    setSelectedSshTermIds(prev => {
+      const next = new Set(prev);
+      next.has(termId) ? next.delete(termId) : next.add(termId);
+      return next;
+    });
+  };
+  // SSH 세션 선택 드롭다운
+  const [sshPickerOpen, setSshPickerOpen] = useState(false);
+  const sshPickerWrapRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!sshPickerOpen) return;
+    const h = (e: MouseEvent) => { if (sshPickerWrapRef.current && !sshPickerWrapRef.current.contains(e.target as Node)) setSshPickerOpen(false); };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, [sshPickerOpen]);
+  // 선택된 세션 목록 (connectedSessions 순서 유지)
+  const selectedSshSessions = connectedSessions.filter(s => selectedSshTermIds.has(s.termId));
+  // 대표 세션 (git bar 등 단일 참조용) — 첫 번째 선택
+  const activeSshSession = selectedSshSessions[0] || null;
   const [installed, setInstalled] = useState<boolean | null>(null);
-  const [version, setVersion] = useState<string>('');
+  // 에이전트별 버전 캐시 — 탭 hover 시 플로팅 툴팁에 표시
+  const [agentVersions, setAgentVersions] = useState<{ claude?: string; gemini?: string; codex?: string }>({});
+  // 에이전트 탭 툴팁 — React 포털로 document.body 에 렌더 (overflow 클립 회피)
+  const [agentTooltip, setAgentTooltip] = useState<{ text: string; x: number; y: number } | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   // Git 상태 — 현재 cwd / 활성 SSH 세션 자동 감지
   const [gitStatus, setGitStatus] = useState<{ ok: boolean; branch?: string; additions?: number; deletions?: number } | null>(null);
   const [input, setInput] = useState('');
-  // 외부 워크스페이스(예: LogAnalyzer)에서 prompt prefill — 'claude-prefill' window event 로 수신
+  // 외부 워크스페이스(예: LogAnalyzer)에서 prompt prefill — 'claude-prefill' window event 로 수신.
+  // detail: { text?: string, attachments?: { name, content }[], newConversation?: boolean, agent?: 'claude'|'gemini'|'codex' }
   useEffect(() => {
     const onPrefill = (e: any) => {
-      const text = String(e?.detail?.text || '');
-      if (!text) return;
-      setInput(prev => prev ? prev + '\n\n' + text : text);
+      const d = e?.detail || {};
+      const text: string = String(d.text || '');
+      const attachments: { name: string; content: string }[] = Array.isArray(d.attachments) ? d.attachments : [];
+      const newConv = !!d.newConversation;
+      const reqAgent = (d.agent === 'gemini' || d.agent === 'codex' || d.agent === 'claude') ? d.agent : null;
+      if (!text && attachments.length === 0) return;
+      // 새 대화 모드일 때 — 에이전트 전환이 일으키는 "최근 대화 자동 선택" 이 clear() 를 덮어쓰지 않도록
+      // 플래그 먼저 세팅 (auto-select effect 가 이 플래그 보면 자동 로드 skip).
+      if (newConv) prefillNewConvRef.current = true;
+      // 지정 에이전트로 전환
+      if (reqAgent && reqAgent !== currentAgentRef.current) {
+        switchAgent(reqAgent);
+      }
+      // 새 대화 모드 — UI 만 리셋 (백그라운드 진행 중 응답은 유지)
+      if (newConv) {
+        clear();
+      }
+      if (text) {
+        // 현재 대화 이어가기에서 동일 프롬프트가 이미 입력란에 있으면 중복 추가 안 함 (에이전트 바꿔 재요청 케이스)
+        setInput(prev => {
+          if (newConv || !prev) return text;
+          if (prev === text || prev.endsWith(text)) return prev;
+          return prev + '\n\n' + text;
+        });
+      }
+      if (attachments.length > 0) {
+        setLocalFileAttachments(prev => {
+          if (newConv) return attachments;
+          // 현재 대화에 이어붙이되 같은 이름은 최신 내용으로 교체 (에이전트 바꿔 재요청 시 중복 누적 방지)
+          const map = new Map(prev.map(f => [f.name, f]));
+          for (const a of attachments) map.set(a.name, a);
+          return Array.from(map.values());
+        });
+      }
       // 입력 textarea 포커스
       setTimeout(() => {
         try {
@@ -750,6 +808,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     };
     window.addEventListener('claude-prefill', onPrefill as any);
     return () => window.removeEventListener('claude-prefill', onPrefill as any);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [streaming, setStreaming] = useState(false);
   // 현재 진행 중 활동(툴 이름 등) — 스트리밍 인디케이터 옆에 표시
@@ -942,7 +1001,10 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   // 사용자가 전송 버튼을 누를 때까지 파일 컨텍스트를 로컬에서 보관 (다중 첨부)
   const [attachments, setAttachments] = useState<FileContextItem[]>([]);
   // 활성 SSH 세션의 WebDAV 마운트 루트 (세션 전체 파일시스템 접근용)
-  const [activeMount, setActiveMount] = useState<{ termId: string; mountRoot: string; label: string } | null>(null);
+  // 선택된 SSH 세션별 WebDAV 마운트 (멀티)
+  const [activeMounts, setActiveMounts] = useState<{ termId: string; mountRoot: string; label: string }[]>([]);
+  // 대표 마운트 (단일 참조 호환용)
+  const activeMount = activeMounts[0] || null;
   // Claude CLI 대화 세션 ID (이전 대화 컨텍스트 유지용 --resume)
   const claudeSessionIdRef = useRef<string | null>(null);
   // 대화 이력 목록 (UIPrefs 영속화)
@@ -950,6 +1012,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const [activeHistoryId, setActiveHistoryId] = useState<string | null>(null);
   const [showHistoryPanel, setShowHistoryPanel] = useState(false);
   const [deleteHistoryConfirm, setDeleteHistoryConfirm] = useState<{ id: string; title: string } | null>(null);
+  const [renamingHistory, setRenamingHistory] = useState<{ id: string; value: string } | null>(null);
   // 에이전트 간 컨텍스트 공유 — 켜져있으면 send 시 이전 transcript(다른 에이전트 답변 포함) 를 inject.
   // UIPrefs 에 영속화. 기본값 true (기존 동작 유지).
   const [shareContext, setShareContext] = useState<boolean>(true);
@@ -1181,6 +1244,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const folderUploadRef = useRef<HTMLInputElement | null>(null);
   // 로컬 파일 첨부 (사용자 PC 파일 내용)
   const [localFileAttachments, setLocalFileAttachments] = useState<{ name: string; content: string }[]>([]);
+  // 첨부 파일 미리보기 모달
+  const [attachmentPreview, setAttachmentPreview] = useState<{ name: string; content: string } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   // ClaudeChat 은 installed 상태에 따라 여러 return 분기를 가져서 ref 부착 시점이 변함.
   // 안정적으로 listener 를 붙이기 위해 document 전체에서 target 이 claude-chat-container 내부인지
@@ -1325,10 +1390,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   }, [showSearch]);
   // ────────────────────────────────────────────────────────────────────────
 
-  // CLI 설치 확인 (currentAgent 변경 시마다 재확인)
+  // CLI 설치 확인 (currentAgent 변경 시마다 재확인) + agentVersions 캐시 갱신
   useEffect(() => {
     setInstalled(null); // 에이전트 전환 시 로딩 상태로 초기화
-    setVersion('');
     (async () => {
       const res = currentAgent === 'gemini'
         ? await (window as any).api?.geminiCheck?.()
@@ -1336,9 +1400,32 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         ? await (window as any).api?.codexCheck?.()
         : await (window as any).api?.claudeCheck?.();
       setInstalled(!!res?.installed);
-      setVersion(res?.version || '');
+      const v = res?.version || '';
+      setAgentVersions(prev => prev[currentAgent] === v ? prev : { ...prev, [currentAgent]: v });
     })();
   }, [currentAgent]);
+
+  // 마운트 시 모든 에이전트 버전 1회 백그라운드 조회 (탭 hover 툴팁 미리 채움)
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const [c, g, cx] = await Promise.all([
+          (window as any).api?.claudeCheck?.().catch(() => null),
+          (window as any).api?.geminiCheck?.().catch(() => null),
+          (window as any).api?.codexCheck?.().catch(() => null),
+        ]);
+        if (!mounted) return;
+        setAgentVersions(prev => ({
+          claude: c?.version || prev.claude || '',
+          gemini: g?.version || prev.gemini || '',
+          codex: cx?.version || prev.codex || '',
+        }));
+      } catch {}
+    })();
+    return () => { mounted = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Hook 승인 요청 리스너
   useEffect(() => {
@@ -1348,24 +1435,25 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     return () => { if (dispose) dispose(); };
   }, []);
 
-  // 활성 SSH 세션이 변경되면 WebDAV 마운트 등록 + 루트 경로 저장
+  // 선택된 SSH 세션들이 바뀌면 각각 WebDAV 마운트 등록 + 루트 경로 저장 (멀티)
   useEffect(() => {
     (async () => {
-      if (!activeSshSession) { setActiveMount(null); return; }
-      if (activeMount?.termId === activeSshSession.termId) return; // 이미 등록됨
-      try {
-        const reg: any = await (window as any).api?.claudeRegisterMount?.(activeSshSession.termId, activeSshSession.label);
-        if (!reg?.success) { setActiveMount(null); return; }
-        const pathRes: any = await (window as any).api?.claudeGetMountPath?.(activeSshSession.termId, '/');
-        if (!pathRes?.success) { setActiveMount(null); return; }
-        // "/" 에 대한 uncPath 가 세션 루트
-        setActiveMount({ termId: activeSshSession.termId, mountRoot: pathRes.uncPath.replace(/\\$/, ''), label: activeSshSession.label });
-      } catch (err) {
-        console.error('[ClaudeChat] auto-mount failed:', err);
-        setActiveMount(null);
+      if (selectedSshSessions.length === 0) { setActiveMounts([]); return; }
+      const results: { termId: string; mountRoot: string; label: string }[] = [];
+      for (const sess of selectedSshSessions) {
+        try {
+          const reg: any = await (window as any).api?.claudeRegisterMount?.(sess.termId, sess.label);
+          if (!reg?.success) continue;
+          const pathRes: any = await (window as any).api?.claudeGetMountPath?.(sess.termId, '/');
+          if (!pathRes?.success) continue;
+          results.push({ termId: sess.termId, mountRoot: pathRes.uncPath.replace(/\\$/, ''), label: sess.label });
+        } catch (err) {
+          console.error('[ClaudeChat] auto-mount failed:', sess.label, err);
+        }
       }
+      setActiveMounts(results);
     })();
-  }, [activeSshSession?.termId, activeSshSession?.label]);
+  }, [selectedSshSessions.map(s => s.termId).join(',')]);
 
   // 스트리밍 응답 리스너
   useEffect(() => {
@@ -1755,10 +1843,6 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         codeEl.setAttribute('data-mermaid-src', source);
         // 특수문자 라벨을 따옴표로 감싸 mermaid 파서 에러 방지 (codex 다이어그램 대응)
         const renderSrc = sanitizeMermaidLabels(source);
-        try {
-          (window as any).api?.debugDump?.('pepe-mermaid-src.txt',
-            `=====SOURCE=====\n${source}\n\n=====SANITIZED=====\n${renderSrc}\n`);
-        } catch {}
         try {
           const { svg } = await Promise.race([
             mermaid.render(id, renderSrc),
@@ -2270,8 +2354,16 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       ).join('\n');
       contextLines.push('', '[명시적으로 첨부된 파일/폴더]', pathMap);
       attachBadge = `📂 첨부 ${mountEntries.length}개:\n${mountEntries.slice(0, 5).map(m => `• ${m.remotePath}${m.isDir ? '/' : ''}`).join('\n')}${mountEntries.length > 5 ? `\n외 ${mountEntries.length - 5}개` : ''}\n\n`;
-    } else if (activeMount) {
-      attachBadge = `🔗 활성 SSH: ${activeMount.label}\n\n`;
+    } else if (activeMounts.length > 0) {
+      // 멀티 SSH 컨텍스트 — 각 세션의 WebDAV 루트를 addDirs 에 추가 + 매핑 안내
+      for (const m of activeMounts) addDirsSet.add(m.mountRoot);
+      if (activeMounts.length > 1) {
+        const mapLines = activeMounts.map(m => `- ${m.label}: \`${m.mountRoot}\` (이 세션 원격 루트 \`/\`)`).join('\n');
+        contextLines.push('', '[연결된 여러 SSH 세션 — 각 루트로 파일 접근 가능]', mapLines);
+        attachBadge = `🔗 활성 SSH ${activeMounts.length}개: ${activeMounts.map(m => m.label).join(', ')}\n\n`;
+      } else {
+        attachBadge = `🔗 활성 SSH: ${activeMounts[0].label}\n\n`;
+      }
     }
 
     // 0.6) 공유 OFF + Gemini — Gemini CLI 의 영구 메모리(save_memory 저장 분)는
@@ -2453,8 +2545,12 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
 
     const addDirs = addDirsSet.size > 0 ? Array.from(addDirsSet) : undefined;
     // 활성 SSH 세션이 선택되어 있으면 Bash 금지 + MCP ssh_exec 툴 제공
-    // (activeMount 가 아직 준비 전이라도 MCP 는 사용 가능해야 함)
-    const sshTermId = activeSshSession?.termId || activeMount?.termId;
+    // 멀티 세션: 대표(첫)는 sshTermId, 전체 목록은 sshSessions 로 전달 (MCP 가 session 인자로 선택)
+    const selForSend = selectedSshSessions.length > 0
+      ? selectedSshSessions.map(s => ({ id: s.termId, label: s.label }))
+      : (activeMounts.length > 0 ? activeMounts.map(m => ({ id: m.termId, label: m.label })) : []);
+    const sshTermId = selForSend[0]?.id;
+    const sshSessions = selForSend.length > 0 ? selForSend : undefined;
     // 전송 후 로컬 파일 첨부는 해제
     setLocalFileAttachments([]);
     try {
@@ -2478,7 +2574,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           geminiPlanRequestsRef.current.add(requestId);
         }
         // sshTermId 전달 → gemini 에 SSH MCP(pepe_ssh) 제공 (원격 파일/명령)
-        await (window as any).api?.geminiSend?.(sessionId, geminiPrompt, requestId, geminiModel, geminiYolo, addDirs, sshTermId);
+        await (window as any).api?.geminiSend?.(sessionId, geminiPrompt, requestId, geminiModel, geminiYolo, addDirs, sshTermId, sshSessions);
       } else if (currentAgentRef.current === 'codex') {
         // codex 는 비대화형(exec)이라 실행 중 승인이 불가 → claude 처럼 "계획 먼저 보여주고 승인" 2단계로 처리.
         // plan 모드(또는 default + 승인성 발화 아님)면 계획 단계로 전송.
@@ -2520,7 +2616,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             ``,
           );
         }
-        await (window as any).api?.claudeSend?.(sessionId, prompt, addDirs, disallowBash, sshTermId, resumeSessionId, effectivePermMode, model, perToolApproval, requestId, effort);
+        await (window as any).api?.claudeSend?.(sessionId, prompt, addDirs, disallowBash, sshTermId, resumeSessionId, effectivePermMode, model, perToolApproval, requestId, effort, sshSessions);
       }
     } catch (err: any) {
       setMessages(prev => [...prev, { role: 'assistant', content: `❌ ${err}`, id: `err-${Date.now()}`, seq: nextSeq() }]);
@@ -2698,9 +2794,17 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   // 가장 최근 대화 자동 선택 — 초기 마운트 / 에이전트 전환 / 공유모드 전환 시 트리거.
   // 현재 view 의 이력이 비어있으면 새 대화 상태 유지 (공유 OFF + 그 에이전트 첫 사용 시 등).
   const autoSelectViewRef = useRef<string | null>(null);
+  // prefill(외부 분석 요청) 로 새 대화를 시작한 직후엔 자동 선택을 건너뛴다 (clear() 가 덮어쓰이는 문제 방지)
+  const prefillNewConvRef = useRef(false);
   useEffect(() => {
     if (!chatHistoryLoadedRef.current) return;
     const viewKey = `${currentAgent}_${shareContext}`;
+    if (prefillNewConvRef.current) {
+      // 이번 view 변경은 prefill 새 대화에 의한 것 — 자동 로드 skip, 처리됨으로 마킹
+      prefillNewConvRef.current = false;
+      autoSelectViewRef.current = viewKey;
+      return;
+    }
     if (autoSelectViewRef.current === viewKey) return; // 이 view 에선 이미 자동선택 처리됨
     autoSelectViewRef.current = viewKey;
     // 현재 view 에서 보이는 이력 목록 계산
@@ -2993,14 +3097,14 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     return (
       <div className="claude-chat-container">
         <div className="claude-chat-header">
-          <div className="claude-chat-header-left">
+          <div className="claude-chat-header-left" />
+          <div className="claude-chat-header-center">
             <div className="claude-chat-agent-switcher">
               <button className={`claude-chat-agent-btn ${currentAgent === 'claude' ? 'active' : ''}`} title="Claude Code" onClick={() => switchAgent('claude')}><ClaudeTabIcon /></button>
               <button className={`claude-chat-agent-btn ${currentAgent === 'gemini' ? 'active' : ''}`} title="Gemini" onClick={() => switchAgent('gemini')}><GeminiTabIcon /></button>
               <button className={`claude-chat-agent-btn ${currentAgent === 'codex' ? 'active' : ''}`} title="Codex" onClick={() => switchAgent('codex')}><CodexTabIcon /></button>
             </div>
           </div>
-          <div className="claude-chat-header-center" />
           <div className="claude-chat-header-actions">
             {onClose && <button className="claude-chat-close" onClick={onClose}>×</button>}
           </div>
@@ -3014,7 +3118,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     return (
       <div className="claude-chat-container">
         <div className="claude-chat-header">
-          <div className="claude-chat-header-left">
+          <div className="claude-chat-header-left" />
+          <div className="claude-chat-header-center">
             <div className="claude-chat-agent-switcher">
               <button
                 className={`claude-chat-agent-btn ${currentAgent === 'claude' ? 'active' : ''}`}
@@ -3033,7 +3138,6 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               ><CodexTabIcon /></button>
             </div>
           </div>
-          <div className="claude-chat-header-center" />
           <div className="claude-chat-header-actions">
             {onClose && <button className="claude-chat-close" onClick={onClose}>×</button>}
           </div>
@@ -3067,26 +3171,6 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     <div className="claude-chat-container">
       <div className="claude-chat-header">
         <div className="claude-chat-header-left">
-          <div className="claude-chat-agent-switcher">
-            <button
-              className={`claude-chat-agent-btn ${currentAgent === 'claude' ? 'active' : ''}`}
-              title="Claude Code"
-              onClick={() => switchAgent('claude')}
-            ><ClaudeTabIcon /></button>
-            <button
-              className={`claude-chat-agent-btn ${currentAgent === 'gemini' ? 'active' : ''}`}
-              title="Gemini"
-              onClick={() => switchAgent('gemini')}
-            ><GeminiTabIcon /></button>
-            <button
-              className={`claude-chat-agent-btn ${currentAgent === 'codex' ? 'active' : ''}`}
-              title="Codex"
-              onClick={() => switchAgent('codex')}
-            ><CodexTabIcon /></button>
-          </div>
-          {version && <span className="claude-chat-version">{version}</span>}
-        </div>
-        <div className="claude-chat-header-center">
           {onTogglePin && (
             <button
               className={`claude-chat-pin ${pinned ? 'pinned' : ''}`}
@@ -3100,6 +3184,30 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             title={shareContext ? '에이전트 간 컨텍스트 공유 켜짐 — 클릭하여 끄기' : '에이전트 간 컨텍스트 공유 꺼짐 — 클릭하여 켜기'}
             className={`claude-chat-share-toggle ${shareContext ? 'on' : 'off'}`}
           >🔗</button>
+        </div>
+        <div className="claude-chat-header-center">
+          <div className="claude-chat-agent-switcher">
+            {(['claude', 'gemini', 'codex'] as const).map(a => {
+              const Icon = a === 'claude' ? ClaudeTabIcon : a === 'gemini' ? GeminiTabIcon : CodexTabIcon;
+              const label = a === 'claude' ? 'Claude Code' : a === 'gemini' ? 'Gemini' : 'Codex';
+              const v = agentVersions[a];
+              const tipText = v ? `${label} · ${v}` : label;
+              const showTip = (e: React.MouseEvent<HTMLButtonElement>) => {
+                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                setAgentTooltip({ text: tipText, x: rect.left + rect.width / 2, y: rect.bottom + 8 });
+              };
+              const hideTip = () => setAgentTooltip(null);
+              return (
+                <button
+                  key={a}
+                  className={`claude-chat-agent-btn ${currentAgent === a ? 'active' : ''}`}
+                  onClick={() => switchAgent(a)}
+                  onMouseEnter={showTip}
+                  onMouseLeave={hideTip}
+                ><Icon /></button>
+              );
+            })}
+          </div>
         </div>
         <div className="claude-chat-header-actions">
           <button onClick={startNewConversation} title={tt('newConversation')}>＋</button>
@@ -3419,21 +3527,55 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           )}
         </div>
       )}
-      <div className="claude-chat-active-session">
+      <div className="claude-chat-active-session" ref={sshPickerWrapRef} style={{ position: 'relative' }}>
         {tt('sshContext')}
-        <select
+        {/* 멀티 SSH 세션 선택 — 체크박스 드롭다운 */}
+        <button
           className="claude-chat-session-select"
-          value={selectedSshTermId || ''}
-          onChange={e => setSelectedSshTermId(e.target.value || null)}
+          onClick={() => setSshPickerOpen(v => !v)}
+          style={{ cursor: 'pointer' }}
+          title={selectedSshSessions.map(s => s.label).join(', ') || tt('sessionNone')}
         >
-          <option value="">{tt('sessionNone')}</option>
-          {connectedSessions.map(s => (
-            <option key={s.termId} value={s.termId}>{s.label}</option>
-          ))}
-        </select>
-        {activeMount ? (
-          <span className="claude-chat-active-session-hint" title={`WebDAV mount: ${activeMount.mountRoot}`}>{tt('mounted')}</span>
-        ) : selectedSshTermId ? (
+          {selectedSshSessions.length > 0 && (
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#5cd97a', flexShrink: 0 }} />
+          )}
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>
+            {selectedSshSessions.length === 0
+              ? tt('sessionNone')
+              : selectedSshSessions.length === 1
+                ? selectedSshSessions[0].label
+                : tt('sessionCount', { count: selectedSshSessions.length, defaultValue: `세션 ${selectedSshSessions.length}개` })}
+          </span>
+          <span style={{ flexShrink: 0, opacity: 0.6, fontSize: 10 }}>▾</span>
+        </button>
+        {sshPickerOpen && (
+          <div
+            className="claude-chat-session-dropdown"
+            style={{
+              position: 'absolute', top: '100%', left: 0, marginTop: 4, zIndex: 1000,
+              background: '#1a1a2e', border: '1px solid #3a3a5a', borderRadius: 6,
+              boxShadow: '0 6px 20px rgba(0,0,0,0.5)', minWidth: 220, maxHeight: 280,
+              overflow: 'auto', padding: 4,
+            }}
+            onClick={e => e.stopPropagation()}
+          >
+            {connectedSessions.length === 0 ? (
+              <div style={{ padding: '6px 10px', color: '#888', fontSize: 12 }}>{tt('noActiveSession')}</div>
+            ) : connectedSessions.map(s => (
+              <label key={s.termId} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 8px', cursor: 'pointer', fontSize: 12, borderRadius: 4 }}
+                onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.06)')}
+                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+              >
+                <input type="checkbox" checked={selectedSshTermIds.has(s.termId)} onChange={() => toggleSshSession(s.termId)} style={{ margin: 0 }} />
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.label}</span>
+                {activeMounts.find(m => m.termId === s.termId) && <span style={{ marginLeft: 'auto', color: '#5cd97a', fontSize: 10 }}>●</span>}
+              </label>
+            ))}
+          </div>
+        )}
+        {selectedSshTermIds.size > 0 && activeMounts.length === selectedSshTermIds.size ? (
+          <span className="claude-chat-active-session-hint" title={activeMounts.map(m => `${m.label}: ${m.mountRoot}`).join('\n')}>{tt('mounted')}</span>
+        ) : selectedSshTermIds.size > 0 ? (
           <span className="claude-chat-active-session-hint" style={{ color: '#fa6' }}>{tt('mounting')}</span>
         ) : connectedSessions.length === 0 ? (
           <span className="claude-chat-active-session-hint" style={{ color: '#a66' }}>{tt('noActiveSession')}</span>
@@ -3486,15 +3628,47 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                 return <Ic key={`${a}-${i}`} />;
               })}
             </span>
-            <span className="claude-chat-history-title" title={h.title}>{h.title || tt('noTitle')}</span>
+            {renamingHistory && renamingHistory.id === h.id ? (
+              <input
+                className="claude-chat-history-rename-input"
+                autoFocus
+                value={renamingHistory.value}
+                onClick={e => e.stopPropagation()}
+                onChange={e => setRenamingHistory({ id: h.id, value: e.target.value })}
+                onKeyDown={e => {
+                  e.stopPropagation();
+                  if (e.key === 'Enter') {
+                    const v = renamingHistory.value.trim();
+                    if (v) renameHistory(h.id, v);
+                    setRenamingHistory(null);
+                  } else if (e.key === 'Escape') {
+                    setRenamingHistory(null);
+                  }
+                }}
+                onBlur={() => {
+                  const v = renamingHistory.value.trim();
+                  if (v && v !== h.title) renameHistory(h.id, v);
+                  setRenamingHistory(null);
+                }}
+              />
+            ) : (
+              <span className="claude-chat-history-title" title={h.title}>{h.title || tt('noTitle')}</span>
+            )}
             <div className="claude-chat-history-actions">
               <button title={h.pinned ? tt('unpinTitle') : tt('pinnedTitle')} onClick={e => { e.stopPropagation(); togglePinHistory(h.id); }}>
                 {h.pinned ? '📍' : '📌'}
               </button>
-              <button title={tt('renameTitle')} onClick={e => {
+              <button title={tt('renameTitle')} onClick={e => { e.stopPropagation(); }} onMouseDown={e => {
+                e.preventDefault();
                 e.stopPropagation();
-                const v = prompt(tt('renamePrompt'), h.title);
-                if (v && v.trim()) renameHistory(h.id, v.trim());
+                setRenamingHistory(prev => {
+                  if (prev && prev.id === h.id) {
+                    const v = prev.value.trim();
+                    if (v && v !== h.title) renameHistory(h.id, v);
+                    return null;
+                  }
+                  return { id: h.id, value: h.title || '' };
+                });
               }}>✎</button>
               <button title={tt('deleteTitle')} onClick={e => {
                 e.stopPropagation();
@@ -3793,25 +3967,21 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       <div className="claude-chat-input-area" style={showHistoryPanel ? { display: 'none' } : undefined}>
         {(() => {
           if (!gitStatus?.ok || !gitStatus.branch) return null;
-          // 엄격한 git 키워드 — 모호한 일반 단어 (push, fetch, diff, merge 등) 제외
-          // 명시적 git 관련 표현만 인정
-          const gitRe = /\bgit\s|\bgit$|`git\b|\bPR\b|\bpull request\b|\bgithub\b|\bgitlab\b|\bcommit\s|`commit`|\bbranch\s.*\b(main|master|dev|feature|release)\b|\bcheckout -b|\bgit\.exe/i;
+          // 엄격한 git 키워드 — 명시적 git/PR 표현만. "commit", 단독 "PR" 같이 일반 문장에서 흔히
+          // 등장하는 단어는 제외 (오탐 차단). 최근 4개 메시지만 확인 — 오래된 대화에 끼어 있던
+          // git 단어로 평생 git bar 가 떠 있는 문제 해결.
+          const gitRe = /\bgit\s|`git\b|\bgit commit\b|\bgit push\b|\bpull request\b|\bgithub\.com\b|\bgitlab\.com\b|\bgh pr\b|\bcheckout -b\b|\bgit\.exe/i;
           const toolHits = toolTimeline.filter(t => /\bgit[\s.]/i.test(t.label)).map(t => t.label);
-          const msgHitsDetailed = messages
+          const recentMsgs = messages.slice(-4);
+          const msgHitsDetailed = recentMsgs
             .map((m, idx) => {
               const c = typeof m.content === 'string' ? m.content : '';
               const match = c.match(gitRe);
-              return match ? { idx, role: m.role, matched: match[0], snippet: c.slice(Math.max(0, (match.index || 0) - 20), (match.index || 0) + 60) } : null;
+              return match ? { idx, role: m.role, matched: match[0] } : null;
             })
             .filter(Boolean);
           const toolMatch = toolHits.length > 0;
           const msgMatch = msgHitsDetailed.length > 0;
-          console.log('[GITBAR] check', {
-            branch: gitStatus.branch,
-            msgCount: messages.length,
-            toolMatch, toolHits,
-            msgMatch, msgHits: msgHitsDetailed,
-          });
           if (!toolMatch && !msgMatch) return null;
           return (
           <div className="claude-chat-git-bar" title={activeSshSession ? `원격 SSH (${activeSshSession.label})` : '로컬'}>
@@ -3865,7 +4035,25 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               {mountEntries.map(m => (
                 <div key={`${m.termId}:${m.remotePath}`} className="claude-chat-attachment">
                   {m.isDir ? '📁' : '📄'}
-                  <span className="claude-chat-attachment-path" title={`${m.remotePath}\n↓ UNC:\n${m.uncPath}`}>{m.remotePath}</span>
+                  <span
+                    className="claude-chat-attachment-path"
+                    title={m.isDir ? `${m.remotePath}\n(폴더 - 미리보기 불가)` : `${m.remotePath}\n클릭하여 내용 보기`}
+                    onClick={async () => {
+                      if (m.isDir) return;
+                      try {
+                        const result: any = await (window as any).api?.sftpReadFile?.(m.termId, m.remotePath);
+                        if (result?.success) {
+                          const fname = m.remotePath.match(/[^\\/]+$/)?.[0] || m.remotePath;
+                          setAttachmentPreview({ name: fname, content: result.text || '' });
+                        } else {
+                          setAttachmentPreview({ name: m.remotePath, content: `(읽기 실패: ${result?.error || '알 수 없음'})` });
+                        }
+                      } catch (err: any) {
+                        setAttachmentPreview({ name: m.remotePath, content: `(읽기 실패: ${err?.message || err})` });
+                      }
+                    }}
+                    style={{ cursor: m.isDir ? 'default' : 'pointer', textDecoration: m.isDir ? 'none' : 'underline dotted', textUnderlineOffset: 2 }}
+                  >{m.remotePath}</span>
                   {onRemoveMountedEntry && <button className="claude-chat-attachment-remove" onClick={() => onRemoveMountedEntry(m.remotePath, m.termId)} title={tt('remove')}>×</button>}
                 </div>
               ))}
@@ -3881,7 +4069,12 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             <div className="claude-chat-attachments-list">
               {attachments.map(a => (
                 <div key={a.remotePath} className="claude-chat-attachment">
-                  📄 <span className="claude-chat-attachment-path" title={a.remotePath}>{a.remotePath}</span>
+                  📄 <span
+                    className="claude-chat-attachment-path"
+                    title={a.remotePath}
+                    onClick={() => setAttachmentPreview({ name: a.fileName || a.remotePath, content: a.content })}
+                    style={{ cursor: 'pointer', textDecoration: 'underline dotted', textUnderlineOffset: 2 }}
+                  >{a.remotePath}</span>
                   <button className="claude-chat-attachment-remove" onClick={() => removeAttachment(a.remotePath)} title={tt('remove')}>×</button>
                 </div>
               ))}
@@ -3897,7 +4090,12 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             <div className="claude-chat-attachments-list">
               {localFileAttachments.map((f, i) => (
                 <div key={`${f.name}-${i}`} className="claude-chat-attachment">
-                  📄 <span className="claude-chat-attachment-path">{f.name}</span>
+                  📄 <span
+                    className="claude-chat-attachment-path"
+                    onClick={() => setAttachmentPreview({ name: f.name, content: f.content })}
+                    style={{ cursor: 'pointer', textDecoration: 'underline dotted', textUnderlineOffset: 2 }}
+                    title="클릭하여 내용 보기"
+                  >{f.name}</span>
                   <span style={{ color: '#888', fontSize: 10 }}>{(f.content.length / 1024).toFixed(1)}KB</span>
                   <button className="claude-chat-attachment-remove" onClick={() => setLocalFileAttachments(prev => prev.filter((_, x) => x !== i))}>×</button>
                 </div>
@@ -4312,6 +4510,65 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           </div>
         );
       })()}
+      {/* 에이전트 탭 hover 툴팁 — 포털로 body 에 렌더 (chat 컨테이너 overflow 영향 X) */}
+      {agentTooltip && createPortal(
+        <div className="claude-chat-agent-tooltip" style={{ left: agentTooltip.x, top: agentTooltip.y }}>
+          {agentTooltip.text}
+        </div>,
+        document.body
+      )}
+      {/* 첨부 파일 미리보기 모달 */}
+      {attachmentPreview && createPortal(
+        <div
+          className="rn-backdrop"
+          onMouseDown={e => { if (e.target === e.currentTarget) setAttachmentPreview(null); }}
+          onKeyDown={e => { if (e.key === 'Escape') setAttachmentPreview(null); }}
+        >
+          <div
+            className="rn-dialog"
+            onMouseDown={e => e.stopPropagation()}
+            style={{
+              width: 'min(900px, 90vw)', height: 'min(700px, 85vh)',
+              minWidth: 360, minHeight: 240,
+              maxWidth: '95vw', maxHeight: '92vh',
+              display: 'flex', flexDirection: 'column',
+              resize: 'both', overflow: 'hidden',
+            }}
+          >
+            <div className="rn-title" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>📄 {attachmentPreview.name}</span>
+              <span style={{ fontSize: 11, fontWeight: 400, color: '#888' }}>
+                {(attachmentPreview.content.length / 1024).toFixed(1)} KB · {attachmentPreview.content.split('\n').length} 줄
+              </span>
+            </div>
+            <div className="rn-body" style={{ flex: 1, minHeight: 0, padding: 0 }}>
+              <pre style={{
+                margin: 0, padding: '12px 14px',
+                height: '100%', overflow: 'auto',
+                background: '#0d1117', color: '#cdd9e5',
+                fontFamily: 'Consolas, "Courier New", monospace',
+                fontSize: 12, lineHeight: 1.5,
+                whiteSpace: 'pre', tabSize: 4,
+              }}>{attachmentPreview.content}</pre>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, padding: '10px 14px', borderTop: '1px solid #2a2a2a' }}>
+              <button
+                className="rn-btn"
+                onClick={() => {
+                  try { navigator.clipboard.writeText(attachmentPreview.content); } catch {}
+                }}
+                title="내용 클립보드 복사"
+              >📋 복사</button>
+              <button
+                className="rn-btn rn-btn-primary"
+                onClick={() => setAttachmentPreview(null)}
+                autoFocus
+              >닫기</button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
       {/* 대화 이력 삭제 확인 모달 */}
       {deleteHistoryConfirm && createPortal(
         <div className="rn-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setDeleteHistoryConfirm(null); }}>

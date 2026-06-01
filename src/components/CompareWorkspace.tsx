@@ -95,6 +95,8 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
   const [contentLoading, setContentLoading] = useState(false);
   const [savingMsg, setSavingMsg] = useState<string>('');
   const [sameNote, setSameNote]   = useState<string>(''); // 크기 달라도 내용 동일 안내
+  // All match 모달 — 두 파일이 완전히 일치할 때 띄움. 사용자가 X 닫기 전까지 유지.
+  const [allMatchModal, setAllMatchModal] = useState<{ left: string; right: string } | null>(null);
   const [leftEol,  setLeftEol]    = useState('');
   const [rightEol, setRightEol]   = useState('');
   const [leftEnc,  setLeftEnc]    = useState('');
@@ -129,15 +131,6 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
   // 디렉토리/파일 picker — 어느 쪽 소스의 경로를 선택 중인지
   const [pickerSide, setPickerSide] = useState<Side | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const [rootH, setRootH] = useState(0);
-  useEffect(() => {
-    if (!rootRef.current) return;
-    const el = rootRef.current;
-    const ro = new ResizeObserver(() => setRootH(el.clientHeight));
-    ro.observe(el);
-    setRootH(el.clientHeight);
-    return () => ro.disconnect();
-  }, []);
 
   // 탭 전환 시 각 모드의 content 상태를 보존하기 위한 스냅샷 ref
   type ModeSnap = {
@@ -408,9 +401,14 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
         setRightEol(detectEol(r.content ?? '')); setRightEnc(r.encoding || 'UTF-8');
         rightC = normEol(r.content ?? ''); setRightContent(rightC); setRightOriginal(rightC);
       }
-      // 크기 휴리스틱 오탐 안내 — 내용이 동일할 때 (카운트는 변경하지 않음)
-      if (!leftErr && !rightErr && leftC === rightC && row.status === 'changed') {
-        setSameNote('내용이 동일합니다 (개행 방식만 다름)');
+      // 내용 동일 안내 — 크기 휴리스틱 오탐(EOL 차이) 케이스 + 진짜 동일 케이스 모두
+      if (!leftErr && !rightErr && leftC === rightC) {
+        if (row.status === 'changed') {
+          setSameNote('내용이 동일합니다 (개행 방식만 다름)');
+        } else {
+          setSameNote('두 파일이 완전히 일치합니다 (All match)');
+          setAllMatchModal({ left: row.relPath || '', right: row.relPath || '' });
+        }
       }
     } catch (err: any) {
       setContentErr(String(err?.message || err));
@@ -446,6 +444,14 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
           updateSrc(side, { basePath: newPath.trim() });
         }
         if (!selectedRel) setSelectedRel('__file__');
+        // 양쪽 내용 비교 — 동일하면 안내
+        const otherC = side === 'left' ? rightContent : leftContent;
+        if (c === otherC) {
+          setSameNote('두 파일이 완전히 일치합니다 (All match)');
+          const lp = side === 'left' ? newPath.trim() : leftFilePath;
+          const rp = side === 'right' ? newPath.trim() : rightFilePath;
+          setAllMatchModal({ left: lp, right: rp });
+        }
       }
     } catch (err: any) {
       setContentErr(String(err?.message || err));
@@ -477,15 +483,21 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
         api.compareRead?.(rightSrc.mode, rightSrc.basePath, rightSrc.termId),
       ]);
       const normEol = (s: string) => s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      let lC = '', rC = '', lOK = false, rOK = false;
       if (l?.error) setContentErr(t('sourceReadFail', { error: l.error }));
       else {
         setLeftEol(detectEol(l.content ?? '')); setLeftEnc(l.encoding || 'UTF-8');
-        const c = normEol(l.content ?? ''); setLeftContent(c); setLeftOriginal(c);
+        lC = normEol(l.content ?? ''); setLeftContent(lC); setLeftOriginal(lC); lOK = true;
       }
       if (r?.error) setContentErr(p => p ? p + ' / ' + t('targetReadFail', { error: r.error }) : t('targetReadFail', { error: r.error }));
       else {
         setRightEol(detectEol(r.content ?? '')); setRightEnc(r.encoding || 'UTF-8');
-        const c = normEol(r.content ?? ''); setRightContent(c); setRightOriginal(c);
+        rC = normEol(r.content ?? ''); setRightContent(rC); setRightOriginal(rC); rOK = true;
+      }
+      // 양쪽 모두 성공 + 내용 동일 → 안내 + 모달
+      if (lOK && rOK && lC === rC) {
+        setSameNote('두 파일이 완전히 일치합니다 (All match)');
+        setAllMatchModal({ left: leftSrc.basePath, right: rightSrc.basePath });
       }
     } catch (err: any) {
       setContentErr(String(err?.message || err));
@@ -679,17 +691,18 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
   const onResizeStart = (e: React.MouseEvent) => {
     e.preventDefault();
     const startY = e.clientY;
-    const rect = rootRef.current?.getBoundingClientRect();
+    // split 컨테이너 높이 기준으로 dPct 계산 → 마우스 이동과 1:1
+    const baseH = (splitWrapRef.current?.clientHeight || splitH) - RESIZER_H;
     const startPct = topPct;
     const prevSelect = document.body.style.userSelect;
     const prevCursor = document.body.style.cursor;
     document.body.style.userSelect = 'none';
     document.body.style.cursor = 'row-resize';
     const onMove = (ev: MouseEvent) => {
-      if (!rect) return;
-      const dy = ev.clientY - startY;
-      const dPct = (dy / rect.height) * 100;
-      setTopPct(Math.max(15, Math.min(85, startPct + dPct)));
+      if (baseH <= 0) return;
+      const dy = ev.clientY - startY; // 아래로 끌면 + (리스트 커짐)
+      const dPct = (dy / baseH) * 100;
+      setTopPct(Math.max(8, Math.min(92, startPct + dPct)));
     };
     const onUp = () => {
       document.body.style.userSelect = prevSelect;
@@ -782,21 +795,51 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
     </div>
   );
 
-  // 가상 리스트 높이 추적
-  const listWrapRef = useRef<HTMLDivElement | null>(null);
-  const [listHeight, setListHeight] = useState(300);
-  const listRoRef = useRef<ResizeObserver | null>(null);
-  const setListWrapRef = useCallback((el: HTMLDivElement | null) => {
-    listWrapRef.current = el;
-    if (listRoRef.current) { listRoRef.current.disconnect(); listRoRef.current = null; }
+  const [diffExpanded, setDiffExpanded] = useState(false);
+  // list+resizer+diff 를 담는 split 컨테이너 높이 측정 → 픽셀 단위로 명확히 분할 (LogAnalyzer 와 동일 방식)
+  const splitWrapRef = useRef<HTMLDivElement | null>(null);
+  const [splitH, setSplitH] = useState(500);
+  const splitRoRef = useRef<ResizeObserver | null>(null);
+  const setSplitWrapRef = useCallback((el: HTMLDivElement | null) => {
+    splitWrapRef.current = el;
+    if (splitRoRef.current) { splitRoRef.current.disconnect(); splitRoRef.current = null; }
     if (!el) return;
-    const update = () => setListHeight(el.clientHeight || 300);
+    const update = () => setSplitH(el.clientHeight || 500);
     const ro = new ResizeObserver(update);
     ro.observe(el);
-    listRoRef.current = ro;
+    splitRoRef.current = ro;
     update();
   }, []);
-  useEffect(() => () => { listRoRef.current?.disconnect(); }, []);
+  useEffect(() => () => { splitRoRef.current?.disconnect(); }, []);
+  const RESIZER_H = 4;
+  // 디렉토리 모드: 리스트 높이 = (split - 리사이저) * topPct/100, diff 최소 80 보장하도록 cap.
+  // file 모드 / diffExpanded 면 리스트 0, diff 전체.
+  const showList = !diffExpanded && compareMode === 'dir';
+  const splitAvail = Math.max(0, splitH - (showList ? RESIZER_H : 0));
+  const listHeight = showList
+    ? Math.min(Math.max(60, splitAvail - 80), Math.max(60, Math.round(splitAvail * topPct / 100)))
+    : 0;
+  const diffH = showList ? Math.max(80, splitAvail - listHeight) : splitH;
+  // 리스트 VList 하단 앵커 — 맨 밑 상태면 리스트 높이 변경 시에도 맨 밑 유지
+  const listVlistRef = useRef<any>(null);
+  const listAtBottomRef = useRef(false);
+  useEffect(() => {
+    if (!listVlistRef.current || filteredRows.length === 0) return;
+    try {
+      const selIdx = selectedRel ? filteredRows.findIndex(r => r.relPath === selectedRel) : -1;
+      if (selIdx >= 0) {
+        listVlistRef.current.scrollToItem(selIdx, 'smart');
+      } else if (listAtBottomRef.current) {
+        listVlistRef.current.scrollToItem(filteredRows.length - 1, 'end');
+      }
+    } catch {}
+  }, [listHeight]); // eslint-disable-line react-hooks/exhaustive-deps
+  // diff 영역 높이 변경 시 Monaco DiffEditor 강제 relayout (automaticLayout 보강)
+  useEffect(() => {
+    const ed = diffEditorRef.current;
+    if (!ed) return;
+    [0, 60, 180].forEach(ms => setTimeout(() => { try { ed.layout(); } catch {} }, ms));
+  }, [diffH]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const counts = useMemo(() => {
     let c = 0, l = 0, r = 0, s = 0;
@@ -808,16 +851,6 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
     }
     return { c, l, r, s };
   }, [rows]);
-
-  const [diffExpanded, setDiffExpanded] = useState(false);
-
-  // 목록 컨테이너 높이 — 항목이 있으면 topPct% 와 실제 항목 높이 중 작은 쪽 (픽셀)
-  const listContainerH = useMemo(() => {
-    if (compareMode !== 'dir' || filteredRows.length === 0 || rootH === 0) return null;
-    const byPct     = Math.round(rootH * topPct / 100);
-    const byContent = filteredRows.length * ROW_H + LIST_HEADER_H;
-    return Math.min(byPct, byContent);
-  }, [compareMode, filteredRows.length, rootH, topPct]);
 
   return (
     <div ref={rootRef} style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, minWidth: 0, overflow: 'hidden', background: '#1a1a1a' }}>
@@ -963,9 +996,13 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
 
       {/* 상단: 비교 결과 트리 (가상화) — 디렉토리 모드만 표시 */}
       {!diffExpanded && compareMode === 'file' && <div style={{ height: 4, background: '#333', flexShrink: 0 }} />}
-      <div ref={setListWrapRef} style={{
-        height:    diffExpanded || compareMode === 'file' ? 0 : listContainerH !== null ? listContainerH : `${topPct}%`,
-        minHeight: diffExpanded || compareMode === 'file' ? 0 : listContainerH !== null ? 0 : 100,
+      {/* list+resizer+diff 를 함께 담는 split 컨테이너 — 남은 공간 전체 차지, 내부를 픽셀로 분할 */}
+      <div ref={setSplitWrapRef} style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <div style={{
+        // 디렉토리 모드: 픽셀 높이 (split * topPct/100). file 모드/diffExpanded 면 0.
+        height:    showList ? listHeight : 0,
+        minHeight: 0,
+        flexShrink: 0,
         overflow: 'hidden', background: '#161616', position: 'relative',
       }}>
         {rows.length === 0 ? (
@@ -1055,7 +1092,15 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
               </span>
             </span>
           </div>
-          <VList height={Math.max(0, (listContainerH !== null ? listContainerH : listHeight) - LIST_HEADER_H)} width="100%" itemCount={filteredRows.length} itemSize={ROW_H} overscanCount={12}>
+          <VList
+            ref={listVlistRef}
+            height={Math.max(0, (showList ? listHeight : 0) - LIST_HEADER_H)}
+            width="100%" itemCount={filteredRows.length} itemSize={ROW_H} overscanCount={12}
+            onScroll={({ scrollOffset }: { scrollOffset: number }) => {
+              const max = filteredRows.length * ROW_H - Math.max(0, listHeight - LIST_HEADER_H);
+              listAtBottomRef.current = scrollOffset >= max - 4;
+            }}
+          >
             {({ index, style }: ListChildComponentProps) => {
               const row = filteredRows[index];
               if (!row) return null;
@@ -1113,16 +1158,16 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
       </div>
 
       {/* 리사이저 — 디렉토리 모드만 */}
-      {!diffExpanded && compareMode === 'dir' && (
+      {showList && (
         <div
           onMouseDown={onResizeStart}
-          style={{ height: 4, cursor: 'row-resize', background: '#333', flexShrink: 0 }}
+          style={{ height: RESIZER_H, cursor: 'row-resize', background: '#333', flexShrink: 0 }}
           title={t('resizerTooltip')}
         />
       )}
 
-      {/* 하단: Monaco DiffEditor — 양쪽 편집 가능 + 적용/저장 툴바 */}
-      <div style={{ flex: 1, minHeight: 100, position: 'relative', background: '#1e1e1e', display: 'flex', flexDirection: 'column' }}>
+      {/* 하단: Monaco DiffEditor — 픽셀 높이 (split * (100-topPct)/100). file 모드/diffExpanded 면 전체 */}
+      <div style={{ height: diffH, flexShrink: 0, minHeight: 80, position: 'relative', background: '#1e1e1e', display: 'flex', flexDirection: 'column' }}>
         {!selectedRel ? (
           <div style={{ color: '#666', fontSize: 12, padding: 16, textAlign: 'center' }}>
             {compareMode === 'file' ? t('fileCompareHint', '양쪽 파일 경로를 입력하고 비교 버튼을 누르세요') : t('selectFileHint')}
@@ -1259,6 +1304,7 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
                   readOnly: false,
                   originalEditable: true,
                   renderSideBySide: true,
+                  automaticLayout: true,
                   minimap: { enabled: false },
                   fontSize: 12,
                   wordWrap: 'off',
@@ -1277,6 +1323,7 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
           </>
         )}
       </div>
+      </div>{/* split 컨테이너 끝 */}
 
       {pickerSide && (
         <RemotePathPicker
@@ -1288,6 +1335,54 @@ export const CompareWorkspace: React.FC<Props> = ({ sessions }) => {
           onPick={(p) => updateSrc(pickerSide!, { basePath: p })}
           onClose={() => setPickerSide(null)}
         />
+      )}
+      {/* All match 안내 모달 — 두 파일 내용이 완전히 일치할 때 */}
+      {allMatchModal && (
+        <div
+          onClick={() => setAllMatchModal(null)}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 5000,
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              background: 'linear-gradient(180deg, #1f2e1f 0%, #182518 100%)',
+              border: '1px solid #4caf50',
+              borderRadius: 10,
+              padding: '22px 28px',
+              minWidth: 360, maxWidth: 560,
+              boxShadow: '0 12px 40px rgba(0,0,0,0.6), 0 0 24px rgba(76,175,80,0.25)',
+              color: '#e0f0e0',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+              <span style={{ fontSize: 28, color: '#7fcf6e', textShadow: '0 0 12px rgba(127,207,110,0.7)' }}>✓</span>
+              <span style={{ fontSize: 16, fontWeight: 600 }}>All match — 두 파일이 완전히 일치합니다</span>
+            </div>
+            <div style={{ fontSize: 12, color: '#a0c8a0', marginBottom: 4 }}>비교 결과 차이가 없습니다.</div>
+            {(allMatchModal.left || allMatchModal.right) && (
+              <div style={{ marginTop: 12, padding: '10px 12px', background: 'rgba(0,0,0,0.3)', borderRadius: 6, fontSize: 11, fontFamily: 'monospace', lineHeight: 1.5 }}>
+                {allMatchModal.left && <div><span style={{ color: '#7a9' }}>L</span> {allMatchModal.left}</div>}
+                {allMatchModal.right && <div><span style={{ color: '#7a9' }}>R</span> {allMatchModal.right}</div>}
+              </div>
+            )}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 18 }}>
+              <button
+                onClick={() => setAllMatchModal(null)}
+                autoFocus
+                style={{
+                  background: '#3b6e3b', color: '#fff', border: 0,
+                  padding: '7px 18px', borderRadius: 5, cursor: 'pointer',
+                  fontSize: 13, fontWeight: 500,
+                }}
+                onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') setAllMatchModal(null); }}
+              >확인</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
