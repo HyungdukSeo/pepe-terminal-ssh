@@ -2883,6 +2883,18 @@ ipcMain.handle('sql:save-csv', async (_e, { defaultName, content }: { defaultNam
   }
 });
 
+// 사이드카 JVM 재시작 — JAR 업데이트(빌드) 후 새 코드를 적용하려면 호출. 모든 활성 JDBC 연결도 끊김.
+ipcMain.handle('jdbc:restart-sidecar', async () => {
+  try {
+    shutdownAllJdbcSidecars();
+    // 다음 jdbcSharedSidecar().call 호출 시 자동 spawn — 여기서 ping 해서 즉시 재기동 검증
+    const r = await getSharedJdbcSidecar().call('ping', null, 8000);
+    return { success: true, result: r };
+  } catch (e: any) {
+    return { success: false, error: String(e?.message || e) };
+  }
+});
+
 // JDBC 사이드카 진단 — Java 프로세스 spawn + ping 라운드트립.
 // E-2.2 단계: Driver Manager UI 의 "사이드카 확인" 버튼이 이걸 호출.
 ipcMain.handle('jdbc:ping', async () => {
@@ -3022,6 +3034,30 @@ ipcMain.handle('jdbc:meta-columns', async (_e, args: { connectionId: string; cat
 });
 ipcMain.handle('jdbc:meta-primary-keys', async (_e, args: { connectionId: string; catalog?: string; schema?: string; table: string }) => {
   try { return { success: true, result: await getSharedJdbcSidecar().call('meta.primaryKeys', args, 30000) }; }
+  catch (e: any) { return { success: false, error: String(e?.message || e) }; }
+});
+ipcMain.handle('jdbc:meta-schemas', async (_e, args: { connectionId: string }) => {
+  try { return { success: true, result: await getSharedJdbcSidecar().call('meta.schemas', args, 30000) }; }
+  catch (e: any) { return { success: false, error: String(e?.message || e) }; }
+});
+ipcMain.handle('jdbc:meta-functions', async (_e, args: { connectionId: string; catalog?: string; schema?: string }) => {
+  try { return { success: true, result: await getSharedJdbcSidecar().call('meta.functions', args, 30000) }; }
+  catch (e: any) { return { success: false, error: String(e?.message || e) }; }
+});
+ipcMain.handle('jdbc:meta-procedures', async (_e, args: { connectionId: string; catalog?: string; schema?: string }) => {
+  try { return { success: true, result: await getSharedJdbcSidecar().call('meta.procedures', args, 30000) }; }
+  catch (e: any) { return { success: false, error: String(e?.message || e) }; }
+});
+ipcMain.handle('jdbc:meta-indexes', async (_e, args: { connectionId: string; catalog?: string; schema?: string; table: string }) => {
+  try { return { success: true, result: await getSharedJdbcSidecar().call('meta.indexes', args, 30000) }; }
+  catch (e: any) { return { success: false, error: String(e?.message || e) }; }
+});
+ipcMain.handle('jdbc:meta-procedure-columns', async (_e, args: { connectionId: string; catalog?: string; schema?: string; procedureName: string }) => {
+  try { return { success: true, result: await getSharedJdbcSidecar().call('meta.procedureColumns', args, 30000) }; }
+  catch (e: any) { return { success: false, error: String(e?.message || e) }; }
+});
+ipcMain.handle('jdbc:meta-function-columns', async (_e, args: { connectionId: string; catalog?: string; schema?: string; functionName: string }) => {
+  try { return { success: true, result: await getSharedJdbcSidecar().call('meta.functionColumns', args, 30000) }; }
   catch (e: any) { return { success: false, error: String(e?.message || e) }; }
 });
 

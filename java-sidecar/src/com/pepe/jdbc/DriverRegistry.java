@@ -21,9 +21,19 @@ import java.util.Map;
  */
 public final class DriverRegistry {
   private final Map<String, Driver> drivers = new HashMap<>();
+  // Keep the loader per driver — many JDBC drivers do internal Class.forName
+  // calls against the thread context class loader (e.g. Altibase loads
+  // AltibaseConnection by name from inside connect()). We must set the context
+  // CL to the driver's URLClassLoader for the duration of connect/exec or
+  // those internal lookups fail with ClassNotFoundException.
+  private final Map<String, ClassLoader> classLoaders = new HashMap<>();
 
   public synchronized Driver getDriver(String id) {
     return drivers.get(id);
+  }
+
+  public synchronized ClassLoader getClassLoader(String id) {
+    return classLoaders.get(id);
   }
 
   public synchronized void loadDriver(String id, String className, List<String> jars) {
@@ -50,5 +60,6 @@ public final class DriverRegistry {
     catch (Throwable t) { throw new RpcError("DRIVER_NOT_FOUND", "cannot instantiate driver: " + className + " — " + t.getMessage()); }
 
     drivers.put(id, d);
+    classLoaders.put(id, cl);
   }
 }

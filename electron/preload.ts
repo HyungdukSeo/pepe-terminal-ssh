@@ -79,6 +79,8 @@ contextBridge.exposeInMainWorld('api', {
   sqlSaveCsv: (defaultName: string, content: string) => ipcRenderer.invoke('sql:save-csv', { defaultName, content }),
   // JDBC 사이드카 진단 — Java 프로세스 ping. 성공 시 { success, result:{version,javaVersion,...}, jar, java }
   jdbcPing: () => ipcRenderer.invoke('jdbc:ping'),
+  // 사이드카 JVM 재시작 — JAR 업데이트 후 새 코드 적용용. 모든 활성 JDBC 연결 끊김.
+  jdbcRestartSidecar: () => ipcRenderer.invoke('jdbc:restart-sidecar'),
   // Driver Manager (DBeaver 스타일).
   jdbcListDrivers: () => ipcRenderer.invoke('jdbc:list-drivers'),
   jdbcSaveDriver: (def: any) => ipcRenderer.invoke('jdbc:save-driver', def),
@@ -98,6 +100,12 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('jdbc:meta-columns', args),
   jdbcMetaPrimaryKeys: (args: { connectionId: string; catalog?: string; schema?: string; table: string }) =>
     ipcRenderer.invoke('jdbc:meta-primary-keys', args),
+  jdbcMetaSchemas: (args: { connectionId: string }) => ipcRenderer.invoke('jdbc:meta-schemas', args),
+  jdbcMetaFunctions: (args: { connectionId: string; catalog?: string; schema?: string }) => ipcRenderer.invoke('jdbc:meta-functions', args),
+  jdbcMetaProcedures: (args: { connectionId: string; catalog?: string; schema?: string }) => ipcRenderer.invoke('jdbc:meta-procedures', args),
+  jdbcMetaIndexes: (args: { connectionId: string; catalog?: string; schema?: string; table: string }) => ipcRenderer.invoke('jdbc:meta-indexes', args),
+  jdbcMetaProcedureColumns: (args: { connectionId: string; catalog?: string; schema?: string; procedureName: string }) => ipcRenderer.invoke('jdbc:meta-procedure-columns', args),
+  jdbcMetaFunctionColumns: (args: { connectionId: string; catalog?: string; schema?: string; functionName: string }) => ipcRenderer.invoke('jdbc:meta-function-columns', args),
   // SQL Tool 세션 상태 영속화 (localStorage 대체)
   sqlToolGetState: (sessionId: string) => ipcRenderer.invoke('sql-tool:get-state', sessionId),
   sqlToolSetState: (sessionId: string, partial: any) => ipcRenderer.invoke('sql-tool:set-state', { sessionId, partial }),

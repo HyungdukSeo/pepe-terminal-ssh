@@ -334,7 +334,21 @@ export const DriverManagerModal: React.FC<Props> = ({ open, onClose }) => {
           </div>
         </div>
 
-        <div style={{ padding: '8px 14px', borderTop: '1px solid #333', display: 'flex', justifyContent: 'flex-end' }}>
+        <div style={{ padding: '8px 14px', borderTop: '1px solid #333', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+          <button
+            onClick={async () => {
+              if (!confirm('사이드카 JVM 을 재시작합니다.\n진행 중인 모든 JDBC 연결이 끊깁니다. 계속할까요?')) return;
+              const r: any = await apiAny.jdbcRestartSidecar?.();
+              if (r?.success) {
+                alert(`✅ 사이드카 재시작 OK\n버전: ${r.result?.version}\nJava: ${r.result?.javaVersion}`);
+                await reload();
+              } else {
+                alert(`❌ 사이드카 재시작 실패: ${r?.error || '?'}`);
+              }
+            }}
+            title="JVM 프로세스 종료 후 새 JAR 로 재spawn — 빌드 업데이트 적용 / 드라이버 캐시 클리어용"
+            style={{ background: '#5a3d1d', color: '#fff', border: 0, padding: '5px 14px', borderRadius: 3, cursor: 'pointer', fontSize: 12 }}
+          >🔄 사이드카 재시작</button>
           <button
             onClick={onClose}
             style={{ background: '#444', color: '#fff', border: 0, padding: '5px 14px', borderRadius: 3, cursor: 'pointer', fontSize: 12 }}

@@ -616,6 +616,7 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
                     .replace('{host}', dbmsHost || '127.0.0.1')
                     .replace('{port}', String(dbmsPort || selectedDriver.defaultPort || 0))
                     .replace('{database}', dbmsDatabase || '')
+                    .replace(/\/+$/, '')  // database 미지정으로 끝에 남는 빈 슬래시 제거
                 : '';
               const effectiveUrl = dbmsUrlEditMode && dbmsUrlOverride ? dbmsUrlOverride : composedUrl;
               const driverUsable = selectedDriver?.diag?.usable;

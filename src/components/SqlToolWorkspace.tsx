@@ -6,6 +6,7 @@ import type * as Monaco from 'monaco-editor';
 import { format as sqlFormat } from 'sql-formatter';
 import { DriverManagerModal } from './DriverManagerModal';
 import { JdbcBackend, resolveDriverFromList, type ColumnInfo } from './jdbcBackend';
+import { ObjectDetailPanel } from './ObjectDetailPanel';
 
 export type DbmsType = 'altibase' | 'mysql' | 'postgres' | 'oracle' | 'mssql' | 'sqlite';
 export type DbmsCfg = {
@@ -61,27 +62,41 @@ const HISTORY_MAX = 200;
 
 export type FavoriteQuery = { id: string; name: string; sql: string; ts: number };
 
-function loadFavorites(_sessionId: string): FavoriteQuery[] { return []; }
+// 모듈 레벨 캐시 — 컴포넌트가 (display:none 토글이나 부모 re-render 로) remount 되어도
+// history/favorites/editorTabs 가 살아남도록 sessionId 키로 보관. useState 초기값을 여기서 읽음.
+type SqlSessionCache = { history: HistoryEntry[]; favorites: FavoriteQuery[]; editorTabs: EditorTab[] };
+const sqlStateCache = new Map<string, SqlSessionCache>();
+
+function loadFavorites(sessionId: string): FavoriteQuery[] {
+  return sqlStateCache.get(sessionId)?.favorites ?? [];
+}
 
 // SQL 작성 탭 또는 객체 상세 탭. 같은 탭 스트립에 공존.
+export type ObjectKind = 'table' | 'view' | 'index' | 'sequence' | 'procedure' | 'function' | 'synonym';
 export type EditorTab = {
   id: string;
   title: string;
   sql: string;
   kind?: 'sql' | 'object';
-  objectKind?: 'table' | 'view';
+  objectKind?: ObjectKind;
   objectName?: string;
-  objectSubTab?: 'columns' | 'definition' | 'data' | 'properties';
+  objectSchema?: string;
+  objectSubTab?: string; // kind 별 자유 — 'columns' | 'definition' | 'data' | 'properties' | 'parameters' | 'source' | 'declaration' | 'constraints' | 'fks' | 'refs' | 'triggers' | 'ddl' | 'er'
+  objectPropSubTab?: string; // Properties 안의 nested 탭 (table/view)
 };
-export type ObjectSubTab = NonNullable<EditorTab['objectSubTab']>;
+export type ObjectSubTab = string;
 function newTabId() { return `t-${Date.now()}-${Math.random().toString(36).slice(2,7)}`; }
-function loadEditorTabs(_sessionId: string): EditorTab[] {
-  // 초기값은 빈 1탭. 실제 데이터는 main 프로세스 IPC (sqlToolGetState) 로 마운트 후 가져옴.
+function loadEditorTabs(sessionId: string): EditorTab[] {
+  // remount 캐시 우선. 없으면 빈 1탭. 디스크 데이터는 IPC 로 마운트 후 머지.
+  const cached = sqlStateCache.get(sessionId)?.editorTabs;
+  if (cached && cached.length > 0) return cached;
   return [{ id: newTabId(), title: 'Query 1', sql: '' }];
 }
 // saveEditorTabs / saveHistory 의 동기 저장은 더 이상 사용하지 않음 — 디바운스 effect 가 IPC 로 영속.
 
-function loadHistory(_sessionId: string): HistoryEntry[] { return []; }
+function loadHistory(sessionId: string): HistoryEntry[] {
+  return sqlStateCache.get(sessionId)?.history ?? [];
+}
 function saveHistory(_sessionId: string, _entries: HistoryEntry[]) { /* moved to IPC effect */ }
 
 // SQL 다중 statement 파서 — '...', "...", /*...*/, --line 안의 ; 는 무시.
@@ -187,19 +202,31 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
   const [renamingTabId, setRenamingTabId] = useState<string>('');
   const [renameDraft, setRenameDraft] = useState<string>('');
   // 오브젝트 상세 탭 열기 (같은 객체 이미 있으면 그 탭으로 전환)
-  const openObjectDetail = useCallback((name: string, kind: 'table' | 'view') => {
+  const openObjectDetail = useCallback((name: string, kind: ObjectKind, schema?: string) => {
     setEditorTabs(prev => {
-      const existing = prev.find(t => t.kind === 'object' && t.objectName === name && t.objectKind === kind);
+      const existing = prev.find(t => t.kind === 'object' && t.objectName === name && t.objectKind === kind && (t.objectSchema || '') === (schema || ''));
       if (existing) { setActiveEditorTabId(existing.id); return prev; }
       const id = newTabId();
-      const icon = kind === 'view' ? '👁' : '📄';
-      const next = [...prev, { id, title: `${icon} ${name}`, sql: '', kind: 'object' as const, objectKind: kind, objectName: name, objectSubTab: 'columns' as const }];
+      const iconMap: Record<ObjectKind, string> = { table: '📄', view: '👁', index: '🔑', sequence: '🔢', procedure: '⚙', function: 'ƒ', synonym: '🔗' };
+      const icon = iconMap[kind] || '📄';
+      // 기본 서브탭 — DBeaver 스타일
+      const defaultSubMap: Record<ObjectKind, string> = {
+        table: 'properties', view: 'properties', index: 'columns', sequence: 'declaration',
+        procedure: 'parameters', function: 'parameters', synonym: 'declaration',
+      };
+      const defaultPropSubMap: Record<ObjectKind, string> = {
+        table: 'columns', view: 'columns', index: '', sequence: '', procedure: '', function: '', synonym: '',
+      };
+      const next = [...prev, { id, title: `${icon} ${name}`, sql: '', kind: 'object' as const, objectKind: kind, objectName: name, objectSchema: schema, objectSubTab: defaultSubMap[kind], objectPropSubTab: defaultPropSubMap[kind] }];
       setActiveEditorTabId(id);
       return next;
     });
   }, []);
   const setObjectSubTab = useCallback((tabId: string, sub: ObjectSubTab) => {
     setEditorTabs(prev => prev.map(t => t.id === tabId ? { ...t, objectSubTab: sub } : t));
+  }, []);
+  const setObjectPropSubTab = useCallback((tabId: string, sub: string) => {
+    setEditorTabs(prev => prev.map(t => t.id === tabId ? { ...t, objectPropSubTab: sub } : t));
   }, []);
   // 컬럼 메타 캐시 (table 이름 대문자 key) — `table.` 자동완성 + 스키마 트리에서 공통 사용. lazy fetch.
   const columnsByTableRef = useRef<Map<string, ColumnInfo[]>>(new Map());
@@ -272,18 +299,19 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
   // 새 result 가 도착하면 그리드 사용자 상태 초기화 — 컬럼 구조가 바뀌었을 가능성
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { setSortState(null); setColFilters(new Map()); setColWidths(new Map()); setPinnedCols(new Set()); }, [result?.columns.join('|'), viewingTabId]);
+  // 자동완성용 테이블 목록 (현재 활성 스키마의 테이블)
   const [tables, setTables] = useState<string[]>([]);
-  const [tablesLoading, setTablesLoading] = useState(false);
   const [tableFilter, setTableFilter] = useState('');
-  // 스키마 트리 추가 그룹
-  const [views, setViews] = useState<string[]>([]);
-  const [viewsLoading, setViewsLoading] = useState(false);
-  const [sequences, setSequences] = useState<string[]>([]);
-  const [sequencesLoading, setSequencesLoading] = useState(false);
-  const [procedures, setProcedures] = useState<string[]>([]);
-  const [proceduresLoading, setProceduresLoading] = useState(false);
-  // 트리 노드 펼침 상태 — id 형식: "group:Tables", "table:NAME", "view:NAME" 등
-  const [treeExpanded, setTreeExpanded] = useState<Set<string>>(() => new Set(['group:Tables']));
+  // ── DBeaver 스타일 스키마 트리 ──
+  // 스키마(user) 목록
+  const [schemas, setSchemas] = useState<string[]>([]);
+  const [schemasLoading, setSchemasLoading] = useState(false);
+  // 트리 노드별 항목 캐시 — key 규칙: `${schema} ${groupId}` (그룹 항목), `idx ${schema} ${table}` (인덱스)
+  const treeItemsRef = useRef<Map<string, string[]>>(new Map());
+  const treeLoadingRef = useRef<Set<string>>(new Set());
+  const [treeRev, setTreeRev] = useState(0);
+  // 트리 노드 펼침 상태 — id 형식: "schema:X", "group:X:TABLE", "table:X:NAME"
+  const [treeExpanded, setTreeExpanded] = useState<Set<string>>(() => new Set());
   const isExpanded = (id: string) => treeExpanded.has(id);
   const toggleExpanded = (id: string) => setTreeExpanded(prev => {
     const n = new Set(prev);
@@ -295,6 +323,9 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
   // 즐겨찾기 (저장된 쿼리)
   const [favorites, setFavorites] = useState<FavoriteQuery[]>(() => loadFavorites(sessionId));
   const [favPanelOpen, setFavPanelOpen] = useState<boolean>(false);
+  // 이름 입력 모달 (Electron 은 window.prompt 미지원 → 인라인 모달).
+  // mode: 'save' = 새 즐겨찾기 저장(sql 보관), 'rename' = 기존 즐겨찾기 이름 변경(id 보관)
+  const [nameModal, setNameModal] = useState<{ mode: 'save' | 'rename'; value: string; sql?: string; id?: string } | null>(null);
   // (favorites 영속화는 아래의 통합 IPC 디바운스 effect 가 담당)
   // 결과 그리드 셀 편집 상태 — Map<"row,col", newValue>
   const [edits, setEdits] = useState<Map<string, string>>(new Map());
@@ -333,46 +364,89 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
     })();
   }, [sessionId]);
 
-  // ── 영속화 IPC: 마운트 시 1회 로드, 변경 시 디바운스 저장 ──
-  const ipcLoadedRef = useRef<boolean>(false);
+  // 모듈 캐시 동기화 — history/favorites/editorTabs 가 바뀔 때마다 즉시 캐시에 반영.
+  // remount 되면 useState 초기값이 이 캐시에서 복원되므로 "쿼리 실행 → remount → 히스토리 사라짐" 방지.
   useEffect(() => {
+    sqlStateCache.set(sessionId, { history, favorites, editorTabs });
+  }, [sessionId, history, favorites, editorTabs]);
+
+  // ── 영속화 IPC: 마운트 시 1회 로드, 변경 시 디바운스 저장 ──
+  // 첫 로드 완료 표시. true 가 된 후에만 save 가 발사 — 초기 빈 값으로 disk 덮어쓰기 방지.
+  const [ipcLoaded, setIpcLoaded] = useState<boolean>(false);
+  useEffect(() => {
+    let cancelled = false;
     (async () => {
       try {
         const api: any = (window as any).api || {};
         const state = await api.sqlToolGetState?.(sessionId);
-        if (state && typeof state === 'object') {
-          if (Array.isArray(state.history)) setHistory(state.history);
-          if (Array.isArray(state.favorites)) setFavorites(state.favorites);
-          if (Array.isArray(state.editorTabs) && state.editorTabs.length > 0) {
-            setEditorTabs(state.editorTabs);
-            setActiveEditorTabId(state.editorTabs[0].id);
-          }
+        if (cancelled) return;
+        // IPC fetch 가 비동기라, 도착하기 전에 사용자가 이미 쿼리를 실행해 history 에 추가했을 수 있다.
+        // 따라서 절대 setHistory(loaded) 로 덮어쓰지 않고 — 머지(현재 로컬 우선, 디스크는 뒤에 누락분만 추가).
+        const mergeHistoryFromDisk = (loaded: any[]) => {
+          if (!Array.isArray(loaded)) return;
+          setHistory(prev => {
+            if (prev.length === 0) return loaded;
+            const seen = new Set(prev.map((p: any) => p?.ts));
+            const diskOnly = loaded.filter((h: any) => !seen.has(h?.ts));
+            return [...prev, ...diskOnly];
+          });
+        };
+        const mergeFavoritesFromDisk = (loaded: any[]) => {
+          if (!Array.isArray(loaded)) return;
+          setFavorites(prev => {
+            if (prev.length === 0) return loaded;
+            const seen = new Set(prev.map((p: any) => p?.id));
+            const diskOnly = loaded.filter((f: any) => !seen.has(f?.id));
+            return [...prev, ...diskOnly];
+          });
+        };
+        // 에디터 탭: 로컬이 "기본 빈 탭 1개" 그대로면 디스크 탭으로 교체. 사용자가 이미 편집했으면 유지.
+        const replaceTabsIfPristine = (loaded: any[]) => {
+          if (!Array.isArray(loaded) || loaded.length === 0) return;
+          setEditorTabs(prev => {
+            const pristine = prev.length === 1 && (prev[0]?.sql || '') === '' && prev[0]?.kind !== 'object';
+            if (!pristine) return prev; // 사용자가 이미 SQL 입력 — 디스크 탭 무시
+            return loaded;
+          });
+          setActiveEditorTabId(prevId => {
+            // pristine 일 때만 교체. 이미 다른 id 면 유지.
+            return loaded[0]?.id || prevId;
+          });
+        };
+        if (state && typeof state === 'object' && Object.keys(state).length > 0) {
+          mergeHistoryFromDisk(state.history);
+          mergeFavoritesFromDisk(state.favorites);
+          replaceTabsIfPristine(state.editorTabs);
+        } else {
+          // disk 에 데이터 없음 — 레거시 localStorage 에서 마이그레이션 시도
+          try {
+            const lsHistory = localStorage.getItem(`sqltool-history-${sessionId}`);
+            const lsFavorites = localStorage.getItem(`sqltool-favorites-${sessionId}`);
+            const lsTabs = localStorage.getItem(`sqltool-tabs-${sessionId}`);
+            if (lsHistory) { const arr = JSON.parse(lsHistory); mergeHistoryFromDisk(arr); }
+            if (lsFavorites) { const arr = JSON.parse(lsFavorites); mergeFavoritesFromDisk(arr); }
+            if (lsTabs) { const arr = JSON.parse(lsTabs); replaceTabsIfPristine(arr); }
+          } catch {}
         }
-      } finally { ipcLoadedRef.current = true; }
+      } finally {
+        if (!cancelled) setIpcLoaded(true);
+      }
     })();
+    return () => { cancelled = true; };
   }, [sessionId]);
-  // 디바운스 저장: 첫 로드 완료 이후에만 IPC 호출 (초기 useState 값을 덮어쓰지 않도록)
+  // 단일 디바운스 저장 effect — 세 state 변화를 합쳐 한 번의 IPC 로 처리.
+  // 분리 effect 였을 때 발생하던 "stale partial 끼리 덮어쓰기" race 차단.
   useEffect(() => {
-    if (!ipcLoadedRef.current) return;
+    if (!ipcLoaded) return;
     const t = setTimeout(() => {
-      (window as any).api?.sqlToolSetState?.(sessionId, { editorTabs });
+      (window as any).api?.sqlToolSetState?.(sessionId, {
+        history: history.slice(0, HISTORY_MAX),
+        favorites,
+        editorTabs,
+      });
     }, 500);
     return () => clearTimeout(t);
-  }, [editorTabs, sessionId]);
-  useEffect(() => {
-    if (!ipcLoadedRef.current) return;
-    const t = setTimeout(() => {
-      (window as any).api?.sqlToolSetState?.(sessionId, { history: history.slice(0, HISTORY_MAX) });
-    }, 500);
-    return () => clearTimeout(t);
-  }, [history, sessionId]);
-  useEffect(() => {
-    if (!ipcLoadedRef.current) return;
-    const t = setTimeout(() => {
-      (window as any).api?.sqlToolSetState?.(sessionId, { favorites });
-    }, 500);
-    return () => clearTimeout(t);
-  }, [favorites, sessionId]);
+  }, [history, favorites, editorTabs, sessionId, ipcLoaded]);
 
   // 연결 수립 — drivers.json 에서 driverId/dialect 로 정의를 찾아 JdbcBackend 생성
   const connect = useCallback(async () => {
@@ -517,6 +591,9 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
   const definitionsRef = useRef<Map<string, string>>(new Map());
   const inflightDefRef = useRef<Map<string, Promise<string>>>(new Map());
   const [defRev, setDefRev] = useState<number>(0);
+  // 인덱스/시퀀스 등 객체-종류별 부가 상세 캐시 (key: `${kind}:${schema}:${NAME}`)
+  const objectDetailCacheRef = useRef<Map<string, any>>(new Map());
+  const [objDetailRev, setObjDetailRev] = useState<number>(0);
   // 뷰: SYS_VIEW_PARSE_ 의 PARSE 컬럼 결합. 테이블: 컬럼 메타 + PK 로부터 CREATE TABLE 생성.
   const loadDefinition = useCallback(async (objectName: string, kind: 'table' | 'view'): Promise<string> => {
     const key = `${kind}:${objectName.toUpperCase()}`;
@@ -585,35 +662,57 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
   // 결과가 새로 들어오면 INSERT/DELETE 표시 초기화 (스냅샷에는 영향 없음)
   useEffect(() => { setNewRows([]); setDeletedRowIdxs(new Set()); }, [result]);
 
-  // 스키마 객체 목록 로드 — JDBC DatabaseMetaData (사이드카 meta.tables).
-  const loadTables = useCallback(async () => {
+  // 트리 객체 그룹 정의 — DBeaver 좌측 사이드 구조. load 는 schema 받아 이름 목록 반환.
+  const OBJECT_GROUPS: { id: string; icon: string; label: string; load: (schema: string) => Promise<string[]>; insert: (name: string) => string }[] = useMemo(() => [
+    { id: 'TABLE',     icon: '📋', label: '테이블',     load: (s) => backend?.listTables(s) ?? Promise.resolve([]),     insert: (n) => `SELECT * FROM ${n};` },
+    { id: 'VIEW',      icon: '👁',  label: '뷰',         load: (s) => backend?.listViews(s) ?? Promise.resolve([]),      insert: (n) => `SELECT * FROM ${n};` },
+    { id: 'INDEX',     icon: '🔑', label: '인덱스',     load: (s) => backend?.listSchemaIndexes(s) ?? Promise.resolve([]), insert: (n) => n },
+    { id: 'SEQUENCE',  icon: '🔢', label: '시퀀스',     load: (s) => backend?.listSequences(s) ?? Promise.resolve([]),  insert: (n) => `${n}.NEXTVAL` },
+    { id: 'PROCEDURE', icon: '⚙',  label: '프로시저',   load: (s) => backend?.listProcedures(s) ?? Promise.resolve([]), insert: (n) => `EXEC ${n}(/* args */);` },
+    { id: 'FUNCTION',  icon: 'ƒ',  label: '함수',       load: (s) => backend?.listFunctions(s) ?? Promise.resolve([]),  insert: (n) => `${n}()` },
+    { id: 'SYSTABLE',  icon: '🗄', label: '시스템 테이블', load: (s) => backend?.listSystemTables(s) ?? Promise.resolve([]), insert: (n) => `SELECT * FROM ${n};` },
+  ], [backend]);
+
+  // 트리 노드 lazy 로드 — key(schema+groupId) 에 대해 items 캐시. 중복 호출 방지.
+  const loadTreeNode = useCallback(async (key: string, loader: () => Promise<string[]>) => {
+    if (treeItemsRef.current.has(key) || treeLoadingRef.current.has(key)) return;
+    treeLoadingRef.current.add(key);
+    setTreeRev(v => v + 1);
+    try {
+      const items = await loader();
+      treeItemsRef.current.set(key, items);
+    } catch { treeItemsRef.current.set(key, []); }
+    finally { treeLoadingRef.current.delete(key); setTreeRev(v => v + 1); }
+  }, []);
+
+  // 스키마 목록 로드 + 자동완성용 기본 스키마 테이블 채우기
+  const loadSchemas = useCallback(async () => {
     if (!backend) return;
-    setTablesLoading(true);
-    try { setTables(await backend.listTables()); }
-    finally { setTablesLoading(false); }
-  }, [backend]);
-  const loadViews = useCallback(async () => {
-    if (!backend) return;
-    setViewsLoading(true);
-    try { setViews(await backend.listViews()); }
-    finally { setViewsLoading(false); }
-  }, [backend]);
-  const loadSequences = useCallback(async () => {
-    if (!backend) return;
-    setSequencesLoading(true);
-    try { setSequences(await backend.listSequences()); }
-    finally { setSequencesLoading(false); }
-  }, [backend]);
-  const loadProcedures = useCallback(async () => {
-    if (!backend) return;
-    setProceduresLoading(true);
-    try { setProcedures(await backend.listProcedures()); }
-    finally { setProceduresLoading(false); }
-  }, [backend]);
+    setSchemasLoading(true);
+    try {
+      const list = await backend.listSchemas();
+      setSchemas(list);
+      // 자동완성: 연결 사용자(대문자) 와 일치하는 스키마, 없으면 첫 스키마의 테이블
+      const userSchema = (session?.dbms?.user || '').toUpperCase();
+      const target = list.find(s => s.toUpperCase() === userSchema) || list[0];
+      if (target) {
+        const tbls = await backend.listTables(target);
+        setTables(tbls);
+        // 기본 스키마는 트리에서 펼쳐두기
+        setTreeExpanded(prev => new Set(prev).add(`schema:${target}`));
+        treeItemsRef.current.set(`${target} TABLE`, tbls);
+        setTreeRev(v => v + 1);
+      } else {
+        // 스키마 개념이 없는 DBMS(SQLite 등) — 스키마 없이 평탄하게
+        const tbls = await backend.listTables();
+        setTables(tbls);
+      }
+    } finally { setSchemasLoading(false); }
+  }, [backend, session]);
 
   useEffect(() => {
-    if (connected) loadTables();
-  }, [connected, loadTables]);
+    if (connected) loadSchemas();
+  }, [connected, loadSchemas]);
 
   // ── Monaco 헬퍼들 ──
   // 커서 offset 또는 선택 영역. 선택 있으면 그 부분, 없으면 null.
@@ -651,22 +750,32 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
     // 실제 다중 실행은 백엔드에서 statement 분리 후 순차 호출 필요. 임시: 첫 statement 만.
     runSql(stmts[0].sql);
   };
-  // 현재 SQL 을 즐겨찾기에 저장 (선택 영역이 있으면 그 부분)
+  // 현재 SQL 을 즐겨찾기에 저장 (선택 영역이 있으면 그 부분) — Electron 은 prompt 미지원이라 인라인 모달.
   const saveCurrentSqlAsFavorite = () => {
     const sel = getSelectionText().trim();
     const target = sel || sql.trim();
     if (!target) { flashHint('저장할 SQL 이 없습니다'); return; }
     const defaultName = target.replace(/\s+/g, ' ').slice(0, 40);
-    const name = prompt('즐겨찾기 이름:', defaultName);
-    if (!name || !name.trim()) return;
-    const fav: FavoriteQuery = {
-      id: `fav-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      name: name.trim(),
-      sql: target,
-      ts: Date.now(),
-    };
-    setFavorites(prev => [fav, ...prev]);
-    flashHint(`⭐ "${fav.name}" 즐겨찾기 저장`);
+    setNameModal({ mode: 'save', value: defaultName, sql: target });
+  };
+  // 이름 입력 모달 확정 — save 면 새 즐겨찾기 추가, rename 이면 기존 항목 이름 변경
+  const confirmNameModal = () => {
+    if (!nameModal) return;
+    const name = nameModal.value.trim();
+    if (!name) { setNameModal(null); return; }
+    if (nameModal.mode === 'save' && nameModal.sql) {
+      const fav: FavoriteQuery = {
+        id: `fav-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        name,
+        sql: nameModal.sql,
+        ts: Date.now(),
+      };
+      setFavorites(prev => [fav, ...prev]);
+      flashHint(`⭐ "${name}" 즐겨찾기 저장`);
+    } else if (nameModal.mode === 'rename' && nameModal.id) {
+      setFavorites(prev => prev.map(x => x.id === nameModal.id ? { ...x, name } : x));
+    }
+    setNameModal(null);
   };
   // 실행 계획 — dialect 별 EXPLAIN. 결과는 즉시 핀 스냅샷으로 보관해 다음 쿼리와 비교 가능.
   const runExplain = async () => {
@@ -1276,13 +1385,13 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
   };
 
   return (
-    <div style={{ display: 'flex', flex: 1, minHeight: 0, background: '#1e1e1e', color: '#d4d4d4', fontFamily: 'system-ui, sans-serif', fontSize: 13 }}>
-      {/* 좌측: 스키마 트리 (테이블/뷰/시퀀스/프로시저) */}
-      <div style={{ width: 260, display: 'flex', flexDirection: 'column', borderRight: '1px solid #333', minHeight: 0 }}>
+    <div style={{ display: 'flex', flex: 1, minHeight: 0, minWidth: 0, width: '100%', overflow: 'hidden', background: '#1e1e1e', color: '#d4d4d4', fontFamily: 'system-ui, sans-serif', fontSize: 13 }}>
+      {/* 좌측: DBeaver 스타일 스키마 트리 (스키마 > 객체 그룹 > 객체 > 컬럼) */}
+      <div style={{ width: 260, flexShrink: 0, display: 'flex', flexDirection: 'column', borderRight: '1px solid #333', minHeight: 0 }}>
         <div style={{ padding: 8, borderBottom: '1px solid #333', display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ fontWeight: 600 }}>🗂 스키마</span>
           <button
-            onClick={() => { loadTables(); if (isExpanded('group:Views')) loadViews(); if (isExpanded('group:Sequences')) loadSequences(); if (isExpanded('group:Procedures')) loadProcedures(); }}
+            onClick={() => { treeItemsRef.current.clear(); setTreeRev(v => v + 1); loadSchemas(); }}
             disabled={!connected}
             title="전체 새로고침"
             style={{ marginLeft: 'auto', background: 'transparent', color: '#aaa', border: '1px solid #444', cursor: 'pointer', padding: '2px 6px', borderRadius: 3 }}
@@ -1291,85 +1400,141 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
         <input value={tableFilter} onChange={e => setTableFilter(e.target.value)} placeholder="이름 검색..." style={{ margin: 6, padding: 4, background: '#2a2a2a', color: '#ddd', border: '1px solid #444', borderRadius: 3 }} />
         <div style={{ flex: 1, overflowY: 'auto', padding: '0 4px 4px', fontSize: 12, fontFamily: 'monospace' }}>
           {(() => {
+            void treeRev; void columnsRev; // 캐시 갱신 시 재렌더 트리거
             const filt = (s: string) => !tableFilter || s.toLowerCase().includes(tableFilter.toLowerCase());
-            const renderGroup = (groupId: string, icon: string, label: string, items: string[], loading: boolean, ensureLoaded: () => void, renderItem: (name: string) => React.ReactNode) => {
-              const open = isExpanded(groupId);
-              const filtered = items.filter(filt);
+            const rowStyle = (depth: number): React.CSSProperties => ({ padding: '2px 4px', paddingLeft: 4 + depth * 12, cursor: 'pointer', userSelect: 'none', display: 'flex', alignItems: 'center', gap: 4, borderRadius: 3 });
+            const caret = (open: boolean) => <span style={{ width: 10, display: 'inline-block', color: '#888' }}>{open ? '▼' : '▶'}</span>;
+            const hover = {
+              onMouseEnter: (e: React.MouseEvent<HTMLDivElement>) => (e.currentTarget.style.background = '#2d2d2d'),
+              onMouseLeave: (e: React.MouseEvent<HTMLDivElement>) => (e.currentTarget.style.background = 'transparent'),
+            };
+
+            // 컬럼 노드 렌더 (테이블/뷰 펼침 시)
+            const renderColumns = (objName: string, depth: number) => {
+              const cols = columnsByTableRef.current.get(objName.toUpperCase());
+              if (!cols) return <div style={{ paddingLeft: 4 + depth * 12, color: '#888' }}>로딩...</div>;
+              if (cols.length === 0) return <div style={{ paddingLeft: 4 + depth * 12, color: '#666' }}>컬럼 없음</div>;
+              return cols.map(c => (
+                <div key={c.name} draggable
+                  title={`드래그: '${objName}.${c.name}' 삽입${c.typeText ? `\n타입: ${c.typeText}` : ''}${c.nullable ? '' : '\nNOT NULL'}`}
+                  onDragStart={e => { const text = `${objName}.${c.name}`; e.dataTransfer.setData('text/plain', text); e.dataTransfer.setData('application/x-pepe-sql-table', text); e.dataTransfer.effectAllowed = 'copy'; }}
+                  onDoubleClick={() => insertAtCursor(`${objName}.${c.name}`)}
+                  style={{ ...rowStyle(depth), cursor: 'grab' }} {...hover}
+                >
+                  <span style={{ width: 10, display: 'inline-block' }} />
+                  <span style={{ color: c.nullable ? '#d4d4d4' : '#ffd680' }}>{c.name}</span>
+                  {c.typeText && <span style={{ marginLeft: 'auto', color: '#888', fontSize: 11 }}>{c.typeText}</span>}
+                </div>
+              ));
+            };
+
+            // 객체 노드 (테이블/뷰는 컬럼 펼침 + 더블클릭 상세, 나머지는 단순 삽입)
+            const renderObject = (schema: string, groupId: string, name: string, icon: string, insert: (n: string) => string, depth: number) => {
+              const expandable = groupId === 'TABLE' || groupId === 'VIEW' || groupId === 'SYSTABLE';
+              const nodeId = `obj:${schema}:${groupId}:${name}`;
+              const open = isExpanded(nodeId);
               return (
-                <div key={groupId}>
-                  <div
-                    onClick={() => { toggleExpanded(groupId); if (!open && items.length === 0) ensureLoaded(); }}
-                    style={{ padding: '3px 4px', cursor: 'pointer', userSelect: 'none', display: 'flex', alignItems: 'center', gap: 4, color: '#9cdcfe' }}
-                    onMouseEnter={e => (e.currentTarget.style.background = '#2d2d2d')}
-                    onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                <div key={nodeId}>
+                  <div draggable
+                    title={expandable ? '클릭: 컬럼 펼침 / 더블클릭: 상세 / 드래그: 이름 삽입' : '더블클릭: 삽입 / 드래그: 이름 삽입'}
+                    onDragStart={e => { e.dataTransfer.setData('text/plain', name); e.dataTransfer.setData('application/x-pepe-sql-table', name); e.dataTransfer.effectAllowed = 'copy'; }}
+                    onClick={() => { if (expandable) { toggleExpanded(nodeId); if (!open && !columnsByTableRef.current.get(name.toUpperCase())) loadColumns(name); } }}
+                    onDoubleClick={() => {
+                      const kindMap: Record<string, ObjectKind | null> = { TABLE: 'table', VIEW: 'view', SYSTABLE: 'table', INDEX: 'index', SEQUENCE: 'sequence', PROCEDURE: 'procedure', FUNCTION: 'function' };
+                      const k = kindMap[groupId];
+                      // INDEX 노드는 "TABLE.INDEX" 형식 — indexDetail 에는 인덱스명만 전달
+                      const detailName = (k === 'index' && name.includes('.')) ? name.split('.').slice(-1)[0] : name;
+                      if (k) openObjectDetail(detailName, k, schema);
+                      else insertAtCursor(insert(name));
+                    }}
+                    style={{ ...rowStyle(depth), cursor: expandable ? 'pointer' : 'grab' }} {...hover}
                   >
-                    <span style={{ width: 10, display: 'inline-block' }}>{open ? '▼' : '▶'}</span>
-                    <span>{icon} {label}</span>
-                    <span style={{ marginLeft: 'auto', color: '#666', fontSize: 11 }}>{loading ? '…' : (items.length || '')}</span>
+                    {expandable ? caret(open) : <span style={{ width: 10, display: 'inline-block' }} />}
+                    <span>{icon} {name}</span>
+                  </div>
+                  {expandable && open && <div>{renderColumns(name, depth + 1)}</div>}
+                </div>
+              );
+            };
+
+            // 그룹 노드 (테이블/뷰/시퀀스/...) — 스키마 밑
+            const renderGroupNode = (schema: string, g: typeof OBJECT_GROUPS[number], depth: number) => {
+              const gid = `group:${schema}:${g.id}`;
+              const key = `${schema} ${g.id}`;
+              const open = isExpanded(gid);
+              const items = treeItemsRef.current.get(key);
+              const loading = treeLoadingRef.current.has(key);
+              const filtered = (items || []).filter(filt);
+              return (
+                <div key={gid}>
+                  <div
+                    onClick={() => { toggleExpanded(gid); if (!open && !items) loadTreeNode(key, () => g.load(schema)); }}
+                    style={{ ...rowStyle(depth), color: '#9cdcfe' }} {...hover}
+                  >
+                    {caret(open)}
+                    <span>{g.icon} {g.label}</span>
+                    <span style={{ marginLeft: 'auto', color: '#666', fontSize: 11 }}>{loading ? '…' : (items ? items.length : '')}</span>
                   </div>
                   {open && (
-                    <div style={{ paddingLeft: 14 }}>
-                      {loading && <div style={{ color: '#888', padding: '2px 4px' }}>로딩...</div>}
-                      {!loading && filtered.length === 0 && <div style={{ color: '#666', padding: '2px 4px' }}>없음</div>}
-                      {filtered.map(renderItem)}
+                    <div>
+                      {loading && <div style={{ paddingLeft: 4 + (depth + 1) * 12, color: '#888' }}>로딩...</div>}
+                      {!loading && items && filtered.length === 0 && <div style={{ paddingLeft: 4 + (depth + 1) * 12, color: '#666' }}>없음</div>}
+                      {filtered.map(n => renderObject(schema, g.id, n, g.icon, g.insert, depth + 1))}
                     </div>
                   )}
                 </div>
               );
             };
-            const renderTable = (t: string) => {
-              const tableNodeId = `table:${t}`;
-              const tableOpen = isExpanded(tableNodeId);
-              const cols = columnsByTableRef.current.get(t.toUpperCase());
-              void columnsRev; // 캐시 갱신 시 재렌더 트리거
+
+            // 스키마 노드
+            const renderSchema = (schema: string, depth: number) => {
+              const sid = `schema:${schema}`;
+              const open = isExpanded(sid);
               return (
-                <div key={t}>
-                  <div
-                    draggable
-                    title="클릭: 컬럼 펼침/접힘 / 더블클릭: SELECT * FROM 삽입 / 드래그: 테이블명 삽입"
-                    onDragStart={e => {
-                      e.dataTransfer.setData('text/plain', t);
-                      e.dataTransfer.setData('application/x-pepe-sql-table', t);
-                      e.dataTransfer.effectAllowed = 'copy';
-                      const ghost = document.createElement('div');
-                      ghost.textContent = t;
-                      ghost.style.cssText = 'position:absolute;top:-1000px;left:-1000px;padding:2px 6px;background:rgba(80,140,200,0.45);color:rgba(255,255,255,0.85);font-family:monospace;font-size:12px;border-radius:3px;pointer-events:none;';
-                      document.body.appendChild(ghost);
-                      e.dataTransfer.setDragImage(ghost, 8, 8);
-                      setTimeout(() => { try { document.body.removeChild(ghost); } catch {} }, 0);
-                    }}
-                    onClick={() => { toggleExpanded(tableNodeId); if (!tableOpen && !cols) loadColumns(t); }}
-                    onDoubleClick={() => openObjectDetail(t, 'table')}
-                    style={{ padding: '2px 4px', cursor: 'grab', borderRadius: 3, display: 'flex', alignItems: 'center', gap: 4 }}
-                    onMouseEnter={e => (e.currentTarget.style.background = '#2d2d2d')}
-                    onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-                  >
-                    <span style={{ width: 10, display: 'inline-block', color: '#888' }}>{tableOpen ? '▼' : '▶'}</span>
-                    <span>📄 {t}</span>
+                <div key={sid}>
+                  <div onClick={() => toggleExpanded(sid)} style={{ ...rowStyle(depth), color: '#dcdcaa', fontWeight: 600 }} {...hover}>
+                    {caret(open)}
+                    <span>👤 {schema}</span>
                   </div>
-                  {tableOpen && (
-                    <div style={{ paddingLeft: 16 }}>
-                      {!cols && <div style={{ color: '#888', padding: '2px 4px' }}>로딩...</div>}
-                      {cols && cols.length === 0 && <div style={{ color: '#666', padding: '2px 4px' }}>컬럼 없음</div>}
-                      {cols && cols.map(c => (
-                        <div
-                          key={c.name}
-                          draggable
-                          title={`드래그: '${t}.${c.name}' 삽입${c.typeText ? `\n타입: ${c.typeText}` : ''}${c.nullable ? '' : '\nNOT NULL'}`}
-                          onDragStart={e => {
-                            const text = `${t}.${c.name}`;
-                            e.dataTransfer.setData('text/plain', text);
-                            e.dataTransfer.setData('application/x-pepe-sql-table', text);
-                            e.dataTransfer.effectAllowed = 'copy';
+                  {open && <div>{OBJECT_GROUPS.map(g => renderGroupNode(schema, g, depth + 1))}</div>}
+                </div>
+              );
+            };
+
+            // Global metadata — user 소유가 아닌 공용 객체 (Public Synonyms 등)
+            const renderGlobalGroup = (gid: string, icon: string, label: string, loader: () => Promise<string[]>, insert: (n: string) => string, depth: number) => {
+              const nid = `global:${gid}`;
+              const key = `__global__ ${gid}`;
+              const open = isExpanded(nid);
+              const items = treeItemsRef.current.get(key);
+              const loading = treeLoadingRef.current.has(key);
+              const filtered = (items || []).filter(filt);
+              return (
+                <div key={nid}>
+                  <div
+                    onClick={() => { toggleExpanded(nid); if (!open && !items) loadTreeNode(key, loader); }}
+                    style={{ ...rowStyle(depth), color: '#9cdcfe' }} {...hover}
+                  >
+                    {caret(open)}
+                    <span>{icon} {label}</span>
+                    <span style={{ marginLeft: 'auto', color: '#666', fontSize: 11 }}>{loading ? '…' : (items ? items.length : '')}</span>
+                  </div>
+                  {open && (
+                    <div>
+                      {loading && <div style={{ paddingLeft: 4 + (depth + 1) * 12, color: '#888' }}>로딩...</div>}
+                      {!loading && items && filtered.length === 0 && <div style={{ paddingLeft: 4 + (depth + 1) * 12, color: '#666' }}>없음</div>}
+                      {filtered.map(n => (
+                        <div key={n} draggable
+                          title={gid === 'PUBSYN' ? '더블클릭: Public Synonym 상세' : '더블클릭: 삽입 / 드래그: 이름 삽입'}
+                          onDragStart={e => { e.dataTransfer.setData('text/plain', n); e.dataTransfer.setData('application/x-pepe-sql-table', n); e.dataTransfer.effectAllowed = 'copy'; }}
+                          onDoubleClick={() => {
+                            if (gid === 'PUBSYN') openObjectDetail(n, 'synonym', '');
+                            else insertAtCursor(insert(n));
                           }}
-                          onDoubleClick={() => insertAtCursor(`${t}.${c.name}`)}
-                          style={{ padding: '1px 4px', cursor: 'grab', display: 'flex', alignItems: 'center', gap: 4, color: '#d4d4d4' }}
-                          onMouseEnter={e => (e.currentTarget.style.background = '#2d2d2d')}
-                          onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                          style={{ ...rowStyle(depth + 1), cursor: gid === 'PUBSYN' ? 'pointer' : 'grab' }} {...hover}
                         >
                           <span style={{ width: 10, display: 'inline-block' }} />
-                          <span style={{ color: c.nullable ? '#d4d4d4' : '#ffd680' }}>{c.name}</span>
-                          {c.typeText && <span style={{ marginLeft: 'auto', color: '#888', fontSize: 11 }}>{c.typeText}</span>}
+                          <span>{icon} {n}</span>
                         </div>
                       ))}
                     </div>
@@ -1377,50 +1542,85 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
                 </div>
               );
             };
-            const renderSimple = (prefix: string, dropExpr: (s: string) => string) => (name: string) => (
-              <div key={name}
-                draggable
-                title="더블클릭: 삽입 / 드래그: 이름 삽입"
-                onDragStart={e => {
-                  const text = dropExpr(name);
-                  e.dataTransfer.setData('text/plain', text);
-                  e.dataTransfer.setData('application/x-pepe-sql-table', text);
-                  e.dataTransfer.effectAllowed = 'copy';
-                }}
-                onDoubleClick={() => insertAtCursor(dropExpr(name))}
-                style={{ padding: '2px 4px', cursor: 'grab', display: 'flex', alignItems: 'center', gap: 4 }}
-                onMouseEnter={e => (e.currentTarget.style.background = '#2d2d2d')}
-                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-              >
-                <span style={{ width: 10, display: 'inline-block' }} />
-                <span>{prefix} {name}</span>
-              </div>
-            );
-            return (
-              <>
-                {renderGroup('group:Tables',     '📋', 'Tables',     tables,     tablesLoading,     loadTables,     renderTable)}
-                {renderGroup('group:Views',      '👁',  'Views',      views,      viewsLoading,      loadViews,      (name: string) => (
-                  <div key={name}
-                    draggable
-                    title="더블클릭: 뷰 상세 / 드래그: 이름 삽입"
-                    onDragStart={e => {
-                      e.dataTransfer.setData('text/plain', name);
-                      e.dataTransfer.setData('application/x-pepe-sql-table', name);
-                      e.dataTransfer.effectAllowed = 'copy';
-                    }}
-                    onDoubleClick={() => openObjectDetail(name, 'view')}
-                    style={{ padding: '2px 4px', cursor: 'grab', display: 'flex', alignItems: 'center', gap: 4 }}
-                    onMouseEnter={e => (e.currentTarget.style.background = '#2d2d2d')}
-                    onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-                  >
-                    <span style={{ width: 10, display: 'inline-block' }} />
-                    <span>👁 {name}</span>
+            // 저장소(테이블스페이스) — 루트 레벨 노드 (스키마와 동일 depth). DBeaver "Storage" 와 동일 위치.
+            const renderStorageRoot = () => {
+              const dialectIs = backend?.type;
+              const supports = dialectIs === 'altibase' || dialectIs === 'oracle' || dialectIs === 'postgres' || dialectIs === 'mssql';
+              if (!supports) return null;
+              const sid = 'storage-root';
+              const open = isExpanded(`schema:${sid}`);
+              const tbsKey = '__storage__ TABLESPACE';
+              const items = treeItemsRef.current.get(tbsKey);
+              const tbsOpen = isExpanded(`storage:TABLESPACE`);
+              const loading = treeLoadingRef.current.has(tbsKey);
+              const filtered = (items || []).filter(filt);
+              return (
+                <div key="storage-root">
+                  <div onClick={() => toggleExpanded(`schema:${sid}`)} style={{ ...rowStyle(0), color: '#dcdcaa', fontWeight: 600 }} {...hover}>
+                    {caret(open)}
+                    <span>💾 저장소</span>
                   </div>
-                ))}
-                {renderGroup('group:Sequences',  '🔢', 'Sequences',  sequences,  sequencesLoading,  loadSequences,  renderSimple('🔢', n => `${n}.NEXTVAL`))}
-                {renderGroup('group:Procedures', '⚙',  'Procedures', procedures, proceduresLoading, loadProcedures, renderSimple('⚙', n => `EXEC ${n}(/* args */);`))}
-              </>
-            );
+                  {open && (
+                    <div>
+                      <div
+                        onClick={() => { toggleExpanded(`storage:TABLESPACE`); if (!tbsOpen && !items) loadTreeNode(tbsKey, () => backend?.listTablespaces() ?? Promise.resolve([])); }}
+                        style={{ ...rowStyle(1), color: '#9cdcfe' }} {...hover}
+                      >
+                        {caret(tbsOpen)}
+                        <span>📂 테이블스페이스</span>
+                        <span style={{ marginLeft: 'auto', color: '#666', fontSize: 11 }}>{loading ? '…' : (items ? items.length : '')}</span>
+                      </div>
+                      {tbsOpen && (
+                        <div>
+                          {loading && <div style={{ paddingLeft: 4 + 2 * 12, color: '#888' }}>로딩...</div>}
+                          {!loading && items && filtered.length === 0 && <div style={{ paddingLeft: 4 + 2 * 12, color: '#666' }}>없음</div>}
+                          {filtered.map(n => (
+                            <div key={n} draggable
+                              title="드래그: 이름 삽입"
+                              onDragStart={e => { e.dataTransfer.setData('text/plain', n); e.dataTransfer.effectAllowed = 'copy'; }}
+                              onDoubleClick={() => insertAtCursor(n)}
+                              style={{ ...rowStyle(2), cursor: 'grab' }} {...hover}
+                            >
+                              <span style={{ width: 10, display: 'inline-block' }} />
+                              <span>💾 {n}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            };
+            const renderGlobalMetadata = () => {
+              const dialectIs = backend?.type;
+              const hasPubSyn = dialectIs === 'altibase' || dialectIs === 'oracle';
+              const hasReplications = dialectIs === 'altibase';
+              if (!hasPubSyn && !hasReplications) return null;
+              const gid = 'global-meta';
+              const open = isExpanded(`schema:${gid}`);
+              return (
+                <div key="global-meta">
+                  <div onClick={() => toggleExpanded(`schema:${gid}`)} style={{ ...rowStyle(0), color: '#dcdcaa', fontWeight: 600 }} {...hover}>
+                    {caret(open)}
+                    <span>🌐 Global metadata</span>
+                  </div>
+                  {open && (
+                    <div>
+                      {hasPubSyn && renderGlobalGroup('PUBSYN', '🔗', 'Public Synonyms', () => backend?.listPublicSynonyms() ?? Promise.resolve([]), (n) => n, 1)}
+                      {hasReplications && renderGlobalGroup('REPL', '🔄', '이중화 객체', () => backend?.listReplications() ?? Promise.resolve([]), (n) => n, 1)}
+                    </div>
+                  )}
+                </div>
+              );
+            };
+
+            if (schemasLoading) return <div style={{ color: '#888', padding: 6 }}>스키마 로딩...</div>;
+            // 스키마가 없는 DBMS(SQLite 등) — 그룹을 최상위로 평탄 표시 (schema='' 전달)
+            if (schemas.length === 0) {
+              return <div>{OBJECT_GROUPS.map(g => renderGroupNode('', g, 0))}</div>;
+            }
+            return <div>{schemas.map(s => renderSchema(s, 0))}{renderStorageRoot()}{renderGlobalMetadata()}</div>;
           })()}
         </div>
       </div>
@@ -1521,10 +1721,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                       <span style={{ fontWeight: 600, fontSize: 12, color: '#9cdcfe', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
                       <button onClick={() => { setSql(() => f.sql); setFavPanelOpen(false); }} title="에디터에 로드" style={{ background: '#0e639c', color: '#fff', border: 0, padding: '1px 6px', borderRadius: 2, cursor: 'pointer', fontSize: 11 }}>로드</button>
-                      <button onClick={() => {
-                        const next = prompt('이름 변경:', f.name);
-                        if (next && next.trim()) setFavorites(prev => prev.map(x => x.id === f.id ? { ...x, name: next.trim() } : x));
-                      }} title="이름 변경" style={{ background: '#444', color: '#ddd', border: 0, padding: '1px 6px', borderRadius: 2, cursor: 'pointer', fontSize: 11 }}>✎</button>
+                      <button onClick={() => setNameModal({ mode: 'rename', value: f.name, id: f.id })} title="이름 변경" style={{ background: '#444', color: '#ddd', border: 0, padding: '1px 6px', borderRadius: 2, cursor: 'pointer', fontSize: 11 }}>✎</button>
                       <button onClick={() => { if (confirm(`삭제: ${f.name}?`)) setFavorites(prev => prev.filter(x => x.id !== f.id)); }} title="삭제" style={{ background: '#5a1d1d', color: '#fff', border: 0, padding: '1px 6px', borderRadius: 2, cursor: 'pointer', fontSize: 11 }}>×</button>
                     </div>
                     <code style={{ color: '#aaa', fontSize: 10, fontFamily: 'monospace', whiteSpace: 'pre-wrap', overflow: 'hidden', maxHeight: 40 }}>{f.sql.slice(0, 200)}{f.sql.length > 200 ? '...' : ''}</code>
@@ -1644,138 +1841,30 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
           >＋</button>
         </div>
         {activeTab?.kind === 'object' && activeTab.objectName && activeTab.objectKind ? (
-          (() => {
-            const objName = activeTab.objectName;
-            const objKind = activeTab.objectKind;
-            const sub = activeTab.objectSubTab || 'columns';
-            const colsCache = columnsByTableRef.current.get(objName.toUpperCase());
-            void columnsRev;
-            const pkCols = pksByTableRef.current.get(objName.toUpperCase()) || [];
-            void pkRev;
-            const defKey = `${objKind}:${objName.toUpperCase()}`;
-            const defText = definitionsRef.current.get(defKey);
-            void defRev;
-            // 컬럼/Definition lazy fetch
-            if (!colsCache && connected) { loadColumns(objName); }
-            if (sub === 'definition' && defText === undefined && connected) { loadDefinition(objName, objKind); }
-            const SubTabBtn = ({ id, label }: { id: ObjectSubTab; label: string }) => (
-              <div
-                onClick={() => setObjectSubTab(activeTab.id, id)}
-                style={{
-                  padding: '4px 12px', cursor: 'pointer', fontSize: 12, userSelect: 'none',
-                  background: sub === id ? '#1e1e1e' : 'transparent',
-                  color: sub === id ? '#fff' : '#bbb',
-                  borderRight: '1px solid #333',
-                  borderTop: sub === id ? '2px solid #569cd6' : '2px solid transparent',
-                }}
-              >{label}</div>
-            );
-            return (
-              <div style={{ flex: '0 0 35%', minHeight: 120, borderBottom: '1px solid #333', display: 'flex', flexDirection: 'column', background: '#1e1e1e' }}>
-                {/* 객체 헤더 */}
-                <div style={{ padding: '6px 10px', borderBottom: '1px solid #333', display: 'flex', alignItems: 'center', gap: 8, background: '#252526' }}>
-                  <span style={{ fontWeight: 600, fontSize: 13 }}>{objKind === 'view' ? '👁' : '📄'} {objName}</span>
-                  <span style={{ color: '#888', fontSize: 11 }}>{objKind === 'view' ? 'VIEW' : 'TABLE'}</span>
-                  {pkCols.length > 0 && (
-                    <span style={{ color: '#9cdcfe', fontSize: 11, background: '#2a2a2a', border: '1px solid #444', padding: '1px 6px', borderRadius: 3 }}>🔑 {pkCols.join(', ')}</span>
-                  )}
-                  <button
-                    onClick={() => { setActiveEditorTabId(activeTab.id); runSql((backend?.selectAllForTable(objName) || `SELECT * FROM ${objName}`)); }}
-                    disabled={!connected || running}
-                    title="SELECT * 실행 (결과는 하단)"
-                    style={{ marginLeft: 'auto', background: '#0e639c', color: '#fff', border: 0, padding: '3px 10px', borderRadius: 3, cursor: 'pointer', fontSize: 11 }}
-                  >▶ 데이터</button>
-                </div>
-                {/* 서브 탭 스트립 */}
-                <div style={{ display: 'flex', alignItems: 'stretch', background: '#252526', borderBottom: '1px solid #333' }}>
-                  <SubTabBtn id="columns" label="컬럼" />
-                  <SubTabBtn id="definition" label="Definition" />
-                  <SubTabBtn id="data" label="Data" />
-                  <SubTabBtn id="properties" label="Properties" />
-                </div>
-                {/* 컨텐츠 */}
-                <div style={{ flex: 1, overflow: 'auto', minHeight: 0, padding: 0 }}>
-                  {sub === 'columns' && (
-                    !colsCache ? (
-                      <div style={{ padding: 12, color: '#888' }}>로딩...</div>
-                    ) : colsCache.length === 0 ? (
-                      <div style={{ padding: 12, color: '#666' }}>컬럼 정보 없음</div>
-                    ) : (
-                      <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, fontFamily: 'monospace', fontSize: 12 }}>
-                        <thead>
-                          <tr style={{ position: 'sticky', top: 0, background: '#2d2d2d', color: '#9cdcfe' }}>
-                            <th style={{ padding: '4px 8px', textAlign: 'right', borderBottom: '1px solid #3f3f46' }}>#</th>
-                            <th style={{ padding: '4px 8px', textAlign: 'left', borderBottom: '1px solid #3f3f46' }}>컬럼명</th>
-                            <th style={{ padding: '4px 8px', textAlign: 'left', borderBottom: '1px solid #3f3f46' }}>타입</th>
-                            <th style={{ padding: '4px 8px', textAlign: 'center', borderBottom: '1px solid #3f3f46' }}>NULL</th>
-                            <th style={{ padding: '4px 8px', textAlign: 'center', borderBottom: '1px solid #3f3f46' }}>PK</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {colsCache.map((c, i) => {
-                            const isPk = pkCols.some(p => p.toUpperCase() === c.name.toUpperCase());
-                            return (
-                              <tr key={c.name} style={{ background: i % 2 ? '#222' : '#1e1e1e' }}>
-                                <td style={{ padding: '3px 8px', textAlign: 'right', color: '#888' }}>{i + 1}</td>
-                                <td style={{ padding: '3px 8px', color: c.nullable ? '#d4d4d4' : '#ffd680' }}>{c.name}</td>
-                                <td style={{ padding: '3px 8px', color: '#9cdcfe' }}>{c.typeText || '-'}</td>
-                                <td style={{ padding: '3px 8px', textAlign: 'center' }}>{c.nullable ? 'Y' : 'N'}</td>
-                                <td style={{ padding: '3px 8px', textAlign: 'center', color: isPk ? '#ffd680' : '#666' }}>{isPk ? '🔑' : ''}</td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    )
-                  )}
-                  {sub === 'definition' && (
-                    defText === undefined ? (
-                      <div style={{ padding: 12, color: '#888' }}>로딩...</div>
-                    ) : (
-                      <Editor
-                        height="100%"
-                        language="sql"
-                        theme="vs-dark"
-                        value={defText}
-                        options={{
-                          readOnly: true,
-                          minimap: { enabled: false },
-                          fontSize: 12,
-                          fontFamily: 'monospace',
-                          lineNumbers: 'on',
-                          renderLineHighlight: 'none',
-                          scrollBeyondLastLine: false,
-                          automaticLayout: true,
-                          wordWrap: 'on',
-                        }}
-                      />
-                    )
-                  )}
-                  {sub === 'data' && (
-                    <div style={{ padding: 12, color: '#bbb', fontSize: 12, lineHeight: 1.6 }}>
-                      <div>아래 <b>▶ 데이터</b> 버튼을 누르면 <code>{(backend?.selectAllForTable(objName) || `SELECT * FROM ${objName}`)}</code> 가 실행되고 결과가 하단에 표시됩니다.</div>
-                      <div style={{ marginTop: 8 }}>
-                        <button
-                          onClick={() => runSql((backend?.selectAllForTable(objName) || `SELECT * FROM ${objName}`))}
-                          disabled={!connected || running}
-                          style={{ background: '#0e639c', color: '#fff', border: 0, padding: '6px 14px', borderRadius: 3, cursor: 'pointer', fontSize: 12 }}
-                        >▶ SELECT * 실행</button>
-                      </div>
-                    </div>
-                  )}
-                  {sub === 'properties' && (
-                    <div style={{ padding: 12, color: '#bbb', fontSize: 12, lineHeight: 1.8 }}>
-                      <div><b>이름:</b> {objName}</div>
-                      <div><b>종류:</b> {objKind === 'view' ? 'VIEW' : 'TABLE'}</div>
-                      <div><b>컬럼 수:</b> {colsCache ? colsCache.length : '...'}</div>
-                      <div><b>PK 컬럼:</b> {pkCols.length > 0 ? pkCols.join(', ') : '(없음 또는 미감지)'}</div>
-                      <div><b>스키마/카탈로그:</b> {session?.dbms?.user || '-'}</div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            );
-          })()
+          <ObjectDetailPanel
+            tab={activeTab}
+            backend={backend}
+            connected={connected}
+            running={running}
+            colsCacheRef={columnsByTableRef}
+            pksCacheRef={pksByTableRef}
+            defsCacheRef={definitionsRef}
+            inflightDefRef={inflightDefRef}
+            detailCacheRef={objectDetailCacheRef}
+            columnsRev={columnsRev}
+            pkRev={pkRev}
+            defRev={defRev}
+            objDetailRev={objDetailRev}
+            setDefRev={setDefRev}
+            setObjDetailRev={setObjDetailRev}
+            loadColumns={loadColumns}
+            loadPrimaryKey={loadPrimaryKey}
+            loadDefinition={loadDefinition}
+            runSql={runSql}
+            setActiveEditorTabId={setActiveEditorTabId}
+            onSubTab={(sub) => setObjectSubTab(activeTab.id, sub)}
+            onPropSubTab={(sub) => setObjectPropSubTab(activeTab.id, sub)}
+          />
         ) : (
         <div
           style={{ flex: '0 0 35%', minHeight: 80, borderBottom: '1px solid #333', position: 'relative' }}
@@ -2120,7 +2209,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
       </div>
 
       {/* 우측: 히스토리 */}
-      <div style={{ width: 280, display: 'flex', flexDirection: 'column', borderLeft: '1px solid #333', minHeight: 0 }}>
+      <div style={{ width: 280, flexShrink: 0, display: 'flex', flexDirection: 'column', borderLeft: '1px solid #333', minHeight: 0 }}>
         <div style={{ padding: 8, borderBottom: '1px solid #333', display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ fontWeight: 600 }}>📜 히스토리</span>
           <button onClick={() => { if (confirm('히스토리 전부 삭제?')) { setHistory([]); saveHistory(sessionId, []); } }} style={{ marginLeft: 'auto', background: 'transparent', color: '#888', border: '1px solid #444', cursor: 'pointer', padding: '2px 6px', borderRadius: 3, fontSize: 11 }}>비우기</button>
@@ -2144,6 +2233,36 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
         </div>
       </div>
       <DriverManagerModal open={driverManagerOpen} onClose={() => setDriverManagerOpen(false)} />
+      {nameModal && (
+        <div
+          onClick={() => setNameModal(null)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 6000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{ background: '#252526', color: '#d4d4d4', borderRadius: 6, padding: 16, width: 380, boxShadow: '0 8px 32px rgba(0,0,0,0.5)' }}
+          >
+            <div style={{ fontWeight: 600, marginBottom: 10, fontSize: 13 }}>
+              {nameModal.mode === 'save' ? '⭐ 즐겨찾기 저장' : '✎ 이름 변경'}
+            </div>
+            <input
+              autoFocus
+              value={nameModal.value}
+              onChange={e => setNameModal(m => m ? { ...m, value: e.target.value } : m)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') { e.preventDefault(); confirmNameModal(); }
+                else if (e.key === 'Escape') { e.preventDefault(); setNameModal(null); }
+              }}
+              placeholder="이름 입력"
+              style={{ width: '100%', boxSizing: 'border-box', background: '#1e1e1e', color: '#d4d4d4', border: '1px solid #444', borderRadius: 3, padding: '6px 8px', fontSize: 13, outline: 'none' }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+              <button onClick={() => setNameModal(null)} style={{ background: '#444', color: '#fff', border: 0, padding: '5px 14px', borderRadius: 3, cursor: 'pointer', fontSize: 12 }}>취소</button>
+              <button onClick={confirmNameModal} disabled={!nameModal.value.trim()} style={{ background: nameModal.value.trim() ? '#0e639c' : '#555', color: '#fff', border: 0, padding: '5px 14px', borderRadius: 3, cursor: nameModal.value.trim() ? 'pointer' : 'not-allowed', fontSize: 12 }}>확인</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
