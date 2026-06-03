@@ -201,6 +201,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
   // 탭 이름 인라인 편집 상태
   const [renamingTabId, setRenamingTabId] = useState<string>('');
   const [renameDraft, setRenameDraft] = useState<string>('');
+  const [tabListOpen, setTabListOpen] = useState<boolean>(false);
   // 오브젝트 상세 탭 열기 (같은 객체 이미 있으면 그 탭으로 전환)
   const openObjectDetail = useCallback((name: string, kind: ObjectKind, schema?: string) => {
     setEditorTabs(prev => {
@@ -322,6 +323,21 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
   });
   const [history, setHistory] = useState<HistoryEntry[]>(() => loadHistory(sessionId));
   const [historyFilter, setHistoryFilter] = useState('');
+  // 좌측 사이드바 폭 (드래그 리사이즈) — localStorage 비활성, 메모리 보존.
+  const [leftSidebarWidth, setLeftSidebarWidth] = useState<number>(() => sqlStateCache.get(sessionId + ':leftW') as any || 260);
+  const [rightSidebarWidth, setRightSidebarWidth] = useState<number>(() => sqlStateCache.get(sessionId + ':rightW') as any || 280);
+  // 히스토리 패널 핀 상태 (unpin 시 collapsed bar 만 표시)
+  const [historyPinned, setHistoryPinned] = useState<boolean>(() => (sqlStateCache.get(sessionId + ':hPin') as any) !== false);
+  // 사이즈 캐시: 트리 옆 사이즈 표시용 (테이블/테이블스페이스)
+  const [sizeRev, setSizeRev] = useState(0);
+  const tableSizesRef = useRef<Map<string, Map<string, { bytes: number; display: string }>>>(new Map()); // schema -> name -> {bytes, display}
+  const tablespaceSizesRef = useRef<Map<string, { bytes: number; display: string }>>(new Map());
+  const tableSizesMaxRef = useRef<Map<string, number>>(new Map()); // schema -> max bytes
+  const tablespaceSizeMaxRef = useRef<number>(0);
+  const sizeLoadingRef = useRef<Set<string>>(new Set());
+  useEffect(() => { sqlStateCache.set(sessionId + ':leftW' as any, leftSidebarWidth as any); }, [sessionId, leftSidebarWidth]);
+  useEffect(() => { sqlStateCache.set(sessionId + ':rightW' as any, rightSidebarWidth as any); }, [sessionId, rightSidebarWidth]);
+  useEffect(() => { sqlStateCache.set(sessionId + ':hPin' as any, historyPinned as any); }, [sessionId, historyPinned]);
   // 즐겨찾기 (저장된 쿼리)
   const [favorites, setFavorites] = useState<FavoriteQuery[]>(() => loadFavorites(sessionId));
   const [favPanelOpen, setFavPanelOpen] = useState<boolean>(false);
@@ -1396,7 +1412,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
   return (
     <div style={{ display: 'flex', flex: 1, minHeight: 0, minWidth: 0, width: '100%', overflow: 'hidden', background: '#1e1e1e', color: '#d4d4d4', fontFamily: 'system-ui, sans-serif', fontSize: 13 }}>
       {/* 좌측: DBeaver 스타일 스키마 트리 (스키마 > 객체 그룹 > 객체 > 컬럼) */}
-      <div style={{ width: 260, flexShrink: 0, display: 'flex', flexDirection: 'column', borderRight: '1px solid #333', minHeight: 0 }}>
+      <div style={{ width: leftSidebarWidth, flexShrink: 0, display: 'flex', flexDirection: 'column', borderRight: '1px solid #333', minHeight: 0, position: 'relative' }}>
         <div style={{ padding: 8, borderBottom: '1px solid #333', display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ fontWeight: 600 }}>🗂 스키마</span>
           <button
@@ -1411,7 +1427,11 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
           {(() => {
             void treeRev; void columnsRev; // 캐시 갱신 시 재렌더 트리거
             const filt = (s: string) => !tableFilter || s.toLowerCase().includes(tableFilter.toLowerCase());
-            const rowStyle = (depth: number): React.CSSProperties => ({ padding: '2px 4px', paddingLeft: 4 + depth * 12, cursor: 'pointer', userSelect: 'none', display: 'flex', alignItems: 'center', gap: 4, borderRadius: 3 });
+            const rowStyle = (depth: number): React.CSSProperties => ({ padding: '2px 4px', paddingLeft: 4 + depth * 12, cursor: 'pointer', userSelect: 'none', display: 'flex', alignItems: 'center', gap: 4, borderRadius: 3, minWidth: 0, overflow: 'hidden', whiteSpace: 'nowrap' });
+            // 이름 span — 남는 공간을 차지 (게이지를 우측 끝에 정렬). 좁아지면 ellipsis.
+            const nameSpanStyle: React.CSSProperties = { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
+            // 게이지 컨테이너 — 사이즈 표시를 바 안에 오버레이 (DBeaver 스타일).
+            const gaugeContainerStyle: React.CSSProperties = { position: 'relative', display: 'inline-block', flex: '0 100 70px', width: 70, height: 14, minWidth: 0, overflow: 'hidden', background: '#333', borderRadius: 2 };
             const caret = (open: boolean) => <span style={{ width: 10, display: 'inline-block', color: '#888' }}>{open ? '▼' : '▶'}</span>;
             const hover = {
               onMouseEnter: (e: React.MouseEvent<HTMLDivElement>) => (e.currentTarget.style.background = '#2d2d2d'),
@@ -1550,8 +1570,20 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
                     }}
                     style={{ ...rowStyle(depth), cursor: expandable ? 'pointer' : 'grab' }} {...hover}
                   >
-                    {expandable ? caret(open) : <span style={{ width: 10, display: 'inline-block' }} />}
-                    <span>{icon} {name}</span>
+                    {expandable ? caret(open) : <span style={{ width: 10, display: 'inline-block', flexShrink: 0 }} />}
+                    <span style={nameSpanStyle}>{icon} {name}</span>
+                    {groupId === 'TABLE' && (() => {
+                      const sz = tableSizesRef.current.get(schema)?.get(name.toUpperCase());
+                      if (!sz) return null;
+                      const max = tableSizesMaxRef.current.get(schema) || 1;
+                      const ratio = Math.max(0.02, Math.min(1, sz.bytes / max));
+                      return (
+                        <span style={gaugeContainerStyle} title={sz.display}>
+                          <span style={{ position: 'absolute', left: 0, top: 0, height: '100%', width: `${ratio * 100}%`, background: '#3a6691' }} />
+                          <span style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#ddd', fontSize: 10, fontVariantNumeric: 'tabular-nums', textShadow: '0 0 2px #000' }}>{sz.display}</span>
+                        </span>
+                      );
+                    })()}
                   </div>
                   {expandable && open && (
                     <div>
@@ -1573,10 +1605,25 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
               const items = treeItemsRef.current.get(key);
               const loading = treeLoadingRef.current.has(key);
               const filtered = (items || []).filter(filt);
+              // TABLE 그룹 펼침 시 사이즈 한 번에 fetch
+              const onTblOpen = () => {
+                if (g.id !== 'TABLE') return;
+                const sizeKey = `__tblSize__ ${schema}`;
+                if (tableSizesRef.current.has(schema) || sizeLoadingRef.current.has(sizeKey)) return;
+                sizeLoadingRef.current.add(sizeKey);
+                (backend?.tableSizes(schema) ?? Promise.resolve(new Map())).then((m: Map<string, { bytes: number; display: string }>) => {
+                  tableSizesRef.current.set(schema, m);
+                  let max = 0;
+                  m.forEach(v => { if (v.bytes > max) max = v.bytes; });
+                  tableSizesMaxRef.current.set(schema, max);
+                  sizeLoadingRef.current.delete(sizeKey);
+                  setSizeRev(v => v + 1);
+                });
+              };
               return (
                 <div key={gid}>
                   <div
-                    onClick={() => { toggleExpanded(gid); if (!open && !items) loadTreeNode(key, () => g.load(schema)); }}
+                    onClick={() => { toggleExpanded(gid); if (!open) { if (!items) loadTreeNode(key, () => g.load(schema)); onTblOpen(); } }}
                     style={{ ...rowStyle(depth), color: '#9cdcfe' }} {...hover}
                   >
                     {caret(open)}
@@ -1593,6 +1640,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
                 </div>
               );
             };
+            void sizeRev; // re-render trigger
 
             // 스키마 노드
             const renderSchema = (schema: string, depth: number) => {
@@ -1662,6 +1710,19 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
               const tbsOpen = isExpanded(`storage:TABLESPACE`);
               const loading = treeLoadingRef.current.has(tbsKey);
               const filtered = (items || []).filter(filt);
+              // 테이블스페이스 사이즈 한 번 fetch
+              const tbsSizeKey = '__tbsSize__';
+              if (tbsOpen && tablespaceSizesRef.current.size === 0 && !sizeLoadingRef.current.has(tbsSizeKey)) {
+                sizeLoadingRef.current.add(tbsSizeKey);
+                (backend?.tablespaceSizes() ?? Promise.resolve(new Map())).then((m: Map<string, { bytes: number; display: string }>) => {
+                  tablespaceSizesRef.current = m;
+                  let max = 0;
+                  m.forEach(v => { if (v.bytes > max) max = v.bytes; });
+                  tablespaceSizeMaxRef.current = max;
+                  sizeLoadingRef.current.delete(tbsSizeKey);
+                  setSizeRev(v => v + 1);
+                });
+              }
               return (
                 <div key="storage-root">
                   <div onClick={() => toggleExpanded(`schema:${sid}`)} style={{ ...rowStyle(0), color: '#dcdcaa', fontWeight: 600 }} {...hover}>
@@ -1682,17 +1743,28 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
                         <div>
                           {loading && <div style={{ paddingLeft: 4 + 2 * 12, color: '#888' }}>로딩...</div>}
                           {!loading && items && filtered.length === 0 && <div style={{ paddingLeft: 4 + 2 * 12, color: '#666' }}>없음</div>}
-                          {filtered.map(n => (
-                            <div key={n} draggable
-                              title="더블클릭: 상세 / 드래그: 이름 삽입"
-                              onDragStart={e => { e.dataTransfer.setData('text/plain', n); e.dataTransfer.effectAllowed = 'copy'; }}
-                              onDoubleClick={() => openObjectDetail(n, 'tablespace', '')}
-                              style={{ ...rowStyle(2), cursor: 'pointer' }} {...hover}
-                            >
-                              <span style={{ width: 10, display: 'inline-block' }} />
-                              <span>💾 {n}</span>
-                            </div>
-                          ))}
+                          {filtered.map(n => {
+                            const sz = tablespaceSizesRef.current.get(n.toUpperCase());
+                            const max = tablespaceSizeMaxRef.current || 1;
+                            const ratio = sz ? Math.max(0.02, Math.min(1, sz.bytes / max)) : 0;
+                            return (
+                              <div key={n} draggable
+                                title="더블클릭: 상세 / 드래그: 이름 삽입"
+                                onDragStart={e => { e.dataTransfer.setData('text/plain', n); e.dataTransfer.effectAllowed = 'copy'; }}
+                                onDoubleClick={() => openObjectDetail(n, 'tablespace', '')}
+                                style={{ ...rowStyle(2), cursor: 'pointer' }} {...hover}
+                              >
+                                <span style={{ width: 10, display: 'inline-block', flexShrink: 0 }} />
+                                <span style={nameSpanStyle}>💾 {n}</span>
+                                {sz && (
+                                  <span style={gaugeContainerStyle} title={sz.display}>
+                                    <span style={{ position: 'absolute', left: 0, top: 0, height: '100%', width: `${ratio * 100}%`, background: '#3a6691' }} />
+                                    <span style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#ddd', fontSize: 10, fontVariantNumeric: 'tabular-nums', textShadow: '0 0 2px #000' }}>{sz.display}</span>
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })}
                         </div>
                       )}
                     </div>
@@ -1745,6 +1817,23 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
           })()}
         </div>
       </div>
+      {/* 좌측 사이드바 리사이저 — 드래그 시 폭 변경 */}
+      <div
+        onMouseDown={(e) => {
+          e.preventDefault();
+          const startX = e.clientX;
+          const startW = leftSidebarWidth;
+          const onMove = (ev: MouseEvent) => {
+            const w = Math.max(140, Math.min(700, startW + (ev.clientX - startX)));
+            setLeftSidebarWidth(w);
+          };
+          const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+          window.addEventListener('mousemove', onMove);
+          window.addEventListener('mouseup', onUp);
+        }}
+        style={{ width: 5, cursor: 'col-resize', background: 'transparent', flexShrink: 0, borderRight: '1px solid #333' }}
+        title="드래그: 사이드바 크기 조절"
+      />
 
       {/* 중앙: 에디터 + 결과 */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0 }}>
@@ -1883,11 +1972,23 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
           {copyHint && <span style={{ color: '#9cdcfe', fontSize: 11, marginLeft: 6 }}>{copyHint}</span>}
         </div>
         {/* SQL 에디터 탭 바 */}
+        <style>{`.pepe-tab-strip::-webkit-scrollbar{display:none}`}</style>
         <div style={{ display: 'flex', alignItems: 'stretch', background: '#252526', borderBottom: '1px solid #333', minHeight: 28 }}>
-          <div style={{ display: 'flex', flex: 1, overflowX: 'auto' }}>
+          <div
+            className="pepe-tab-strip"
+            onWheel={e => {
+              // 세로 휠을 가로 스크롤로 변환 (가로 휠도 그대로 적용)
+              const el = e.currentTarget as HTMLDivElement;
+              const delta = e.deltaX !== 0 ? e.deltaX : e.deltaY;
+              if (delta !== 0) { el.scrollLeft += delta; }
+            }}
+            style={{ display: 'flex', flex: 1, overflowX: 'auto', scrollbarWidth: 'none' as any, msOverflowStyle: 'none' as any }}
+          >
             {editorTabs.map(t => {
               const active = t.id === activeEditorTabId;
               const isRenaming = renamingTabId === t.id;
+              // 객체 탭(테이블/뷰/인덱스 등)은 이름 변경 불가 — DBeaver 동작과 동일.
+              const isRenamable = t.kind !== 'object';
               const commitRename = () => {
                 const v = renameDraft.trim() || t.title;
                 setEditorTabs(prev => prev.map(x => x.id === t.id ? { ...x, title: v } : x));
@@ -1897,8 +1998,8 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
                 <div
                   key={t.id}
                   onClick={() => setActiveEditorTabId(t.id)}
-                  onDoubleClick={() => { setRenamingTabId(t.id); setRenameDraft(t.title); }}
-                  title="더블클릭: 이름 변경"
+                  onDoubleClick={() => { if (isRenamable) { setRenamingTabId(t.id); setRenameDraft(t.title); } }}
+                  title={isRenamable ? '더블클릭: 이름 변경' : t.title}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 6,
                     padding: '2px 10px', cursor: 'pointer', fontSize: 12,
@@ -1906,7 +2007,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
                     color: active ? '#fff' : '#bbb',
                     borderRight: '1px solid #333',
                     borderTop: active ? '2px solid #0e639c' : '2px solid transparent',
-                    minWidth: 80, maxWidth: 200,
+                    flexShrink: 0,
                   }}
                 >
                   {isRenaming ? (
@@ -1923,7 +2024,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
                       style={{ flex: 1, minWidth: 60, background: '#1e1e1e', color: '#fff', border: '1px solid #555', borderRadius: 2, padding: '0 4px', fontSize: 12 }}
                     />
                   ) : (
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{t.title}</span>
+                    <span style={{ whiteSpace: 'nowrap' }}>{t.title}</span>
                   )}
                   {editorTabs.length > 1 && !isRenaming && (
                     <span
@@ -1960,6 +2061,58 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
             title="새 SQL 탭"
             style={{ background: 'transparent', color: '#9cdcfe', border: 0, borderLeft: '1px solid #333', padding: '0 12px', cursor: 'pointer', fontSize: 14 }}
           >＋</button>
+          {/* 탭 목록 드롭다운 (DBeaver 와 동일) */}
+          <div style={{ position: 'relative', borderLeft: '1px solid #333' }}>
+            <button
+              onClick={() => setTabListOpen(v => !v)}
+              title="모든 탭 보기"
+              style={{ background: 'transparent', color: '#9cdcfe', border: 0, padding: '0 10px', cursor: 'pointer', fontSize: 11, height: '100%' }}
+            >▾</button>
+            {tabListOpen && (
+              <>
+                <div onClick={() => setTabListOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 4999 }} />
+                <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: 2, minWidth: 240, maxHeight: 480, overflowY: 'auto', background: '#252526', border: '1px solid #444', borderRadius: 3, zIndex: 5000, boxShadow: '0 4px 12px rgba(0,0,0,0.6)' }}>
+                  {editorTabs.length === 0 ? (
+                    <div style={{ padding: 8, color: '#666' }}>탭 없음</div>
+                  ) : (
+                    editorTabs.map(t => {
+                      const isActive = t.id === activeEditorTabId;
+                      return (
+                        <div
+                          key={t.id}
+                          onClick={() => { setActiveEditorTabId(t.id); setTabListOpen(false); }}
+                          style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px', cursor: 'pointer', background: isActive ? '#094771' : 'transparent', color: '#ddd', fontSize: 12, borderBottom: '1px solid #2a2a2a', whiteSpace: 'nowrap' }}
+                          onMouseEnter={e => { if (!isActive) (e.currentTarget as HTMLDivElement).style.background = '#2a2d2e'; }}
+                          onMouseLeave={e => { if (!isActive) (e.currentTarget as HTMLDivElement).style.background = 'transparent'; }}
+                        >
+                          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.title}</span>
+                          {editorTabs.length > 1 && (
+                            <span
+                              onClick={e => {
+                                e.stopPropagation();
+                                setEditorTabs(prev => {
+                                  const next = prev.filter(x => x.id !== t.id);
+                                  if (next.length === 0) return [{ id: newTabId(), title: 'Query 1', sql: '' }];
+                                  return next;
+                                });
+                                if (activeEditorTabId === t.id) {
+                                  const idx = editorTabs.findIndex(x => x.id === t.id);
+                                  const neighbour = editorTabs[idx + 1] || editorTabs[idx - 1];
+                                  if (neighbour) setActiveEditorTabId(neighbour.id);
+                                }
+                              }}
+                              title="닫기"
+                              style={{ color: '#888', cursor: 'pointer', padding: '0 4px' }}
+                            >×</span>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </>
+            )}
+          </div>
         </div>
         {activeTab?.kind === 'object' && activeTab.objectName && activeTab.objectKind ? (
           <ObjectDetailPanel
@@ -2024,7 +2177,8 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
             }}
           />
         </div>)}
-        <div style={{ flex: 1, overflow: 'hidden', minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+        {/* 결과 영역 — 객체 탭일 때는 결과가 있을 때만 표시 (객체 패널에 공간 양보) */}
+        <div style={{ flex: (activeTab?.kind === 'object' && !result) ? '0 0 0px' : 1, overflow: 'hidden', minHeight: 0, minWidth: 0, display: (activeTab?.kind === 'object' && !result) ? 'none' : 'flex', flexDirection: 'column' }}>
           {/* 결과 탭 스트립 — 현재 + 핀된 스냅샷 */}
           {(pinnedSnapshots.length > 0 || result) && (
             <div style={{ display: 'flex', alignItems: 'stretch', background: '#252526', borderBottom: '1px solid #333', minHeight: 26, overflowX: 'auto' }}>
@@ -2329,11 +2483,32 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
         </div>
       </div>
 
+      {/* 우측 히스토리 리사이저 (핀 상태일 때만) */}
+      {historyPinned && (
+        <div
+          onMouseDown={(e) => {
+            e.preventDefault();
+            const startX = e.clientX;
+            const startW = rightSidebarWidth;
+            const onMove = (ev: MouseEvent) => {
+              const w = Math.max(180, Math.min(700, startW - (ev.clientX - startX)));
+              setRightSidebarWidth(w);
+            };
+            const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+            window.addEventListener('mousemove', onMove);
+            window.addEventListener('mouseup', onUp);
+          }}
+          style={{ width: 5, cursor: 'col-resize', background: 'transparent', flexShrink: 0, borderLeft: '1px solid #333' }}
+          title="드래그: 히스토리 크기 조절"
+        />
+      )}
       {/* 우측: 히스토리 */}
-      <div style={{ width: 280, flexShrink: 0, display: 'flex', flexDirection: 'column', borderLeft: '1px solid #333', minHeight: 0 }}>
+      {historyPinned ? (
+      <div style={{ width: rightSidebarWidth, flexShrink: 0, display: 'flex', flexDirection: 'column', borderLeft: '1px solid #333', minHeight: 0 }}>
         <div style={{ padding: 8, borderBottom: '1px solid #333', display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ fontWeight: 600 }}>📜 히스토리</span>
-          <button onClick={() => { if (confirm('히스토리 전부 삭제?')) { setHistory([]); saveHistory(sessionId, []); } }} style={{ marginLeft: 'auto', background: 'transparent', color: '#888', border: '1px solid #444', cursor: 'pointer', padding: '2px 6px', borderRadius: 3, fontSize: 11 }}>비우기</button>
+          <button onClick={() => setHistoryPinned(false)} title="고정 해제 (Unpin)" style={{ marginLeft: 'auto', background: 'transparent', color: '#888', border: '1px solid #444', cursor: 'pointer', padding: '2px 6px', borderRadius: 3, fontSize: 11 }}>📍</button>
+          <button onClick={() => { if (confirm('히스토리 전부 삭제?')) { setHistory([]); saveHistory(sessionId, []); } }} style={{ background: 'transparent', color: '#888', border: '1px solid #444', cursor: 'pointer', padding: '2px 6px', borderRadius: 3, fontSize: 11 }}>비우기</button>
         </div>
         <input value={historyFilter} onChange={e => setHistoryFilter(e.target.value)} placeholder="검색..." style={{ margin: 6, padding: 4, background: '#2a2a2a', color: '#ddd', border: '1px solid #444', borderRadius: 3 }} />
         <div style={{ flex: 1, overflowY: 'auto', padding: '0 4px 4px' }}>
@@ -2353,6 +2528,14 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
           ))}
         </div>
       </div>
+      ) : (
+        // Unpinned: 좁은 세로 바만 표시. 클릭 시 다시 펼침.
+        <div
+          onClick={() => setHistoryPinned(true)}
+          title="히스토리 펼치기 (Pin)"
+          style={{ width: 24, flexShrink: 0, borderLeft: '1px solid #333', cursor: 'pointer', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '8px 0', background: '#1e1e1e', color: '#888', writingMode: 'vertical-rl', fontSize: 11 }}
+        >📜 히스토리</div>
+      )}
       <DriverManagerModal open={driverManagerOpen} onClose={() => setDriverManagerOpen(false)} />
       {nameModal && (
         <div

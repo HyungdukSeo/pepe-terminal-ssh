@@ -46,14 +46,15 @@ export interface ConnectInfo {
 
 function escapeStr(s: string): string { return s.replace(/'/g, "''"); }
 
-// 바이트 수치를 사람이 읽기 좋은 단위로 (1024 단위, 정수면 정수 표기).
+// 바이트 수치를 사람이 읽기 좋은 단위로 (1024 단위) — DBeaver ByteNumberFormat 동일.
+// 10 이상은 정수, 10 미만만 소수 한 자리 (예: 29M, 3.8M, 802M).
 function formatBytes(bytes: number): string {
   if (!isFinite(bytes) || bytes <= 0) return '0';
   const units = ['B', 'K', 'M', 'G', 'T', 'P'];
   let i = 0;
   let v = bytes;
   while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
-  const num = (v >= 100 || v % 1 === 0) ? v.toFixed(0) : v.toFixed(1);
+  const num = v >= 10 ? Math.floor(v).toString() : v.toFixed(1);
   return `${num}${units[i]}`;
 }
 // V$DATAFILES.STATE 코드 매핑 (Altibase). 사용자 환경 기준: 2=ONLINE.
@@ -945,6 +946,77 @@ export class JdbcBackend {
       const r = await this.exec(sql, 5000);
       return r.rows.map(x => (x[0] || '').toString()).filter(Boolean);
     } catch { return []; }
+  }
+
+  // 테이블 사이즈 — DBeaver AltibaseSchema 의 SYS_TABLE_SIZE_ 쿼리 (메모리+디스크 합).
+  // 반환: Map<tableName_uppercase, { bytes, display }>
+  async tableSizes(schema?: string): Promise<Map<string, { bytes: number; display: string }>> {
+    const out = new Map<string, { bytes: number; display: string }>();
+    if (this.type !== 'altibase') return out;
+    const s = escapeStr((schema || this.dbms?.user || '').toUpperCase());
+    try {
+      const r = await this.exec(
+        `SELECT TABLE_NAME, MEMORY_SIZE, DISK_SIZE FROM SYSTEM_.SYS_TABLE_SIZE_ WHERE USER_NAME = '${s}'`, 10000);
+      for (const row of r.rows) {
+        const nm = (row[0] || '').toString().toUpperCase();
+        const m = parseFloat((row[1] || '0').toString()) || 0;
+        const d = parseFloat((row[2] || '0').toString()) || 0;
+        const total = m + d;
+        if (nm && total > 0) out.set(nm, { bytes: total, display: formatBytes(total) });
+      }
+    } catch {}
+    return out;
+  }
+  // 테이블스페이스 "Used Size" — DBeaver AltibaseTablespace.setQry4Size() 의 USED_SIZE 부분.
+  //   디스크: x$segment.total_used_size 합 (bytes)
+  //   메모리: v$memtbl_info.fixed_used_mem + var_used_mem 합 (bytes)
+  async tablespaceSizes(): Promise<Map<string, { bytes: number; display: string }>> {
+    const out = new Map<string, { bytes: number; display: string }>();
+    if (this.type !== 'altibase') return out;
+    // 디스크 — x$segment
+    try {
+      const r = await this.exec(
+        `SELECT T.NAME, NVL(DS.USED, 0) FROM V$TABLESPACES T LEFT OUTER JOIN `
+      + `(SELECT SPACE_ID, SUM(TOTAL_USED_SIZE) USED FROM X$SEGMENT GROUP BY SPACE_ID) DS `
+      + `ON DS.SPACE_ID = T.ID`, 1000);
+      for (const row of r.rows) {
+        const nm = (row[0] || '').toString().toUpperCase();
+        const bytes = parseFloat((row[1] || '0').toString()) || 0;
+        if (nm && bytes > 0) out.set(nm, { bytes, display: formatBytes(bytes) });
+      }
+    } catch {}
+    // 메모리 — v$memtbl_info
+    try {
+      const r = await this.exec(
+        `SELECT T.NAME, NVL(MT.USED, 0) FROM V$TABLESPACES T LEFT OUTER JOIN `
+      + `(SELECT TABLESPACE_ID, SUM(FIXED_USED_MEM + VAR_USED_MEM) USED FROM V$MEMTBL_INFO GROUP BY TABLESPACE_ID) MT `
+      + `ON T.ID = MT.TABLESPACE_ID`, 1000);
+      for (const row of r.rows) {
+        const nm = (row[0] || '').toString().toUpperCase();
+        const bytes = parseFloat((row[1] || '0').toString()) || 0;
+        if (nm && bytes > 0) {
+          const cur = out.get(nm);
+          if (!cur || cur.bytes < bytes) out.set(nm, { bytes, display: formatBytes(bytes) });
+        }
+      }
+    } catch {}
+    // Undo 테이블스페이스 — DBeaver Disk Undo 공식. UNDO 타입 테이블스페이스만 대상.
+    try {
+      const r = await this.exec(
+        `SELECT T.NAME, ((U.TX_EXT_CNT + U.USED_EXT_CNT + U.UNSTEALABLE_EXT_CNT) * PROP.EXTENT_SIZE) USED `
+      + `FROM V$TABLESPACES T, V$DISK_UNDO_USAGE U, `
+      + `(SELECT VALUE1 EXTENT_SIZE FROM V$PROPERTY WHERE NAME = 'SYS_UNDO_TBS_EXTENT_SIZE') PROP `
+      + `WHERE T.NAME LIKE '%UNDO%'`, 100);
+      for (const row of r.rows) {
+        const nm = (row[0] || '').toString().toUpperCase();
+        const bytes = parseFloat((row[1] || '0').toString()) || 0;
+        if (nm && bytes > 0) {
+          const cur = out.get(nm);
+          if (!cur || cur.bytes < bytes) out.set(nm, { bytes, display: formatBytes(bytes) });
+        }
+      }
+    } catch {}
+    return out;
   }
 
   // 패키지에 속한 프로시저/함수 — DBeaver prepareCallableLoadStatement(package) 와 동일.

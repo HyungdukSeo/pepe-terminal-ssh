@@ -559,7 +559,7 @@ export const ObjectDetailPanel: React.FC<Props> = (p) => {
   };
 
   return (
-    <div style={{ flex: '0 0 35%', minHeight: 120, borderBottom: '1px solid #333', display: 'flex', flexDirection: 'column', background: '#1e1e1e' }}>
+    <div style={{ flex: '1 1 auto', minHeight: 200, borderBottom: '1px solid #333', display: 'flex', flexDirection: 'column', background: '#1e1e1e', overflow: 'hidden' }}>
       {/* 객체 헤더 */}
       <div style={{ padding: '6px 10px', borderBottom: '1px solid #333', display: 'flex', alignItems: 'center', gap: 8, background: '#252526' }}>
         <span style={{ fontWeight: 600, fontSize: 13 }}>{ICON_MAP[objKind]} {objName}</span>
