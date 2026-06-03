@@ -46,6 +46,45 @@ export interface ConnectInfo {
 
 function escapeStr(s: string): string { return s.replace(/'/g, "''"); }
 
+// 바이트 수치를 사람이 읽기 좋은 단위로 (1024 단위, 정수면 정수 표기).
+function formatBytes(bytes: number): string {
+  if (!isFinite(bytes) || bytes <= 0) return '0';
+  const units = ['B', 'K', 'M', 'G', 'T', 'P'];
+  let i = 0;
+  let v = bytes;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  const num = (v >= 100 || v % 1 === 0) ? v.toFixed(0) : v.toFixed(1);
+  return `${num}${units[i]}`;
+}
+// V$DATAFILES.STATE 코드 매핑 (Altibase). 사용자 환경 기준: 2=ONLINE.
+function mapDatafileState(s: string): string {
+  const m: Record<string, string> = { '0': 'OFFLINE', '1': 'BACKUP', '2': 'ONLINE', '3': 'OFFLINE_BACKUP' };
+  return m[s] || s;
+}
+
+// V$DATAFILES 컬럼 → DBeaver 한글/영문 헤더 매핑.
+function mapDataFileHeader(col: string): string {
+  const m: Record<string, string> = {
+    NAME: 'Path',
+    DATAFILE_ID: 'DataFile ID',
+    SPACEID: 'Tablespace ID',
+    SPACE_ID: 'Tablespace ID',
+    CURRENT_SIZE: 'Current Size',
+    NEXT_SIZE: 'Next Size',
+    INITIAL_SIZE: 'Initital Size',
+    DBFILE_SIZE: 'DBFile Size',
+    MAXIMUM_SIZE: 'Maximum Size',
+    MAX_SIZE: 'Maximum Size',
+    AUTOEXTEND_MODE: 'Auto Extended',
+    AUTO_EXTENDED: 'Auto Extended',
+    STATE: 'State',
+    SPACE_NAME: 'Tablespace',
+    ID: 'ID',
+    CHECKPOINT_PATH: 'Path',
+  };
+  return m[col?.toUpperCase()] || col;
+}
+
 function quoteIdent(dialect: Dialect, name: string): string {
   if (dialect === 'mysql') return '`' + name.replace(/`/g, '``') + '`';
   if (dialect === 'mssql') return '[' + name.replace(/]/g, ']]') + ']';
@@ -266,12 +305,16 @@ export class JdbcBackend {
     // Altibase 함수 — SYS_PROCEDURES_ 의 RETURN_* 컬럼으로 첫 행 (RETURN_VALUE) 합성 + 파라미터들
     if (this.type === 'altibase') {
       const n2 = escapeStr(name.toUpperCase());
+      const s2 = escapeStr((schema || '').toUpperCase());
+      const userJoin = s2
+        ? `AND USER_ID = (SELECT USER_ID FROM SYSTEM_.SYS_USERS_ WHERE USER_NAME = '${s2}')`
+        : '';
       const rows: { name: string; order: number; type: string; inOut: string; length?: number; scale?: number; precision?: number; nullable?: boolean }[] = [];
       // 함수면 RETURN 행 먼저
       if (kind === 'function') {
         try {
           const retSql = `SELECT RETURN_DATA_TYPE, RETURN_SIZE, RETURN_SCALE, RETURN_PRECISION `
-                       + `FROM SYSTEM_.SYS_PROCEDURES_ WHERE PROC_NAME = '${n2}' AND OBJECT_TYPE = 1`;
+                       + `FROM SYSTEM_.SYS_PROCEDURES_ WHERE PROC_NAME = '${n2}' AND OBJECT_TYPE = 1 ${userJoin}`;
           const res = await this.exec(retSql, 5000);
           for (const row of res.rows) {
             rows.push({
@@ -291,7 +334,7 @@ export class JdbcBackend {
         const objType = kind === 'function' ? 1 : 0;
         const paramSql = `SELECT PARA_NAME, PARA_ORDER, INOUT_TYPE, DATA_TYPE, SIZE, SCALE, PRECISION `
                        + `FROM SYSTEM_.SYS_PROC_PARAS_ `
-                       + `WHERE PROC_OID IN (SELECT PROC_OID FROM SYSTEM_.SYS_PROCEDURES_ WHERE PROC_NAME = '${n2}' AND OBJECT_TYPE = ${objType}) `
+                       + `WHERE PROC_OID IN (SELECT PROC_OID FROM SYSTEM_.SYS_PROCEDURES_ WHERE PROC_NAME = '${n2}' AND OBJECT_TYPE = ${objType} ${userJoin}) `
                        + `ORDER BY PARA_ORDER`;
         const res = await this.exec(paramSql, 5000);
         for (const row of res.rows) {
@@ -379,23 +422,29 @@ export class JdbcBackend {
     return s;
   }
   // 테이블 제약조건 (PK/UNIQUE/CHECK/NOT NULL).
-  async tableConstraints(table: string, schema?: string): Promise<{ name: string; type: string; columns: string[] }[]> {
+  async tableConstraints(table: string, schema?: string): Promise<{ name: string; owner: string; type: string; validated: string; condition: string; columns: string[] }[]> {
     const s = escapeStr((schema || '').toUpperCase());
     const n = escapeStr(table.toUpperCase());
     let sql: string | null = null;
     switch (this.type) {
       case 'altibase':
-        // CONSTRAINT_TYPE: 0=PK, 1=Unique, 2=NotNull, 3=FK
-        sql = `SELECT C.CONSTRAINT_NAME, C.CONSTRAINT_TYPE, CC.COLUMN_NAME `
-            + `FROM SYSTEM_.SYS_CONSTRAINTS_ C `
-            + `JOIN SYSTEM_.SYS_TABLES_ T ON C.TABLE_ID = T.TABLE_ID `
-            + `JOIN SYSTEM_.SYS_USERS_ U ON T.USER_ID = U.USER_ID `
-            + `LEFT JOIN SYSTEM_.SYS_CONSTRAINT_COLUMNS_ CC ON CC.CONSTRAINT_ID = C.CONSTRAINT_ID `
-            + `WHERE U.USER_NAME = '${s}' AND T.TABLE_NAME = '${n}' AND C.CONSTRAINT_TYPE != 3 `
-            + `ORDER BY C.CONSTRAINT_NAME, CC.CONSTRAINT_COL_ORDER`;
+        // DBeaver AltibaseMetaModel.prepareUniqueConstraintsLoadStatement 와 완전히 동일 SQL.
+        // SYS_CONSTRAINT_COLUMNS_ 에는 COLUMN_NAME 이 없어 SYS_COLUMNS_ 와 COLUMN_ID 로 추가 JOIN.
+        sql = `SELECT C.CONSTRAINT_NAME AS PK_NAME, C.CONSTRAINT_TYPE, COL.COLUMN_NAME, T.TABLE_NAME, C.VALIDATED, C.CHECK_CONDITION `
+            + `FROM SYSTEM_.SYS_USERS_ U, SYSTEM_.SYS_TABLES_ T, SYSTEM_.SYS_COLUMNS_ COL, `
+            + `SYSTEM_.SYS_CONSTRAINTS_ C, SYSTEM_.SYS_CONSTRAINT_COLUMNS_ CCOL `
+            + `WHERE U.USER_NAME = '${s}' `
+            + `AND U.USER_ID = C.USER_ID `
+            + `AND U.USER_ID = T.USER_ID `
+            + `AND T.TABLE_ID = C.TABLE_ID `
+            + `AND C.CONSTRAINT_TYPE <> 0 `
+            + `AND C.CONSTRAINT_ID = CCOL.CONSTRAINT_ID `
+            + `AND CCOL.COLUMN_ID = COL.COLUMN_ID `
+            + `AND T.TABLE_NAME = '${n}' `
+            + `ORDER BY C.CONSTRAINT_NAME, CCOL.CONSTRAINT_COL_ORDER`;
         break;
       case 'oracle':
-        sql = `SELECT C.CONSTRAINT_NAME, C.CONSTRAINT_TYPE, CC.COLUMN_NAME FROM ALL_CONSTRAINTS C `
+        sql = `SELECT C.CONSTRAINT_NAME, C.CONSTRAINT_TYPE, CC.COLUMN_NAME, C.TABLE_NAME, C.VALIDATED, C.SEARCH_CONDITION FROM ALL_CONSTRAINTS C `
             + `LEFT JOIN ALL_CONS_COLUMNS CC ON CC.CONSTRAINT_NAME = C.CONSTRAINT_NAME AND CC.OWNER = C.OWNER `
             + `WHERE C.OWNER = '${s}' AND C.TABLE_NAME = '${n}' AND C.CONSTRAINT_TYPE != 'R' ORDER BY C.CONSTRAINT_NAME, CC.POSITION`;
         break;
@@ -403,13 +452,17 @@ export class JdbcBackend {
     }
     try {
       const res = await this.exec(sql, 5000);
-      const byName = new Map<string, { name: string; type: string; columns: string[] }>();
+      const byName = new Map<string, { name: string; owner: string; type: string; validated: string; condition: string; columns: string[] }>();
       for (const row of res.rows) {
         const cname = (row[0] || '').trim();
         const ctype = this.constraintTypeLabel(row[1]);
         const col = (row[2] || '').trim();
+        const owner = (row[3] || '').trim();
+        const validatedRaw = (row[4] || '').toString().toUpperCase().trim();
+        const validated = (validatedRaw === 'T' || validatedRaw === 'Y' || validatedRaw === 'TRUE' || validatedRaw === 'VALIDATED' || validatedRaw === '1') ? 'true' : (validatedRaw ? 'false' : '');
+        const condition = (row[5] || '').toString().trim();
         if (!cname) continue;
-        const entry = byName.get(cname) || { name: cname, type: ctype, columns: [] };
+        const entry = byName.get(cname) || { name: cname, owner, type: ctype, validated, condition, columns: [] };
         if (col) entry.columns.push(col);
         byName.set(cname, entry);
       }
@@ -418,11 +471,19 @@ export class JdbcBackend {
   }
   private constraintTypeLabel(v: any): string {
     const s = (v || '').toString().toUpperCase();
-    if (s === '0' || s === 'P') return 'PRIMARY KEY';
-    if (s === '1' || s === 'U') return 'UNIQUE';
-    if (s === '2' || s === 'C') return 'NOT NULL';
-    if (s === '3' || s === 'R') return 'FOREIGN KEY';
-    if (s === '4') return 'CHECK';
+    // Altibase 코드 (DBeaver AltibaseMetaModel 기준)
+    if (s === '0') return 'FOREIGN KEY';
+    if (s === '1') return 'NOT NULL';
+    if (s === '2') return 'UNIQUE';
+    if (s === '3') return 'PRIMARY KEY';
+    if (s === '5') return 'TIMESTAMP';
+    if (s === '6') return 'LOCAL UNIQUE';
+    if (s === '7') return 'CHECK';
+    // Oracle 코드
+    if (s === 'P') return 'PRIMARY KEY';
+    if (s === 'U') return 'UNIQUE';
+    if (s === 'C') return 'CHECK';
+    if (s === 'R') return 'FOREIGN KEY';
     return s;
   }
   // 테이블 외래키.
@@ -566,6 +627,7 @@ export class JdbcBackend {
                 + `U2.USER_NAME `
                 + `FROM SYSTEM_.SYS_INDICES_ I, SYSTEM_.SYS_TABLES_ T, SYSTEM_.SYS_INDEX_COLUMNS_ IC, SYSTEM_.SYS_COLUMNS_ C, SYSTEM_.SYS_USERS_ U2 `
                 + `WHERE I.INDEX_NAME = '${n}' `
+                + (s ? `AND U2.USER_NAME = '${s}' ` : '')
                 + `AND I.TABLE_ID = T.TABLE_ID AND I.USER_ID = T.USER_ID `
                 + `AND IC.INDEX_ID = I.INDEX_ID AND IC.USER_ID = I.USER_ID `
                 + `AND C.COLUMN_ID = IC.COLUMN_ID `
@@ -744,6 +806,387 @@ export class JdbcBackend {
       return res.rows.map(r => (r[0] || '').trim()).filter(Boolean);
     } catch { return []; }
   }
+  // 테이블 DDL — dialect 별 네이티브 메타데이터 함수 우선. 실패 시 null 반환(호출부 fallback).
+  // DBeaver AltibaseMetaModel.getDDLFromDbmsMetadata 와 동일 패턴 (DBMS_METADATA.GET_DDL).
+  async tableDdl(name: string, schema?: string): Promise<string | null> {
+    const n = escapeStr(name.toUpperCase());
+    // 스키마 우선순위: 인자 > info.schema > 접속 user
+    const resolvedSchema = (schema || this._info?.schema || this.dbms?.user || '').toUpperCase();
+    const s = escapeStr(resolvedSchema);
+    if (this.type === 'altibase' || this.type === 'oracle') {
+      const qSchema = s ? `, '${s}'` : '';
+      try {
+        const r = await this.exec(`SELECT DBMS_METADATA.GET_DDL('TABLE', '${n}'${qSchema}) FROM DUAL`, 1);
+        const ddl = (r.rows[0]?.[0] || '').toString().trim();
+        if (ddl && !/error|ORA-|ERR-/i.test(ddl.slice(0, 80))) {
+          // 인덱스 DDL 추가 — resolvedSchema 사용
+          const idxBlock = await this._collectIndexDdls(name, resolvedSchema).catch(() => '');
+          return idxBlock ? `${ddl.replace(/;?\s*$/, ';')}\n\n${idxBlock}` : ddl.replace(/;?\s*$/, ';');
+        }
+      } catch { /* fallback */ }
+    }
+    return null;
+  }
+  // 테이블의 모든 인덱스 DDL 을 모아 문자열로 — table DDL 아래 추가용.
+  private async _collectIndexDdls(table: string, schema?: string): Promise<string> {
+    try {
+      const idxNames = await this.listTableIndexes(table, schema);
+      if (!idxNames.length) return '';
+      const out: string[] = [];
+      for (const idx of idxNames) {
+        try {
+          const d = await this.indexDetail(idx, schema);
+          if (!d.table) continue;
+          const q = (x: string) => `"${x}"`;
+          const cols = (d.columns || []).map(c => q(c.name) + (c.sortOrder === 'D' ? ' DESC' : ''));
+          const sch = (d.tableSchema || schema || '').toUpperCase();
+          const head = `CREATE ${d.unique ? 'UNIQUE ' : ''}INDEX ${sch ? q(sch) + '.' : ''}${q(idx)} ON ${sch ? q(sch) + '.' : ''}${q(d.table)} (${cols.join(', ')})`;
+          const parts = [head];
+          if (d.typeName) parts.push(`INDEXTYPE IS ${d.typeName}`);
+          if (d.tablespace) parts.push(`TABLESPACE ${q(d.tablespace)}`);
+          out.push(parts.join('\n') + ';');
+        } catch {}
+      }
+      return out.join('\n\n');
+    } catch { return ''; }
+  }
+
+  // ── 테이블별 하위 (DBeaver 의 테이블 노드 펼침: 제약조건/외래키/인덱스/참조/트리거) ──
+  // Altibase SYS_CONSTRAINTS_.CONSTRAINT_TYPE (DBeaver AltibaseMetaModel 기준):
+  //   0=FOREIGN KEY, 1=NOT NULL, 2=UNIQUE, 3=PRIMARY KEY, 5=TIMESTAMP, 6=LOCAL UNIQUE, 7=CHECK
+  // 제약조건 폴더는 FK(0) 제외, 외래키 폴더는 FK(0) 만, 참조 폴더는 다른 테이블의 FK(0) 가
+  // 본 테이블을 가리키는 것.
+  async listTableConstraints(table: string, schema?: string): Promise<string[]> {
+    if (this.type !== 'altibase') return [];
+    const s = escapeStr((schema || '').toUpperCase());
+    const t = escapeStr(table.toUpperCase());
+    try {
+      const r = await this.exec(
+        `SELECT C.CONSTRAINT_NAME FROM SYSTEM_.SYS_CONSTRAINTS_ C, SYSTEM_.SYS_TABLES_ T, SYSTEM_.SYS_USERS_ U `
+      + `WHERE C.TABLE_ID = T.TABLE_ID AND C.USER_ID = T.USER_ID AND T.USER_ID = U.USER_ID `
+      + `AND U.USER_NAME = '${s}' AND T.TABLE_NAME = '${t}' `
+      + `AND C.CONSTRAINT_TYPE <> 0 `
+      + `ORDER BY C.CONSTRAINT_NAME`, 1000);
+      return r.rows.map(x => (x[0] || '').toString()).filter(Boolean);
+    } catch { return []; }
+  }
+  async listTableForeignKeys(table: string, schema?: string): Promise<string[]> {
+    if (this.type !== 'altibase') return [];
+    const s = escapeStr((schema || '').toUpperCase());
+    const t = escapeStr(table.toUpperCase());
+    try {
+      // CONSTRAINT_TYPE = 0 (FK) — DBeaver 기준
+      const r = await this.exec(
+        `SELECT C.CONSTRAINT_NAME FROM SYSTEM_.SYS_CONSTRAINTS_ C, SYSTEM_.SYS_TABLES_ T, SYSTEM_.SYS_USERS_ U `
+      + `WHERE C.TABLE_ID = T.TABLE_ID AND C.USER_ID = T.USER_ID AND T.USER_ID = U.USER_ID `
+      + `AND U.USER_NAME = '${s}' AND T.TABLE_NAME = '${t}' AND C.CONSTRAINT_TYPE = 0 `
+      + `ORDER BY C.CONSTRAINT_NAME`, 1000);
+      return r.rows.map(x => (x[0] || '').toString()).filter(Boolean);
+    } catch { return []; }
+  }
+  async listTableIndexes(table: string, schema?: string): Promise<string[]> {
+    if (this.type !== 'altibase') return [];
+    const s = escapeStr((schema || '').toUpperCase());
+    const t = escapeStr(table.toUpperCase());
+    try {
+      const r = await this.exec(
+        `SELECT I.INDEX_NAME FROM SYSTEM_.SYS_INDICES_ I, SYSTEM_.SYS_TABLES_ T, SYSTEM_.SYS_USERS_ U `
+      + `WHERE I.TABLE_ID = T.TABLE_ID AND I.USER_ID = T.USER_ID AND T.USER_ID = U.USER_ID `
+      + `AND U.USER_NAME = '${s}' AND T.TABLE_NAME = '${t}' `
+      + `ORDER BY I.INDEX_NAME`, 1000);
+      return r.rows.map(x => (x[0] || '').toString()).filter(Boolean);
+    } catch { return []; }
+  }
+  // 참조: 이 테이블을 가리키는 FK (다른 테이블의 FK 가 REFERENCED_TABLE_ID = 본 테이블)
+  async listTableReferences(table: string, schema?: string): Promise<string[]> {
+    if (this.type !== 'altibase') return [];
+    const s = escapeStr((schema || '').toUpperCase());
+    const t = escapeStr(table.toUpperCase());
+    try {
+      const r = await this.exec(
+        `SELECT C.CONSTRAINT_NAME || ' (' || RT.TABLE_NAME || ')' `
+      + `FROM SYSTEM_.SYS_CONSTRAINTS_ C, SYSTEM_.SYS_TABLES_ T, SYSTEM_.SYS_USERS_ U, SYSTEM_.SYS_TABLES_ RT `
+      + `WHERE C.REFERENCED_TABLE_ID = T.TABLE_ID AND C.REFERENCED_USER_ID = T.USER_ID `
+      + `AND T.USER_ID = U.USER_ID AND U.USER_NAME = '${s}' AND T.TABLE_NAME = '${t}' `
+      + `AND C.TABLE_ID = RT.TABLE_ID AND C.USER_ID = RT.USER_ID `
+      + `AND C.CONSTRAINT_TYPE = 0 ORDER BY C.CONSTRAINT_NAME`, 1000);
+      return r.rows.map(x => (x[0] || '').toString()).filter(Boolean);
+    } catch { return []; }
+  }
+  async listTableTriggers(table: string, schema?: string): Promise<string[]> {
+    if (this.type !== 'altibase') return [];
+    const s = escapeStr((schema || '').toUpperCase());
+    const t = escapeStr(table.toUpperCase());
+    try {
+      const r = await this.exec(
+        `SELECT TR.TRIGGER_NAME FROM SYSTEM_.SYS_TRIGGERS_ TR, SYSTEM_.SYS_TABLES_ T, SYSTEM_.SYS_USERS_ U `
+      + `WHERE TR.TABLE_ID = T.TABLE_ID AND TR.USER_ID = T.USER_ID AND T.USER_ID = U.USER_ID `
+      + `AND U.USER_NAME = '${s}' AND T.TABLE_NAME = '${t}' `
+      + `ORDER BY TR.TRIGGER_NAME`, 1000);
+      return r.rows.map(x => (x[0] || '').toString()).filter(Boolean);
+    } catch { return []; }
+  }
+
+  // 스키마 레벨 패키지 목록 — DBeaver preparePackageLoadStatement 와 동일.
+  async listPackages(schema?: string): Promise<string[]> {
+    if (this.type !== 'altibase' && this.type !== 'oracle') return [];
+    const s = escapeStr((schema || '').toUpperCase());
+    let sql: string;
+    if (this.type === 'altibase') {
+      // DBeaver preparePackageLoadStatement 와 동일 — spec/body 합쳐 모두, 이름 중복은 DISTINCT.
+      // (Altibase PACKAGE_TYPE: 6=SPEC, 7=BODY)
+      sql = `SELECT DISTINCT P.PACKAGE_NAME FROM SYSTEM_.SYS_PACKAGES_ P, SYSTEM_.SYS_USERS_ U `
+          + `WHERE U.USER_NAME = '${s}' AND U.USER_ID = P.USER_ID `
+          + `ORDER BY P.PACKAGE_NAME`;
+    } else {
+      sql = `SELECT OBJECT_NAME FROM ALL_OBJECTS WHERE OWNER = '${s}' AND OBJECT_TYPE = 'PACKAGE' ORDER BY OBJECT_NAME`;
+    }
+    try {
+      const r = await this.exec(sql, 5000);
+      return r.rows.map(x => (x[0] || '').toString()).filter(Boolean);
+    } catch { return []; }
+  }
+
+  // 패키지에 속한 프로시저/함수 — DBeaver prepareCallableLoadStatement(package) 와 동일.
+  // SYS_PACKAGE_PARAS_.SUB_TYPE: 0=PROCEDURE, 1=FUNCTION.
+  async listPackageRoutines(packageName: string, schema?: string): Promise<{ name: string; schema: string; package: string; type: 'PROCEDURE' | 'FUNCTION' }[]> {
+    if (this.type !== 'altibase') return [];
+    const s = escapeStr((schema || this.dbms?.user || '').toUpperCase());
+    const p = escapeStr(packageName.toUpperCase());
+    try {
+      const r = await this.exec(
+        `SELECT PP.OBJECT_NAME, PP.SUB_TYPE FROM SYSTEM_.SYS_PACKAGES_ P, SYSTEM_.SYS_USERS_ U, SYSTEM_.SYS_PACKAGE_PARAS_ PP `
+      + `WHERE U.USER_NAME = '${s}' AND U.USER_ID = P.USER_ID `
+      + `AND P.PACKAGE_OID = PP.PACKAGE_OID AND P.PACKAGE_NAME = '${p}' `
+      + `AND (PP.PARA_ORDER = 0 OR PP.PARA_ORDER = 1) `
+      + `ORDER BY PP.OBJECT_NAME`, 1000);
+      const seen = new Set<string>();
+      const out: { name: string; schema: string; package: string; type: 'PROCEDURE' | 'FUNCTION' }[] = [];
+      for (const row of r.rows) {
+        const nm = (row[0] || '').toString();
+        if (!nm || seen.has(nm)) continue;
+        seen.add(nm);
+        const t = (row[1] || '').toString();
+        out.push({ name: nm, schema: (schema || '').toUpperCase(), package: packageName, type: t === '1' ? 'FUNCTION' : 'PROCEDURE' });
+      }
+      return out;
+    } catch { return []; }
+  }
+
+  // 패키지 상세 — properties + spec/body DDL.
+  async packageDetail(name: string, schema?: string): Promise<{ properties: Record<string, string>; spec: string; body: string; routines: { name: string; schema: string; package: string; type: string }[] }> {
+    const result = { properties: {} as Record<string, string>, spec: '', body: '', routines: [] as { name: string; schema: string; package: string; type: string }[] };
+    if (this.type !== 'altibase' && this.type !== 'oracle') return result;
+    const s = escapeStr((schema || this.dbms?.user || '').toUpperCase());
+    const n = escapeStr(name.toUpperCase());
+    // Properties
+    if (this.type === 'altibase') {
+      try {
+        const r = await this.exec(
+          `SELECT P.PACKAGE_NAME, P.PACKAGE_TYPE, P.AUTHID, P.STATUS FROM SYSTEM_.SYS_PACKAGES_ P, SYSTEM_.SYS_USERS_ U `
+        + `WHERE U.USER_ID = P.USER_ID AND U.USER_NAME = '${s}' AND P.PACKAGE_NAME = '${n}' ORDER BY P.PACKAGE_TYPE`, 50);
+        for (const row of r.rows) {
+          const t = (row[1] || '').toString();
+          result.properties['이름'] = (row[0] || '').toString();
+          result.properties['AUTHID'] = (row[2] || '').toString();
+          result.properties['상태(' + (t === '6' ? 'SPEC' : t === '7' ? 'BODY' : t) + ')'] = (row[3] || '').toString();
+        }
+      } catch {}
+    }
+    // DDL (spec / body) — DBMS_METADATA.GET_DDL
+    try {
+      const r = await this.exec(`SELECT DBMS_METADATA.GET_DDL('PACKAGE', '${n}', '${s}') FROM DUAL`, 1);
+      result.spec = (r.rows[0]?.[0] || '').toString().trim();
+    } catch {}
+    try {
+      const r = await this.exec(`SELECT DBMS_METADATA.GET_DDL('PACKAGE_BODY', '${n}', '${s}') FROM DUAL`, 1);
+      result.body = (r.rows[0]?.[0] || '').toString().trim();
+    } catch {}
+    result.routines = await this.listPackageRoutines(name, schema);
+    return result;
+  }
+
+  // 트리거 상세 — properties + DDL.
+  async triggerDetail(name: string, schema?: string): Promise<{ properties: Record<string, string>; ddl: string }> {
+    const result = { properties: {} as Record<string, string>, ddl: '' };
+    if (this.type !== 'altibase' && this.type !== 'oracle') return result;
+    const s = escapeStr((schema || this.dbms?.user || '').toUpperCase());
+    // 트리거 노드는 "NAME (TABLE)" 형식으로 표시될 수 있어 ( 앞부분만 사용
+    const rawName = name.includes(' (') ? name.split(' (')[0] : name;
+    const n = escapeStr(rawName.toUpperCase());
+    if (this.type === 'altibase') {
+      try {
+        const r = await this.exec(
+          `SELECT TR.TRIGGER_NAME, T.TABLE_NAME, TR.IS_ENABLE, `
+        + `CASE2(TR.EVENT_TIME = 1, 'BEFORE', TR.EVENT_TIME = 2, 'AFTER', TR.EVENT_TIME = 3, 'INSTEAD OF', 'Unknown') AS EVENT_TIME, `
+        + `CASE2(TR.EVENT_TYPE = 1, 'INSERT', TR.EVENT_TYPE = 2, 'DELETE', TR.EVENT_TYPE = 4, 'UPDATE', 'Unknown') AS EVENT_TYPE, `
+        + `CASE2(TR.GRANULARITY = 1, 'FOR EACH ROW', TR.GRANULARITY = 12, 'FOR EACH STATEMENT', 'Unknown') AS GRANULARITY `
+        + `FROM SYSTEM_.SYS_TRIGGERS_ TR, SYSTEM_.SYS_TABLES_ T, SYSTEM_.SYS_USERS_ U `
+        + `WHERE TR.TABLE_ID = T.TABLE_ID AND TR.USER_ID = T.USER_ID AND T.USER_ID = U.USER_ID `
+        + `AND U.USER_NAME = '${s}' AND TR.TRIGGER_NAME = '${n}'`, 1);
+        const row = r.rows[0];
+        if (row) {
+          result.properties['이름'] = (row[0] || '').toString();
+          result.properties['대상 테이블'] = (row[1] || '').toString();
+          result.properties['활성화'] = (row[2] || '').toString();
+          result.properties['시점'] = (row[3] || '').toString();
+          result.properties['이벤트'] = (row[4] || '').toString();
+          result.properties['Granularity'] = (row[5] || '').toString();
+        }
+      } catch {}
+    }
+    // DDL
+    try {
+      const r = await this.exec(`SELECT DBMS_METADATA.GET_DDL('TRIGGER', '${n}', '${s}') FROM DUAL`, 1);
+      result.ddl = (r.rows[0]?.[0] || '').toString().trim();
+    } catch {}
+    return result;
+  }
+
+  // 스키마 레벨 트리거 목록 — DBeaver prepareTableTriggersLoadStatement 패턴.
+  // 표시: "TRIGGER_NAME (OWNER_TABLE)" — 트리거가 어떤 테이블에 붙어 있는지 함께.
+  async listSchemaTriggers(schema?: string): Promise<string[]> {
+    if (this.type !== 'altibase' && this.type !== 'oracle') return [];
+    const s = escapeStr((schema || '').toUpperCase());
+    let sql: string;
+    if (this.type === 'altibase') {
+      // SYS_TRIGGERS_ + SYS_TABLES_ join 으로 트리거-테이블 매핑.
+      sql = `SELECT TR.TRIGGER_NAME || ' (' || T.TABLE_NAME || ')' FROM SYSTEM_.SYS_TRIGGERS_ TR, SYSTEM_.SYS_TABLES_ T, SYSTEM_.SYS_USERS_ U `
+          + `WHERE TR.TABLE_ID = T.TABLE_ID AND TR.USER_ID = T.USER_ID AND T.USER_ID = U.USER_ID `
+          + `AND U.USER_NAME = '${s}' ORDER BY TR.TRIGGER_NAME`;
+    } else {
+      sql = `SELECT TRIGGER_NAME || ' (' || TABLE_NAME || ')' FROM ALL_TRIGGERS WHERE OWNER = '${s}' ORDER BY TRIGGER_NAME`;
+    }
+    try {
+      const r = await this.exec(sql, 5000);
+      return r.rows.map(x => (x[0] || '').toString()).filter(Boolean);
+    } catch { return []; }
+  }
+
+  // 테이블스페이스 상세 — DBeaver AltibaseTablespace 의 datafiles/tables/indexes 쿼리.
+  // 데이터 파일은 SELECT * (DBeaver 와 동일) — 컬럼 구성이 dialect/버전마다 달라 동적 헤더 사용.
+  async tablespaceDetail(name: string): Promise<{
+    dataFileColumns: string[];
+    dataFileRows: string[][];
+    tables: { schema: string; table: string; partition: string }[];
+    indexes: { schema: string; index: string; partition: string; tableSchema: string; table: string }[];
+  }> {
+    const result = { dataFileColumns: [] as string[], dataFileRows: [] as string[][], tables: [] as any[], indexes: [] as any[] };
+    if (this.type !== 'altibase') return result;
+    const tn = escapeStr(name.toUpperCase());
+    // SPACE_ID 조회 — V$TABLESPACES.ID 가 표준이지만 SPACE_ID 도 시도
+    let spaceId = -1;
+    for (const idCol of ['ID', 'SPACE_ID']) {
+      try {
+        const r = await this.exec(`SELECT ${idCol} FROM V$TABLESPACES WHERE NAME = '${tn}'`, 1);
+        if (r.rows.length > 0) {
+          const v = parseInt((r.rows[0][0] || '-1').toString(), 10);
+          if (!isNaN(v) && v >= 0) { spaceId = v; break; }
+        }
+      } catch {}
+    }
+    if (spaceId < 0) return result;
+    // 데이터 파일 — Disk(V$DATAFILES). DBeaver 표시 컬럼만 화이트리스트로 추출.
+    // DBeaver AltibaseTablespace 의 표시 헤더: Path/DataFile ID/Tablespace ID/Current Size/
+    //   Next Size/Initial Size/Maximum Size/Auto Extended/State
+    try {
+      const r = await this.exec(`SELECT * FROM V$DATAFILES WHERE SPACEID = ${spaceId} ORDER BY NAME`, 1000);
+      if (r.rows.length > 0) {
+        // DBeaver AltibaseDataFile4Disk @Property 순서:
+        //   Path(NAME), DataFile ID(ID), Tablespace ID(SPACEID), Current Size(CURRSIZE),
+        //   Next Size(NEXTSIZE), Initital Size(INITSIZE), Maximum Size(MAXSIZE),
+        //   Auto Extended(AUTOEXTEND), State(STATE)
+        type Kind = 'raw' | 'size' | 'autoExt' | 'state';
+        const wanted: { match: RegExp; label: string; kind: Kind }[] = [
+          { match: /^NAME$/,                                    label: 'Path',           kind: 'raw' },
+          { match: /^(DATAFILE_?ID|ID)$/,                       label: 'DataFile ID',    kind: 'raw' },
+          { match: /^(SPACEID|SPACE_ID|TABLESPACE_ID)$/,        label: 'Tablespace ID',  kind: 'raw' },
+          { match: /^(CURRSIZE|CURRENT_?SIZE|CURRENTSIZE)$/,    label: 'Current Size',   kind: 'size' },
+          { match: /^(NEXTSIZE|NEXT_?SIZE)$/,                   label: 'Next Size',      kind: 'size' },
+          { match: /^(INITSIZE|INIT(?:IAL)?_?SIZE)$/,           label: 'Initital Size',  kind: 'size' },
+          { match: /^(MAXSIZE|MAX(?:IMUM)?_?SIZE)$/,            label: 'Maximum Size',   kind: 'size' },
+          { match: /^(AUTOEXTEND|AUTOEXTEND_?MODE|AUTO_?EXTEND(?:ED)?)$/, label: 'Auto Extended', kind: 'autoExt' },
+          { match: /^STATE$/,                                    label: 'State',          kind: 'state' },
+        ];
+        const srcCols = (r.columns || []).map(c => (c || '').toString().toUpperCase());
+        const picked: { srcIdx: number; label: string; kind: Kind }[] = [];
+        for (const w of wanted) {
+          const idx = srcCols.findIndex(c => w.match.test(c));
+          if (idx >= 0) picked.push({ srcIdx: idx, label: w.label, kind: w.kind });
+        }
+        // 페이지 크기 — Altibase 기본 디스크 페이지 = 8KB
+        const PAGE_SIZE = 8192;
+        if (picked.length > 0) {
+          result.dataFileColumns = picked.map(p => p.label);
+          result.dataFileRows = r.rows.map(row => picked.map(p => {
+            const raw = (row[p.srcIdx] || '').toString();
+            if (p.kind === 'size') return formatBytes((parseFloat(raw) || 0) * PAGE_SIZE);
+            if (p.kind === 'autoExt') return raw === '1' ? '[ ✓ ]' : '[   ]';
+            if (p.kind === 'state') return mapDatafileState(raw);
+            return raw;
+          }));
+        } else {
+          result.dataFileColumns = (r.columns || []).map(c => c);
+          result.dataFileRows = r.rows;
+        }
+      }
+    } catch {}
+    if (result.dataFileRows.length === 0) {
+      // 메모리 테이블스페이스 — DBeaver AltibaseTablespace 의 원본 쿼리.
+      try {
+        const r = await this.exec(
+          `SELECT mt.ID ID, p.CHECKPOINT_PATH || '/' || mt.DBFILE_NAME AS NAME, mt.CURRENT_SIZE, mt.DBFILE_SIZE `
+        + `FROM (SELECT 0 ID, SPACE_NAME || '-0-0' AS DBFILE_NAME, SPACE_ID, CURRENT_SIZE, DBFILE_SIZE FROM V$MEM_TABLESPACES `
+        + ` UNION ALL `
+        + ` SELECT 1 ID, SPACE_NAME || '-1-0' AS DBFILE_NAME, SPACE_ID, CURRENT_SIZE, DBFILE_SIZE FROM V$MEM_TABLESPACES) mt, `
+        + `V$MEM_TABLESPACE_CHECKPOINT_PATHS p `
+        + `WHERE p.SPACE_ID = mt.SPACE_ID AND mt.SPACE_ID = ${spaceId} ORDER BY mt.ID`, 1000);
+        if (r.rows.length > 0) {
+          result.dataFileColumns = ['ID', 'Path', 'Current Size', 'DBFile Size'];
+          result.dataFileRows = r.rows;
+        }
+      } catch {}
+      if (result.dataFileRows.length === 0) {
+        try {
+          const r = await this.exec(`SELECT * FROM V$MEM_TABLESPACES WHERE SPACE_ID = ${spaceId}`, 100);
+          if (r.rows.length > 0) {
+            result.dataFileColumns = (r.columns || []).map(c => mapDataFileHeader(c));
+            result.dataFileRows = r.rows;
+          }
+        } catch {}
+      }
+    }
+    // 테이블 (DBeaver AltibaseTablespace 쿼리 그대로)
+    try {
+      const r = await this.exec(
+        `SELECT U.USER_NAME, T.TABLE_NAME, NULL FROM SYSTEM_.SYS_USERS_ U, SYSTEM_.SYS_TABLES_ T `
+      + `WHERE U.USER_ID = T.USER_ID AND (T.TABLE_TYPE = 'T' OR T.TABLE_TYPE = 'Q') AND T.IS_PARTITIONED = 'F' AND T.TBS_ID = ${spaceId} `
+      + `UNION ALL `
+      + `SELECT U.USER_NAME, T.TABLE_NAME, TP.PARTITION_NAME FROM SYSTEM_.SYS_USERS_ U, SYSTEM_.SYS_TABLES_ T, SYSTEM_.SYS_TABLE_PARTITIONS_ TP `
+      + `WHERE U.USER_ID = T.USER_ID AND (T.TABLE_TYPE = 'T' OR T.TABLE_TYPE = 'Q') AND T.IS_PARTITIONED = 'T' AND T.TABLE_ID = TP.TABLE_ID AND TP.TBS_ID = ${spaceId} `
+      + `ORDER BY 1, 2, 3`, 5000);
+      for (const row of r.rows) {
+        result.tables.push({ schema: (row[0] || '').toString(), table: (row[1] || '').toString(), partition: (row[2] || '').toString() });
+      }
+    } catch {}
+    // 인덱스 (DBeaver 쿼리 그대로)
+    try {
+      const r = await this.exec(
+        `SELECT U.USER_NAME, I.INDEX_NAME, NULL, UT.USER_NAME, T.TABLE_NAME `
+      + `FROM SYSTEM_.SYS_USERS_ U, SYSTEM_.SYS_INDICES_ I, SYSTEM_.SYS_USERS_ UT, SYSTEM_.SYS_TABLES_ T `
+      + `WHERE U.USER_ID = I.USER_ID AND I.IS_PARTITIONED = 'F' AND I.TABLE_ID = T.TABLE_ID AND UT.USER_ID = T.USER_ID AND I.TBS_ID = ${spaceId} `
+      + `UNION ALL `
+      + `SELECT U.USER_NAME, I.INDEX_NAME, IP.INDEX_PARTITION_NAME, UT.USER_NAME, T.TABLE_NAME `
+      + `FROM SYSTEM_.SYS_USERS_ U, SYSTEM_.SYS_INDICES_ I, SYSTEM_.SYS_INDEX_PARTITIONS_ IP, SYSTEM_.SYS_USERS_ UT, SYSTEM_.SYS_TABLES_ T `
+      + `WHERE U.USER_ID = IP.USER_ID AND I.INDEX_ID = IP.INDEX_ID AND I.IS_PARTITIONED = 'T' AND I.TABLE_ID = T.TABLE_ID AND UT.USER_ID = T.USER_ID AND IP.TBS_ID = ${spaceId} `
+      + `ORDER BY 1, 2, 3`, 5000);
+      for (const row of r.rows) {
+        result.indexes.push({ schema: (row[0] || '').toString(), index: (row[1] || '').toString(), partition: (row[2] || '').toString(), tableSchema: (row[3] || '').toString(), table: (row[4] || '').toString() });
+      }
+    } catch {}
+    return result;
+  }
+
   // 테이블스페이스 목록 — DBeaver 의 "저장소 > 테이블스페이스" 노드.
   // dialect 별 카탈로그 뷰. 결과는 "NAME (SIZE)" 또는 단순 "NAME".
   async listTablespaces(): Promise<string[]> {

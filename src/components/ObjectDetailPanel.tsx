@@ -40,8 +40,8 @@ interface Props {
   onPropSubTab: (sub: string) => void;
 }
 
-const ICON_MAP: Record<ObjectKind, string> = { table: '📄', view: '👁', index: '🔑', sequence: '🔢', procedure: '⚙', function: 'ƒ', synonym: '🔗' };
-const LABEL_MAP: Record<ObjectKind, string> = { table: 'TABLE', view: 'VIEW', index: 'INDEX', sequence: 'SEQUENCE', procedure: 'PROCEDURE', function: 'FUNCTION', synonym: 'PUBLIC SYNONYM' };
+const ICON_MAP: Record<ObjectKind, string> = { table: '📄', view: '👁', index: '🔑', sequence: '🔢', procedure: '⚙', function: 'ƒ', synonym: '🔗', package: '📦', trigger: '🔔', tablespace: '💾' };
+const LABEL_MAP: Record<ObjectKind, string> = { table: 'TABLE', view: 'VIEW', index: 'INDEX', sequence: 'SEQUENCE', procedure: 'PROCEDURE', function: 'FUNCTION', synonym: 'PUBLIC SYNONYM', package: 'PACKAGE', trigger: 'TRIGGER', tablespace: 'TABLESPACE' };
 
 export const ObjectDetailPanel: React.FC<Props> = (p) => {
   const { tab, backend, connected, running, colsCacheRef, pksCacheRef, defsCacheRef, inflightDefRef, detailCacheRef,
@@ -177,6 +177,18 @@ export const ObjectDetailPanel: React.FC<Props> = (p) => {
       }
       setDefRev(v => v + 1);
     }
+    // Package 상세 (properties + spec/body)
+    if (objKind === 'package' && detail === undefined) {
+      backend.packageDetail(objName, objSchema).then(d => { detailCacheRef.current.set(detailKey, d || { properties: {}, spec: '', body: '' }); setObjDetailRev(v => v + 1); });
+    }
+    // Trigger 상세 (properties + ddl)
+    if (objKind === 'trigger' && detail === undefined) {
+      backend.triggerDetail(objName, objSchema).then(d => { detailCacheRef.current.set(detailKey, d || { properties: {}, ddl: '' }); setObjDetailRev(v => v + 1); });
+    }
+    // Tablespace 상세 (datafiles + tables + indexes)
+    if (objKind === 'tablespace' && detail === undefined) {
+      backend.tablespaceDetail(objName).then(d => { detailCacheRef.current.set(detailKey, d || { dataFileColumns: [], dataFileRows: [], tables: [], indexes: [] }); setObjDetailRev(v => v + 1); });
+    }
     // PUBLIC SYNONYM Declaration: synonymTarget 으로 CREATE PUBLIC SYNONYM 합성
     if (objKind === 'synonym' && sub === 'declaration' && declText === undefined) {
       backend.synonymTarget(objName).then(t => {
@@ -200,6 +212,9 @@ export const ObjectDetailPanel: React.FC<Props> = (p) => {
       case 'procedure': return [{ id: 'parameters', label: '프로시저 파라미터' }, { id: 'source', label: 'Source' }];
       case 'function':  return [{ id: 'parameters', label: '함수 파라미터' }, { id: 'source', label: 'Source' }];
       case 'synonym':   return [{ id: 'declaration', label: 'Declaration' }];
+      case 'package':   return [{ id: 'pkgProcs', label: '프로시저' }, { id: 'pkgFuncs', label: '함수' }, { id: 'source', label: 'Source' }];
+      case 'trigger':   return [{ id: 'source', label: 'Source' }];
+      case 'tablespace': return [{ id: 'datafiles', label: '데이터 파일' }, { id: 'tbsTables', label: '테이블' }, { id: 'tbsIndexes', label: '인덱스' }];
       default:          return [];
     }
   })();
@@ -297,7 +312,11 @@ export const ObjectDetailPanel: React.FC<Props> = (p) => {
     if (objKind !== 'table') return null;
     if (propSub === 'columns') return renderColumnsTable();
     if (propSub === 'constraints') return renderSimpleListTable(constraints, [
-      { key: 'name', label: '이름' }, { key: 'type', label: '종류' },
+      { key: 'name', label: '이름' },
+      { key: 'owner', label: '소유자' },
+      { key: 'type', label: 'Type' },
+      { key: 'validated', label: 'Validated', render: r => r.validated === 'true' ? '[ ✓ ]' : (r.validated === 'false' ? '[   ]' : '') },
+      { key: 'condition', label: 'Condition' },
       { key: 'columns', label: '컬럼', render: r => (r.columns || []).join(', ') },
     ]);
     if (propSub === 'fks') return renderSimpleListTable(fks, [
@@ -361,9 +380,9 @@ export const ObjectDetailPanel: React.FC<Props> = (p) => {
               const so = typeof c === 'string' ? 'A' : (c.sortOrder || 'A');
               return (
                 <tr key={i} style={{ background: i % 2 ? '#222' : '#1e1e1e' }}>
-                  <td style={{ padding: '3px 8px', color: '#d4d4d4' }}>{objName}</td>
+                  <td style={{ padding: '3px 8px', color: '#d4d4d4' }}>{cn}</td>
                   <td style={{ padding: '3px 8px', color: '#9cdcfe' }}>{cn}</td>
-                  <td style={{ padding: '3px 8px', textAlign: 'center', color: '#d4d4d4' }}>{so === 'D' ? 'false' : 'true'}</td>
+                  <td style={{ padding: '3px 8px', textAlign: 'center', color: '#d4d4d4' }}>{so === 'D' ? '[   ]' : '[ ✓ ]'}</td>
                 </tr>
               );
             })}
@@ -400,6 +419,107 @@ export const ObjectDetailPanel: React.FC<Props> = (p) => {
       );
     }
     if (sub === 'declaration') return renderMonacoText(declText);
+    // Package: pkgProcs/pkgFuncs/source 탭 — DBeaver 패키지 노드 패턴
+    if (objKind === 'package') {
+      if (detail === undefined) return <div style={{ padding: 12, color: '#888' }}>로딩...</div>;
+      const d: any = detail || {};
+      const renderRoutineTable = (kindFilter: 'PROCEDURE' | 'FUNCTION') => {
+        const rows = ((d.routines || []) as any[]).filter(r => r.type === kindFilter);
+        if (!rows.length) return <div style={{ padding: 12, color: '#666' }}>{kindFilter === 'PROCEDURE' ? '프로시저' : '함수'} 없음</div>;
+        const label = kindFilter === 'PROCEDURE' ? '프로시저명' : '함수명';
+        return (
+          <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, fontFamily: 'monospace', fontSize: 12 }}>
+            <thead>
+              <tr style={{ background: '#2d2d2d', color: '#9cdcfe' }}>
+                <th style={{ padding: '4px 8px', textAlign: 'left', borderBottom: '1px solid #3f3f46' }}>{label}</th>
+                <th style={{ padding: '4px 8px', textAlign: 'left', borderBottom: '1px solid #3f3f46' }}>Schema Name</th>
+                <th style={{ padding: '4px 8px', textAlign: 'left', borderBottom: '1px solid #3f3f46' }}>패키지</th>
+                <th style={{ padding: '4px 8px', textAlign: 'left', borderBottom: '1px solid #3f3f46' }}>타입</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r: any, i: number) => (
+                <tr key={i} style={{ background: i % 2 ? '#222' : '#1e1e1e' }}>
+                  <td style={{ padding: '3px 8px', color: '#d4d4d4' }}>{r.name}</td>
+                  <td style={{ padding: '3px 8px', color: '#9cdcfe' }}>{r.schema}</td>
+                  <td style={{ padding: '3px 8px', color: '#d4d4d4' }}>{r.package}</td>
+                  <td style={{ padding: '3px 8px', color: '#dcdcaa' }}>{r.type}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        );
+      };
+      if (sub === 'pkgProcs') return renderRoutineTable('PROCEDURE');
+      if (sub === 'pkgFuncs') return renderRoutineTable('FUNCTION');
+      if (sub === 'source') {
+        const combined = [d.spec, d.body].filter(Boolean).join('\n\n');
+        return renderMonacoText(combined || '-- (소스 없음)');
+      }
+    }
+    // Trigger: source 만 (DBeaver 와 동일)
+    if (objKind === 'trigger') {
+      if (detail === undefined) return <div style={{ padding: 12, color: '#888' }}>로딩...</div>;
+      const d: any = detail || {};
+      if (sub === 'source') return renderMonacoText(d.ddl || '-- (소스 없음)');
+    }
+    // Tablespace: 데이터 파일 / 테이블 / 인덱스
+    if (objKind === 'tablespace') {
+      if (detail === undefined) return <div style={{ padding: 12, color: '#888' }}>로딩...</div>;
+      const d: any = detail || {};
+      const th: React.CSSProperties = { padding: '4px 8px', textAlign: 'left', borderBottom: '1px solid #3f3f46' };
+      const td: React.CSSProperties = { padding: '3px 8px' };
+      const tableStyle: React.CSSProperties = { width: '100%', borderCollapse: 'separate', borderSpacing: 0, fontFamily: 'monospace', fontSize: 12 };
+      if (sub === 'datafiles') {
+        const cols: string[] = d.dataFileColumns || [];
+        const rows: string[][] = d.dataFileRows || [];
+        if (!rows.length) return <div style={{ padding: 12, color: '#666' }}>데이터 파일 없음</div>;
+        return (
+          <table style={tableStyle}>
+            <thead><tr style={{ background: '#2d2d2d', color: '#9cdcfe' }}>{cols.map((c, i) => <th key={i} style={th}>{c}</th>)}</tr></thead>
+            <tbody>{rows.map((r, i) => (
+              <tr key={i} style={{ background: i % 2 ? '#222' : '#1e1e1e' }}>
+                {cols.map((_c, ci) => <td key={ci} style={{ ...td, color: ci === 0 ? '#d4d4d4' : '#9cdcfe' }}>{(r[ci] || '').toString()}</td>)}
+              </tr>
+            ))}</tbody>
+          </table>
+        );
+      }
+      if (sub === 'tbsTables') {
+        const rows = d.tables || [];
+        if (!rows.length) return <div style={{ padding: 12, color: '#666' }}>테이블 없음</div>;
+        return (
+          <table style={tableStyle}>
+            <thead><tr style={{ background: '#2d2d2d', color: '#9cdcfe' }}><th style={th}>Schema</th><th style={th}>Table</th><th style={th}>Partition</th></tr></thead>
+            <tbody>{rows.map((r: any, i: number) => (
+              <tr key={i} style={{ background: i % 2 ? '#222' : '#1e1e1e' }}>
+                <td style={{ ...td, color: '#9cdcfe' }}>{r.schema}</td>
+                <td style={{ ...td, color: '#d4d4d4' }}>{r.table}</td>
+                <td style={{ ...td, color: '#888' }}>{r.partition || ''}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        );
+      }
+      if (sub === 'tbsIndexes') {
+        const rows = d.indexes || [];
+        if (!rows.length) return <div style={{ padding: 12, color: '#666' }}>인덱스 없음</div>;
+        return (
+          <table style={tableStyle}>
+            <thead><tr style={{ background: '#2d2d2d', color: '#9cdcfe' }}><th style={th}>Schema</th><th style={th}>Index</th><th style={th}>Partition</th><th style={th}>Table Schema</th><th style={th}>Table</th></tr></thead>
+            <tbody>{rows.map((r: any, i: number) => (
+              <tr key={i} style={{ background: i % 2 ? '#222' : '#1e1e1e' }}>
+                <td style={{ ...td, color: '#9cdcfe' }}>{r.schema}</td>
+                <td style={{ ...td, color: '#d4d4d4' }}>{r.index}</td>
+                <td style={{ ...td, color: '#888' }}>{r.partition || ''}</td>
+                <td style={{ ...td, color: '#9cdcfe' }}>{r.tableSchema}</td>
+                <td style={{ ...td, color: '#d4d4d4' }}>{r.table}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        );
+      }
+    }
     if (sub === 'source') return renderMonacoText(srcText);
     if (sub === 'parameters' && isRoutine) {
       if (params === undefined) return <div style={{ padding: 12, color: '#888' }}>로딩...</div>;

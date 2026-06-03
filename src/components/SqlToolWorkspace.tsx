@@ -72,7 +72,7 @@ function loadFavorites(sessionId: string): FavoriteQuery[] {
 }
 
 // SQL 작성 탭 또는 객체 상세 탭. 같은 탭 스트립에 공존.
-export type ObjectKind = 'table' | 'view' | 'index' | 'sequence' | 'procedure' | 'function' | 'synonym';
+export type ObjectKind = 'table' | 'view' | 'index' | 'sequence' | 'procedure' | 'function' | 'synonym' | 'package' | 'trigger' | 'tablespace';
 export type EditorTab = {
   id: string;
   title: string;
@@ -207,15 +207,17 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
       const existing = prev.find(t => t.kind === 'object' && t.objectName === name && t.objectKind === kind && (t.objectSchema || '') === (schema || ''));
       if (existing) { setActiveEditorTabId(existing.id); return prev; }
       const id = newTabId();
-      const iconMap: Record<ObjectKind, string> = { table: '📄', view: '👁', index: '🔑', sequence: '🔢', procedure: '⚙', function: 'ƒ', synonym: '🔗' };
+      const iconMap: Record<ObjectKind, string> = { table: '📄', view: '👁', index: '🔑', sequence: '🔢', procedure: '⚙', function: 'ƒ', synonym: '🔗', package: '📦', trigger: '🔔', tablespace: '💾' };
       const icon = iconMap[kind] || '📄';
       // 기본 서브탭 — DBeaver 스타일
       const defaultSubMap: Record<ObjectKind, string> = {
         table: 'properties', view: 'properties', index: 'columns', sequence: 'declaration',
         procedure: 'parameters', function: 'parameters', synonym: 'declaration',
+        package: 'pkgProcs', trigger: 'source', tablespace: 'datafiles',
       };
       const defaultPropSubMap: Record<ObjectKind, string> = {
         table: 'columns', view: 'columns', index: '', sequence: '', procedure: '', function: '', synonym: '',
+        package: '', trigger: '', tablespace: '',
       };
       const next = [...prev, { id, title: `${icon} ${name}`, sql: '', kind: 'object' as const, objectKind: kind, objectName: name, objectSchema: schema, objectSubTab: defaultSubMap[kind], objectPropSubTab: defaultPropSubMap[kind] }];
       setActiveEditorTabId(id);
@@ -610,7 +612,12 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
           const startsWithCreate = /^\s*CREATE/i.test(body);
           return startsWithCreate ? body : `CREATE OR REPLACE VIEW ${objectName} AS\n${body}${body.endsWith(';') ? '' : ';'}`;
         }
-        // table: 컬럼 + PK 로 CREATE TABLE 생성 (대략)
+        // table: backend.tableDdl 이 dialect 별 DBMS_METADATA.GET_DDL 등을 시도. 실패 시 fallback.
+        if (backend && connected) {
+          const native = await backend.tableDdl(objectName);
+          if (native) return native;
+        }
+        // fallback: 컬럼 + PK 로 단순 CREATE TABLE 생성
         const cols = await loadColumnsRef.current(objectName);
         const pkCols = pksByTableRef.current.get(objectName.toUpperCase()) || await loadPrimaryKey(objectName);
         const colLines = cols.map(c => {
@@ -670,6 +677,8 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
     { id: 'SEQUENCE',  icon: '🔢', label: '시퀀스',     load: (s) => backend?.listSequences(s) ?? Promise.resolve([]),  insert: (n) => `${n}.NEXTVAL` },
     { id: 'PROCEDURE', icon: '⚙',  label: '프로시저',   load: (s) => backend?.listProcedures(s) ?? Promise.resolve([]), insert: (n) => `EXEC ${n}(/* args */);` },
     { id: 'FUNCTION',  icon: 'ƒ',  label: '함수',       load: (s) => backend?.listFunctions(s) ?? Promise.resolve([]),  insert: (n) => `${n}()` },
+    { id: 'PACKAGE',   icon: '📦', label: '패키지',     load: (s) => backend?.listPackages(s) ?? Promise.resolve([]),   insert: (n) => n },
+    { id: 'TRIGGER',   icon: '🔔', label: '트리거',     load: (s) => backend?.listSchemaTriggers(s) ?? Promise.resolve([]), insert: (n) => n },
     { id: 'SYSTABLE',  icon: '🗄', label: '시스템 테이블', load: (s) => backend?.listSystemTables(s) ?? Promise.resolve([]), insert: (n) => `SELECT * FROM ${n};` },
   ], [backend]);
 
@@ -1428,22 +1437,114 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
               ));
             };
 
-            // 객체 노드 (테이블/뷰는 컬럼 펼침 + 더블클릭 상세, 나머지는 단순 삽입)
+            // 테이블 내 하위 폴더 (컬럼/제약조건/외래키/인덱스/참조/트리거) — DBeaver 패턴
+            type TblChild = { id: string; icon: string; label: string; loader?: (t: string, s: string) => Promise<string[]>; useColumns?: boolean; objKind?: ObjectKind };
+            const TBL_CHILDREN: TblChild[] = [
+              { id: 'COLS', icon: '📁', label: '컬럼', useColumns: true },
+              { id: 'CONS', icon: '📁', label: '제약조건', loader: (t, s) => backend?.listTableConstraints(t, s) ?? Promise.resolve([]) },
+              { id: 'FK',   icon: '📁', label: '외래키',   loader: (t, s) => backend?.listTableForeignKeys(t, s) ?? Promise.resolve([]) },
+              { id: 'IDX',  icon: '📁', label: '인덱스',   loader: (t, s) => backend?.listTableIndexes(t, s) ?? Promise.resolve([]), objKind: 'index' },
+              { id: 'REF',  icon: '📁', label: '참조',     loader: (t, s) => backend?.listTableReferences(t, s) ?? Promise.resolve([]) },
+              { id: 'TRG',  icon: '📁', label: '트리거',   loader: (t, s) => backend?.listTableTriggers(t, s) ?? Promise.resolve([]) },
+            ];
+            const renderTblChildFolder = (schema: string, tableName: string, c: TblChild, depth: number) => {
+              const nid = `tbl:${schema}:${tableName}:${c.id}`;
+              const key = `__tbl__ ${schema} ${tableName} ${c.id}`;
+              const open = isExpanded(nid);
+              if (c.useColumns) {
+                // 컬럼 폴더 — 기존 columnsByTableRef 캐시 사용
+                return (
+                  <div key={nid}>
+                    <div onClick={() => { toggleExpanded(nid); if (!open && !columnsByTableRef.current.get(tableName.toUpperCase())) loadColumns(tableName); }} style={{ ...rowStyle(depth), color: '#9cdcfe' }} {...hover}>
+                      {caret(open)}
+                      <span>{c.icon} {c.label}</span>
+                    </div>
+                    {open && <div>{renderColumns(tableName, depth + 1)}</div>}
+                  </div>
+                );
+              }
+              const items = treeItemsRef.current.get(key);
+              const loading = treeLoadingRef.current.has(key);
+              const filtered = (items || []).filter(filt);
+              return (
+                <div key={nid}>
+                  <div onClick={() => { toggleExpanded(nid); if (!open && !items && c.loader) loadTreeNode(key, () => c.loader!(tableName, schema)); }} style={{ ...rowStyle(depth), color: '#9cdcfe' }} {...hover}>
+                    {caret(open)}
+                    <span>{c.icon} {c.label}</span>
+                    <span style={{ marginLeft: 'auto', color: '#666', fontSize: 11 }}>{loading ? '…' : (items ? items.length : '')}</span>
+                  </div>
+                  {open && (
+                    <div>
+                      {loading && <div style={{ paddingLeft: 4 + (depth + 1) * 12, color: '#888' }}>로딩...</div>}
+                      {!loading && items && filtered.length === 0 && <div style={{ paddingLeft: 4 + (depth + 1) * 12, color: '#666' }}>없음</div>}
+                      {filtered.map(n => (
+                        <div key={n} draggable
+                          title={c.objKind ? '더블클릭: 상세' : '더블클릭: 삽입 / 드래그: 이름 삽입'}
+                          onDragStart={e => { e.dataTransfer.setData('text/plain', n); e.dataTransfer.effectAllowed = 'copy'; }}
+                          onDoubleClick={() => { if (c.objKind) openObjectDetail(n, c.objKind, schema); else insertAtCursor(n); }}
+                          style={{ ...rowStyle(depth + 1), cursor: c.objKind ? 'pointer' : 'grab' }} {...hover}
+                        >
+                          <span style={{ width: 10, display: 'inline-block' }} />
+                          <span>🔹 {n}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            };
+
+            // 패키지 펼침 시 하위 프로시저/함수 — DBeaver 패키지 노드 동작
+            const renderPackageChildren = (schema: string, pkgName: string, depth: number) => {
+              const key = `__pkg__ ${schema} ${pkgName}`;
+              const items = treeItemsRef.current.get(key) as any[] | undefined;
+              const loading = treeLoadingRef.current.has(key);
+              if (loading) return <div style={{ paddingLeft: 4 + depth * 12, color: '#888' }}>로딩...</div>;
+              if (!items) {
+                // lazy load — 비동기 호출 한 번
+                loadTreeNode(key, async () => {
+                  const list = await (backend?.listPackageRoutines(pkgName, schema) ?? Promise.resolve([]));
+                  return list.map((r: any) => `${r.type === 'FUNCTION' ? 'ƒ' : '⚙'}|${r.name}`) as any;
+                });
+                return <div style={{ paddingLeft: 4 + depth * 12, color: '#888' }}>로딩...</div>;
+              }
+              if (items.length === 0) return <div style={{ paddingLeft: 4 + depth * 12, color: '#666' }}>없음</div>;
+              return items.map(it => {
+                const [ico, nm] = String(it).split('|');
+                return (
+                  <div key={nm} draggable
+                    onDragStart={e => { e.dataTransfer.setData('text/plain', `${pkgName}.${nm}`); e.dataTransfer.effectAllowed = 'copy'; }}
+                    onDoubleClick={() => insertAtCursor(`${pkgName}.${nm}`)}
+                    style={{ ...rowStyle(depth), cursor: 'grab' }} {...hover}
+                  >
+                    <span style={{ width: 10, display: 'inline-block' }} />
+                    <span>{ico} {nm}</span>
+                  </div>
+                );
+              });
+            };
+
+            // 객체 노드 (테이블/뷰는 6개 하위 폴더 펼침 + 더블클릭 상세, 나머지는 단순 삽입)
             const renderObject = (schema: string, groupId: string, name: string, icon: string, insert: (n: string) => string, depth: number) => {
-              const expandable = groupId === 'TABLE' || groupId === 'VIEW' || groupId === 'SYSTABLE';
+              const isTableLike = groupId === 'TABLE' || groupId === 'VIEW' || groupId === 'SYSTABLE';
+              const isPackage = groupId === 'PACKAGE';
+              const expandable = isTableLike || isPackage;
               const nodeId = `obj:${schema}:${groupId}:${name}`;
               const open = isExpanded(nodeId);
               return (
                 <div key={nodeId}>
                   <div draggable
-                    title={expandable ? '클릭: 컬럼 펼침 / 더블클릭: 상세 / 드래그: 이름 삽입' : '더블클릭: 삽입 / 드래그: 이름 삽입'}
+                    title={expandable ? '클릭: 펼침 / 더블클릭: 상세 / 드래그: 이름 삽입' : '더블클릭: 삽입 / 드래그: 이름 삽입'}
                     onDragStart={e => { e.dataTransfer.setData('text/plain', name); e.dataTransfer.setData('application/x-pepe-sql-table', name); e.dataTransfer.effectAllowed = 'copy'; }}
-                    onClick={() => { if (expandable) { toggleExpanded(nodeId); if (!open && !columnsByTableRef.current.get(name.toUpperCase())) loadColumns(name); } }}
+                    onClick={() => { if (expandable) toggleExpanded(nodeId); }}
                     onDoubleClick={() => {
-                      const kindMap: Record<string, ObjectKind | null> = { TABLE: 'table', VIEW: 'view', SYSTABLE: 'table', INDEX: 'index', SEQUENCE: 'sequence', PROCEDURE: 'procedure', FUNCTION: 'function' };
+                      const kindMap: Record<string, ObjectKind | null> = { TABLE: 'table', VIEW: 'view', SYSTABLE: 'table', INDEX: 'index', SEQUENCE: 'sequence', PROCEDURE: 'procedure', FUNCTION: 'function', PACKAGE: 'package', TRIGGER: 'trigger' };
                       const k = kindMap[groupId];
                       // INDEX 노드는 "TABLE.INDEX" 형식 — indexDetail 에는 인덱스명만 전달
-                      const detailName = (k === 'index' && name.includes('.')) ? name.split('.').slice(-1)[0] : name;
+                      // TRIGGER 노드는 "NAME (TABLE)" 형식 — 앞부분만 전달
+                      const detailName = (k === 'index' && name.includes('.')) ? name.split('.').slice(-1)[0]
+                                       : (k === 'trigger' && name.includes(' (')) ? name.split(' (')[0]
+                                       : name;
                       if (k) openObjectDetail(detailName, k, schema);
                       else insertAtCursor(insert(name));
                     }}
@@ -1452,7 +1553,14 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
                     {expandable ? caret(open) : <span style={{ width: 10, display: 'inline-block' }} />}
                     <span>{icon} {name}</span>
                   </div>
-                  {expandable && open && <div>{renderColumns(name, depth + 1)}</div>}
+                  {expandable && open && (
+                    <div>
+                      {isPackage
+                        ? renderPackageChildren(schema, name, depth + 1)
+                        : (groupId === 'VIEW' ? TBL_CHILDREN.filter(c => c.id === 'COLS' || c.id === 'TRG') : TBL_CHILDREN)
+                            .map(c => renderTblChildFolder(schema, name, c, depth + 1))}
+                    </div>
+                  )}
                 </div>
               );
             };
@@ -1576,10 +1684,10 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
                           {!loading && items && filtered.length === 0 && <div style={{ paddingLeft: 4 + 2 * 12, color: '#666' }}>없음</div>}
                           {filtered.map(n => (
                             <div key={n} draggable
-                              title="드래그: 이름 삽입"
+                              title="더블클릭: 상세 / 드래그: 이름 삽입"
                               onDragStart={e => { e.dataTransfer.setData('text/plain', n); e.dataTransfer.effectAllowed = 'copy'; }}
-                              onDoubleClick={() => insertAtCursor(n)}
-                              style={{ ...rowStyle(2), cursor: 'grab' }} {...hover}
+                              onDoubleClick={() => openObjectDetail(n, 'tablespace', '')}
+                              style={{ ...rowStyle(2), cursor: 'pointer' }} {...hover}
                             >
                               <span style={{ width: 10, display: 'inline-block' }} />
                               <span>💾 {n}</span>
@@ -1620,7 +1728,20 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
             if (schemas.length === 0) {
               return <div>{OBJECT_GROUPS.map(g => renderGroupNode('', g, 0))}</div>;
             }
-            return <div>{schemas.map(s => renderSchema(s, 0))}{renderStorageRoot()}{renderGlobalMetadata()}</div>;
+            // 루트: "스키마" 폴더로 user 들을 감쌈 (DBeaver 패턴)
+            const schemasRootOpen = isExpanded('schemas-root');
+            return (
+              <div>
+                <div onClick={() => toggleExpanded('schemas-root')} style={{ ...rowStyle(0), color: '#dcdcaa', fontWeight: 600 }} {...hover}>
+                  {caret(schemasRootOpen)}
+                  <span>📁 스키마</span>
+                  <span style={{ marginLeft: 'auto', color: '#666', fontSize: 11 }}>{schemas.length}</span>
+                </div>
+                {schemasRootOpen && <div>{schemas.map(s => renderSchema(s, 1))}</div>}
+                {renderStorageRoot()}
+                {renderGlobalMetadata()}
+              </div>
+            );
           })()}
         </div>
       </div>
