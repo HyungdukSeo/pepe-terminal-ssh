@@ -9,6 +9,7 @@ import { Layout } from './components/Layout';
 import { SearchBar } from './components/SearchBar';
 import { FileExplorer } from './components/FileExplorer';
 import { ConflictDialogQueue } from './components/ConflictDialog';
+import { NotifyHost, notifyError } from './components/Notify';
 import { FileEditor } from './components/FileEditor';
 import { ClaudeChat } from './components/ClaudeChat';
 import { BrowserPane } from './components/BrowserPane';
@@ -588,7 +589,7 @@ function App() {
     try {
       const r: any = await (window as any).api?.feSftpConnect?.(connId, sess.host, sess.port || 22, remotePickerCredUser, { type: 'password', password: remotePickerCredPass }, jumpOpts);
       if (!r?.success) {
-        alert(`연결 실패 (${sess.name}): ${r?.error || '알 수 없는 오류'}`);
+        notifyError('연결 실패', `${sess.name}: ${r?.error || '알 수 없는 오류'}`);
         setRemotePickerCredConnecting(false);
         return;
       }
@@ -601,7 +602,7 @@ function App() {
       } catch { setRemotePickerPath('/'); }
       setRemotePickerCredPrompt(null);
     } catch (err: any) {
-      alert(`연결 실패 (${sess.name}): ${err?.message || err}`);
+      notifyError('연결 실패', `${sess.name}: ${err?.message || err}`);
     }
     setRemotePickerCredConnecting(false);
   };
@@ -2023,7 +2024,7 @@ function App() {
           } else {
             const msg = result?.error || '알 수 없는 오류';
             console.error('[fe-sftp-connect dblclick] failed:', msg);
-            alert(`파일 전송 연결 실패 (${sessionName})\n\n${msg}`);
+            notifyError('파일 전송 연결 실패', `${sessionName}\n\n${msg}`);
           }
         } catch (err: any) {
           console.error('[fe-sftp-connect dblclick] exception:', err);
@@ -2796,11 +2797,11 @@ function App() {
             } else {
               const msg = result?.error || '알 수 없는 오류';
               console.error('[fe-sftp-connect] failed:', msg);
-              alert(`파일 전송 연결 실패 (${sessionName})\n\n${msg}\n\nDevTools Console 에 [sftp-connect] 로그 확인 권장.`);
+              notifyError('파일 전송 연결 실패', `${sessionName}\n\n${msg}\n\nDevTools Console 에 [sftp-connect] 로그 확인 권장.`);
             }
           } catch (err: any) {
             console.error('[fe-sftp-connect] exception:', err);
-            alert(`파일 전송 연결 예외: ${err?.message || err}`);
+            notifyError('파일 전송 연결 예외', String(err?.message || err));
           }
         }}
       />
@@ -3963,6 +3964,7 @@ function App() {
 
       {/* 하단 상태바 SFTP 진행률 — 파일전송 탭의 TransferLog 로 대체됨 */}
       <ConflictDialogQueue />
+      <NotifyHost />
       {showClaudeChat && (() => {
         // 모든 연결된 SSH 세션 수집 (panel.sessions 내의 termId 들)
         const connectedSessions: { termId: string; label: string }[] = [];

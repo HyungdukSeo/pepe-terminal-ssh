@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { FixedSizeList as VList, ListChildComponentProps } from 'react-window';
 import { useTranslation } from 'react-i18next';
+import { notifyError, notifyConfirm } from './Notify';
 
 const api = (window as any).api || {};
 
@@ -143,12 +144,12 @@ export const VpnWorkspace: React.FC = () => {
       await refreshConfigs();
       setSelectedConfig(r.storedPath);
     } else if (r?.reason) {
-      alert(t('importFailed', { reason: r.reason }));
+      notifyError(t('importFailed', { reason: r.reason }));
     }
   }, [refreshConfigs]);
 
   const removeConfig = useCallback(async (p: string) => {
-    if (!confirm(t('confirmDeleteConfig', { path: p }))) return;
+    if (!await notifyConfirm(t('deleteTitle') || '삭제', t('confirmDeleteConfig', { path: p }))) return;
     await api.vpnRemoveConfig?.(p);
     await api.vpnClearCreds?.(p); // 저장된 자격증명도 삭제
     const remaining: Config[] = await api.vpnListConfigs?.() || [];
@@ -175,14 +176,14 @@ export const VpnWorkspace: React.FC = () => {
     }
     const r = await api.vpnConnect?.(selectedConfig, useUser, usePass);
     if (!r?.ok && r?.reason) {
-      alert(t('connectFailed', { reason: r.reason }));
+      notifyError(t('connectFailed', { reason: r.reason }));
     }
     if (withAuth) setAuthPrompt(false);
   }, [selectedConfig, username, password, rememberCreds, hasSavedCreds]);
 
   const clearSavedCreds = useCallback(async () => {
     if (!selectedConfig) return;
-    if (!confirm(t('confirmClearCreds'))) return;
+    if (!await notifyConfirm(t('clearCredsTitle') || '자격증명 삭제', t('confirmClearCreds'))) return;
     await api.vpnClearCreds?.(selectedConfig);
     setHasSavedCreds(false);
     setUsername(''); setPassword('');

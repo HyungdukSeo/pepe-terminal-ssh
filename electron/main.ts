@@ -1100,6 +1100,24 @@ ipcMain.handle('folders:delete', (_e, id: string) => {
 
 // ── Export/Import Sessions ──
 
+// 일반 텍스트 파일 저장 (SQL Tool 데이터 추출 등) — 사용자에게 저장 위치 묻고 UTF-8 로 기록.
+ipcMain.handle('dialog:save-text-file', async (_e, args: { defaultName?: string; content: string; filters?: { name: string; extensions: string[] }[] }) => {
+  if (!mainWindow) return { success: false, error: 'no window' };
+  try {
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: '파일로 저장',
+      defaultPath: args.defaultName || 'export.txt',
+      filters: args.filters || [{ name: 'Text', extensions: ['txt'] }, { name: 'All Files', extensions: ['*'] }],
+    });
+    if (result.canceled || !result.filePath) return { success: false, canceled: true };
+    // CSV 등 한글이 포함될 수 있으므로 UTF-8 BOM 을 옵션으로 추가하지 않고 plain UTF-8 (Excel 한글 깨짐 대비는 호출부에서 BOM 부착).
+    fs.writeFileSync(result.filePath, args.content, 'utf8');
+    return { success: true, filePath: result.filePath };
+  } catch (e: any) {
+    return { success: false, error: String(e?.message || e) };
+  }
+});
+
 ipcMain.handle('sessions:export', async () => {
   if (!mainWindow) return null;
   const result = await dialog.showSaveDialog(mainWindow, {
@@ -2948,19 +2966,125 @@ ipcMain.handle('jdbc:pick-and-import-jar', async () => {
     filters: [{ name: 'JAR', extensions: ['jar'] }],
   });
   if (r.canceled || r.filePaths.length === 0) return { success: false, canceled: true };
-  const userRoot = getUserJdbcDriversRoot();
+  // DBeaver "Add File" 동등 — 원본 경로를 그대로 저장 (복사 X). 사용자가 어느 경로에서 가져왔는지 보존.
+  return { success: true, imported: r.filePaths };
+});
+// 폴더 단위 JAR 가져오기 — DBeaver "Add Folder" 와 동일. 선택 폴더의 .jar 모두 복사.
+ipcMain.handle('jdbc:pick-and-import-folder', async () => {
+  if (!mainWindow) return { success: false, error: 'no window' };
+  const r = await dialog.showOpenDialog(mainWindow, {
+    title: 'JAR 폴더 선택 (하위 .jar 모두 참조)',
+    properties: ['openDirectory'],
+  });
+  if (r.canceled || r.filePaths.length === 0) return { success: false, canceled: true };
+  // DBeaver "Add Folder" 동등 — 원본 폴더의 .jar 들을 절대 경로로 참조 (복사 X).
   const imported: string[] = [];
   try {
-    for (const src of r.filePaths) {
-      const name = path.basename(src);
-      const dst = path.join(userRoot, name);
-      fs.copyFileSync(src, dst);
-      imported.push(`\${userJdbc}/${name}`);
+    for (const dir of r.filePaths) {
+      const entries = fs.readdirSync(dir);
+      for (const f of entries) {
+        if (!/\.jar$/i.test(f)) continue;
+        const src = path.join(dir, f);
+        const stat = fs.statSync(src);
+        if (!stat.isFile()) continue;
+        imported.push(src);
+      }
     }
     return { success: true, imported };
   } catch (err: any) {
     return { success: false, error: String(err?.message || err) };
   }
+});
+// Maven artifact 다운로드 — DBeaver "Add Artifact" 와 동일 (Maven Central 에서 jar 다운로드 후 user JAR 로 복사).
+//   coords 형식: "groupId:artifactId:version"  (DBeaver 와 동일)
+ipcMain.handle('jdbc:download-maven-artifact', async (_e, args: { groupId: string; artifactId: string; version: string }) => {
+  const { groupId, artifactId, version } = args || ({} as any);
+  if (!groupId || !artifactId || !version) return { success: false, error: 'groupId/artifactId/version 모두 필요' };
+  const groupPath = groupId.replace(/\./g, '/');
+  const fileName = `${artifactId}-${version}.jar`;
+  const url = `https://repo1.maven.org/maven2/${groupPath}/${artifactId}/${version}/${fileName}`;
+  const userRoot = getUserJdbcDriversRoot();
+  const dst = path.join(userRoot, fileName);
+  try {
+    const https = require('https');
+    const http = require('http');
+    await new Promise<void>((resolve, reject) => {
+      const get = (u: string, depth: number) => {
+        if (depth > 5) { reject(new Error('redirect 횟수 초과')); return; }
+        const lib = u.startsWith('https:') ? https : http;
+        lib.get(u, (res: any) => {
+          // redirect 처리
+          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+            get(res.headers.location, depth + 1);
+            return;
+          }
+          if (res.statusCode !== 200) {
+            reject(new Error(`HTTP ${res.statusCode} ${url}`));
+            return;
+          }
+          const out = fs.createWriteStream(dst);
+          res.pipe(out);
+          out.on('finish', () => out.close(() => resolve()));
+          out.on('error', reject);
+        }).on('error', reject);
+      };
+      get(url, 0);
+    });
+    return { success: true, imported: `\${userJdbc}/${fileName}`, url };
+  } catch (err: any) {
+    try { fs.unlinkSync(dst); } catch {} // 실패 시 잔여 파일 제거
+    return { success: false, error: `${String(err?.message || err)} (URL: ${url})` };
+  }
+});
+// Driver 의 모든 maven: 좌표를 일괄 다운로드 (이미 캐시된 경우 스킵). DBeaver "Download/Update" 동등.
+ipcMain.handle('jdbc:download-driver-libraries', async (_e, def: JdbcDriverDef) => {
+  if (!def?.jars) return { success: false, error: 'no jars' };
+  const results: { coord: string; ok: boolean; cached?: boolean; path?: string; error?: string }[] = [];
+  const userRoot = getUserJdbcDriversRoot();
+  const https = require('https');
+  const http = require('http');
+  for (const jar of def.jars) {
+    // classifier 지원: "maven:group:artifact:version" 또는 "maven:group:artifact:version:classifier"
+    const m4 = jar.match(/^maven:([^:]+):([^:]+):([^:]+):([^:]+)$/);
+    const m3 = jar.match(/^maven:([^:]+):([^:]+):([^:]+)$/);
+    if (!m3 && !m4) continue;
+    const groupId    = (m4 || m3)![1];
+    const artifactId = (m4 || m3)![2];
+    const version    = (m4 || m3)![3];
+    const classifier = m4 ? m4[4] : '';
+    const fileName = classifier ? `${artifactId}-${version}-${classifier}.jar` : `${artifactId}-${version}.jar`;
+    const dst = path.join(userRoot, fileName);
+    // 이미 캐시됨
+    if (fs.existsSync(dst)) {
+      results.push({ coord: jar, ok: true, cached: true, path: dst });
+      continue;
+    }
+    const url = `https://repo1.maven.org/maven2/${groupId.replace(/\./g, '/')}/${artifactId}/${version}/${fileName}`;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const get = (u: string, depth: number) => {
+          if (depth > 5) { reject(new Error('redirect 초과')); return; }
+          const lib = u.startsWith('https:') ? https : http;
+          lib.get(u, (res: any) => {
+            if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+              get(res.headers.location, depth + 1); return;
+            }
+            if (res.statusCode !== 200) { reject(new Error(`HTTP ${res.statusCode}`)); return; }
+            const out = fs.createWriteStream(dst);
+            res.pipe(out);
+            out.on('finish', () => out.close(() => resolve()));
+            out.on('error', reject);
+          }).on('error', reject);
+        };
+        get(url, 0);
+      });
+      results.push({ coord: jar, ok: true, cached: false, path: dst });
+    } catch (err: any) {
+      try { fs.unlinkSync(dst); } catch {}
+      results.push({ coord: jar, ok: false, error: `${err?.message || err} (URL: ${url})` });
+    }
+  }
+  return { success: true, results };
 });
 // 사이드카에 전달할 수 있는 드라이버의 "절대 JAR 경로" 해석 — 미리보기/디버그용.
 ipcMain.handle('jdbc:resolve-jars', async (_e, def: JdbcDriverDef) => {
@@ -3023,6 +3147,24 @@ ipcMain.handle('jdbc:exec', async (_e, args: { connectionId: string; sql: string
   } catch (e: any) {
     return { success: false, error: String(e?.message || e) };
   }
+});
+// 트랜잭션 — DBeaver 와 동일하게 Connection.setAutoCommit(false) / commit() / rollback() 네이티브 호출.
+ipcMain.handle('jdbc:tx-begin', async (_e, args: { connectionId: string }) => {
+  try { return { success: true, result: await getSharedJdbcSidecar().call('tx.begin', args, 15000) }; }
+  catch (e: any) { return { success: false, error: String(e?.message || e) }; }
+});
+ipcMain.handle('jdbc:tx-commit', async (_e, args: { connectionId: string }) => {
+  try { return { success: true, result: await getSharedJdbcSidecar().call('tx.commit', args, 30000) }; }
+  catch (e: any) { return { success: false, error: String(e?.message || e) }; }
+});
+ipcMain.handle('jdbc:tx-rollback', async (_e, args: { connectionId: string }) => {
+  try { return { success: true, result: await getSharedJdbcSidecar().call('tx.rollback', args, 30000) }; }
+  catch (e: any) { return { success: false, error: String(e?.message || e) }; }
+});
+// Altibase 전용 — AltibaseConnection.setExplainPlan + AltibaseStatement.getExplainPlan reflection 사용.
+ipcMain.handle('jdbc:altibase-explain', async (_e, args: { connectionId: string; sql: string }) => {
+  try { return { success: true, result: await getSharedJdbcSidecar().call('altibase.explain', args, 30000) }; }
+  catch (e: any) { return { success: false, error: String(e?.message || e) }; }
 });
 ipcMain.handle('jdbc:meta-tables', async (_e, args: { connectionId: string; catalog?: string; schema?: string; types?: string[] }) => {
   try { return { success: true, result: await getSharedJdbcSidecar().call('meta.tables', args, 30000) }; }
@@ -3500,6 +3642,39 @@ ipcMain.handle('ssh:reset-state', (_e, panelId: string) => {
   connectedPanels.delete(panelId);
   connectingPanels.delete(panelId);
   return 'ok';
+});
+// SSH 위 로컬 포트 포워딩 — SqlTool 의 JDBC 연결을 SSH 세션을 통해 라우팅.
+//   sessionId 로 활성 SSH 패널을 찾고, 그 위에 forwardOut(remote→127.0.0.1:auto) 매핑 생성.
+ipcMain.handle('ssh:open-local-forward', async (_e, args: { sessionId: string; remoteHost: string; remotePort: number; sshHost?: string; sshPort?: number }) => {
+  try {
+    const bridge: any = getSSHBridge();
+    // 1차: sessionId 매칭. 2차: SSH host:port 힌트 매칭 (quick-connect 시).
+    let panelId: string | null = bridge.findPanelBySessionId?.(args.sessionId, { host: args.sshHost, port: args.sshPort }) ?? null;
+    // 3차 fallback: 활성 SSH 가 1개뿐이면 그것을 사용 (사용자가 명시적으로 그것을 띄워놓은 것이 명백)
+    if (!panelId) {
+      const active: string[] = bridge.listActivePanels?.() || [];
+      if (active.length === 1) {
+        panelId = active[0];
+        console.log(`[ssh-tunnel] only 1 active SSH panel — using ${panelId} as fallback`);
+      } else {
+        const dump = bridge.dumpSessionInfo?.() || '(dump unavailable)';
+        return { success: false, error: `세션(${args.sessionId})의 활성 SSH 연결 매칭 실패. sshHost 힌트=${args.sshHost || '(없음)'}, 활성: ${active.length === 0 ? '(없음)' : active.join(', ')}, 상세: ${dump}` };
+      }
+    }
+    const { forwardId, localPort } = await bridge.openLocalForward(panelId, args.remoteHost, args.remotePort);
+    return { success: true, forwardId, localPort, panelId };
+  } catch (e: any) {
+    return { success: false, error: String(e?.message || e) };
+  }
+});
+ipcMain.handle('ssh:close-local-forward', (_e, args: { forwardId: string }) => {
+  try {
+    const bridge: any = getSSHBridge();
+    const ok = bridge.closeLocalForward?.(args.forwardId);
+    return { success: !!ok };
+  } catch (e: any) {
+    return { success: false, error: String(e?.message || e) };
+  }
 });
 
 ipcMain.handle('ssh:connect', (_e, { panelId, sessionId, cols, rows }) => {

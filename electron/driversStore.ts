@@ -33,6 +33,8 @@ export interface JdbcDriverDef {
   note?: string;
 }
 
+// DBeaver 기본 드라이버 라이브러리 = Maven Central artifact 좌표. 사용자가 Driver Manager 에서
+// "Download / Update" 누르면 사이드카 호출 전 자동 다운로드. 기존 번들 .jar 가 있어도 우선 사용 가능.
 const BUILTIN_DRIVERS: JdbcDriverDef[] = [
   {
     id: 'postgres-builtin',
@@ -40,7 +42,13 @@ const BUILTIN_DRIVERS: JdbcDriverDef[] = [
     className: 'org.postgresql.Driver',
     urlTemplate: 'jdbc:postgresql://{host}:{port}/{database}',
     defaultPort: 5432,
-    jars: ['${bundled}/postgresql.jar'],
+    // DBeaver 기본 라이브러리 셋 — 메인 드라이버 + postgis 확장 + waffle-jna (Windows SSO)
+    jars: [
+      'maven:org.postgresql:postgresql:42.7.4',
+      'maven:net.postgis:postgis-jdbc:2024.1.0',
+      'maven:net.postgis:postgis-geometry:2024.1.0',
+      'maven:com.github.waffle:waffle-jna:3.5.1',
+    ],
     builtin: true,
     dialect: 'postgres',
   },
@@ -50,7 +58,9 @@ const BUILTIN_DRIVERS: JdbcDriverDef[] = [
     className: 'org.mariadb.jdbc.Driver',
     urlTemplate: 'jdbc:mariadb://{host}:{port}/{database}',
     defaultPort: 3306,
-    jars: ['${bundled}/mariadb.jar'],
+    jars: [
+      'maven:org.mariadb.jdbc:mariadb-java-client:3.5.2',
+    ],
     builtin: true,
     dialect: 'mysql',
     note: 'MariaDB Connector/J — MySQL 프로토콜과 호환됩니다.',
@@ -61,7 +71,13 @@ const BUILTIN_DRIVERS: JdbcDriverDef[] = [
     className: 'com.microsoft.sqlserver.jdbc.SQLServerDriver',
     urlTemplate: 'jdbc:sqlserver://{host}:{port};databaseName={database};encrypt=true;trustServerCertificate=true',
     defaultPort: 1433,
-    jars: ['${bundled}/mssql.jar'],
+    // DBeaver 기본 라이브러리 셋 — 메인 드라이버 + Windows 통합 인증.
+    //   jre11 변형 대신 jre8 변형 사용 (사이드카 JVM Java 8 호환).
+    //   mssql-jdbc_auth 는 Maven classifier 형식 (artifactId-version-classifier.jar).
+    jars: [
+      'maven:com.microsoft.sqlserver:mssql-jdbc:12.8.1.jre8',
+      'maven:com.microsoft.sqlserver:mssql-jdbc_auth:12.8.1:x64',
+    ],
     builtin: true,
     dialect: 'mssql',
   },
@@ -71,10 +87,14 @@ const BUILTIN_DRIVERS: JdbcDriverDef[] = [
     className: 'org.sqlite.JDBC',
     urlTemplate: 'jdbc:sqlite:{database}',
     defaultPort: 0,
-    jars: ['${bundled}/sqlite.jar'],
+    // sqlite-jdbc 3.45+ 는 slf4j-api 를 transitive 로 요구 (없으면 NoClassDefFoundError: org/slf4j/LoggerFactory)
+    jars: [
+      'maven:org.xerial:sqlite-jdbc:3.46.1.0',
+      'maven:org.slf4j:slf4j-api:2.0.13',
+    ],
     builtin: true,
     dialect: 'sqlite',
-    note: 'database = 로컬 .db 파일 경로',
+    note: 'database = 로컬 .db 파일 경로. slf4j-api 가 함께 필요합니다.',
   },
   {
     id: 'altibase-builtin',
@@ -82,10 +102,13 @@ const BUILTIN_DRIVERS: JdbcDriverDef[] = [
     className: 'Altibase.jdbc.driver.AltibaseDriver',
     urlTemplate: 'jdbc:Altibase://{host}:{port}/{database}',
     defaultPort: 20300,
-    jars: ['${bundled}/altibase.jar'],
+    // Altibase 는 Maven Central 에 미러링됨 (com.altibase:altibase-jdbc)
+    jars: [
+      'maven:com.altibase:altibase-jdbc:7.1.0.9.0',
+    ],
     builtin: true,
     dialect: 'altibase',
-    note: '라이선스 사정으로 JAR 자동 번들 제외 — Altibase JDBC 를 ${bundled}/altibase.jar 또는 ${userJdbc}/ 에 복사하세요.',
+    note: 'Maven Central 의 com.altibase:altibase-jdbc 자동 다운로드 (또는 번들/사용자 폴더 jar 사용).',
   },
   {
     id: 'oracle-template',
@@ -93,10 +116,17 @@ const BUILTIN_DRIVERS: JdbcDriverDef[] = [
     className: 'oracle.jdbc.OracleDriver',
     urlTemplate: 'jdbc:oracle:thin:@{host}:{port}/{database}',
     defaultPort: 1521,
-    jars: ['${userJdbc}/ojdbc11.jar'],
+    // DBeaver 기본 라이브러리 셋 — ojdbc + 부속(NLS, XDB, XML Parser).
+    //   주의: ojdbc11(JDK 11+) 대신 ojdbc8(JDK 8+) 사용 — 사이드카 JVM 호환.
+    jars: [
+      'maven:com.oracle.database.jdbc:ojdbc8:23.5.0.24.07',
+      'maven:com.oracle.database.nls:orai18n:23.5.0.24.07',
+      'maven:com.oracle.database.xml:xdb:23.5.0.24.07',
+      'maven:com.oracle.database.xml:xmlparserv2:23.5.0.24.07',
+    ],
     builtin: true,
     dialect: 'oracle',
-    note: 'Oracle OTN 라이선스로 번들 제외 — 오라클 사이트에서 ojdbc11.jar 를 받아 ${userJdbc}/ 에 복사하세요.',
+    note: 'Maven Central 의 com.oracle.database.jdbc:ojdbc8 자동 다운로드 (사이드카 JVM(Java 8) 호환). 23c 기준.',
   },
 ];
 
@@ -117,11 +147,31 @@ export function getUserJdbcDriversRoot(): string {
   return root;
 }
 
+/** Maven 좌표(groupId:artifactId:version[:classifier]) → 로컬 캐시 경로. */
+export function mavenCoordToCachedPath(coord: string): string | null {
+  // 형식: "maven:groupId:artifactId:version" 또는 "maven:groupId:artifactId:version:classifier"
+  //   classifier (x64, sources, javadoc 등) 가 있으면 파일명에 `-classifier` 가 붙음. (Maven Central 규칙)
+  const m4 = coord.match(/^maven:([^:]+):([^:]+):([^:]+):([^:]+)$/);
+  if (m4) {
+    const [, , artifactId, version, classifier] = m4;
+    return path.join(getUserJdbcDriversRoot(), `${artifactId}-${version}-${classifier}.jar`);
+  }
+  const m3 = coord.match(/^maven:([^:]+):([^:]+):([^:]+)$/);
+  if (m3) {
+    const [, , artifactId, version] = m3;
+    return path.join(getUserJdbcDriversRoot(), `${artifactId}-${version}.jar`);
+  }
+  return null;
+}
 export function resolveDriverJars(jars: string[]): string[] {
   const bundled = getBundledDriversRoot();
   const userJdbc = getUserJdbcDriversRoot();
-  return jars.map(j =>
-    j.replace('${bundled}', bundled).replace('${userJdbc}', userJdbc));
+  return jars.map(j => {
+    // Maven 좌표면 user JAR 캐시 경로로 변환
+    const mvn = mavenCoordToCachedPath(j);
+    if (mvn) return mvn;
+    return j.replace('${bundled}', bundled).replace('${userJdbc}', userJdbc);
+  });
 }
 
 /** Existing JAR paths (after token resolve) — used by the sidecar to load classes. */
@@ -147,14 +197,16 @@ function readUserDrivers(): JdbcDriverDef[] {
       builtin: false,
       dialect: typeof d.dialect === 'string' ? d.dialect : 'generic',
       note: typeof d.note === 'string' ? d.note : undefined,
-    } as JdbcDriverDef));
+      properties: d.properties && typeof d.properties === 'object' ? d.properties : undefined,
+      meta: d.meta && typeof d.meta === 'object' ? d.meta : undefined,
+    } as any as JdbcDriverDef));
   } catch { return []; }
 }
 
 function writeUserDrivers(list: JdbcDriverDef[]) {
   const p = driversJsonPath();
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  const userOnly = list.filter(d => !d.builtin).map(d => ({
+  const userOnly = list.filter(d => !d.builtin).map((d: any) => ({
     id: d.id,
     name: d.name,
     className: d.className,
@@ -163,6 +215,8 @@ function writeUserDrivers(list: JdbcDriverDef[]) {
     jars: d.jars,
     dialect: d.dialect,
     note: d.note,
+    properties: d.properties,
+    meta: d.meta,
   }));
   fs.writeFileSync(p, JSON.stringify(userOnly, null, 2), 'utf8');
 }

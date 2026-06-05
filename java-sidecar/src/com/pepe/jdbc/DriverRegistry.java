@@ -37,7 +37,10 @@ public final class DriverRegistry {
   }
 
   public synchronized void loadDriver(String id, String className, List<String> jars) {
-    if (drivers.containsKey(id)) return; // already loaded
+    // 항상 새 URLClassLoader 로 재구성한다.
+    // 캐시 reuse 는 사용자가 Driver Manager 에서 jars 를 변경(예: 누락된 transitive 의존성 추가)했을 때
+    // 이전 classloader 가 그대로 남아 NoClassDefFoundError 가 지속되는 문제를 만든다.
+    // 기존 Connection 들은 자체 classloader 참조를 들고 있어 계속 동작하므로 안전.
 
     URL[] urls = new URL[jars.size()];
     for (int i = 0; i < jars.size(); i++) {

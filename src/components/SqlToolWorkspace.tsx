@@ -8,6 +8,27 @@ import { DriverManagerModal } from './DriverManagerModal';
 import { JdbcBackend, resolveDriverFromList, type ColumnInfo } from './jdbcBackend';
 import { ObjectDetailPanel } from './ObjectDetailPanel';
 
+// AI 에이전트 브랜드 아이콘 (LogAnalyzer/ClaudeChat 와 동일)
+const ClaudeIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+    <path d="m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z" fill="#D97757"/>
+  </svg>
+);
+const GeminiIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+    <defs><linearGradient id="sqlGeminiGrad" x1="12" y1="0" x2="12" y2="24" gradientUnits="userSpaceOnUse"><stop offset="0%" stopColor="#4285F4"/><stop offset="100%" stopColor="#00BFA5"/></linearGradient></defs>
+    <path d="M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81" fill="url(#sqlGeminiGrad)"/>
+  </svg>
+);
+const CodexIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+    <path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z" fill="#b0b0b0"/>
+  </svg>
+);
+const AGENT_ICON: Record<'claude' | 'gemini' | 'codex', React.FC> = {
+  claude: ClaudeIcon, gemini: GeminiIcon, codex: CodexIcon,
+};
+
 export type DbmsType = 'altibase' | 'mysql' | 'postgres' | 'oracle' | 'mssql' | 'sqlite';
 export type DbmsCfg = {
   type: DbmsType;
@@ -47,6 +68,7 @@ type HistoryEntry = {
 type ParsedResult = {
   columns: string[];
   rows: string[][];
+  types?: string[];  // JDBC ResultSetMetaData.getColumnTypeName 결과 (DATE/TIMESTAMP/VARCHAR 등). 적용하기 SQL 합성 시 사용.
   affectedText?: string;
   raw?: string;
 };
@@ -72,7 +94,7 @@ function loadFavorites(sessionId: string): FavoriteQuery[] {
 }
 
 // SQL 작성 탭 또는 객체 상세 탭. 같은 탭 스트립에 공존.
-export type ObjectKind = 'table' | 'view' | 'index' | 'sequence' | 'procedure' | 'function' | 'synonym' | 'package' | 'trigger' | 'tablespace';
+export type ObjectKind = 'table' | 'view' | 'index' | 'sequence' | 'procedure' | 'function' | 'synonym' | 'package' | 'trigger' | 'tablespace' | 'replication';
 export type EditorTab = {
   id: string;
   title: string;
@@ -208,17 +230,17 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
       const existing = prev.find(t => t.kind === 'object' && t.objectName === name && t.objectKind === kind && (t.objectSchema || '') === (schema || ''));
       if (existing) { setActiveEditorTabId(existing.id); return prev; }
       const id = newTabId();
-      const iconMap: Record<ObjectKind, string> = { table: '📄', view: '👁', index: '🔑', sequence: '🔢', procedure: '⚙', function: 'ƒ', synonym: '🔗', package: '📦', trigger: '🔔', tablespace: '💾' };
+      const iconMap: Record<ObjectKind, string> = { table: '📄', view: '👁', index: '🔑', sequence: '🔢', procedure: '⚙', function: 'ƒ', synonym: '🔗', package: '📦', trigger: '🔔', tablespace: '💾', replication: '🔄' };
       const icon = iconMap[kind] || '📄';
       // 기본 서브탭 — DBeaver 스타일
       const defaultSubMap: Record<ObjectKind, string> = {
         table: 'properties', view: 'properties', index: 'columns', sequence: 'declaration',
         procedure: 'parameters', function: 'parameters', synonym: 'declaration',
-        package: 'pkgProcs', trigger: 'source', tablespace: 'datafiles',
+        package: 'pkgProcs', trigger: 'source', tablespace: 'datafiles', replication: 'properties',
       };
       const defaultPropSubMap: Record<ObjectKind, string> = {
         table: 'columns', view: 'columns', index: '', sequence: '', procedure: '', function: '', synonym: '',
-        package: '', trigger: '', tablespace: '',
+        package: '', trigger: '', tablespace: '', replication: '',
       };
       const next = [...prev, { id, title: `${icon} ${name}`, sql: '', kind: 'object' as const, objectKind: kind, objectName: name, objectSchema: schema, objectSubTab: defaultSubMap[kind], objectPropSubTab: defaultPropSubMap[kind] }];
       setActiveEditorTabId(id);
@@ -244,6 +266,17 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
   // 새 행 각 칸은 빈 문자열로 시작. INSERT 시 빈 문자열은 NULL 로 보냄.
   const [newRows, setNewRows] = useState<string[][]>([]);
   const [deletedRowIdxs, setDeletedRowIdxs] = useState<Set<number>>(new Set());
+  // 선택된 행(복사용) — # 컬럼 클릭으로 토글. Ctrl/Shift 다중 선택.
+  const [selectedRowIdxs, setSelectedRowIdxs] = useState<Set<number>>(new Set());
+  // EXPLAIN PLAN 트리 — 접힘 노드 인덱스(자식 숨김). result 바뀔 때 자동 초기화.
+  const [collapsedPlanNodes, setCollapsedPlanNodes] = useState<Set<number>>(new Set());
+  // AI 에이전트 선택 — props 의 aiAgent 가 초기값. 세션 캐시에 보존.
+  const [selectedAgent, setSelectedAgent] = useState<'claude' | 'gemini' | 'codex'>(
+    () => ((sqlStateCache.get(sessionId + ':ai') as any) || aiAgent) as 'claude' | 'gemini' | 'codex'
+  );
+  useEffect(() => { sqlStateCache.set(sessionId + ':ai' as any, selectedAgent as any); }, [sessionId, selectedAgent]);
+  const [agentMenuOpen, setAgentMenuOpen] = useState<boolean>(false);
+  const lastSelectedRowRef = useRef<number | null>(null);
   // ── 결과 그리드 사용자 상태 ──
   // 정렬: null=원본 순서. 같은 컬럼 재클릭 시 asc→desc→null 토글.
   const [sortState, setSortState] = useState<{ col: number; dir: 'asc' | 'desc' } | null>(null);
@@ -328,6 +361,17 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
   const [rightSidebarWidth, setRightSidebarWidth] = useState<number>(() => sqlStateCache.get(sessionId + ':rightW') as any || 280);
   // 히스토리 패널 핀 상태 (unpin 시 collapsed bar 만 표시)
   const [historyPinned, setHistoryPinned] = useState<boolean>(() => (sqlStateCache.get(sessionId + ':hPin') as any) !== false);
+  // 결과 패널 높이 (px) — DBeaver Sash 와 동등. 드래그로 조절, ▲▼ 로 접기/펼치기.
+  const [resultPaneHeight, setResultPaneHeight] = useState<number>(() => (sqlStateCache.get(sessionId + ':resH') as any) || 300);
+  // ResultSet fetch size — DBeaver 의 "Custom row count" 와 동일. SELECT 시 최대 가져올 행 수.
+  const [fetchSize, setFetchSize] = useState<number>(() => (sqlStateCache.get(sessionId + ':fsz') as any) || 200);
+  // 데이터 추출 메뉴 — 2단계 (대상 선택 → 포맷 선택). 부모 overflow 로 잘리지 않도록 position: fixed.
+  const [exportMenuAnchor, setExportMenuAnchor] = useState<{ left: number; bottom: number } | null>(null);
+  const [exportMenuPath, setExportMenuPath] = useState<null | 'clipboard' | 'file'>(null);
+  const exportMenuOpen = exportMenuAnchor !== null;
+  const setExportMenuOpen = (v: boolean) => { if (!v) { setExportMenuAnchor(null); setExportMenuPath(null); } };
+  const [resultPaneCollapsed, setResultPaneCollapsed] = useState<boolean>(() => (sqlStateCache.get(sessionId + ':resC') as any) === true);
+  const [resultPaneMaximized, setResultPaneMaximized] = useState<boolean>(false);
   // 사이즈 캐시: 트리 옆 사이즈 표시용 (테이블/테이블스페이스)
   const [sizeRev, setSizeRev] = useState(0);
   const tableSizesRef = useRef<Map<string, Map<string, { bytes: number; display: string }>>>(new Map()); // schema -> name -> {bytes, display}
@@ -338,12 +382,17 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
   useEffect(() => { sqlStateCache.set(sessionId + ':leftW' as any, leftSidebarWidth as any); }, [sessionId, leftSidebarWidth]);
   useEffect(() => { sqlStateCache.set(sessionId + ':rightW' as any, rightSidebarWidth as any); }, [sessionId, rightSidebarWidth]);
   useEffect(() => { sqlStateCache.set(sessionId + ':hPin' as any, historyPinned as any); }, [sessionId, historyPinned]);
+  useEffect(() => { sqlStateCache.set(sessionId + ':resH' as any, resultPaneHeight as any); }, [sessionId, resultPaneHeight]);
+  useEffect(() => { sqlStateCache.set(sessionId + ':resC' as any, resultPaneCollapsed as any); }, [sessionId, resultPaneCollapsed]);
+  useEffect(() => { sqlStateCache.set(sessionId + ':fsz' as any, fetchSize as any); }, [sessionId, fetchSize]);
   // 즐겨찾기 (저장된 쿼리)
   const [favorites, setFavorites] = useState<FavoriteQuery[]>(() => loadFavorites(sessionId));
   const [favPanelOpen, setFavPanelOpen] = useState<boolean>(false);
   // 이름 입력 모달 (Electron 은 window.prompt 미지원 → 인라인 모달).
   // mode: 'save' = 새 즐겨찾기 저장(sql 보관), 'rename' = 기존 즐겨찾기 이름 변경(id 보관)
   const [nameModal, setNameModal] = useState<{ mode: 'save' | 'rename'; value: string; sql?: string; id?: string } | null>(null);
+  // 확인(confirm) 모달 — window.confirm 이 포커스를 빼앗는 문제 회피.
+  const [confirmModal, setConfirmModal] = useState<{ title: string; message: string; onOk: () => void } | null>(null);
   // (favorites 영속화는 아래의 통합 IPC 디바운스 effect 가 담당)
   // 결과 그리드 셀 편집 상태 — Map<"row,col", newValue>
   const [edits, setEdits] = useState<Map<string, string>>(new Map());
@@ -487,10 +536,54 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
         setConnectError(`드라이버 JAR 누락: ${def.name}. 드라이버 관리자에서 JAR 을 추가하세요.`);
         return;
       }
-      const newBackend = new JdbcBackend(sessionId, session.dbms, def);
+      // SSH 터널 사용 시 — 로컬 포트 포워딩 열고 host/port 교체.
+      let effectiveDbms: any = session.dbms;
+      let forwardId = '';
+      console.log('[SqlTool] connect() session.dbms =', session.dbms);
+      if (session.dbms?.useSshTunnel) {
+        if (typeof api.sshOpenLocalForward !== 'function') {
+          setConnectError('SSH 터널 IPC 미등록 — Electron 메인 프로세스를 재시작하세요 (코드 변경 적용을 위해).');
+          return;
+        }
+        let fwd: any;
+        try {
+          fwd = await api.sshOpenLocalForward({
+            sessionId,
+            remoteHost: session.dbms.host || '127.0.0.1',
+            remotePort: session.dbms.port || def.defaultPort || 0,
+            // SSH 호스트 힌트 — quick-connect 시 session.id 가 불일치해도 매칭 가능
+            sshHost: (session as any).host,
+            sshPort: (session as any).port || 22,
+          });
+        } catch (ipcErr: any) {
+          setConnectError(`SSH 터널 IPC 예외: ${ipcErr?.message || ipcErr}`);
+          return;
+        }
+        console.log('[SqlTool] sshOpenLocalForward result =', fwd);
+        if (!fwd || fwd.success !== true) {
+          setConnectError(`SSH 터널 열기 실패: ${fwd?.error || '응답 없음'} — 먼저 같은 세션의 터미널을 연결하세요.`);
+          return;
+        }
+        if (!fwd.localPort) {
+          setConnectError(`SSH 터널 응답에 localPort 누락 (panelId=${fwd.panelId || '?'}) — sshBridge.openLocalForward 확인 필요`);
+          return;
+        }
+        forwardId = fwd.forwardId;
+        // urlOverride 가 남아있으면 host/port 교체가 무시되므로 함께 비움
+        effectiveDbms = { ...session.dbms, host: '127.0.0.1', port: fwd.localPort, urlOverride: undefined };
+        console.log('[SqlTool] SSH tunnel opened:', { remoteHost: session.dbms.host, remotePort: session.dbms.port, localPort: fwd.localPort, forwardId, panelId: fwd.panelId });
+      }
+      const newBackend = new JdbcBackend(sessionId, effectiveDbms, def);
+      // forwardId 를 backend 에 저장해 disconnect 시 정리
+      (newBackend as any).__forwardId = forwardId;
+      // 진단 로그 — 실제 빌드된 URL
+      const dbgUrl = newBackend.buildUrl();
+      console.log('[SqlTool] connecting JDBC →', dbgUrl, forwardId ? `(via SSH tunnel ${forwardId})` : '(direct)');
       const cr = await newBackend.ensureConnected();
       if (!cr.ok) {
-        setConnectError(cr.error || '연결 실패');
+        if (forwardId) { try { await api.sshCloseLocalForward?.({ forwardId }); } catch {} }
+        const prefix = forwardId ? `[SSH tunnel: ${dbgUrl}] ` : '';
+        setConnectError(prefix + (cr.error || '연결 실패'));
         return;
       }
       setBackend(newBackend);
@@ -509,11 +602,15 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
     }
   }, [session, connected, connecting, connect]);
 
-  // 언마운트 시 JDBC 연결 종료 (사이드카 측)
+  // 언마운트 시 JDBC 연결 종료 (사이드카 측) + SSH 터널 정리
   useEffect(() => {
     return () => {
       const b = backend;
-      if (b) { try { b.disconnect(); } catch {} }
+      if (b) {
+        try { b.disconnect(); } catch {}
+        const fwd = (b as any).__forwardId;
+        if (fwd) { try { (window as any).api?.sshCloseLocalForward?.({ forwardId: fwd }); } catch {} }
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -527,7 +624,11 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
     setEdits(new Map());
     if (!isAuto) {
       setResult(null);
-      const m = sqlText.match(/from\s+([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)?)/i);
+      // FROM 테이블명 추출 — 라인/블록 주석 안의 FROM 이 잘못 잡히는 문제 회피 (DBeaver 와 동일하게 주석 제거 후 매칭).
+      const cleaned = sqlText
+        .replace(/--[^\n]*/g, '')
+        .replace(/\/\*[\s\S]*?\*\//g, '');
+      const m = cleaned.match(/\bfrom\s+([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)?)/i);
       setLastTable(m ? m[1] : '');
     }
     const t0 = Date.now();
@@ -547,16 +648,18 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
     try {
       // 사이드카가 maxRows+1 로 페이지를 가져오고 truncated 플래그를 함께 반환하므로
       // 클라이언트는 COUNT/페이지 루프가 불필요. 단순 한 번 exec.
-      const res = await backend!.exec(sqlText, MAX_DISPLAY_ROWS);
+      // fetchSize 가 사용자가 정한 limit (DBeaver "Custom row count"). 상한은 안전을 위해 MAX_DISPLAY_ROWS.
+      const effectiveMax = Math.max(1, Math.min(MAX_DISPLAY_ROWS, fetchSize || MAX_DISPLAY_ROWS));
+      const res = await backend!.exec(sqlText, effectiveMax);
       if (runIdRef.current !== myRunId) return; // 더 새로운 runSql — 결과 무시
       const ms = Date.now() - t0;
       const note = res.truncated
-        ? ` ⚠ 결과 ${MAX_DISPLAY_ROWS.toLocaleString()}행 까지만 표시 (WHERE/ORDER BY+LIMIT 권장)`
+        ? ` ⚠ 결과 ${effectiveMax.toLocaleString()}행 까지만 표시 (fetch size ↑ 또는 WHERE/LIMIT 사용)`
         : '';
       const affectedText = res.columns.length === 0
         ? (res.rowsAffected > 0 ? `✓ ${res.rowsAffected}행 영향 (${ms}ms)` : `✓ 완료 (${ms}ms)`)
         : `✓ ${res.rows.length.toLocaleString()}${res.truncated ? '+' : ''}행 (${ms}ms)${note}`;
-      setResult({ columns: res.columns, rows: res.rows, affectedText, raw: '' });
+      setResult({ columns: res.columns, rows: res.rows, types: res.types, affectedText, raw: '' });
       if (!isAuto) {
         setHistory(h => {
           const next = [{ ts: Date.now(), sql: sqlText, rows: res.rows.length, ms, error: undefined }, ...h];
@@ -683,7 +786,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
   }, [lastTable, connected, loadPrimaryKey]);
 
   // 결과가 새로 들어오면 INSERT/DELETE 표시 초기화 (스냅샷에는 영향 없음)
-  useEffect(() => { setNewRows([]); setDeletedRowIdxs(new Set()); }, [result]);
+  useEffect(() => { setNewRows([]); setDeletedRowIdxs(new Set()); setCollapsedPlanNodes(new Set()); }, [result]);
 
   // 트리 객체 그룹 정의 — DBeaver 좌측 사이드 구조. load 는 schema 받아 이름 목록 반환.
   const OBJECT_GROUPS: { id: string; icon: string; label: string; load: (schema: string) => Promise<string[]>; insert: (name: string) => string }[] = useMemo(() => [
@@ -695,6 +798,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
     { id: 'FUNCTION',  icon: 'ƒ',  label: '함수',       load: (s) => backend?.listFunctions(s) ?? Promise.resolve([]),  insert: (n) => `${n}()` },
     { id: 'PACKAGE',   icon: '📦', label: '패키지',     load: (s) => backend?.listPackages(s) ?? Promise.resolve([]),   insert: (n) => n },
     { id: 'TRIGGER',   icon: '🔔', label: '트리거',     load: (s) => backend?.listSchemaTriggers(s) ?? Promise.resolve([]), insert: (n) => n },
+    { id: 'SYNONYM',   icon: '🔗', label: '시노님',     load: (s) => backend?.listSynonyms(s) ?? Promise.resolve([]), insert: (n) => n },
     { id: 'SYSTABLE',  icon: '🗄', label: '시스템 테이블', load: (s) => backend?.listSystemTables(s) ?? Promise.resolve([]), insert: (n) => `SELECT * FROM ${n};` },
   ], [backend]);
 
@@ -957,38 +1061,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
   // tables 변경 시 ref 동기화
   useEffect(() => { tablesRefForCompletion.current = tables; }, [tables]);
 
-  // ── 결과 export 헬퍼 ── (현재 보고 있는 탭 기준 — 라이브면 edits 반영, 스냅샷이면 원본)
-  const escCsv = (v: string) => /[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
-  const exportCell = (i: number, j: number, c: string) => isPinnedView ? c : (edits.get(`${i},${j}`) ?? c);
-  const buildCsv = () => {
-    const src = displayedResult;
-    if (!src || src.columns.length === 0) return '';
-    const head = src.columns.map(escCsv).join(',');
-    const body = src.rows.map((row, i) =>
-      row.map((c, j) => escCsv(exportCell(i, j, c))).join(',')
-    ).join('\n');
-    return head + '\n' + body;
-  };
-  const buildTsv = () => {
-    const src = displayedResult;
-    if (!src || src.columns.length === 0) return '';
-    const head = src.columns.join('\t');
-    const body = src.rows.map((row, i) =>
-      row.map((c, j) => exportCell(i, j, c).replace(/\t/g, ' ').replace(/\n/g, ' ')).join('\t')
-    ).join('\n');
-    return head + '\n' + body;
-  };
-  // JSON 내보내기 — 컬럼명을 키로 한 객체 배열. 라이브에서는 편집 셀 반영.
-  const buildJson = (): string => {
-    const src = displayedResult;
-    if (!src || src.columns.length === 0) return '[]';
-    const arr = src.rows.map((row, i) => {
-      const obj: Record<string, string> = {};
-      src.columns.forEach((col, j) => { obj[col] = exportCell(i, j, row[j] ?? ''); });
-      return obj;
-    });
-    return JSON.stringify(arr, null, 2);
-  };
+  // ── 결과 export ── 라이브/스냅샷 직렬화 헬퍼는 데이터 추출 메뉴 내부의 serialize() 가 담당.
 
   // ── 결과 탭(현재 + 핀된 스냅샷) ─ derived 표시 변수 ──
   const viewingSnapshot = pinnedSnapshots.find(s => s.id === viewingTabId);
@@ -1063,33 +1136,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
 
   const flashHint = (msg: string) => { setCopyHint(msg); setTimeout(() => setCopyHint(''), 1800); };
 
-  const onSaveCsv = async () => {
-    if (!displayedResult || displayedResult.columns.length === 0) return;
-    const name = (displayedLastTable || 'query-result') + '-' + new Date().toISOString().slice(0,19).replace(/[:T]/g,'-') + '.csv';
-    try {
-      const r = await (window as any).api?.sqlSaveCsv(name, buildCsv());
-      if (r?.success) flashHint(`저장됨: ${r.path}`);
-      else if (!r?.canceled) flashHint(`저장 실패: ${r?.error || '?'}`);
-    } catch (e: any) { flashHint(`저장 예외: ${e?.message || e}`); }
-  };
-  const onSaveJson = async () => {
-    if (!displayedResult || displayedResult.columns.length === 0) return;
-    const name = (displayedLastTable || 'query-result') + '-' + new Date().toISOString().slice(0,19).replace(/[:T]/g,'-') + '.json';
-    try {
-      // sqlSaveCsv 는 임의 텍스트 저장 IPC 로도 동작 (단순 텍스트 write). 확장자만 .json 으로.
-      const r = await (window as any).api?.sqlSaveCsv(name, buildJson());
-      if (r?.success) flashHint(`저장됨: ${r.path}`);
-      else if (!r?.canceled) flashHint(`저장 실패: ${r?.error || '?'}`);
-    } catch (e: any) { flashHint(`저장 예외: ${e?.message || e}`); }
-  };
-
-  const onCopyClipboard = async () => {
-    if (!displayedResult || displayedResult.columns.length === 0) return;
-    try {
-      await navigator.clipboard.writeText(buildTsv());
-      flashHint('클립보드에 복사됨');
-    } catch (e: any) { flashHint(`복사 실패: ${e?.message || e}`); }
-  };
+  // onSaveCsv / onSaveJson / onCopyClipboard 는 결과 영역의 "↥ 데이터 추출" 메뉴에 통합되어 제거됨.
 
   // 테이블을 canvas 로 렌더해서 PNG 클립보드 복사
   const onCopyImage = async () => {
@@ -1097,6 +1144,8 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
     if (!src || src.columns.length === 0) return;
     try {
       const cols = src.columns;
+      // 라이브 뷰면 edits 반영, 스냅샷이면 원본
+      const exportCell = (i: number, j: number, c: string) => isPinnedView ? c : (edits.get(`${i},${j}`) ?? c);
       const rows = src.rows.map((row, i) => row.map((c, j) => exportCell(i, j, c)));
       const fontSize = 13;
       const padX = 10, padY = 6;
@@ -1239,9 +1288,9 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
 
     try {
       let r: any;
-      if (aiAgent === 'gemini') {
+      if (selectedAgent === 'gemini') {
         r = await (window as any).api?.geminiSend?.(claudeSessionId, prompt, requestId, undefined, true);
-      } else if (aiAgent === 'codex') {
+      } else if (selectedAgent === 'codex') {
         r = await (window as any).api?.codexSend?.(claudeSessionId, prompt, requestId, undefined, 'full-auto');
       } else {
         r = await (window as any).api?.claudeSend?.(
@@ -1274,9 +1323,69 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
     if (!backend || !connected) return;
     if (edits.size === 0 && newRows.length === 0 && deletedRowIdxs.size === 0) return;
 
-    // 빈 문자열/NULL 표기 처리.
-    const sqlVal = (v: string) => v === '' ? 'NULL' : `'${v.replace(/'/g, `''`)}'`;
-    const eqOrNull = (col: string, v: string) => v === '' ? `${col} IS NULL` : `${col} = '${v.replace(/'/g, `''`)}'`;
+    // 빈 문자열/NULL 표기 + dialect 별 컬럼 타입별 리터럴 변환 (DBeaver ValueHandler 패턴).
+    const isAltibase = backend?.type === 'altibase';
+    const isOracle = backend?.type === 'oracle';
+    const isAltibaseOrOracle = isAltibase || isOracle;
+    const colTypes = result.types || [];
+    const typeOf = (col: string): string => {
+      const idx = result.columns.findIndex(c => c.toUpperCase() === col.toUpperCase());
+      return (idx >= 0 ? (colTypes[idx] || '') : '').toUpperCase();
+    };
+    // 타입 분류 — Altibase/Oracle 공통 타입명 우선, 일반적인 JDBC 타입명 보강.
+    const isDateType   = (t: string) => t === 'DATE' || /^TIMESTAMP/.test(t) || /^DATETIME/.test(t);
+    const isNumberType = (t: string) =>
+      /^(NUMBER|NUMERIC|DECIMAL|DEC|INTEGER|INT|BIGINT|SMALLINT|TINYINT|REAL|FLOAT|DOUBLE|BINARY_FLOAT|BINARY_DOUBLE)$/.test(t);
+    const isBooleanType = (t: string) => t === 'BOOLEAN' || t === 'BOOL' || t === 'BIT';
+    const isBinaryType  = (t: string) => /^(RAW|LONG\s*RAW|BLOB|BYTE|BYTES|VARBINARY|BINARY|GEOMETRY|BIT\s+VARYING)$/.test(t);
+    // 날짜 리터럴 → TO_DATE('...', 'fmt') — 분수초 유무 / 시간부 유무에 따라 fmt 결정.
+    const formatDateLit = (raw: string): string => {
+      const esc = raw.replace(/'/g, `''`);
+      const hasFrac = /\.\d+/.test(raw);
+      const looksDate = /^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?(\.\d+)?)?$/.test(raw.trim());
+      if (!looksDate) return `'${esc}'`;
+      const fmt = hasFrac ? 'YYYY-MM-DD HH24:MI:SS.FF' : (raw.length > 10 ? 'YYYY-MM-DD HH24:MI:SS' : 'YYYY-MM-DD');
+      return `TO_DATE('${esc}', '${fmt}')`;
+    };
+    // 숫자 리터럴 — 부호 + 정수/소수 + 지수(E) 허용. 그 외는 인용처리 폴백.
+    const numericRe = /^-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
+    const formatNumberLit = (raw: string): string => numericRe.test(raw.trim()) ? raw.trim() : `'${raw.replace(/'/g, `''`)}'`;
+    // 불리언 리터럴 — TRUE/FALSE/1/0/T/F/Y/N 표기 폭넓게 수용.
+    const formatBoolLit = (raw: string): string => {
+      const v = raw.trim().toUpperCase();
+      if (v === 'TRUE' || v === 'T' || v === 'Y' || v === '1') return 'TRUE';
+      if (v === 'FALSE' || v === 'F' || v === 'N' || v === '0') return 'FALSE';
+      return `'${raw.replace(/'/g, `''`)}'`;
+    };
+    // 바이너리 리터럴 — Altibase: BYTES_TO_BIN('hex'), Oracle: HEXTORAW('hex'). 16진수만 허용.
+    const formatBinaryLit = (raw: string): string => {
+      const hex = raw.trim().replace(/^0x/i, '');
+      if (!/^[0-9A-Fa-f]+$/.test(hex)) return `'${raw.replace(/'/g, `''`)}'`;
+      if (isOracle)   return `HEXTORAW('${hex}')`;
+      if (isAltibase) return `BYTE'${hex}'`; // Altibase BYTE literal
+      return `'${hex}'`;
+    };
+    // 메인 변환 함수 — 컬럼 타입 + dialect 에 따라 SQL 리터럴 결정.
+    const sqlVal = (v: string, col?: string) => {
+      if (v === '') return 'NULL';
+      if (!col) return `'${v.replace(/'/g, `''`)}'`;
+      const t = typeOf(col);
+      if (isAltibaseOrOracle && isDateType(t)) return formatDateLit(v);
+      if (isNumberType(t))   return formatNumberLit(v);
+      if (isBooleanType(t))  return formatBoolLit(v);
+      if (isBinaryType(t))   return formatBinaryLit(v);
+      // CHAR/VARCHAR/NCHAR/NVARCHAR/CLOB/NCLOB/JSON/XML 등은 문자열 인용
+      return `'${v.replace(/'/g, `''`)}'`;
+    };
+    const eqOrNull = (col: string, v: string) => {
+      if (v === '') return `${col} IS NULL`;
+      const t = typeOf(col);
+      if (isAltibaseOrOracle && isDateType(t)) return `${col} = ${formatDateLit(v)}`;
+      if (isNumberType(t))  return `${col} = ${formatNumberLit(v)}`;
+      if (isBooleanType(t)) return `${col} = ${formatBoolLit(v)}`;
+      if (isBinaryType(t))  return `${col} = ${formatBinaryLit(v)}`;
+      return `${col} = '${v.replace(/'/g, `''`)}'`;
+    };
 
     // PK 우선 사용. 없으면 모든 컬럼 매칭으로 폴백.
     const pkCols = pksByTableRef.current.get(lastTable.toUpperCase()) || [];
@@ -1306,7 +1415,8 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
     editsByRow.forEach((cellMap, rowIdx) => {
       const setParts: string[] = [];
       cellMap.forEach((newV, colIdx) => {
-        setParts.push(`${result.columns[colIdx]} = ${sqlVal(newV)}`);
+        const col = result.columns[colIdx];
+        setParts.push(`${col} = ${sqlVal(newV, col)}`);
       });
       updates.push(`UPDATE ${lastTable} SET ${setParts.join(', ')} WHERE ${buildWhere(rowIdx)};`);
     });
@@ -1318,7 +1428,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
     newRows.forEach(row => {
       // 모든 칸이 빈 행은 스킵
       if (row.every(v => v === '')) return;
-      const valStrs = row.map(sqlVal).join(', ');
+      const valStrs = row.map((v, j) => sqlVal(v, result.columns[j])).join(', ');
       inserts.push(`INSERT INTO ${lastTable} (${result.columns.join(', ')}) VALUES (${valStrs});`);
     });
 
@@ -1333,12 +1443,16 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
       ? `PK 사용: ${pkCols.join(', ')}`
       : '⚠ PK 미감지 — 모든 컬럼 매칭(보수적). 잘못된 매칭 가능성 있음.';
     const preview = [...deletes, ...updates, ...inserts].join('\n');
-    const refocus = () => { try { (window as any).api?.refocusWindow?.(); } catch {} };
-    const ok = confirm(
-      `${opsSummary}\n${pkNote}\n\n${preview.slice(0, 600)}${preview.length > 600 ? '\n...' : ''}\n\n적용 (COMMIT) 진행?`
-    );
-    refocus();
-    if (!ok) return;
+    // window.confirm 은 Electron 에서 포커스를 빼앗고 일부 환경에서 즉시 false 반환 → 인라인 모달로 대체.
+    setConfirmModal({
+      title: '✔ 변경 적용 (COMMIT)',
+      message: `${opsSummary}\n${pkNote}\n\n${preview.slice(0, 600)}${preview.length > 600 ? '\n...' : ''}`,
+      onOk: () => { void runApply(deletes, updates, inserts, opsSummary); },
+    });
+  };
+  // 실제 트랜잭션 실행 — 확인 모달 OK 후 호출.
+  const runApply = async (deletes: string[], updates: string[], inserts: string[], opsSummary: string) => {
+    if (!backend || !connected || !lastTable) return;
     setApplying(true);
     const t0 = Date.now();
     const allStmts = [...deletes, ...updates, ...inserts];
@@ -1361,12 +1475,11 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
           saveHistory(sessionId, next);
           return next;
         });
-        alert(`적용 완료 — ${opsSummary} + COMMIT.`);
-        refocus();
         setEdits(new Map());
         setNewRows([]);
         setDeletedRowIdxs(new Set());
         if (lastTable) runSql(backend.selectAllForTable(lastTable));
+        setConfirmModal({ title: '✔ 적용 완료', message: `${opsSummary} + COMMIT 완료.`, onOk: () => {} });
       } catch (innerErr: any) {
         try { await backend.rollback(); } catch {}
         const ms = Date.now() - t0;
@@ -1379,8 +1492,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
           return next;
         });
         console.error('[SQL apply error]', { stmt: failedStmt, message: failedMsg });
-        alert(`적용 중 에러 — ROLLBACK 시도됨:\n${failedMsg}\n\n실패 SQL(앞 600자):\n${(failedStmt || '').slice(0, 600)}`);
-        refocus();
+        setConfirmModal({ title: '✗ 적용 실패 — ROLLBACK', message: `${failedMsg}\n\n실패 SQL(앞 600자):\n${(failedStmt || '').slice(0, 600)}`, onOk: () => {} });
       }
     } finally { setApplying(false); }
   };
@@ -1485,7 +1597,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
               }
               const items = treeItemsRef.current.get(key);
               const loading = treeLoadingRef.current.has(key);
-              const filtered = (items || []).filter(filt);
+              const filtered = Array.from(new Set((items || []).filter(filt)));
               return (
                 <div key={nid}>
                   <div onClick={() => { toggleExpanded(nid); if (!open && !items && c.loader) loadTreeNode(key, () => c.loader!(tableName, schema)); }} style={{ ...rowStyle(depth), color: '#9cdcfe' }} {...hover}>
@@ -1558,7 +1670,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
                     onDragStart={e => { e.dataTransfer.setData('text/plain', name); e.dataTransfer.setData('application/x-pepe-sql-table', name); e.dataTransfer.effectAllowed = 'copy'; }}
                     onClick={() => { if (expandable) toggleExpanded(nodeId); }}
                     onDoubleClick={() => {
-                      const kindMap: Record<string, ObjectKind | null> = { TABLE: 'table', VIEW: 'view', SYSTABLE: 'table', INDEX: 'index', SEQUENCE: 'sequence', PROCEDURE: 'procedure', FUNCTION: 'function', PACKAGE: 'package', TRIGGER: 'trigger' };
+                      const kindMap: Record<string, ObjectKind | null> = { TABLE: 'table', VIEW: 'view', SYSTABLE: 'table', INDEX: 'index', SEQUENCE: 'sequence', PROCEDURE: 'procedure', FUNCTION: 'function', PACKAGE: 'package', TRIGGER: 'trigger', SYNONYM: 'synonym' };
                       const k = kindMap[groupId];
                       // INDEX 노드는 "TABLE.INDEX" 형식 — indexDetail 에는 인덱스명만 전달
                       // TRIGGER 노드는 "NAME (TABLE)" 형식 — 앞부분만 전달
@@ -1604,7 +1716,8 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
               const open = isExpanded(gid);
               const items = treeItemsRef.current.get(key);
               const loading = treeLoadingRef.current.has(key);
-              const filtered = (items || []).filter(filt);
+              // 중복 제거 — MySQL/MariaDB 등 일부 드라이버가 INFORMATION_SCHEMA + catalog 양쪽에서 같은 이름을 반환하는 경우 방어.
+              const filtered = Array.from(new Set((items || []).filter(filt)));
               // TABLE 그룹 펼침 시 사이즈 한 번에 fetch
               const onTblOpen = () => {
                 if (g.id !== 'TABLE') return;
@@ -1664,7 +1777,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
               const open = isExpanded(nid);
               const items = treeItemsRef.current.get(key);
               const loading = treeLoadingRef.current.has(key);
-              const filtered = (items || []).filter(filt);
+              const filtered = Array.from(new Set((items || []).filter(filt)));
               return (
                 <div key={nid}>
                   <div
@@ -1681,13 +1794,14 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
                       {!loading && items && filtered.length === 0 && <div style={{ paddingLeft: 4 + (depth + 1) * 12, color: '#666' }}>없음</div>}
                       {filtered.map(n => (
                         <div key={n} draggable
-                          title={gid === 'PUBSYN' ? '더블클릭: Public Synonym 상세' : '더블클릭: 삽입 / 드래그: 이름 삽입'}
+                          title={gid === 'PUBSYN' || gid === 'REPL' ? '더블클릭: 상세 / 드래그: 이름 삽입' : '더블클릭: 삽입 / 드래그: 이름 삽입'}
                           onDragStart={e => { e.dataTransfer.setData('text/plain', n); e.dataTransfer.setData('application/x-pepe-sql-table', n); e.dataTransfer.effectAllowed = 'copy'; }}
                           onDoubleClick={() => {
                             if (gid === 'PUBSYN') openObjectDetail(n, 'synonym', '');
+                            else if (gid === 'REPL') openObjectDetail(n, 'replication', '');
                             else insertAtCursor(insert(n));
                           }}
-                          style={{ ...rowStyle(depth + 1), cursor: gid === 'PUBSYN' ? 'pointer' : 'grab' }} {...hover}
+                          style={{ ...rowStyle(depth + 1), cursor: gid === 'PUBSYN' || gid === 'REPL' ? 'pointer' : 'grab' }} {...hover}
                         >
                           <span style={{ width: 10, display: 'inline-block' }} />
                           <span>{icon} {n}</span>
@@ -1709,7 +1823,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
               const items = treeItemsRef.current.get(tbsKey);
               const tbsOpen = isExpanded(`storage:TABLESPACE`);
               const loading = treeLoadingRef.current.has(tbsKey);
-              const filtered = (items || []).filter(filt);
+              const filtered = Array.from(new Set((items || []).filter(filt)));
               // 테이블스페이스 사이즈 한 번 fetch
               const tbsSizeKey = '__tbsSize__';
               if (tbsOpen && tablespaceSizesRef.current.size === 0 && !sizeLoadingRef.current.has(tbsSizeKey)) {
@@ -1877,19 +1991,29 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
                         loadResults.push(`  ✗ ${d.name}: ${le?.message || le}`);
                       }
                     }
-                    alert(
-                      `✅ JDBC 사이드카 OK\n` +
-                      `버전: ${v.version}\nJava: ${v.javaVersion} (${v.javaVendor})\nOS: ${v.os}\n\n` +
-                      `JAR: ${r.jar || '(미발견)'}\nJava bin: ${r.java || '(기본)'}\n\n` +
-                      `등록된 드라이버 (${drivers.length}):\n${driverLines.join('\n')}\n\n` +
-                      `loadDriver 검증:\n${loadResults.join('\n')}\n\n` +
-                      `bundled: ${roots.bundled || '(?)'}\nuser:    ${roots.user || '(?)'}`
-                    );
+                    setConfirmModal({
+                      title: '✅ JDBC 사이드카 OK',
+                      message:
+                        `버전: ${v.version}\nJava: ${v.javaVersion} (${v.javaVendor})\nOS: ${v.os}\n\n` +
+                        `JAR: ${r.jar || '(미발견)'}\nJava bin: ${r.java || '(기본)'}\n\n` +
+                        `등록된 드라이버 (${drivers.length}):\n${driverLines.join('\n')}\n\n` +
+                        `loadDriver 검증:\n${loadResults.join('\n')}\n\n` +
+                        `bundled: ${roots.bundled || '(?)'}\nuser:    ${roots.user || '(?)'}`,
+                      onOk: () => {},
+                    });
                   } else {
-                    alert(`❌ JDBC 사이드카 실패\n${r?.error || '?'}\n\nJAR: ${r?.jar || '(미발견)'}\nJava bin: ${r?.java || '(기본)'}`);
+                    setConfirmModal({
+                      title: '❌ JDBC 사이드카 실패',
+                      message: `${r?.error || '?'}\n\nJAR: ${r?.jar || '(미발견)'}\nJava bin: ${r?.java || '(기본)'}`,
+                      onOk: () => {},
+                    });
                   }
                 } catch (e: any) {
-                  alert(`❌ JDBC 사이드카 예외: ${e?.message || e}`);
+                  setConfirmModal({
+                    title: '❌ JDBC 사이드카 예외',
+                    message: String(e?.message || e),
+                    onOk: () => {},
+                  });
                 }
               }}
               title="Java 사이드카 ping + 등록된 드라이버 진단 (Driver Manager 도착 전 임시 진단)"
@@ -1932,7 +2056,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
                       <span style={{ fontWeight: 600, fontSize: 12, color: '#9cdcfe', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
                       <button onClick={() => { setSql(() => f.sql); setFavPanelOpen(false); }} title="에디터에 로드" style={{ background: '#0e639c', color: '#fff', border: 0, padding: '1px 6px', borderRadius: 2, cursor: 'pointer', fontSize: 11 }}>로드</button>
                       <button onClick={() => setNameModal({ mode: 'rename', value: f.name, id: f.id })} title="이름 변경" style={{ background: '#444', color: '#ddd', border: 0, padding: '1px 6px', borderRadius: 2, cursor: 'pointer', fontSize: 11 }}>✎</button>
-                      <button onClick={() => { if (confirm(`삭제: ${f.name}?`)) setFavorites(prev => prev.filter(x => x.id !== f.id)); }} title="삭제" style={{ background: '#5a1d1d', color: '#fff', border: 0, padding: '1px 6px', borderRadius: 2, cursor: 'pointer', fontSize: 11 }}>×</button>
+                      <button onClick={() => setConfirmModal({ title: '⭐ 즐겨찾기 삭제', message: `"${f.name}" 을(를) 삭제할까요?`, onOk: () => setFavorites(prev => prev.filter(x => x.id !== f.id)) })} title="삭제" style={{ background: '#5a1d1d', color: '#fff', border: 0, padding: '1px 6px', borderRadius: 2, cursor: 'pointer', fontSize: 11 }}>×</button>
                     </div>
                     <code style={{ color: '#aaa', fontSize: 10, fontFamily: 'monospace', whiteSpace: 'pre-wrap', overflow: 'hidden', maxHeight: 40 }}>{f.sql.slice(0, 200)}{f.sql.length > 200 ? '...' : ''}</code>
                   </div>
@@ -1949,26 +2073,66 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
               ⏹ 취소
             </button>
           )}
-          <button onClick={onSaveCsv} disabled={!displayedResult || displayedResult.columns.length === 0} style={{ background: '#444', color: '#fff', border: 0, padding: '4px 10px', borderRadius: 3, cursor: 'pointer' }} title="결과를 CSV 파일로 저장">
-            💾 CSV
-          </button>
-          <button onClick={onSaveJson} disabled={!displayedResult || displayedResult.columns.length === 0} style={{ background: '#444', color: '#fff', border: 0, padding: '4px 10px', borderRadius: 3, cursor: 'pointer' }} title="결과를 JSON 파일로 저장">
-            💾 JSON
-          </button>
-          <button onClick={onCopyClipboard} disabled={!displayedResult || displayedResult.columns.length === 0} style={{ background: '#444', color: '#fff', border: 0, padding: '4px 10px', borderRadius: 3, cursor: 'pointer' }} title="결과를 TSV 로 클립보드 복사 (Excel 붙여넣기 호환)">
-            📋 클립보드로 복사
-          </button>
-          <button onClick={onCopyImage} disabled={!displayedResult || displayedResult.columns.length === 0} style={{ background: '#444', color: '#fff', border: 0, padding: '4px 10px', borderRadius: 3, cursor: 'pointer' }} title="결과를 PNG 이미지로 클립보드 복사">
-            🖼 이미지로 복사
-          </button>
-          <button
-            onClick={onAutoGenerate}
-            disabled={generating || !sql.trim()}
-            title="편집창의 요청/메모를 Claude agent 에 보내 SQL 을 생성하고 편집창 하단에 추가"
-            style={{ background: generating ? '#555' : '#6f4ab3', color: '#fff', border: 0, padding: '4px 10px', borderRadius: 3, cursor: generating ? 'wait' : 'pointer' }}
-          >
-            {generating ? '🤖 생성 중...' : '🤖 AI 자동생성'}
-          </button>
+          {/* CSV/JSON/클립보드/이미지 버튼 제거 — 모두 결과 영역의 "↥ 데이터 추출" 메뉴로 통합됨 */}
+          {/* AI 자동 생성 — LogAnalyzer 와 동일 스타일 (teal/blue + 에이전트 dropdown) */}
+          <div style={{ display: 'inline-flex', alignItems: 'stretch', borderRadius: 3, position: 'relative' }}>
+            <button
+              onClick={onAutoGenerate}
+              disabled={generating || !sql.trim()}
+              title={`편집창의 요청/메모를 ${selectedAgent} 에이전트에 보내 SQL 을 생성하고 편집창 하단에 추가`}
+              style={{
+                padding: '4px 12px', fontSize: 12, color: '#fff',
+                background: generating ? '#555' : '#2b4e74',
+                border: '1px solid #3a6593', borderRight: 'none',
+                borderRadius: '3px 0 0 3px', cursor: generating ? 'wait' : 'pointer',
+              }}
+            >🤖 {generating ? '생성 중...' : 'AI 자동 생성'}</button>
+            <button
+              onClick={() => setAgentMenuOpen(v => !v)}
+              disabled={generating}
+              title="에이전트 선택"
+              style={{
+                padding: '4px 6px', fontSize: 12, color: '#fff',
+                background: generating ? '#555' : '#2b4e74',
+                border: '1px solid #3a6593',
+                borderRadius: '0 3px 3px 0', cursor: generating ? 'wait' : 'pointer',
+              }}
+            >▾</button>
+            {agentMenuOpen && (
+              <>
+                <div onClick={() => setAgentMenuOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 99998 }} />
+                <div style={{
+                  position: 'absolute', top: '100%', right: 0, marginTop: 4,
+                  background: '#1a1a2e', border: '1px solid #3a3a5a', borderRadius: 6,
+                  boxShadow: '0 6px 20px rgba(0,0,0,0.5)', zIndex: 99999,
+                  minWidth: 160, padding: 4, display: 'flex', flexDirection: 'column', gap: 2,
+                }} onClick={e => e.stopPropagation()}>
+                  {([
+                    { id: 'claude' as const, label: 'Claude', color: '#a070ff' },
+                    { id: 'gemini' as const, label: 'Gemini', color: '#4a9eff' },
+                    { id: 'codex'  as const, label: 'Codex',  color: '#5cd97a' },
+                  ]).map(opt => {
+                    const Ico = AGENT_ICON[opt.id];
+                    return (
+                      <button key={opt.id}
+                        onClick={() => { setSelectedAgent(opt.id); setAgentMenuOpen(false); onAutoGenerate(); }}
+                        onMouseEnter={e => (e.currentTarget.style.background = opt.color + '22')}
+                        onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                        style={{
+                          background: 'transparent', color: '#ddd', border: 0,
+                          padding: '6px 10px', textAlign: 'left', cursor: 'pointer',
+                          borderRadius: 4, fontSize: 12, display: 'flex', alignItems: 'center', gap: 8,
+                        }}
+                      >
+                        <Ico />
+                        <span>{opt.label} 로 생성</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
           {copyHint && <span style={{ color: '#9cdcfe', fontSize: 11, marginLeft: 6 }}>{copyHint}</span>}
         </div>
         {/* SQL 에디터 탭 바 */}
@@ -2141,7 +2305,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
           />
         ) : (
         <div
-          style={{ flex: '0 0 35%', minHeight: 80, borderBottom: '1px solid #333', position: 'relative' }}
+          style={{ flex: '1 1 0', minHeight: 80, position: 'relative' }}
           onDragOver={e => {
             if (!(e.dataTransfer.types.includes('application/x-pepe-sql-table') || e.dataTransfer.types.includes('text/plain'))) return;
             e.preventDefault();
@@ -2177,8 +2341,43 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
             }}
           />
         </div>)}
-        {/* 결과 영역 — 객체 탭일 때는 결과가 있을 때만 표시 (객체 패널에 공간 양보) */}
-        <div style={{ flex: (activeTab?.kind === 'object' && !result) ? '0 0 0px' : 1, overflow: 'hidden', minHeight: 0, minWidth: 0, display: (activeTab?.kind === 'object' && !result) ? 'none' : 'flex', flexDirection: 'column' }}>
+        {/* 결과/상단 패널 사이 Sash — DBeaver 스타일 (드래그 리사이즈 + ▲▼ 접기/펼치기) */}
+        {!(activeTab?.kind === 'object' && !result) && (
+          <div style={{ flexShrink: 0, height: 6, background: '#252526', borderTop: '1px solid #333', borderBottom: '1px solid #333', cursor: 'row-resize', position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'visible', zIndex: 4 }}
+            onMouseDown={(e) => {
+              if ((e.target as HTMLElement).dataset?.role === 'sash-btn') return;
+              e.preventDefault();
+              const startY = e.clientY;
+              const startH = resultPaneCollapsed ? 0 : resultPaneHeight;
+              const onMove = (ev: MouseEvent) => {
+                const h = Math.max(0, Math.min(window.innerHeight - 200, startH - (ev.clientY - startY)));
+                setResultPaneCollapsed(h < 30);
+                if (h >= 30) setResultPaneHeight(h);
+                setResultPaneMaximized(false);
+              };
+              const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+              window.addEventListener('mousemove', onMove);
+              window.addEventListener('mouseup', onUp);
+            }}
+            title="드래그: 결과 패널 크기 조절"
+          >
+            <div style={{ position: 'absolute', top: -7, left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: 0, background: '#1e1e1e', border: '1px solid #3f3f46', borderRadius: 3, height: 16, padding: '0 1px', zIndex: 5 }}>
+              <span data-role="sash-btn" title={resultPaneMaximized ? '결과 패널 복원' : '결과 패널 최대화'} onMouseDown={e => e.stopPropagation()} onClick={() => { setResultPaneMaximized(v => !v); setResultPaneCollapsed(false); }}
+                style={{ cursor: 'pointer', color: '#9cdcfe', fontSize: 10, lineHeight: '14px', padding: '0 6px', userSelect: 'none', display: 'inline-flex', alignItems: 'center' }}>▲</span>
+              <span style={{ width: 1, height: 10, background: '#444' }} />
+              <span data-role="sash-btn" title={resultPaneCollapsed ? '결과 패널 펼치기' : '결과 패널 접기'} onMouseDown={e => e.stopPropagation()} onClick={() => { setResultPaneCollapsed(v => !v); setResultPaneMaximized(false); }}
+                style={{ cursor: 'pointer', color: '#9cdcfe', fontSize: 10, lineHeight: '14px', padding: '0 6px', userSelect: 'none', display: 'inline-flex', alignItems: 'center' }}>▼</span>
+            </div>
+          </div>
+        )}
+        {/* 결과 영역 — 객체 탭일 때는 결과가 있을 때만 표시 (객체 패널에 공간 양보). 높이는 Sash 로 조절. */}
+        <div style={{
+          flex: resultPaneMaximized ? '1 1 0' : '0 0 auto',
+          height: (activeTab?.kind === 'object' && !result) ? 0 : (resultPaneMaximized ? undefined : (resultPaneCollapsed ? 0 : resultPaneHeight)),
+          overflow: 'hidden', minHeight: 0, minWidth: 0,
+          display: (activeTab?.kind === 'object' && !result) || resultPaneCollapsed ? 'none' : 'flex',
+          flexDirection: 'column'
+        }}>
           {/* 결과 탭 스트립 — 현재 + 핀된 스냅샷 */}
           {(pinnedSnapshots.length > 0 || result) && (
             <div style={{ display: 'flex', alignItems: 'stretch', background: '#252526', borderBottom: '1px solid #333', minHeight: 26, overflowX: 'auto' }}>
@@ -2232,47 +2431,400 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
               })}
             </div>
           )}
-          <div style={{ flex: 1, overflow: 'auto', minHeight: 0, minWidth: 0, position: 'relative' }}>
+          {/* 편집 컨트롤 툴바 — 결과 그리드 위 별도 영역 (그리드와 겹치지 않도록 분리). 복사는 스냅샷에서도 가능. */}
+          {displayedResult && displayedResult.columns.length > 0 && (() => {
+            const pkCols = pksByTableRef.current.get(lastTable.toUpperCase()) || [];
+            void pkRev;
+            const pendingTotal = edits.size + newRows.length + deletedRowIdxs.size;
+            const enabled = pendingTotal > 0 && !!displayedLastTable;
+            const summaryPieces = [
+              edits.size ? `${edits.size}셀 수정` : '',
+              newRows.length ? `${newRows.length}건 삽입` : '',
+              deletedRowIdxs.size ? `${deletedRowIdxs.size}건 삭제` : '',
+            ].filter(Boolean);
+            return (
+              <div style={{ display: 'flex', gap: 4, alignItems: 'center', padding: '4px 8px', background: '#252526', borderBottom: '1px solid #333', flexShrink: 0, flexWrap: 'wrap' }}>
+                {!isPinnedView && displayedLastTable && (
+                  <span title={pkCols.length > 0 ? `PK: ${pkCols.join(', ')} (UPDATE/DELETE WHERE 에 사용)` : 'PK 미감지 — 모든 컬럼 매칭 폴백'} style={{ fontSize: 10, color: pkCols.length > 0 ? '#9cdcfe' : '#e0a060', background: '#2a2a2a', border: '1px solid #444', padding: '2px 6px', borderRadius: 3 }}>
+                    {pkCols.length > 0 ? `🔑 ${pkCols.join(',')}` : '⚠ no PK'}
+                  </span>
+                )}
+                {!isPinnedView && (
+                  <button
+                    onClick={() => { if (lastTable) runSql(backend!.selectAllForTable(lastTable)); }}
+                    disabled={!connected || running || !lastTable}
+                    title="새로 고침 — SELECT 재실행 (현재 편집 중인 변경분 유지)"
+                    style={{ background: '#3a3a3a', color: '#fff', border: '1px solid #555', padding: '4px 8px', borderRadius: 3, cursor: connected && lastTable ? 'pointer' : 'not-allowed', fontSize: 11 }}
+                  >🔄 새로 고침</button>
+                )}
+                {/* Fetch size — DBeaver "Custom row count" */}
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 4 }} title="Result Set Fetch Size — SELECT 한 번에 가져올 최대 행 수">
+                  <span style={{ color: '#9cdcfe', fontSize: 11 }}>⚙</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={MAX_DISPLAY_ROWS}
+                    value={fetchSize}
+                    onChange={e => setFetchSize(Math.max(1, Math.min(MAX_DISPLAY_ROWS, parseInt(e.target.value || '0', 10) || 1)))}
+                    style={{ width: 60, background: '#1e1e1e', color: '#d4d4d4', border: '1px solid #555', borderRadius: 3, padding: '2px 6px', fontSize: 11, textAlign: 'right' }}
+                  />
+                </span>
+                {/* 데이터 추출 dropdown — fixed positioning 으로 부모 overflow 무시 */}
+                <div style={{ position: 'relative' }}>
+                  <button
+                    onClick={(e) => {
+                      if (exportMenuOpen) { setExportMenuOpen(false); return; }
+                      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                      // bottom = 뷰포트 하단부터 버튼 위쪽까지 거리. 메뉴는 버튼 위로 펼침.
+                      setExportMenuAnchor({ left: rect.right, bottom: window.innerHeight - rect.top + 4 });
+                    }}
+                    disabled={!displayedResult}
+                    title="선택/표시 행 내보내기 — CSV / JSON / SQL INSERT"
+                    style={{ background: '#3a3a3a', color: '#fff', border: '1px solid #555', padding: '4px 8px', borderRadius: 3, cursor: displayedResult ? 'pointer' : 'not-allowed', fontSize: 11 }}
+                  >↥ 데이터 추출 ▾</button>
+                  {exportMenuOpen && exportMenuAnchor && (
+                    <>
+                      <div onClick={() => setExportMenuOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 9990 }} />
+                      <div style={{ position: 'fixed', left: exportMenuAnchor.left, bottom: exportMenuAnchor.bottom, transform: 'translateX(-100%)', background: '#252526', border: '1px solid #555', borderRadius: 3, padding: 4, minWidth: 240, maxHeight: '70vh', overflowY: 'auto', zIndex: 9999, boxShadow: '0 -4px 12px rgba(0,0,0,0.5)' }}>
+                        {(() => {
+                          const FORMATS: { id: 'csv' | 'tsv' | 'json' | 'sql' | 'md'; label: string; hint: string; ext: string }[] = [
+                            { id: 'csv',  label: 'CSV',        hint: '쉼표 구분 (헤더 포함)', ext: 'csv' },
+                            { id: 'tsv',  label: 'TSV',        hint: '탭 구분 (헤더 포함)',  ext: 'tsv' },
+                            { id: 'json', label: 'JSON',       hint: '배열 형식',           ext: 'json' },
+                            { id: 'sql',  label: 'SQL INSERT', hint: 'INSERT INTO …',      ext: 'sql' },
+                            { id: 'md',   label: 'Markdown',   hint: '표 형식',             ext: 'md' },
+                          ];
+                          // 포맷별 직렬화 — 클립보드/파일 양쪽에서 재사용.
+                          const serialize = (fmtId: string): string => {
+                            if (!displayedResult) return '';
+                            const cols = displayedResult.columns;
+                            const sel = Array.from(selectedRowIdxs).sort((a, b) => a - b);
+                            const idxs = sel.length > 0 ? sel : viewRowIndices;
+                            const rows = idxs.map(i => displayedResult.rows[i]);
+                            if (fmtId === 'csv' || fmtId === 'tsv') {
+                              const sep = fmtId === 'csv' ? ',' : '\t';
+                              const esc = (v: string) => {
+                                const s = (v ?? '').toString();
+                                if (fmtId === 'csv' && /[,"\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+                                return s.replace(/\t/g, ' ').replace(/\r?\n/g, ' ');
+                              };
+                              return [cols.map(esc).join(sep), ...rows.map(r => r.map(esc).join(sep))].join('\n');
+                            }
+                            if (fmtId === 'json') {
+                              return JSON.stringify(rows.map(r => {
+                                const o: Record<string, string> = {};
+                                cols.forEach((c, i) => { o[c] = r[i] ?? ''; });
+                                return o;
+                              }), null, 2);
+                            }
+                            if (fmtId === 'sql') {
+                              const tbl = displayedLastTable || lastTable || 'TABLE';
+                              const esc = (v: string) => v === '' ? 'NULL' : `'${v.replace(/'/g, "''")}'`;
+                              return rows.map(r => `INSERT INTO ${tbl} (${cols.join(', ')}) VALUES (${r.map(esc).join(', ')});`).join('\n');
+                            }
+                            if (fmtId === 'md') {
+                              const esc = (v: string) => (v ?? '').toString().replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+                              return [
+                                '| ' + cols.map(esc).join(' | ') + ' |',
+                                '| ' + cols.map(() => '---').join(' | ') + ' |',
+                                ...rows.map(r => '| ' + r.map(esc).join(' | ') + ' |'),
+                              ].join('\n');
+                            }
+                            return '';
+                          };
+                          const itemStyle: React.CSSProperties = { padding: '6px 10px', cursor: 'pointer', fontSize: 11, color: '#d4d4d4', display: 'flex', justifyContent: 'space-between', gap: 12, borderRadius: 2, userSelect: 'none' };
+                          const onHover = (e: React.MouseEvent<HTMLDivElement>) => { e.currentTarget.style.background = '#0e639c'; };
+                          const onLeave = (e: React.MouseEvent<HTMLDivElement>) => { e.currentTarget.style.background = 'transparent'; };
+                          // 1단계 — 대상 선택 (클립보드 / 파일 / 이미지)
+                          if (exportMenuPath === null) {
+                            return (<>
+                              <div onClick={() => setExportMenuPath('clipboard')} onMouseEnter={onHover} onMouseLeave={onLeave} style={itemStyle}>
+                                <span>📋 클립보드로 복사</span><span style={{ color: '#888' }}>▸</span>
+                              </div>
+                              <div onClick={() => setExportMenuPath('file')} onMouseEnter={onHover} onMouseLeave={onLeave} style={itemStyle}>
+                                <span>💾 파일로 저장</span><span style={{ color: '#888' }}>▸</span>
+                              </div>
+                              <div onClick={async () => { setExportMenuOpen(false); await onCopyImage(); }} onMouseEnter={onHover} onMouseLeave={onLeave} style={itemStyle}>
+                                <span>🖼 이미지로 복사</span><span style={{ color: '#888', fontSize: 10 }}>PNG → 클립보드</span>
+                              </div>
+                            </>);
+                          }
+                          // 2단계 — 포맷 선택 (뒤로가기 헤더 포함)
+                          const isClip = exportMenuPath === 'clipboard';
+                          return (<>
+                            <div onClick={() => setExportMenuPath(null)} onMouseEnter={onHover} onMouseLeave={onLeave} style={{ ...itemStyle, color: '#9cdcfe', borderBottom: '1px solid #333' }}>
+                              <span>◂ 뒤로 — {isClip ? '📋 클립보드로 복사' : '💾 파일로 저장'}</span>
+                            </div>
+                            {FORMATS.map(opt => (
+                              <div key={`${exportMenuPath}-${opt.id}`}
+                                onClick={async () => {
+                                  setExportMenuOpen(false);
+                                  let out = serialize(opt.id);
+                                  if (!out) return;
+                                  if (isClip) {
+                                    const rowCount = (selectedRowIdxs.size > 0 ? selectedRowIdxs.size : viewRowIndices.length);
+                                    try { await navigator.clipboard.writeText(out); flashHint(`${opt.label} ${rowCount}행 — 클립보드 복사 완료`); }
+                                    catch { flashHint('클립보드 복사 실패'); }
+                                  } else {
+                                    // 파일 저장 — CSV 는 Excel 한글 호환 위해 UTF-8 BOM 부착
+                                    if (opt.id === 'csv') out = '﻿' + out;
+                                    const baseName = (displayedLastTable || lastTable || 'export').replace(/[\\/:*?"<>|]/g, '_');
+                                    const ts = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
+                                    const defaultName = `${baseName}_${ts}.${opt.ext}`;
+                                    const filters = [
+                                      { name: opt.label, extensions: [opt.ext] },
+                                      { name: 'All Files', extensions: ['*'] },
+                                    ];
+                                    const api: any = (window as any).api || {};
+                                    const r = await api.saveTextFile?.({ defaultName, content: out, filters });
+                                    if (r?.success) flashHint(`💾 저장 완료 — ${r.filePath}`);
+                                    else if (!r?.canceled) flashHint(`저장 실패 — ${r?.error || 'unknown'}`);
+                                  }
+                                }}
+                                onMouseEnter={onHover} onMouseLeave={onLeave}
+                                style={itemStyle}
+                              >
+                                <span>{opt.label}</span>
+                                <span style={{ color: '#888', fontSize: 10 }}>{isClip ? opt.hint : `.${opt.ext}`}</span>
+                              </div>
+                            ))}
+                          </>);
+                        })()}
+                        <div style={{ borderTop: '1px solid #444', padding: '6px 10px', fontSize: 10, color: '#888' }}>
+                          {selectedRowIdxs.size > 0 ? `선택된 ${selectedRowIdxs.size}행 대상` : `표시된 전체 ${viewRowIndices.length}행 대상`}
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+                {/* 우측 정렬용 spacer */}
+                <span style={{ flex: 1 }} />
+                {!isPinnedView && pendingTotal > 0 && (
+                  <span title={summaryPieces.join(' / ')} style={{ fontSize: 10, color: '#e0a060', background: '#2a2a2a', border: '1px solid #555', padding: '2px 6px', borderRadius: 3 }}>
+                    ● {pendingTotal} 대기
+                  </span>
+                )}
+                {!isPinnedView && (
+                  <button
+                    onClick={() => setNewRows(prev => [...prev, displayedResult ? displayedResult.columns.map(() => '') : []])}
+                    disabled={!displayedLastTable || !displayedResult}
+                    title="비어 있는 새 행 추가 (적용 시 INSERT)"
+                    style={{ background: '#3a7d3a', color: '#fff', border: 0, padding: '4px 10px', borderRadius: 3, cursor: displayedLastTable ? 'pointer' : 'not-allowed', fontSize: 11, fontWeight: 600 }}
+                  >+ 새 행</button>
+                )}
+                {!isPinnedView && (
+                  <button
+                    onClick={() => {
+                      // 선택된 기존 행을 복제 — 새 INSERT 후보로 추가 (값 그대로). 선택 없으면 비활성.
+                      if (!displayedResult || selectedRowIdxs.size === 0) return;
+                      const sorted = Array.from(selectedRowIdxs).sort((a, b) => a - b);
+                      const cloned = sorted.map(i => displayedResult.rows[i].slice());
+                      setNewRows(prev => [...prev, ...cloned]);
+                    }}
+                    disabled={!displayedLastTable || selectedRowIdxs.size === 0}
+                    title={selectedRowIdxs.size > 0 ? `선택된 ${selectedRowIdxs.size}행 복제 (적용 시 INSERT)` : '복제할 행 선택 필요'}
+                    style={{ background: selectedRowIdxs.size > 0 ? '#5a7d3a' : '#444', color: '#fff', border: 0, padding: '4px 10px', borderRadius: 3, cursor: selectedRowIdxs.size > 0 ? 'pointer' : 'not-allowed', fontSize: 11, fontWeight: 600 }}
+                  >⎘ 복제{selectedRowIdxs.size > 0 ? ` (${selectedRowIdxs.size})` : ''}</button>
+                )}
+                {!isPinnedView && (
+                  <button
+                    onClick={() => {
+                      // 선택된 행을 삭제 표시 (실제 DELETE 는 적용하기 시점).
+                      if (selectedRowIdxs.size === 0) return;
+                      setDeletedRowIdxs(prev => {
+                        const next = new Set(prev);
+                        selectedRowIdxs.forEach(i => next.add(i));
+                        return next;
+                      });
+                    }}
+                    disabled={!displayedLastTable || selectedRowIdxs.size === 0}
+                    title={selectedRowIdxs.size > 0 ? `선택된 ${selectedRowIdxs.size}행 삭제 표시 (적용 시 DELETE)` : '삭제할 행 선택 필요'}
+                    style={{ background: selectedRowIdxs.size > 0 ? '#a04040' : '#444', color: '#fff', border: 0, padding: '4px 10px', borderRadius: 3, cursor: selectedRowIdxs.size > 0 ? 'pointer' : 'not-allowed', fontSize: 11, fontWeight: 600 }}
+                  >🗑 삭제{selectedRowIdxs.size > 0 ? ` (${selectedRowIdxs.size})` : ''}</button>
+                )}
+                {/* 복사/붙여넣기 버튼 제거 — 복제(⎘) 가 동일 워크플로우 커버. 외부 복사는 ↥ 데이터 추출 메뉴 사용. */}
+                {!isPinnedView && (
+                  <button
+                    onClick={() => { setEdits(new Map()); setNewRows([]); setDeletedRowIdxs(new Set()); }}
+                    disabled={pendingTotal === 0}
+                    title={pendingTotal === 0 ? '취소할 변경 사항 없음' : `${summaryPieces.join(' / ')} 모두 폐기 (DB 영향 없음)`}
+                    style={{ background: pendingTotal > 0 ? '#7a3a3a' : '#444', color: '#fff', border: 0, padding: '4px 10px', borderRadius: 3, cursor: pendingTotal > 0 ? 'pointer' : 'not-allowed', fontSize: 11, fontWeight: 600 }}
+                  >↶ 취소</button>
+                )}
+                {!isPinnedView && (
+                  <button
+                    onClick={onApplyChanges}
+                    disabled={!enabled || applying}
+                    title={!displayedLastTable ? '단일 테이블 SELECT 결과에서만 사용 가능' : pendingTotal === 0 ? '변경 사항 없음' : `${summaryPieces.join(' / ')} → 단일 트랜잭션 적용`}
+                    style={{ background: enabled ? '#c97a2a' : '#888', color: '#fff', border: 0, padding: '4px 12px', borderRadius: 3, cursor: enabled ? 'pointer' : 'not-allowed', fontSize: 11, fontWeight: 600, boxShadow: '0 2px 6px rgba(0,0,0,0.25)' }}
+                  >
+                    {applying ? '적용 중...' : `✔ 적용하기${pendingTotal > 0 ? ` (${pendingTotal})` : ''}`}
+                  </button>
+                )}
+              </div>
+            );
+          })()}
+          <div
+            tabIndex={0}
+            onPaste={(e) => {
+              // 스냅샷 뷰는 읽기전용 — 붙여넣기 차단
+              if (isPinnedView || !displayedResult) return;
+              // 셀 인라인 편집 중이면 input 의 paste 가 우선
+              if (editingCell) return;
+              const text = e.clipboardData.getData('text/plain');
+              if (!text) return;
+              e.preventDefault();
+              const ncols = displayedResult.columns.length;
+              // TSV 파싱 — 줄 끝 \r 제거. 빈 줄 제외.
+              const lines = text.replace(/\r\n?/g, '\n').split('\n').filter(l => l.length > 0);
+              if (!lines.length) return;
+              // 헤더 자동 감지 — 첫 줄이 컬럼명과 모두 일치하면 헤더로 스킵
+              let startIdx = 0;
+              const firstCells = lines[0].split('\t');
+              if (firstCells.length === ncols && firstCells.every((c, i) => c === displayedResult.columns[i])) startIdx = 1;
+              const pasted: string[][] = [];
+              for (let li = startIdx; li < lines.length; li++) {
+                const cells = lines[li].split('\t');
+                const row: string[] = [];
+                for (let j = 0; j < ncols; j++) row.push((cells[j] ?? '').toString());
+                pasted.push(row);
+              }
+              if (!pasted.length) return;
+              setNewRows(prev => [...prev, ...pasted]);
+            }}
+            style={{ flex: 1, overflow: 'auto', minHeight: 0, minWidth: 0, position: 'relative', outline: 'none' }}>
           {displayedResultError && (
             <div style={{ background: '#5a1d1d', color: '#fcc', padding: 8, fontSize: 12, fontFamily: 'monospace', whiteSpace: 'pre-wrap' }}>{displayedResultError}</div>
           )}
-          {displayedResult && displayedResult.columns.length > 0 && (
+          {/* 실행 계획(EXPLAIN) 결과 — DBeaver 스타일 트리 렌더 (들여쓰기 + 분기선) */}
+          {displayedResult && displayedResult.columns.length === 1 && (displayedResult.columns[0] === 'Plan' || displayedResult.columns[0] === 'plan') && (() => {
+            // 1) 구분선 / 빈 줄 제거 + 들여쓰기 길이 측정
+            const rawLines = displayedResult.rows.map(r => (r[0] ?? '').toString());
+            type Node = { leading: number; text: string };
+            const flat: Node[] = [];
+            rawLines.forEach(line => {
+              const noTrail = line.replace(/\s+$/, '');
+              if (!noTrail.trim()) return;
+              if (/^-{3,}\s*$/.test(noTrail.trim())) return;
+              const leading = noTrail.match(/^(\s*)/)?.[1].length || 0;
+              flat.push({ leading, text: noTrail.trim() });
+            });
+            // 2) 들여쓰기 단위 추정 — 0 이상의 leading 중 최소값(0 제외) 으로 정규화. 안 잡히면 2 가정.
+            const leadings = flat.map(n => n.leading).filter(l => l > 0);
+            const unit = leadings.length ? Math.min(...leadings) : 2;
+            const nodes = flat.map(n => ({ depth: Math.floor(n.leading / unit), text: n.text }));
+            // 3) 부모 체인 계산 — 각 노드의 ancestor 깊이별로 "마지막 형제 여부" 트래킹 → 트리 분기 라인 그림.
+            const isLastAtDepth: boolean[][] = [];
+            for (let i = 0; i < nodes.length; i++) {
+              const lastFlags: boolean[] = [];
+              // 같은 depth 또는 더 깊은 노드를 더 이상 만나지 않는지 → 마지막 형제 여부
+              for (let d = 0; d <= nodes[i].depth; d++) {
+                let isLast = true;
+                for (let j = i + 1; j < nodes.length; j++) {
+                  if (nodes[j].depth < d) break; // ancestor 변경
+                  if (nodes[j].depth === d) { isLast = false; break; }
+                }
+                lastFlags.push(isLast);
+              }
+              isLastAtDepth.push(lastFlags);
+            }
+            const sel = Array.from(selectedRowIdxs).sort((a, b) => a - b)[0];
+            return (
+              <div style={{ padding: 0, background: '#1e1e1e', fontFamily: 'monospace', fontSize: 12 }}>
+                <div style={{ padding: '4px 12px', color: '#9cdcfe', fontWeight: 600, borderBottom: '1px solid #333', fontSize: 11, position: 'sticky', top: 0, background: '#252526' }}>Plan String</div>
+                {(() => {
+                  // 각 노드의 자식 존재 여부 — 다음 노드 depth 가 더 크면 자식 있음
+                  const hasChild: boolean[] = nodes.map((n, i) => (i + 1 < nodes.length && nodes[i + 1].depth > n.depth));
+                  // 접힌 ancestor 가 있는 노드는 숨김 — visibility 계산
+                  const visible: boolean[] = nodes.map(() => true);
+                  for (let i = 0; i < nodes.length; i++) {
+                    if (!collapsedPlanNodes.has(i) || !hasChild[i]) continue;
+                    // i 의 모든 descendant(다음에 등장하는 depth > nodes[i].depth 까지) 숨김
+                    for (let j = i + 1; j < nodes.length; j++) {
+                      if (nodes[j].depth <= nodes[i].depth) break;
+                      visible[j] = false;
+                    }
+                  }
+                  return nodes.map((n, ni) => {
+                    if (!visible[ni]) return null;
+                    const isSelected = sel === ni;
+                    const flags = isLastAtDepth[ni];
+                    const collapsed = collapsedPlanNodes.has(ni);
+                    const expandable = hasChild[ni];
+                    // 분기 라인
+                    const prefix: React.ReactNode[] = [];
+                    for (let d = 0; d < n.depth; d++) {
+                      prefix.push(
+                        <span key={`v${d}`} style={{ display: 'inline-block', width: 18, color: '#666', textAlign: 'center' }}>
+                          {flags[d] ? ' ' : '│'}
+                        </span>
+                      );
+                    }
+                    if (n.depth > 0) {
+                      prefix.push(
+                        <span key="branch" style={{ display: 'inline-block', width: 18, color: '#888', textAlign: 'center' }}>
+                          {flags[n.depth] ? '└' : '├'}─
+                        </span>
+                      );
+                    }
+                    // 펼침/접힘 토글 캐럿 — 자식 있는 노드에만 표시
+                    const toggle = expandable ? (
+                      <span
+                        onClick={e => {
+                          e.stopPropagation();
+                          setCollapsedPlanNodes(prev => {
+                            const next = new Set(prev);
+                            if (next.has(ni)) next.delete(ni); else next.add(ni);
+                            return next;
+                          });
+                        }}
+                        title={collapsed ? '펼치기' : '접기'}
+                        style={{ display: 'inline-block', width: 14, color: '#9cdcfe', textAlign: 'center', cursor: 'pointer', userSelect: 'none' }}
+                      >{collapsed ? '▸' : '▾'}</span>
+                    ) : (
+                      <span style={{ display: 'inline-block', width: 14, color: '#555', textAlign: 'center' }}>·</span>
+                    );
+                    const m = n.text.match(/^(\S+)(\s*\(.*)?$/);
+                    const op = m ? m[1] : n.text;
+                    const rest = m && m[2] ? m[2] : '';
+                    return (
+                      <div key={ni}
+                        onClick={() => setSelectedRowIdxs(new Set([ni]))}
+                        onDoubleClick={() => {
+                          if (!expandable) return;
+                          setCollapsedPlanNodes(prev => {
+                            const next = new Set(prev);
+                            if (next.has(ni)) next.delete(ni); else next.add(ni);
+                            return next;
+                          });
+                        }}
+                        style={{
+                          padding: '3px 12px',
+                          cursor: 'pointer',
+                          background: isSelected ? '#7a3a3a' : 'transparent',
+                          color: isSelected ? '#fff' : '#d4d4d4',
+                          whiteSpace: 'pre',
+                          userSelect: 'text',
+                          display: 'flex', alignItems: 'center',
+                        }}
+                        title={expandable ? '더블클릭: 자식 펼치기/접기' : undefined}
+                      >
+                        {prefix}
+                        {toggle}
+                        <span style={{ marginLeft: 4, color: isSelected ? '#fff' : '#dcdcaa', fontWeight: 600 }}>{op}</span>
+                        <span style={{ color: isSelected ? '#fff' : '#9cdcfe' }}>{rest}</span>
+                      </div>
+                    );
+                  });
+                })()}
+                {nodes.length === 0 && (
+                  <div style={{ padding: 12, color: '#666' }}>(빈 PLAN)</div>
+                )}
+              </div>
+            );
+          })()}
+          {displayedResult && displayedResult.columns.length > 0 && !(displayedResult.columns.length === 1 && (displayedResult.columns[0] === 'Plan' || displayedResult.columns[0] === 'plan')) && (
             <>
-              {/* 헤더 우상단 floating 컨트롤 — 스냅샷 뷰에서는 숨김(읽기전용) */}
-              {!isPinnedView && (() => {
-                const pkCols = pksByTableRef.current.get(lastTable.toUpperCase()) || [];
-                void pkRev;
-                const pendingTotal = edits.size + newRows.length + deletedRowIdxs.size;
-                const enabled = pendingTotal > 0 && !!displayedLastTable;
-                const summaryPieces = [
-                  edits.size ? `${edits.size}셀 수정` : '',
-                  newRows.length ? `${newRows.length}건 삽입` : '',
-                  deletedRowIdxs.size ? `${deletedRowIdxs.size}건 삭제` : '',
-                ].filter(Boolean);
-                return (
-                  <div style={{ position: 'sticky', top: 6, float: 'right', marginRight: 8, marginTop: 6, zIndex: 5, display: 'flex', gap: 6, alignItems: 'center' }}>
-                    {displayedLastTable && (
-                      <span title={pkCols.length > 0 ? `PK: ${pkCols.join(', ')} (UPDATE/DELETE WHERE 에 사용)` : 'PK 미감지 — 모든 컬럼 매칭 폴백'} style={{ fontSize: 10, color: pkCols.length > 0 ? '#9cdcfe' : '#e0a060', background: '#2a2a2a', border: '1px solid #444', padding: '2px 6px', borderRadius: 3 }}>
-                        {pkCols.length > 0 ? `🔑 ${pkCols.join(',')}` : '⚠ no PK'}
-                      </span>
-                    )}
-                    <button
-                      onClick={() => setNewRows(prev => [...prev, displayedResult ? displayedResult.columns.map(() => '') : []])}
-                      disabled={!displayedLastTable || !displayedResult}
-                      title="비어 있는 새 행 추가 (적용 시 INSERT)"
-                      style={{ background: '#3a7d3a', color: '#fff', border: 0, padding: '4px 10px', borderRadius: 3, cursor: displayedLastTable ? 'pointer' : 'not-allowed', fontSize: 11, fontWeight: 600 }}
-                    >+ 새 행</button>
-                    <button
-                      onClick={onApplyChanges}
-                      disabled={!enabled || applying}
-                      title={!displayedLastTable ? '단일 테이블 SELECT 결과에서만 사용 가능' : pendingTotal === 0 ? '변경 사항 없음' : `${summaryPieces.join(' / ')} → 단일 트랜잭션 적용`}
-                      style={{ background: enabled ? '#c97a2a' : '#888', color: '#fff', border: 0, padding: '4px 12px', borderRadius: 3, cursor: enabled ? 'pointer' : 'not-allowed', fontSize: 11, fontWeight: 600, boxShadow: '0 2px 6px rgba(0,0,0,0.25)' }}
-                    >
-                      {applying ? '적용 중...' : `✔ 적용하기${pendingTotal > 0 ? ` (${pendingTotal})` : ''}`}
-                    </button>
-                  </div>
-                );
-              })()}
               <table style={{ borderCollapse: 'separate', borderSpacing: 0, width: 'max-content', minWidth: '100%', fontFamily: 'monospace', fontSize: 12, color: '#d4d4d4' }}>
                 <thead>
                   <tr>
@@ -2355,20 +2907,60 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
                     const isDeleted = !isPinnedView && deletedRowIdxs.has(i);
                     return (
                     <tr key={i}>
-                      <td title={`원본 행 #${i + 1}${isDeleted ? ' (삭제 표시)' : ''}`} style={{ position: 'sticky', left: 0, zIndex: 1, padding: 0, color: '#888', background: isDeleted ? '#3a1d1d' : '#252525', border: '1px solid #3f3f46', borderTop: 0, textAlign: 'center', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums', width: INDEX_COL_W, minWidth: INDEX_COL_W }}>
+                      <td title={`원본 행 #${i + 1}${isDeleted ? ' (삭제 표시)' : ''}${selectedRowIdxs.has(i) ? ' · 선택됨' : ''}`} style={{ position: 'sticky', left: 0, zIndex: 1, padding: 0, color: '#888', background: selectedRowIdxs.has(i) ? '#264f78' : (isDeleted ? '#3a1d1d' : '#252525'), border: '1px solid #3f3f46', borderTop: 0, textAlign: 'center', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums', width: INDEX_COL_W, minWidth: INDEX_COL_W }}>
                         {isPinnedView ? (
-                          <span style={{ padding: '4px 8px', display: 'inline-block' }}>{displayIdx + 1}</span>
+                          <span
+                            onClick={(e) => {
+                              setSelectedRowIdxs(prev => {
+                                const n = new Set(prev);
+                                if (e.shiftKey && lastSelectedRowRef.current !== null) {
+                                  const idxs = viewRowIndices;
+                                  const a = idxs.indexOf(lastSelectedRowRef.current);
+                                  const b = idxs.indexOf(i);
+                                  if (a >= 0 && b >= 0) { const [lo, hi] = a < b ? [a, b] : [b, a]; for (let k = lo; k <= hi; k++) n.add(idxs[k]); }
+                                } else if (e.ctrlKey || e.metaKey) {
+                                  if (n.has(i)) n.delete(i); else n.add(i);
+                                } else {
+                                  // 단일 선택 — 이미 그 행만 선택돼 있으면 해제, 아니면 새로 단일 선택
+                                  if (n.size === 1 && n.has(i)) { n.clear(); }
+                                  else { n.clear(); n.add(i); }
+                                }
+                                return n;
+                              });
+                              lastSelectedRowRef.current = i;
+                            }}
+                            title="클릭: 선택 / Ctrl+클릭: 토글 / Shift+클릭: 범위"
+                            style={{ padding: '4px 8px', display: 'inline-block', cursor: 'pointer', userSelect: 'none' }}
+                          >{displayIdx + 1}</span>
                         ) : (
                           <span
-                            onClick={() => setDeletedRowIdxs(prev => {
-                              const n = new Set(prev);
-                              if (n.has(i)) n.delete(i); else n.add(i);
-                              return n;
-                            })}
-                            title={isDeleted ? '삭제 표시 해제' : '이 행을 삭제 표시 (적용 시 DELETE)'}
-                            style={{ padding: '4px 4px', display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer', justifyContent: 'center' }}
+                            onClick={(e) => {
+                              if (e.altKey) {
+                                setDeletedRowIdxs(prev => { const n = new Set(prev); if (n.has(i)) n.delete(i); else n.add(i); return n; });
+                                return;
+                              }
+                              setSelectedRowIdxs(prev => {
+                                const n = new Set(prev);
+                                if (e.shiftKey && lastSelectedRowRef.current !== null) {
+                                  const idxs = viewRowIndices;
+                                  const a = idxs.indexOf(lastSelectedRowRef.current);
+                                  const b = idxs.indexOf(i);
+                                  if (a >= 0 && b >= 0) { const [lo, hi] = a < b ? [a, b] : [b, a]; for (let k = lo; k <= hi; k++) n.add(idxs[k]); }
+                                } else if (e.ctrlKey || e.metaKey) {
+                                  if (n.has(i)) n.delete(i); else n.add(i);
+                                } else {
+                                  // 단일 선택 — 이미 그 행만 선택돼 있으면 해제, 아니면 새로 단일 선택
+                                  if (n.size === 1 && n.has(i)) { n.clear(); }
+                                  else { n.clear(); n.add(i); }
+                                }
+                                return n;
+                              });
+                              lastSelectedRowRef.current = i;
+                            }}
+                            title={'클릭: 선택 / Ctrl+클릭: 토글 / Shift+클릭: 범위 / Alt+클릭: ' + (isDeleted ? '삭제 표시 해제' : '삭제 표시')}
+                            style={{ padding: '4px 4px', display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer', justifyContent: 'center', userSelect: 'none' }}
                           >
-                            <span style={{ color: isDeleted ? '#ff8080' : '#888', fontSize: 11 }}>{isDeleted ? '🗑' : displayIdx + 1}</span>
+                            <span style={{ color: isDeleted ? '#ff8080' : (selectedRowIdxs.has(i) ? '#fff' : '#888'), fontSize: 11 }}>{isDeleted ? '🗑' : displayIdx + 1}</span>
                           </span>
                         )}
                       </td>
@@ -2382,7 +2974,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
                         return (
                           <td key={j} style={{
                             padding: 0, border: '1px solid #3f3f46', borderTop: 0, borderLeft: 0,
-                            background: isDeleted ? '#3a1d1d' : (edited ? '#3d2a14' : (i % 2 ? '#222' : '#1e1e1e')),
+                            background: selectedRowIdxs.has(i) ? '#264f78' : (isDeleted ? '#3a1d1d' : (edited ? '#3d2a14' : (i % 2 ? '#222' : '#1e1e1e'))),
                             width: w, minWidth: w, maxWidth: w,
                             textDecoration: isDeleted ? 'line-through' : 'none',
                             opacity: isDeleted ? 0.65 : 1,
@@ -2405,20 +2997,16 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
                                 onKeyDown={e => {
                                   if (e.key === 'Escape' || e.key === 'Enter') { e.preventDefault(); setEditingCell(null); }
                                 }}
-                                ref={el => {
-                                  if (el && document.activeElement !== el) {
-                                    // Chromium caret stuck 우회 — IPC 로 window blur/focus 강제 → 한 박자 뒤 focus+select
-                                    (window as any).api?.refocusWindow?.();
-                                    setTimeout(() => { try { el.focus(); el.select(); } catch {} }, 30);
-                                  }
-                                }}
+                                onFocus={e => { try { e.currentTarget.select(); } catch {} }}
+                                onMouseDown={e => e.stopPropagation()}
+                                onClick={e => e.stopPropagation()}
                                 spellCheck={false}
                                 style={{ width: '100%', boxSizing: 'border-box', background: '#1a1a1a', color: edited ? '#ffd680' : '#d4d4d4', border: '1px solid #569cd6', padding: '3px 11px', fontFamily: 'monospace', fontSize: 12, outline: 'none', display: 'block' }}
                               />
                             ) : (
                               <div
-                                onClick={() => { if (!isPinnedView) setEditingCell(key); }}
-                                title={value.length > 40 ? value : undefined}
+                                onDoubleClick={() => { if (!isPinnedView) setEditingCell(key); }}
+                                title={(value.length > 40 ? value + '\n\n' : '') + (isPinnedView ? '' : '더블클릭: 편집')}
                                 style={{ padding: '4px 12px', color: edited ? '#ffd680' : '#d4d4d4', fontFamily: 'monospace', fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', cursor: isPinnedView ? 'default' : 'text' }}
                               >{value || ' '}</div>
                             )}
@@ -2449,21 +3037,41 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
                             width: w, minWidth: w, maxWidth: w,
                             ...(pinned ? { position: 'sticky', left: pinnedLeftFor(j), zIndex: 1 } : { position: 'relative' }),
                           }}>
-                            <input
-                              value={v}
-                              onChange={e => {
-                                const v2 = e.target.value;
-                                setNewRows(prev => prev.map((r, k) => {
-                                  if (k !== ni) return r;
-                                  const nr = r.slice();
-                                  nr[j] = v2;
-                                  return nr;
-                                }));
-                              }}
-                              spellCheck={false}
-                              placeholder={'NULL'}
-                              style={{ width: '100%', boxSizing: 'border-box', background: 'transparent', color: '#bef5be', border: 0, padding: '4px 11px', fontFamily: 'monospace', fontSize: 12, outline: 'none', display: 'block' }}
-                            />
+                            {(() => {
+                              const newKey = `new-${ni},${j}`;
+                              const isEditingNew = editingCell === newKey;
+                              return isEditingNew ? (
+                                <input
+                                  autoFocus
+                                  value={v}
+                                  onChange={e => {
+                                    const v2 = e.target.value;
+                                    setNewRows(prev => prev.map((r, k) => {
+                                      if (k !== ni) return r;
+                                      const nr = r.slice();
+                                      nr[j] = v2;
+                                      return nr;
+                                    }));
+                                  }}
+                                  onBlur={() => setEditingCell(null)}
+                                  onKeyDown={e => {
+                                    if (e.key === 'Escape' || e.key === 'Enter') { e.preventDefault(); setEditingCell(null); }
+                                  }}
+                                  onFocus={e => { try { e.currentTarget.select(); } catch {} }}
+                                  onMouseDown={e => e.stopPropagation()}
+                                  onClick={e => e.stopPropagation()}
+                                  spellCheck={false}
+                                  placeholder="NULL"
+                                  style={{ width: '100%', boxSizing: 'border-box', background: '#1a2a1a', color: '#bef5be', border: '1px solid #569cd6', padding: '3px 10px', fontFamily: 'monospace', fontSize: 12, outline: 'none', display: 'block' }}
+                                />
+                              ) : (
+                                <div
+                                  onDoubleClick={() => setEditingCell(newKey)}
+                                  title="더블클릭: 편집 — 적용하기 전까지 수정 가능"
+                                  style={{ padding: '4px 11px', color: v ? '#bef5be' : '#5a8a5a', fontStyle: v ? 'normal' : 'italic', fontFamily: 'monospace', fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', cursor: 'cell', minHeight: 14 }}
+                                >{v || 'NULL'}</div>
+                              );
+                            })()}
                           </td>
                         );
                       })}
@@ -2508,7 +3116,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
         <div style={{ padding: 8, borderBottom: '1px solid #333', display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ fontWeight: 600 }}>📜 히스토리</span>
           <button onClick={() => setHistoryPinned(false)} title="고정 해제 (Unpin)" style={{ marginLeft: 'auto', background: 'transparent', color: '#888', border: '1px solid #444', cursor: 'pointer', padding: '2px 6px', borderRadius: 3, fontSize: 11 }}>📍</button>
-          <button onClick={() => { if (confirm('히스토리 전부 삭제?')) { setHistory([]); saveHistory(sessionId, []); } }} style={{ background: 'transparent', color: '#888', border: '1px solid #444', cursor: 'pointer', padding: '2px 6px', borderRadius: 3, fontSize: 11 }}>비우기</button>
+          <button onClick={() => setConfirmModal({ title: '📜 히스토리 비우기', message: '히스토리 전부를 삭제할까요?', onOk: () => { setHistory([]); saveHistory(sessionId, []); } })} style={{ background: 'transparent', color: '#888', border: '1px solid #444', cursor: 'pointer', padding: '2px 6px', borderRadius: 3, fontSize: 11 }}>비우기</button>
         </div>
         <input value={historyFilter} onChange={e => setHistoryFilter(e.target.value)} placeholder="검색..." style={{ margin: 6, padding: 4, background: '#2a2a2a', color: '#ddd', border: '1px solid #444', borderRadius: 3 }} />
         <div style={{ flex: 1, overflowY: 'auto', padding: '0 4px 4px' }}>
@@ -2537,6 +3145,31 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
         >📜 히스토리</div>
       )}
       <DriverManagerModal open={driverManagerOpen} onClose={() => setDriverManagerOpen(false)} />
+      {confirmModal && (
+        <div
+          onClick={() => setConfirmModal(null)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 6100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{ background: '#252526', color: '#d4d4d4', borderRadius: 6, padding: 16, width: 380, boxShadow: '0 8px 32px rgba(0,0,0,0.5)' }}
+          >
+            <div style={{ fontWeight: 600, marginBottom: 10, fontSize: 13 }}>{confirmModal.title}</div>
+            <div style={{ fontSize: 12, marginBottom: 14, color: '#bbb', whiteSpace: 'pre-wrap', fontFamily: 'monospace', maxHeight: 320, overflowY: 'auto' }}>{confirmModal.message}</div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button autoFocus
+                onKeyDown={e => { if (e.key === 'Escape') setConfirmModal(null); }}
+                onClick={() => setConfirmModal(null)}
+                style={{ background: '#444', color: '#fff', border: 0, padding: '5px 14px', borderRadius: 3, cursor: 'pointer', fontSize: 12 }}
+              >취소</button>
+              <button
+                onClick={() => { const ok = confirmModal.onOk; setConfirmModal(null); ok(); }}
+                style={{ background: '#c0392b', color: '#fff', border: 0, padding: '5px 14px', borderRadius: 3, cursor: 'pointer', fontSize: 12 }}
+              >확인</button>
+            </div>
+          </div>
+        </div>
+      )}
       {nameModal && (
         <div
           onClick={() => setNameModal(null)}

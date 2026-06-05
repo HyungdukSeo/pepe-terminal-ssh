@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { FilePanel, PanelSource } from './FilePanel';
 import { TransferLog } from './TransferLog';
 import { setTermFocusBlocked } from './TerminalPanel';
+import { notifyError } from './Notify';
 import type { PanelSession } from '../utils/layoutUtils';
 
 const api = (window as any).api || {};
@@ -209,7 +210,7 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
       const connId = `sftp-${Date.now()}`;
       try {
         const result = await api.feSftpConnect?.(connId, info.host, Number(info.port) || 22, info.username, { type: 'password', password: info.auth?.password ?? '' });
-        if (!result?.success) { alert(t('connectFail', { err: result?.error || t('unknownError') })); return; }
+        if (!result?.success) { notifyError(t('connectFail', { err: result?.error || t('unknownError') })); return; }
         const newSrc: PanelSource = { mode: 'remote', termId: connId, label: `🔌 ${info.username}@${info.host}` };
         setSources(prev => {
           if (prev.find(s => s.termId === connId)) return prev;
@@ -226,7 +227,7 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
           setRightSource(newSrc);
           try { const home = await api.feHomeDir('remote', connId); setRightPath(home || '/'); } catch { setRightPath('/'); }
         }
-      } catch (err: any) { alert(t('connectFail', { err })); }
+      } catch (err: any) { notifyError(t('connectFail', { err })); }
     };
     window.addEventListener('fe-quick-sftp-connect', handler);
     return () => window.removeEventListener('fe-quick-sftp-connect', handler);
@@ -304,7 +305,7 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
   const realizeLazyRemote = async (src: PanelSource, side: 'left' | 'right'): Promise<PanelSource | null> => {
     if (src.mode !== 'lazy-remote' || !src.sessionId) return null;
     const sess = allSessionsList.find(s => s.id === src.sessionId);
-    if (!sess) { alert(t('remoteSessionMissing')); return null; }
+    if (!sess) { notifyError(t('remoteSessionMissing')); return null; }
     const connId = `fe-lazy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const jumpOpts = sess.jumpTargetHost?.trim()
       ? { host: sess.jumpTargetHost.trim(), user: sess.jumpTargetUser || 'root', port: Number(sess.jumpTargetPort) || 22, password: sess.jumpTargetPassword || undefined }
@@ -357,7 +358,7 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
     try {
       const r: any = await api?.feSftpConnect?.(newConnId, sess.host, sess.port || 22, credUser, { type: 'password', password: credPass }, jumpOpts);
       if (!r?.success) {
-        alert(t('connectFailNamed', { name: sess.name, err: r?.error || t('unknownError') }));
+        notifyError(t('connectFailNamed', { name: sess.name, err: r?.error || t('unknownError') }));
         setCredConnecting(false);
         return;
       }
@@ -381,7 +382,7 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
       }
       setCredPrompt(null);
     } catch (err: any) {
-      alert(t('connectFailNamed', { name: sess.name, err: err?.message || err }));
+      notifyError(t('connectFailNamed', { name: sess.name, err: err?.message || err }));
     }
     setCredConnecting(false);
   };
@@ -431,7 +432,7 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
     const connId = `sftp-${Date.now()}`;
     try {
       const result = await api.feSftpConnect?.(connId, sftpHost, sftpPort, sftpUser, { type: 'password', password: sftpPass });
-      if (!result?.success) { alert(t('connectFail', { error: result?.error || t('unknownError') })); setSftpConnecting(false); return; }
+      if (!result?.success) { notifyError(t('connectFail', { error: result?.error || t('unknownError') })); setSftpConnecting(false); return; }
       const newSrc: PanelSource = { mode: 'remote', termId: connId, label: `🔌 ${sftpUser}@${sftpHost}` };
       setSources(prev => [...prev, newSrc]);
       if (showSftpConnect === 'left') {
@@ -441,7 +442,7 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
         setRightSource(newSrc);
         try { const home = await api.feHomeDir('remote', connId); setRightPath(home || '/'); } catch { setRightPath('/'); }
       }
-    } catch (err: any) { alert(t('connectFail', { err })); }
+    } catch (err: any) { notifyError(t('connectFail', { err })); }
     setSftpConnecting(false);
     setShowSftpConnect(null);
     setSftpHost(''); setSftpPort(22); setSftpUser(''); setSftpPass('');
@@ -480,7 +481,7 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
         { mode: dstSource.mode, termId: dstSource.termId, path: dstFull },
         name,
       );
-      if (!result.success) alert(t('transferFail', { name, err: result.error }));
+      if (!result.success) notifyError(t('transferFail', { name, err: result.error }));
     }
 
     setTransferring(false);
@@ -502,7 +503,7 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
         { mode: dstSource.mode, termId: dstSource.termId, path: dstFull },
         name,
       );
-      if (!result.success) alert(t('transferFail', { name, err: result.error }));
+      if (!result.success) notifyError(t('transferFail', { name, err: result.error }));
     }
     setTransferring(false);
     setRefreshKey(k => k + 1);

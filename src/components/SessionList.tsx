@@ -2,6 +2,7 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { SessionEditor } from './SessionEditor';
+import { notifyConfirm } from './Notify';
 
 type LoginScriptRule = {
   expect: string;
@@ -258,13 +259,10 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
   };
 
   const handleDelete = async () => {
-    // confirm() 후 Windows BrowserWindow 포커스 복원 (입력칸 커서 회복용)
-    const refocus = () => { try { (window as any).api?.refocusWindow?.(); } catch {} };
     // 다중 선택 삭제
     if (selectedIds.size > 0) {
       const ids = [...selectedIds];
-      const ok = confirm(t('deleteItems', { count: ids.length }));
-      refocus();
+      const ok = await notifyConfirm(t('deleteTitle') || '삭제', t('deleteItems', { count: ids.length }));
       if (!ok) return;
       for (const id of ids) {
         if (sessions.some(x => x.id === id)) await window.api?.deleteSession?.(id);
@@ -280,8 +278,7 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
     if (selectedType === 'folder') {
       const f = folders.find(x => x.id === selectedId);
       if (!f) return;
-      const ok = confirm(t('deleteFolder', { name: f.name }));
-      refocus();
+      const ok = await notifyConfirm(t('deleteTitle') || '삭제', t('deleteFolder', { name: f.name }));
       if (!ok) return;
       await (window as any).api.deleteFolder(selectedId);
       await reload();
@@ -290,8 +287,7 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
     }
     const s = sessions.find(x => x.id === selectedId);
     if (!s) return;
-    const ok = confirm(t('deleteSession', { name: s.name }));
-    refocus();
+    const ok = await notifyConfirm(t('deleteTitle') || '삭제', t('deleteSession', { name: s.name }));
     if (!ok) return;
     await window.api?.deleteSession?.(selectedId);
     await reload();

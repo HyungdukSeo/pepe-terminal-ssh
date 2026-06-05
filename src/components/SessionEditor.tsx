@@ -626,22 +626,50 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
                 setDbmsTesting(true);
                 setDbmsTestResult('테스트 중...');
                 const cid = `test-${Date.now().toString(36)}`;
+                const api: any = (window as any).api || {};
+                let testUrl = effectiveUrl;
+                let forwardId = '';
                 try {
-                  const api: any = (window as any).api || {};
+                  // SSH 터널 사용 시 — 로컬 포워드 열고 URL 의 host:port 를 127.0.0.1:localPort 로 재작성
+                  if (dbmsUseSshTunnel && session?.id) {
+                    if (typeof api.sshOpenLocalForward !== 'function') {
+                      setDbmsTestResult('❌ SSH 터널 IPC 미등록 — Electron 메인 재시작 필요'); return;
+                    }
+                    setDbmsTestResult('SSH 터널 여는 중...');
+                    const fwd = await api.sshOpenLocalForward({
+                      sessionId: session.id,
+                      remoteHost: dbmsHost || '127.0.0.1',
+                      remotePort: dbmsPort || selectedDriver?.defaultPort || 0,
+                      sshHost: host,
+                      sshPort: parseInt(String(port || '22'), 10) || 22,
+                    });
+                    console.log('[SessionEditor] sshOpenLocalForward =', fwd);
+                    if (!fwd?.success) {
+                      setDbmsTestResult(`❌ SSH 터널 실패: ${fwd?.error || '?'} — 먼저 같은 세션 터미널 연결 필요`); return;
+                    }
+                    forwardId = fwd.forwardId;
+                    // 원래 호스트:포트를 127.0.0.1:localPort 로 치환
+                    const orig = `${dbmsHost || '127.0.0.1'}:${dbmsPort || selectedDriver?.defaultPort || 0}`;
+                    testUrl = effectiveUrl.replace(orig, `127.0.0.1:${fwd.localPort}`);
+                    setDbmsTestResult(`SSH 터널 OK (local=${fwd.localPort}) — JDBC 테스트 중...`);
+                  }
                   const cr = await api.jdbcConnect?.({
                     connectionId: cid,
                     driver: selectedDriver,
-                    url: effectiveUrl,
+                    url: testUrl,
                     user: dbmsUser,
                     password: dbmsPassword,
                   });
-                  if (!cr?.success) { setDbmsTestResult(`❌ ${cr?.error || '?'}`); return; }
+                  if (!cr?.success) { setDbmsTestResult(`❌ ${cr?.error || '?'} (URL: ${testUrl})`); return; }
                   const info = cr.result || {};
-                  setDbmsTestResult(`✅ ${info.productName || ''} ${info.productVersion || ''} (driver: ${info.driverName || '?'})`);
+                  setDbmsTestResult(`✅ ${info.productName || ''} ${info.productVersion || ''} (driver: ${info.driverName || '?'})${forwardId ? ' [via SSH tunnel]' : ''}`);
                   await api.jdbcDisconnect?.(cid);
                 } catch (e: any) {
                   setDbmsTestResult(`❌ 예외: ${e?.message || e}`);
-                } finally { setDbmsTesting(false); }
+                } finally {
+                  if (forwardId) { try { await api.sshCloseLocalForward?.({ forwardId }); } catch {} }
+                  setDbmsTesting(false);
+                }
               };
               return (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>

@@ -3,6 +3,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useTranslation } from 'react-i18next';
 import { FixedSizeList as VList, ListChildComponentProps } from 'react-window';
 import { subscribePwdChange, isTermPty, subscribeConnectedChange, getCurrentPwdForTerm } from './TerminalPanel';
+import { notifyError, notifyConfirm } from './Notify';
 
 const ROW_HEIGHT = 22; // App.css 의 .remote-file-item height 와 동기
 
@@ -598,7 +599,7 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
               <div className="remote-file-ctx-item danger" onClick={async () => {
                 const paths = [...selectedPaths];
                 setCtxMenu(null);
-                if (!confirm(t('deleteMultiConfirm', { count: paths.length, names: paths.slice(0, 10).join('\n') + (paths.length > 10 ? `\n... (+${paths.length - 10})` : '') }))) return;
+                if (!await notifyConfirm(t('deleteMultiConfirmTitle') || '삭제 확인', t('deleteMultiConfirm', { count: paths.length, names: paths.slice(0, 10).join('\n') + (paths.length > 10 ? `\n... (+${paths.length - 10})` : '') }))) return;
                 let ok = 0, fail = 0;
                 for (const p of paths) {
                   try {
@@ -607,7 +608,7 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
                     if (r?.success) ok++; else fail++;
                   } catch { fail++; }
                 }
-                if (fail > 0) alert(t('deleteResult', { ok, fail }));
+                if (fail > 0) notifyError(t('deleteResult', { ok, fail }));
                 setSelectedPaths(new Set());
                 if (root) navigateTo(root.path);
               }}>{t('deleteMultiple', { count: selectedPaths.size })}</div>
@@ -685,18 +686,18 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
             const node = ctxMenu.node;
             setCtxMenu(null);
             const kind = node.isDir ? t('kindFolder') : t('kindFile');
-            if (!confirm(t('deleteConfirmRecursive', { kind, path: node.path }))) return;
+            if (!await notifyConfirm(t('deleteMultiConfirmTitle') || '삭제 확인', t('deleteConfirmRecursive', { kind, path: node.path }))) return;
             try {
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               const r = await (window as any).api?.feDelete?.(mode, node.path, termId);
               if (!r?.success) {
-                alert(t('deleteFailUnknown', { err: r?.error || t('unknownError') }));
+                notifyError(t('deleteFailUnknown', { err: r?.error || t('unknownError') }));
                 return;
               }
               // 삭제된 노드의 부모 경로를 다시 로드
               if (root) navigateTo(root.path);
             } catch (err: any) {
-              alert(t('deleteFailUnknown', { err: err?.message || err }));
+              notifyError(t('deleteFailUnknown', { err: err?.message || err }));
             }
           }}>{t('deleteMenu')}{ctxMenu.node.isDir ? t('downloadRecursive') : ''}</div>
             </>

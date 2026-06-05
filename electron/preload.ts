@@ -94,6 +94,20 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('jdbc:connect', args),
   jdbcDisconnect: (connectionId: string) => ipcRenderer.invoke('jdbc:disconnect', connectionId),
   jdbcExec: (args: { connectionId: string; sql: string; maxRows?: number }) => ipcRenderer.invoke('jdbc:exec', args),
+  jdbcTxBegin: (args: { connectionId: string }) => ipcRenderer.invoke('jdbc:tx-begin', args),
+  jdbcTxCommit: (args: { connectionId: string }) => ipcRenderer.invoke('jdbc:tx-commit', args),
+  jdbcTxRollback: (args: { connectionId: string }) => ipcRenderer.invoke('jdbc:tx-rollback', args),
+  jdbcAltibaseExplain: (args: { connectionId: string; sql: string }) => ipcRenderer.invoke('jdbc:altibase-explain', args),
+  jdbcPickAndImportFolder: () => ipcRenderer.invoke('jdbc:pick-and-import-folder'),
+  jdbcDownloadMavenArtifact: (args: { groupId: string; artifactId: string; version: string }) =>
+    ipcRenderer.invoke('jdbc:download-maven-artifact', args),
+  jdbcDownloadDriverLibraries: (def: any) => ipcRenderer.invoke('jdbc:download-driver-libraries', def),
+  sshOpenLocalForward: (args: { sessionId: string; remoteHost: string; remotePort: number }) =>
+    ipcRenderer.invoke('ssh:open-local-forward', args),
+  sshCloseLocalForward: (args: { forwardId: string }) =>
+    ipcRenderer.invoke('ssh:close-local-forward', args),
+  saveTextFile: (args: { defaultName?: string; content: string; filters?: { name: string; extensions: string[] }[] }) =>
+    ipcRenderer.invoke('dialog:save-text-file', args),
   jdbcMetaTables: (args: { connectionId: string; catalog?: string; schema?: string; types?: string[] }) =>
     ipcRenderer.invoke('jdbc:meta-tables', args),
   jdbcMetaColumns: (args: { connectionId: string; catalog?: string; schema?: string; table: string }) =>

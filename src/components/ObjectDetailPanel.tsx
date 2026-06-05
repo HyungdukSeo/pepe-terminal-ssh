@@ -40,8 +40,8 @@ interface Props {
   onPropSubTab: (sub: string) => void;
 }
 
-const ICON_MAP: Record<ObjectKind, string> = { table: '📄', view: '👁', index: '🔑', sequence: '🔢', procedure: '⚙', function: 'ƒ', synonym: '🔗', package: '📦', trigger: '🔔', tablespace: '💾' };
-const LABEL_MAP: Record<ObjectKind, string> = { table: 'TABLE', view: 'VIEW', index: 'INDEX', sequence: 'SEQUENCE', procedure: 'PROCEDURE', function: 'FUNCTION', synonym: 'PUBLIC SYNONYM', package: 'PACKAGE', trigger: 'TRIGGER', tablespace: 'TABLESPACE' };
+const ICON_MAP: Record<ObjectKind, string> = { table: '📄', view: '👁', index: '🔑', sequence: '🔢', procedure: '⚙', function: 'ƒ', synonym: '🔗', package: '📦', trigger: '🔔', tablespace: '💾', replication: '🔄' };
+const LABEL_MAP: Record<ObjectKind, string> = { table: 'TABLE', view: 'VIEW', index: 'INDEX', sequence: 'SEQUENCE', procedure: 'PROCEDURE', function: 'FUNCTION', synonym: 'PUBLIC SYNONYM', package: 'PACKAGE', trigger: 'TRIGGER', tablespace: 'TABLESPACE', replication: 'REPLICATION' };
 
 export const ObjectDetailPanel: React.FC<Props> = (p) => {
   const { tab, backend, connected, running, colsCacheRef, pksCacheRef, defsCacheRef, inflightDefRef, detailCacheRef,
@@ -189,11 +189,24 @@ export const ObjectDetailPanel: React.FC<Props> = (p) => {
     if (objKind === 'tablespace' && detail === undefined) {
       backend.tablespaceDetail(objName).then(d => { detailCacheRef.current.set(detailKey, d || { dataFileColumns: [], dataFileRows: [], tables: [], indexes: [] }); setObjDetailRev(v => v + 1); });
     }
-    // PUBLIC SYNONYM Declaration: synonymTarget 으로 CREATE PUBLIC SYNONYM 합성
+    // Replication 상세 (properties + hosts + items) — DBeaver AltibaseReplication 패턴.
+    //   캐시에 빈 properties 가 있으면 다시 시도 (이전 fetch 가 실패한 경우 대비).
+    if (objKind === 'replication') {
+      const cached: any = detail;
+      const needFetch = cached === undefined
+        || (cached && (!cached.properties || Object.keys(cached.properties).length === 0));
+      if (needFetch) {
+        backend.replicationDetail(objName).then(d => { detailCacheRef.current.set(detailKey, d || { properties: {}, hosts: [], items: [] }); setObjDetailRev(v => v + 1); });
+      }
+    }
+    // SYNONYM Declaration — objSchema 있으면 user-소유, 없으면 PUBLIC 으로 합성.
     if (objKind === 'synonym' && sub === 'declaration' && declText === undefined) {
-      backend.synonymTarget(objName).then(t => {
+      backend.synonymTarget(objName, objSchema).then(t => {
+        const isPublic = !objSchema;
+        const head = isPublic ? 'CREATE PUBLIC SYNONYM' : 'CREATE SYNONYM';
+        const name = isPublic ? objName : `${objSchema}.${objName}`;
         const ddl = t
-          ? `CREATE PUBLIC SYNONYM ${objName} FOR ${t.ownerName ? t.ownerName + '.' : ''}${t.objectName};`
+          ? `${head} ${name} FOR ${t.ownerName ? t.ownerName + '.' : ''}${t.objectName};`
           : `-- 시노님 대상 정보 없음`;
         defsCacheRef.current.set(declKey, ddl); setDefRev(v => v + 1);
       });
@@ -215,6 +228,7 @@ export const ObjectDetailPanel: React.FC<Props> = (p) => {
       case 'package':   return [{ id: 'pkgProcs', label: '프로시저' }, { id: 'pkgFuncs', label: '함수' }, { id: 'source', label: 'Source' }];
       case 'trigger':   return [{ id: 'source', label: 'Source' }];
       case 'tablespace': return [{ id: 'datafiles', label: '데이터 파일' }, { id: 'tbsTables', label: '테이블' }, { id: 'tbsIndexes', label: '인덱스' }];
+      case 'replication': return [{ id: 'properties', label: 'Properties' }, { id: 'replItems', label: '이중화 대상' }, { id: 'replHosts', label: '원격 호스트' }];
       default:          return [];
     }
   })();
@@ -520,6 +534,85 @@ export const ObjectDetailPanel: React.FC<Props> = (p) => {
         );
       }
     }
+    // Replication: properties / 이중화 대상(SYS_REPL_ITEMS_) / 원격 호스트(SYS_REPL_HOSTS_)
+    if (objKind === 'replication') {
+      if (detail === undefined) return <div style={{ padding: 12, color: '#888' }}>로딩...</div>;
+      const d: any = detail || {};
+      const th: React.CSSProperties = { padding: '4px 8px', textAlign: 'left', borderBottom: '1px solid #3f3f46' };
+      const td: React.CSSProperties = { padding: '3px 8px' };
+      const tableStyle: React.CSSProperties = { width: '100%', borderCollapse: 'separate', borderSpacing: 0, fontFamily: 'monospace', fontSize: 12 };
+      if (sub === 'properties') {
+        const props: Record<string, string> = d.properties || {};
+        const keys = Object.keys(props);
+        // 빈 상태일 때도 진단 정보 표시 — 사용자가 무엇이 안 되는지 확인 가능.
+        return (
+          <div>
+            <table style={tableStyle}>
+              <thead><tr style={{ background: '#2d2d2d', color: '#9cdcfe' }}><th style={{ ...th, width: 220 }}>속성</th><th style={th}>값</th></tr></thead>
+              <tbody>
+                {/* 항상 보이는 헤더 정보 */}
+                <tr style={{ background: '#1e1e1e' }}>
+                  <td style={{ ...td, color: '#dcdcaa' }}>REPLICATION_NAME</td>
+                  <td style={{ ...td, color: '#9cdcfe' }}>{objName}</td>
+                </tr>
+                {keys.length === 0 ? (
+                  <tr style={{ background: '#222' }}>
+                    <td style={{ ...td, color: '#e0a060' }}>(no data)</td>
+                    <td style={{ ...td, color: '#888' }}>SYS_REPLICATIONS_ 조회 결과 비어있음 — 권한/뷰 확인</td>
+                  </tr>
+                ) : keys.map((k, i) => (
+                  <tr key={k} style={{ background: (i + 1) % 2 ? '#222' : '#1e1e1e' }}>
+                    <td style={{ ...td, color: '#dcdcaa' }}>{k}</td>
+                    <td style={{ ...td, color: '#d4d4d4', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{props[k]}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      }
+      if (sub === 'replItems') {
+        const rows = d.items || [];
+        if (!rows.length) return <div style={{ padding: 12, color: '#666' }}>이중화 대상 없음</div>;
+        return (
+          <table style={tableStyle}>
+            <thead><tr style={{ background: '#2d2d2d', color: '#9cdcfe' }}>
+              <th style={th}>Local User</th><th style={th}>Local Table</th><th style={th}>Local Partition</th>
+              <th style={th}>Remote User</th><th style={th}>Remote Table</th><th style={th}>Remote Partition</th>
+            </tr></thead>
+            <tbody>{rows.map((r: any, i: number) => (
+              <tr key={i} style={{ background: i % 2 ? '#222' : '#1e1e1e' }}>
+                <td style={{ ...td, color: '#9cdcfe' }}>{r.localUser}</td>
+                <td style={{ ...td, color: '#d4d4d4' }}>{r.localTable}</td>
+                <td style={{ ...td, color: '#888' }}>{r.localPartition || ''}</td>
+                <td style={{ ...td, color: '#9cdcfe' }}>{r.remoteUser}</td>
+                <td style={{ ...td, color: '#d4d4d4' }}>{r.remoteTable}</td>
+                <td style={{ ...td, color: '#888' }}>{r.remotePartition || ''}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        );
+      }
+      if (sub === 'replHosts') {
+        const rows = d.hosts || [];
+        if (!rows.length) return <div style={{ padding: 12, color: '#666' }}>원격 호스트 없음</div>;
+        return (
+          <table style={tableStyle}>
+            <thead><tr style={{ background: '#2d2d2d', color: '#9cdcfe' }}>
+              <th style={th}>Host No</th><th style={th}>IP</th><th style={th}>Port</th><th style={th}>Conn Type</th>
+            </tr></thead>
+            <tbody>{rows.map((r: any, i: number) => (
+              <tr key={i} style={{ background: i % 2 ? '#222' : '#1e1e1e' }}>
+                <td style={{ ...td, color: '#888' }}>{r.hostNo}</td>
+                <td style={{ ...td, color: '#d4d4d4' }}>{r.ip}</td>
+                <td style={{ ...td, color: '#dcdcaa' }}>{r.port}</td>
+                <td style={{ ...td, color: '#9cdcfe' }}>{r.connType}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        );
+      }
+    }
     if (sub === 'source') return renderMonacoText(srcText);
     if (sub === 'parameters' && isRoutine) {
       if (params === undefined) return <div style={{ padding: 12, color: '#888' }}>로딩...</div>;
@@ -559,7 +652,7 @@ export const ObjectDetailPanel: React.FC<Props> = (p) => {
   };
 
   return (
-    <div style={{ flex: '1 1 auto', minHeight: 200, borderBottom: '1px solid #333', display: 'flex', flexDirection: 'column', background: '#1e1e1e', overflow: 'hidden' }}>
+    <div style={{ flex: '1 1 0', minHeight: 200, borderBottom: '1px solid #333', display: 'flex', flexDirection: 'column', background: '#1e1e1e', overflow: 'hidden' }}>
       {/* 객체 헤더 */}
       <div style={{ padding: '6px 10px', borderBottom: '1px solid #333', display: 'flex', alignItems: 'center', gap: 8, background: '#252526' }}>
         <span style={{ fontWeight: 600, fontSize: 13 }}>{ICON_MAP[objKind]} {objName}</span>

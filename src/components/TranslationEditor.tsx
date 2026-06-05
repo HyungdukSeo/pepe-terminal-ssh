@@ -7,6 +7,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next';
 import { reloadNamespace, setLanguage, getCurrentLanguage } from '../i18n';
 import { searchLanguages } from './languageCodes';
+import { notifyConfirm } from './Notify';
 
 const api = (window as any).api || {};
 
@@ -117,7 +118,7 @@ export const TranslationEditor: React.FC<{ aiAgent?: AgentType }> = ({ aiAgent =
   }, [newLangCode, refreshLangs]);
 
   const removeLanguage = useCallback(async (lang: string) => {
-    if (!confirm(t('removeLangConfirm', { lang }))) return;
+    if (!await notifyConfirm(t('removeLangTitle') || '언어 제거', t('removeLangConfirm', { lang }))) return;
     const r = await api.i18nRemoveLanguage?.(lang);
     if (r?.ok) {
       await refreshLangs();

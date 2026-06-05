@@ -998,6 +998,87 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
     for (const panelId of [...this.pendingConnects.keys()]) this.handleDisconnect(panelId);
   }
 
+  // 로컬 포트 포워딩 (SSH 터널) — 활성 SSH 연결을 통해 원격 host:port 를 로컬 127.0.0.1:auto 로 매핑.
+  // SqlTool 의 JDBC 연결을 SSH 세션 위로 라우팅할 때 사용.
+  private localForwards = new Map<string, { server: net.Server; localPort: number; panelId: string }>();
+  public hasActiveClient(panelId: string): boolean { return this.clients.has(panelId); }
+  public listActivePanels(): string[] { return [...this.clients.keys()]; }
+  // 디버그용 — 각 활성 패널의 sessionStore 정보(id, host, port) 한 줄 요약.
+  public dumpSessionInfo(): string {
+    const lines: string[] = [];
+    for (const panelId of this.clients.keys()) {
+      const s = this.sessionStore.get(panelId);
+      lines.push(`${panelId}=[id=${s?.id}, host=${s?.host}, port=${s?.port}]`);
+    }
+    return lines.length === 0 ? '(없음)' : lines.join('; ');
+  }
+  // sessionStore(panelId → session) 에서 session.id 가 일치하는 첫 panelId 반환 — JDBC 터널이 사용할 SSH 연결 찾기용.
+  // 1) session.id 정확 매칭
+  // 2) panelId 접두/동일 매칭(legacy)
+  // 3) host:port (또는 host) 매칭 — quick-connect 가 다른 id 를 쓰는 경우 fallback
+  public findPanelBySessionId(sessionId: string, hint?: { host?: string; port?: number }): string | null {
+    for (const [panelId, sess] of this.sessionStore.entries()) {
+      if (sess?.id === sessionId && this.clients.has(panelId)) return panelId;
+    }
+    for (const pid of this.clients.keys()) {
+      if (pid === sessionId || pid.startsWith(sessionId + '-')) return pid;
+    }
+    if (hint?.host) {
+      // host + port 동일한 활성 SSH 세션 우선
+      for (const [panelId, sess] of this.sessionStore.entries()) {
+        if (!this.clients.has(panelId)) continue;
+        if (sess?.host === hint.host && (!hint.port || sess?.port === hint.port)) return panelId;
+      }
+      // port 무시하고 host 만
+      for (const [panelId, sess] of this.sessionStore.entries()) {
+        if (!this.clients.has(panelId)) continue;
+        if (sess?.host === hint.host) return panelId;
+      }
+    }
+    return null;
+  }
+  public async openLocalForward(panelId: string, remoteHost: string, remotePort: number): Promise<{ forwardId: string; localPort: number }> {
+    const rec = this.clients.get(panelId);
+    if (!rec?.conn) throw new Error('SSH 연결 없음');
+    return new Promise((resolve, reject) => {
+      const server = net.createServer((client: net.Socket) => {
+        // eslint-disable-next-line no-console
+        console.log(`[ssh-tunnel] inbound connection on ${(server.address() as any)?.port} → ${remoteHost}:${remotePort}`);
+        rec.conn.forwardOut('127.0.0.1', 0, remoteHost, remotePort, (err: any, stream: any) => {
+          if (err) {
+            console.error('[ssh-tunnel] forwardOut error:', err?.message || err);
+            try { client.destroy(err); } catch {}
+            return;
+          }
+          client.pipe(stream).pipe(client);
+          client.on('error', (e: any) => { console.error('[ssh-tunnel] client err:', e?.message || e); try { stream.end(); } catch {} });
+          stream.on('error', (e: any) => { console.error('[ssh-tunnel] stream err:', e?.message || e); try { client.end(); } catch {} });
+          client.on('close', () => { try { stream.end(); } catch {} });
+          stream.on('close', () => { try { client.end(); } catch {} });
+        });
+      });
+      server.on('error', (e: any) => { console.error('[ssh-tunnel] server err:', e?.message || e); reject(e); });
+      server.on('close', () => { console.log('[ssh-tunnel] server closed'); });
+      // IPv4 127.0.0.1 단순 형태로 listen — Java 측이 127.0.0.1 로 접속하므로 정확히 매칭.
+      server.listen(0, '127.0.0.1', () => {
+        const addr = server.address() as net.AddressInfo;
+        const localPort = addr.port;
+        const forwardId = `fw-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        this.localForwards.set(forwardId, { server, localPort, panelId });
+        // eslint-disable-next-line no-console
+        console.log(`[ssh-tunnel] listening 127.0.0.1:${localPort} → ${remoteHost}:${remotePort} (panelId=${panelId}, forwardId=${forwardId})`);
+        resolve({ forwardId, localPort });
+      });
+    });
+  }
+  public closeLocalForward(forwardId: string): boolean {
+    const f = this.localForwards.get(forwardId);
+    if (!f) return false;
+    try { f.server.close(); } catch {}
+    this.localForwards.delete(forwardId);
+    return true;
+  }
+
   // ── SFTP ──
 
   /** SSH 세션에서 일회성 명령 실행 — stdout 반환 (stderr 무시). git status 등 짧은 조회용. */

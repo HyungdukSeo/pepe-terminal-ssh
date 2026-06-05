@@ -42,6 +42,10 @@ public final class Handlers {
       case "meta.tableTypes":  return metaTableTypes(params);
       case "meta.procedureColumns": return metaProcedureColumns(params);
       case "meta.functionColumns":  return metaFunctionColumns(params);
+      case "tx.begin":         return txBegin(params);
+      case "tx.commit":        return txCommit(params);
+      case "tx.rollback":      return txRollback(params);
+      case "altibase.explain": return altibaseExplain(params);
       default: throw new RpcError("UNKNOWN_METHOD", "unknown method: " + method);
     }
   }
@@ -169,6 +173,161 @@ public final class Handlers {
       throw sqlError(sqe);
     }
     } finally { Thread.currentThread().setContextClassLoader(prev); }
+  }
+
+  // ── Transaction control — DBeaver 와 동일하게 Connection 의 네이티브 API 사용.
+  //   SQL 형태의 `AUTOCOMMIT OFF` / `COMMIT` 은 Altibase 등 일부 드라이버에서 isql 전용으로 해석돼
+  //   JDBC autoCommit 상태와 어긋나고, 결과적으로 UPDATE 가 확정되지 않는 사례가 있다.
+  //   여기서는 Connection.setAutoCommit / commit / rollback 로 명확히 처리.
+  private Map<String, Object> txBegin(JsonNode p) {
+    String connId = req(p, "connectionId");
+    Connection c = conns.get(connId);
+    if (c == null) throw new RpcError("CONNECTION_NOT_FOUND", connId);
+    try { c.setAutoCommit(false); }
+    catch (SQLException sqe) { throw sqlError(sqe); }
+    return single("ok", true);
+  }
+  private Map<String, Object> txCommit(JsonNode p) {
+    String connId = req(p, "connectionId");
+    Connection c = conns.get(connId);
+    if (c == null) throw new RpcError("CONNECTION_NOT_FOUND", connId);
+    try {
+      c.commit();
+      // 다음 DML 들이 다시 statement-level autocommit 되도록 복구.
+      c.setAutoCommit(true);
+    } catch (SQLException sqe) { throw sqlError(sqe); }
+    return single("ok", true);
+  }
+  private Map<String, Object> txRollback(JsonNode p) {
+    String connId = req(p, "connectionId");
+    Connection c = conns.get(connId);
+    if (c == null) throw new RpcError("CONNECTION_NOT_FOUND", connId);
+    try {
+      c.rollback();
+      c.setAutoCommit(true);
+    } catch (SQLException sqe) { throw sqlError(sqe); }
+    return single("ok", true);
+  }
+
+  // Altibase 실행 계획 — DBeaver AltibaseExecutionPlan 와 동일 방식.
+  //   1) AltibaseConnection.setExplainPlan(2)  → 2 = EXPLAIN_PLAN_ONLY (실제 실행 X, 계획만 수집)
+  //   2) PreparedStatement.execute()
+  //   3) AltibaseStatement.getExplainPlan()    → 트리 형태의 PLAN 문자열 반환
+  //   4) AltibaseConnection.setExplainPlan(0)  → 원복
+  //   드라이버 클래스명/API 가 버전마다 다를 수 있어 reflection 으로 호출.
+  // setExplainPlan(int|byte) 를 풀링/래퍼 Connection 에서도 찾기 위해 unwrap 시도 + 다중 시그니처/이름 탐색.
+  private static java.lang.reflect.Method findMethod(Class<?> cl, String name, Class<?>... params) {
+    Class<?> cur = cl;
+    while (cur != null) {
+      try {
+        java.lang.reflect.Method m = cur.getDeclaredMethod(name, params);
+        m.setAccessible(true);
+        return m;
+      } catch (NoSuchMethodException ignore) { /* try parent */ }
+      cur = cur.getSuperclass();
+    }
+    return null;
+  }
+  // Connection 으로부터 Altibase 네이티브 Connection 인스턴스 추출 — unwrap 또는 클래스 매칭.
+  private static Object resolveAltibaseConn(Connection c) {
+    Class<?> cl = c.getClass();
+    while (cl != null) {
+      String name = cl.getName();
+      if (name.startsWith("Altibase.") || name.contains("AltibaseConnection") || name.contains("altibase.jdbc")) {
+        try { return c.unwrap(cl); } catch (Exception ignore) { return c; }
+      }
+      cl = cl.getSuperclass();
+    }
+    // 풀링 wrapper 일 수 있으므로 unwrap 시도 (인터페이스 단위)
+    for (Class<?> iface : c.getClass().getInterfaces()) {
+      if (iface.getName().contains("altibase") || iface.getName().contains("Altibase")) {
+        try { return c.unwrap(iface); } catch (Exception ignore) {}
+      }
+    }
+    return c;
+  }
+  private Map<String, Object> altibaseExplain(JsonNode p) {
+    String connId = req(p, "connectionId");
+    String sql    = req(p, "sql");
+    Connection c = conns.get(connId);
+    if (c == null) throw new RpcError("CONNECTION_NOT_FOUND", connId);
+
+    ClassLoader prev = Thread.currentThread().getContextClassLoader();
+    ClassLoader connCl = c.getClass().getClassLoader();
+    try {
+      if (connCl != null) Thread.currentThread().setContextClassLoader(connCl);
+
+      // DBeaver AltibaseExecutionPlan 패턴:
+      //   - setExplainPlan(byte|int|...) 은 Connection 측, getExplainPlan() 은 Statement 측.
+      //   - unwrap() 미구현 → Connection 클래스에 직접 reflection 적용.
+      //   - 정확한 시그니처를 모르므로 setExplainPlan 이름의 single-param 메서드를 모두 모아 차례로 시도.
+      Class<?> connCls = c.getClass();
+      java.util.List<java.lang.reflect.Method> candidates = new java.util.ArrayList<>();
+      for (java.lang.reflect.Method m : connCls.getMethods()) {
+        if (m.getName().equals("setExplainPlan") && m.getParameterCount() == 1) {
+          m.setAccessible(true);
+          candidates.add(m);
+        }
+      }
+      if (candidates.isEmpty()) {
+        StringBuilder methods = new StringBuilder();
+        for (java.lang.reflect.Method m : connCls.getMethods()) {
+          String n = m.getName().toLowerCase();
+          if (n.contains("explain") || n.contains("plan")) {
+            methods.append(' ').append(m.getName()).append('(');
+            Class<?>[] ps2 = m.getParameterTypes();
+            for (int i = 0; i < ps2.length; i++) { if (i > 0) methods.append(','); methods.append(ps2[i].getSimpleName()); }
+            methods.append(')');
+          }
+        }
+        throw new RpcError("EXPLAIN_NOT_SUPPORTED",
+          "Connection.setExplainPlan not found on " + connCls.getName() + " — methods:" + (methods.length() == 0 ? " (none)" : methods.toString()));
+      }
+      // 모드 값 2 를 각 파라미터 타입에 맞춰 박스. argType 별로 onlyMode/offMode 동시 생성.
+      java.lang.reflect.Method setExplain = null;
+      Object onlyMode = null, offMode = null;
+      StringBuilder tryLog = new StringBuilder();
+      for (java.lang.reflect.Method m : candidates) {
+        Class<?> pt = m.getParameterTypes()[0];
+        Object onlyV, offV;
+        if (pt == byte.class    || pt == Byte.class)    { onlyV = Byte.valueOf((byte)2);     offV = Byte.valueOf((byte)0); }
+        else if (pt == int.class     || pt == Integer.class) { onlyV = Integer.valueOf(2);       offV = Integer.valueOf(0); }
+        else if (pt == short.class   || pt == Short.class)   { onlyV = Short.valueOf((short)2); offV = Short.valueOf((short)0); }
+        else if (pt == long.class    || pt == Long.class)    { onlyV = Long.valueOf(2L);         offV = Long.valueOf(0L); }
+        else if (pt == String.class)                          { onlyV = "ONLY";                  offV = "OFF"; }
+        else if (pt == boolean.class || pt == Boolean.class) { onlyV = Boolean.TRUE;            offV = Boolean.FALSE; }
+        else { tryLog.append(' ').append(pt.getSimpleName()).append('?'); continue; }
+        try { m.invoke(c, onlyV); setExplain = m; onlyMode = onlyV; offMode = offV; break; }
+        catch (Throwable t) { tryLog.append(' ').append(pt.getSimpleName()).append('=').append(t.getClass().getSimpleName()); }
+      }
+      if (setExplain == null) {
+        throw new RpcError("EXPLAIN_FAILED", "All setExplainPlan candidates failed:" + tryLog.toString());
+      }
+      // setExplain 호출 성공 → onlyMode/offMode 확정. (실제로 onlyMode 는 이미 invoke 됨)
+
+      String plan = "";
+      try (java.sql.PreparedStatement ps = c.prepareStatement(sql)) {
+        try { ps.execute(); } catch (SQLException ignore) { /* EXPLAIN_PLAN_ONLY 모드 — 실제 실행 없음 */ }
+        java.lang.reflect.Method getPlan = findMethod(ps.getClass(), "getExplainPlan");
+        if (getPlan == null) {
+          throw new RpcError("EXPLAIN_FAILED", "Statement.getExplainPlan() not found on " + ps.getClass().getName());
+        }
+        try {
+          Object obj = getPlan.invoke(ps);
+          if (obj != null) plan = obj.toString();
+        } catch (Exception ex) { throw new RpcError("EXPLAIN_FAILED", "Statement.getExplainPlan(): " + ex.getMessage()); }
+      } catch (SQLException sqe) {
+        throw sqlError(sqe);
+      } finally {
+        try { setExplain.invoke(c, offMode); } catch (Exception ignored) {}
+      }
+
+      Map<String, Object> out = new LinkedHashMap<>();
+      out.put("plan", plan);
+      return out;
+    } finally {
+      Thread.currentThread().setContextClassLoader(prev);
+    }
   }
 
   private Map<String, Object> metaTables(JsonNode p) {

@@ -12,7 +12,7 @@
 export type Dialect = 'altibase' | 'mysql' | 'postgres' | 'oracle' | 'mssql' | 'sqlite' | 'generic';
 
 export type ColumnInfo = { name: string; typeText: string; nullable: boolean };
-export type ParsedResult = { columns: string[]; rows: string[][]; affectedText?: string; raw?: string };
+export type ParsedResult = { columns: string[]; rows: string[][]; types?: string[]; affectedText?: string; raw?: string };
 
 export interface ExecResult {
   columns: string[];
@@ -209,7 +209,11 @@ export class JdbcBackend {
   // types/schema 를 지정해 객체명 목록 — 트리의 각 그룹에서 호출.
   async listByType(types: string[], schema?: string): Promise<string[]> {
     const api: any = (window as any).api || {};
-    const r = await api.jdbcMetaTables?.({ connectionId: this.connectionId, types, schema });
+    // MySQL/MariaDB 는 JDBC 의 "catalog" 가 데이터베이스에 매핑됨. schema 인자만 넘기면 다른 DB 테이블이 함께 반환되는
+    // 드라이버 버전이 있어, catalog=schema 도 동시에 지정해 강제 필터링.
+    const args: any = { connectionId: this.connectionId, types, schema };
+    if (this.type === 'mysql' && schema) args.catalog = schema;
+    const r = await api.jdbcMetaTables?.(args);
     if (!r?.success) return [];
     return ((r.result?.rows as any[]) || []).map(row => row.name).filter(Boolean);
   }
@@ -424,10 +428,20 @@ export class JdbcBackend {
   }
   // 테이블 제약조건 (PK/UNIQUE/CHECK/NOT NULL).
   async tableConstraints(table: string, schema?: string): Promise<{ name: string; owner: string; type: string; validated: string; condition: string; columns: string[] }[]> {
-    const s = escapeStr((schema || '').toUpperCase());
-    const n = escapeStr(table.toUpperCase());
+    const isMySQL = this.type === 'mysql';
+    // MySQL/MariaDB 는 대소문자 그대로 (Linux 의 lower_case_table_names=0 호환). Altibase/Oracle 은 대문자.
+    const s = escapeStr(isMySQL ? (schema || this.dbms?.database || '') : (schema || '').toUpperCase());
+    const n = escapeStr(isMySQL ? table : table.toUpperCase());
     let sql: string | null = null;
     switch (this.type) {
+      case 'mysql':
+        // INFORMATION_SCHEMA 표준 — PK / UNIQUE / CHECK 모두 포함. FK 는 별도 메서드.
+        sql = `SELECT TC.CONSTRAINT_NAME, TC.CONSTRAINT_TYPE, KCU.COLUMN_NAME, TC.TABLE_NAME, 'YES', NULL `
+            + `FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS TC `
+            + `LEFT JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE KCU ON KCU.CONSTRAINT_SCHEMA = TC.CONSTRAINT_SCHEMA AND KCU.CONSTRAINT_NAME = TC.CONSTRAINT_NAME AND KCU.TABLE_NAME = TC.TABLE_NAME `
+            + `WHERE TC.TABLE_SCHEMA = '${s}' AND TC.TABLE_NAME = '${n}' AND TC.CONSTRAINT_TYPE <> 'FOREIGN KEY' `
+            + `ORDER BY TC.CONSTRAINT_NAME, KCU.ORDINAL_POSITION`;
+        break;
       case 'altibase':
         // DBeaver AltibaseMetaModel.prepareUniqueConstraintsLoadStatement 와 완전히 동일 SQL.
         // SYS_CONSTRAINT_COLUMNS_ 에는 COLUMN_NAME 이 없어 SYS_COLUMNS_ 와 COLUMN_ID 로 추가 JOIN.
@@ -485,14 +499,23 @@ export class JdbcBackend {
     if (s === 'U') return 'UNIQUE';
     if (s === 'C') return 'CHECK';
     if (s === 'R') return 'FOREIGN KEY';
+    // MySQL/MariaDB INFORMATION_SCHEMA 는 이미 라벨 형태
+    if (s === 'PRIMARY KEY' || s === 'UNIQUE' || s === 'FOREIGN KEY' || s === 'CHECK') return s;
     return s;
   }
   // 테이블 외래키.
   async tableForeignKeys(table: string, schema?: string): Promise<{ name: string; columns: string[]; refTable: string; refColumns: string[] }[]> {
-    const s = escapeStr((schema || '').toUpperCase());
-    const n = escapeStr(table.toUpperCase());
+    const isMySQL = this.type === 'mysql';
+    const s = escapeStr(isMySQL ? (schema || this.dbms?.database || '') : (schema || '').toUpperCase());
+    const n = escapeStr(isMySQL ? table : table.toUpperCase());
     let sql: string | null = null;
     switch (this.type) {
+      case 'mysql':
+        sql = `SELECT KCU.CONSTRAINT_NAME, KCU.COLUMN_NAME, KCU.REFERENCED_TABLE_NAME, KCU.REFERENCED_COLUMN_NAME `
+            + `FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE KCU `
+            + `WHERE KCU.TABLE_SCHEMA = '${s}' AND KCU.TABLE_NAME = '${n}' AND KCU.REFERENCED_TABLE_NAME IS NOT NULL `
+            + `ORDER BY KCU.CONSTRAINT_NAME, KCU.ORDINAL_POSITION`;
+        break;
       case 'altibase':
         sql = `SELECT C.CONSTRAINT_NAME, CC.COLUMN_NAME, T2.TABLE_NAME, RC.COLUMN_NAME `
             + `FROM SYSTEM_.SYS_CONSTRAINTS_ C `
@@ -530,10 +553,17 @@ export class JdbcBackend {
   }
   // 이 테이블을 참조하는 다른 테이블 외래키 (referenced by).
   async tableReferencedBy(table: string, schema?: string): Promise<{ name: string; fromTable: string; fromColumns: string[] }[]> {
-    const s = escapeStr((schema || '').toUpperCase());
-    const n = escapeStr(table.toUpperCase());
+    const isMySQL = this.type === 'mysql';
+    const s = escapeStr(isMySQL ? (schema || this.dbms?.database || '') : (schema || '').toUpperCase());
+    const n = escapeStr(isMySQL ? table : table.toUpperCase());
     let sql: string | null = null;
     switch (this.type) {
+      case 'mysql':
+        sql = `SELECT KCU.CONSTRAINT_NAME, KCU.TABLE_NAME, KCU.COLUMN_NAME `
+            + `FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE KCU `
+            + `WHERE KCU.REFERENCED_TABLE_SCHEMA = '${s}' AND KCU.REFERENCED_TABLE_NAME = '${n}' `
+            + `ORDER BY KCU.CONSTRAINT_NAME, KCU.ORDINAL_POSITION`;
+        break;
       case 'altibase':
         sql = `SELECT C.CONSTRAINT_NAME, T.TABLE_NAME, CC.COLUMN_NAME `
             + `FROM SYSTEM_.SYS_CONSTRAINTS_ C `
@@ -567,10 +597,15 @@ export class JdbcBackend {
   }
   // 테이블 트리거.
   async tableTriggers(table: string, schema?: string): Promise<{ name: string; event: string; timing: string }[]> {
-    const s = escapeStr((schema || '').toUpperCase());
-    const n = escapeStr(table.toUpperCase());
+    const isMySQL = this.type === 'mysql';
+    const s = escapeStr(isMySQL ? (schema || this.dbms?.database || '') : (schema || '').toUpperCase());
+    const n = escapeStr(isMySQL ? table : table.toUpperCase());
     let sql: string | null = null;
     switch (this.type) {
+      case 'mysql':
+        sql = `SELECT TRIGGER_NAME, EVENT_MANIPULATION, ACTION_TIMING FROM INFORMATION_SCHEMA.TRIGGERS `
+            + `WHERE EVENT_OBJECT_SCHEMA = '${s}' AND EVENT_OBJECT_TABLE = '${n}' ORDER BY TRIGGER_NAME`;
+        break;
       case 'altibase':
         sql = `SELECT TR.TRIGGER_NAME, TR.EVENT_TYPE, TR.IS_BEFORE FROM SYSTEM_.SYS_TRIGGERS_ TR `
             + `JOIN SYSTEM_.SYS_TABLES_ T ON TR.TABLE_ID = T.TABLE_ID `
@@ -588,17 +623,32 @@ export class JdbcBackend {
     } catch { return []; }
   }
   // 시노님이 가리키는 대상 (Declaration 합성용).
-  async synonymTarget(name: string): Promise<{ ownerName: string; objectName: string } | null> {
+  async synonymTarget(name: string, schema?: string): Promise<{ ownerName: string; objectName: string } | null> {
     if (this.type !== 'altibase' && this.type !== 'oracle') return null;
     const n = escapeStr(name.toUpperCase());
-    const sql = this.type === 'altibase'
-      ? `SELECT OBJECT_OWNER_NAME, OBJECT_NAME FROM SYSTEM_.SYS_SYNONYMS_ WHERE SYNONYM_NAME = '${n}'`
-      : `SELECT TABLE_OWNER, TABLE_NAME FROM ALL_SYNONYMS WHERE OWNER = 'PUBLIC' AND SYNONYM_NAME = '${n}'`;
-    try {
-      const res = await this.exec(sql, 5000);
-      if (res.rows.length === 0) return null;
-      return { ownerName: (res.rows[0][0] || '').trim(), objectName: (res.rows[0][1] || '').trim() };
-    } catch { return null; }
+    const s = escapeStr((schema || '').toUpperCase());
+    // 1) schema 가 지정되어 있으면 user-소유 시노님 우선 검색, 2) 그 다음 PUBLIC fallback.
+    const queries: string[] = [];
+    if (this.type === 'altibase') {
+      if (s) {
+        queries.push(
+          `SELECT S.OBJECT_OWNER_NAME, S.OBJECT_NAME FROM SYSTEM_.SYS_SYNONYMS_ S `
+          + `JOIN SYSTEM_.SYS_USERS_ U ON S.SYNONYM_OWNER_ID = U.USER_ID `
+          + `WHERE U.USER_NAME = '${s}' AND S.SYNONYM_NAME = '${n}'`
+        );
+      }
+      queries.push(`SELECT OBJECT_OWNER_NAME, OBJECT_NAME FROM SYSTEM_.SYS_SYNONYMS_ WHERE SYNONYM_NAME = '${n}'`);
+    } else { // oracle
+      if (s) queries.push(`SELECT TABLE_OWNER, TABLE_NAME FROM ALL_SYNONYMS WHERE OWNER = '${s}' AND SYNONYM_NAME = '${n}'`);
+      queries.push(`SELECT TABLE_OWNER, TABLE_NAME FROM ALL_SYNONYMS WHERE OWNER = 'PUBLIC' AND SYNONYM_NAME = '${n}'`);
+    }
+    for (const q of queries) {
+      try {
+        const res = await this.exec(q, 5000);
+        if (res.rows.length > 0) return { ownerName: (res.rows[0][0] || '').trim(), objectName: (res.rows[0][1] || '').trim() };
+      } catch { /* try next */ }
+    }
+    return null;
   }
 
   // 인덱스 상세 — DBeaver 스타일. table/columns 외에 컬럼별 SORT_ORDER, INDEX_TYPE, TABLESPACE 도 반환.
@@ -644,6 +694,14 @@ export class JdbcBackend {
       case 'postgres':
         listSql = `SELECT tablename, indexname FROM pg_indexes WHERE schemaname = '${escapeStr(schema || '')}' AND indexname = '${escapeStr(name)}'`;
         break;
+      case 'mysql': {
+        // INFORMATION_SCHEMA.STATISTICS: TABLE_NAME / COLUMN_NAME / NON_UNIQUE / INDEX_TYPE / COLLATION('A'|'D') / TABLE_SCHEMA
+        const sm = escapeStr(schema || this.dbms?.database || '');
+        const nm = escapeStr(name);
+        listSql = `SELECT TABLE_NAME, COLUMN_NAME, (1 - NON_UNIQUE) AS IS_UNIQUE, INDEX_TYPE, COLLATION, NULL AS TBS, TABLE_SCHEMA `
+                + `FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = '${sm}' AND INDEX_NAME = '${nm}' ORDER BY SEQ_IN_INDEX`;
+        break;
+      }
       default: return { table: '', columns: [], unique: false, tableSchema: undefined, typeName: undefined, tablespace: undefined };
     }
     const indexTypeName = (code: any): string | undefined => {
@@ -766,6 +824,24 @@ export class JdbcBackend {
       case 'mssql':
         sql = `SELECT OBJECT_DEFINITION(OBJECT_ID('${escapeStr(name)}'))`;
         break;
+      case 'mysql': {
+        // MySQL/MariaDB — INFORMATION_SCHEMA.ROUTINES.ROUTINE_DEFINITION 또는 SHOW CREATE
+        const sm = escapeStr(schema || this.dbms?.database || '');
+        const nm = escapeStr(name);
+        const kindUp = kind === 'procedure' ? 'PROCEDURE' : 'FUNCTION';
+        // SHOW CREATE 우선 (CREATE 문 전체 반환). 실패 시 ROUTINE_DEFINITION fallback.
+        try {
+          const r1 = await this.exec(`SHOW CREATE ${kindUp} \`${sm}\`.\`${nm}\``, 1);
+          if (r1.rows.length > 0) {
+            // 결과: [Name, sql_mode, Create Procedure/Function, ...]
+            const idx = r1.columns.findIndex(c => /^Create /i.test(c));
+            const body = (r1.rows[0][idx >= 0 ? idx : 2] || '').toString().trim();
+            if (body) return body;
+          }
+        } catch { /* try ROUTINE_DEFINITION */ }
+        sql = `SELECT ROUTINE_DEFINITION FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_SCHEMA = '${sm}' AND ROUTINE_NAME = '${nm}' AND ROUTINE_TYPE = '${kindUp}'`;
+        break;
+      }
       default: return null;
     }
     try {
@@ -826,6 +902,20 @@ export class JdbcBackend {
         }
       } catch { /* fallback */ }
     }
+    if (this.type === 'mysql') {
+      // MySQL/MariaDB — SHOW CREATE TABLE `schema`.`table`
+      const sch = schema || this._info?.schema || this.dbms?.database || '';
+      const q = (x: string) => '`' + x.replace(/`/g, '``') + '`';
+      try {
+        const r = await this.exec(`SHOW CREATE TABLE ${sch ? q(sch) + '.' : ''}${q(name)}`, 1);
+        // 결과: [TableName, CreateTableDDL]
+        const ddl = (r.rows[0]?.[1] || '').toString().trim();
+        if (ddl) return ddl.replace(/;?\s*$/, ';');
+      } catch { /* ignore */ }
+    }
+    if (this.type === 'postgres' || this.type === 'mssql' || this.type === 'sqlite') {
+      // 단순 SHOW CREATE 동등이 없거나 dialect 별 / pg_dump 등 외부 도구 권장 — 호출부 fallback 사용
+    }
     return null;
   }
   // 테이블의 모든 인덱스 DDL 을 모아 문자열로 — table DDL 아래 추가용.
@@ -858,74 +948,116 @@ export class JdbcBackend {
   // 제약조건 폴더는 FK(0) 제외, 외래키 폴더는 FK(0) 만, 참조 폴더는 다른 테이블의 FK(0) 가
   // 본 테이블을 가리키는 것.
   async listTableConstraints(table: string, schema?: string): Promise<string[]> {
-    if (this.type !== 'altibase') return [];
-    const s = escapeStr((schema || '').toUpperCase());
-    const t = escapeStr(table.toUpperCase());
-    try {
-      const r = await this.exec(
-        `SELECT C.CONSTRAINT_NAME FROM SYSTEM_.SYS_CONSTRAINTS_ C, SYSTEM_.SYS_TABLES_ T, SYSTEM_.SYS_USERS_ U `
-      + `WHERE C.TABLE_ID = T.TABLE_ID AND C.USER_ID = T.USER_ID AND T.USER_ID = U.USER_ID `
-      + `AND U.USER_NAME = '${s}' AND T.TABLE_NAME = '${t}' `
-      + `AND C.CONSTRAINT_TYPE <> 0 `
-      + `ORDER BY C.CONSTRAINT_NAME`, 1000);
-      return r.rows.map(x => (x[0] || '').toString()).filter(Boolean);
-    } catch { return []; }
+    if (this.type === 'altibase') {
+      const s = escapeStr((schema || '').toUpperCase()); const t = escapeStr(table.toUpperCase());
+      try {
+        const r = await this.exec(
+          `SELECT C.CONSTRAINT_NAME FROM SYSTEM_.SYS_CONSTRAINTS_ C, SYSTEM_.SYS_TABLES_ T, SYSTEM_.SYS_USERS_ U `
+        + `WHERE C.TABLE_ID = T.TABLE_ID AND C.USER_ID = T.USER_ID AND T.USER_ID = U.USER_ID `
+        + `AND U.USER_NAME = '${s}' AND T.TABLE_NAME = '${t}' AND C.CONSTRAINT_TYPE <> 0 ORDER BY C.CONSTRAINT_NAME`, 1000);
+        return r.rows.map(x => (x[0] || '').toString()).filter(Boolean);
+      } catch { return []; }
+    }
+    if (this.type === 'mysql') {
+      const s = escapeStr(schema || this.dbms?.database || ''); const t = escapeStr(table);
+      try {
+        const r = await this.exec(
+          `SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS `
+        + `WHERE TABLE_SCHEMA = '${s}' AND TABLE_NAME = '${t}' AND CONSTRAINT_TYPE <> 'FOREIGN KEY' ORDER BY CONSTRAINT_NAME`, 1000);
+        return r.rows.map(x => (x[0] || '').toString()).filter(Boolean);
+      } catch { return []; }
+    }
+    return [];
   }
   async listTableForeignKeys(table: string, schema?: string): Promise<string[]> {
-    if (this.type !== 'altibase') return [];
-    const s = escapeStr((schema || '').toUpperCase());
-    const t = escapeStr(table.toUpperCase());
-    try {
-      // CONSTRAINT_TYPE = 0 (FK) — DBeaver 기준
-      const r = await this.exec(
-        `SELECT C.CONSTRAINT_NAME FROM SYSTEM_.SYS_CONSTRAINTS_ C, SYSTEM_.SYS_TABLES_ T, SYSTEM_.SYS_USERS_ U `
-      + `WHERE C.TABLE_ID = T.TABLE_ID AND C.USER_ID = T.USER_ID AND T.USER_ID = U.USER_ID `
-      + `AND U.USER_NAME = '${s}' AND T.TABLE_NAME = '${t}' AND C.CONSTRAINT_TYPE = 0 `
-      + `ORDER BY C.CONSTRAINT_NAME`, 1000);
-      return r.rows.map(x => (x[0] || '').toString()).filter(Boolean);
-    } catch { return []; }
+    if (this.type === 'altibase') {
+      const s = escapeStr((schema || '').toUpperCase()); const t = escapeStr(table.toUpperCase());
+      try {
+        const r = await this.exec(
+          `SELECT C.CONSTRAINT_NAME FROM SYSTEM_.SYS_CONSTRAINTS_ C, SYSTEM_.SYS_TABLES_ T, SYSTEM_.SYS_USERS_ U `
+        + `WHERE C.TABLE_ID = T.TABLE_ID AND C.USER_ID = T.USER_ID AND T.USER_ID = U.USER_ID `
+        + `AND U.USER_NAME = '${s}' AND T.TABLE_NAME = '${t}' AND C.CONSTRAINT_TYPE = 0 ORDER BY C.CONSTRAINT_NAME`, 1000);
+        return r.rows.map(x => (x[0] || '').toString()).filter(Boolean);
+      } catch { return []; }
+    }
+    if (this.type === 'mysql') {
+      const s = escapeStr(schema || this.dbms?.database || ''); const t = escapeStr(table);
+      try {
+        const r = await this.exec(
+          `SELECT DISTINCT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE `
+        + `WHERE TABLE_SCHEMA = '${s}' AND TABLE_NAME = '${t}' AND REFERENCED_TABLE_NAME IS NOT NULL ORDER BY CONSTRAINT_NAME`, 1000);
+        return r.rows.map(x => (x[0] || '').toString()).filter(Boolean);
+      } catch { return []; }
+    }
+    return [];
   }
   async listTableIndexes(table: string, schema?: string): Promise<string[]> {
-    if (this.type !== 'altibase') return [];
-    const s = escapeStr((schema || '').toUpperCase());
-    const t = escapeStr(table.toUpperCase());
-    try {
-      const r = await this.exec(
-        `SELECT I.INDEX_NAME FROM SYSTEM_.SYS_INDICES_ I, SYSTEM_.SYS_TABLES_ T, SYSTEM_.SYS_USERS_ U `
-      + `WHERE I.TABLE_ID = T.TABLE_ID AND I.USER_ID = T.USER_ID AND T.USER_ID = U.USER_ID `
-      + `AND U.USER_NAME = '${s}' AND T.TABLE_NAME = '${t}' `
-      + `ORDER BY I.INDEX_NAME`, 1000);
-      return r.rows.map(x => (x[0] || '').toString()).filter(Boolean);
-    } catch { return []; }
+    if (this.type === 'altibase') {
+      const s = escapeStr((schema || '').toUpperCase()); const t = escapeStr(table.toUpperCase());
+      try {
+        const r = await this.exec(
+          `SELECT I.INDEX_NAME FROM SYSTEM_.SYS_INDICES_ I, SYSTEM_.SYS_TABLES_ T, SYSTEM_.SYS_USERS_ U `
+        + `WHERE I.TABLE_ID = T.TABLE_ID AND I.USER_ID = T.USER_ID AND T.USER_ID = U.USER_ID `
+        + `AND U.USER_NAME = '${s}' AND T.TABLE_NAME = '${t}' ORDER BY I.INDEX_NAME`, 1000);
+        return r.rows.map(x => (x[0] || '').toString()).filter(Boolean);
+      } catch { return []; }
+    }
+    if (this.type === 'mysql') {
+      const s = escapeStr(schema || this.dbms?.database || ''); const t = escapeStr(table);
+      try {
+        const r = await this.exec(
+          `SELECT DISTINCT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS `
+        + `WHERE TABLE_SCHEMA = '${s}' AND TABLE_NAME = '${t}' ORDER BY INDEX_NAME`, 1000);
+        return r.rows.map(x => (x[0] || '').toString()).filter(Boolean);
+      } catch { return []; }
+    }
+    return [];
   }
-  // 참조: 이 테이블을 가리키는 FK (다른 테이블의 FK 가 REFERENCED_TABLE_ID = 본 테이블)
   async listTableReferences(table: string, schema?: string): Promise<string[]> {
-    if (this.type !== 'altibase') return [];
-    const s = escapeStr((schema || '').toUpperCase());
-    const t = escapeStr(table.toUpperCase());
-    try {
-      const r = await this.exec(
-        `SELECT C.CONSTRAINT_NAME || ' (' || RT.TABLE_NAME || ')' `
-      + `FROM SYSTEM_.SYS_CONSTRAINTS_ C, SYSTEM_.SYS_TABLES_ T, SYSTEM_.SYS_USERS_ U, SYSTEM_.SYS_TABLES_ RT `
-      + `WHERE C.REFERENCED_TABLE_ID = T.TABLE_ID AND C.REFERENCED_USER_ID = T.USER_ID `
-      + `AND T.USER_ID = U.USER_ID AND U.USER_NAME = '${s}' AND T.TABLE_NAME = '${t}' `
-      + `AND C.TABLE_ID = RT.TABLE_ID AND C.USER_ID = RT.USER_ID `
-      + `AND C.CONSTRAINT_TYPE = 0 ORDER BY C.CONSTRAINT_NAME`, 1000);
-      return r.rows.map(x => (x[0] || '').toString()).filter(Boolean);
-    } catch { return []; }
+    if (this.type === 'altibase') {
+      const s = escapeStr((schema || '').toUpperCase()); const t = escapeStr(table.toUpperCase());
+      try {
+        const r = await this.exec(
+          `SELECT C.CONSTRAINT_NAME || ' (' || RT.TABLE_NAME || ')' `
+        + `FROM SYSTEM_.SYS_CONSTRAINTS_ C, SYSTEM_.SYS_TABLES_ T, SYSTEM_.SYS_USERS_ U, SYSTEM_.SYS_TABLES_ RT `
+        + `WHERE C.REFERENCED_TABLE_ID = T.TABLE_ID AND C.REFERENCED_USER_ID = T.USER_ID `
+        + `AND T.USER_ID = U.USER_ID AND U.USER_NAME = '${s}' AND T.TABLE_NAME = '${t}' `
+        + `AND C.TABLE_ID = RT.TABLE_ID AND C.USER_ID = RT.USER_ID AND C.CONSTRAINT_TYPE = 0 ORDER BY C.CONSTRAINT_NAME`, 1000);
+        return r.rows.map(x => (x[0] || '').toString()).filter(Boolean);
+      } catch { return []; }
+    }
+    if (this.type === 'mysql') {
+      const s = escapeStr(schema || this.dbms?.database || ''); const t = escapeStr(table);
+      try {
+        const r = await this.exec(
+          `SELECT DISTINCT CONCAT(CONSTRAINT_NAME, ' (', TABLE_NAME, ')') FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE `
+        + `WHERE REFERENCED_TABLE_SCHEMA = '${s}' AND REFERENCED_TABLE_NAME = '${t}' ORDER BY 1`, 1000);
+        return r.rows.map(x => (x[0] || '').toString()).filter(Boolean);
+      } catch { return []; }
+    }
+    return [];
   }
   async listTableTriggers(table: string, schema?: string): Promise<string[]> {
-    if (this.type !== 'altibase') return [];
-    const s = escapeStr((schema || '').toUpperCase());
-    const t = escapeStr(table.toUpperCase());
-    try {
-      const r = await this.exec(
-        `SELECT TR.TRIGGER_NAME FROM SYSTEM_.SYS_TRIGGERS_ TR, SYSTEM_.SYS_TABLES_ T, SYSTEM_.SYS_USERS_ U `
-      + `WHERE TR.TABLE_ID = T.TABLE_ID AND TR.USER_ID = T.USER_ID AND T.USER_ID = U.USER_ID `
-      + `AND U.USER_NAME = '${s}' AND T.TABLE_NAME = '${t}' `
-      + `ORDER BY TR.TRIGGER_NAME`, 1000);
-      return r.rows.map(x => (x[0] || '').toString()).filter(Boolean);
-    } catch { return []; }
+    if (this.type === 'altibase') {
+      const s = escapeStr((schema || '').toUpperCase()); const t = escapeStr(table.toUpperCase());
+      try {
+        const r = await this.exec(
+          `SELECT TR.TRIGGER_NAME FROM SYSTEM_.SYS_TRIGGERS_ TR, SYSTEM_.SYS_TABLES_ T, SYSTEM_.SYS_USERS_ U `
+        + `WHERE TR.TABLE_ID = T.TABLE_ID AND TR.USER_ID = T.USER_ID AND T.USER_ID = U.USER_ID `
+        + `AND U.USER_NAME = '${s}' AND T.TABLE_NAME = '${t}' ORDER BY TR.TRIGGER_NAME`, 1000);
+        return r.rows.map(x => (x[0] || '').toString()).filter(Boolean);
+      } catch { return []; }
+    }
+    if (this.type === 'mysql') {
+      const s = escapeStr(schema || this.dbms?.database || ''); const t = escapeStr(table);
+      try {
+        const r = await this.exec(
+          `SELECT TRIGGER_NAME FROM INFORMATION_SCHEMA.TRIGGERS `
+        + `WHERE EVENT_OBJECT_SCHEMA = '${s}' AND EVENT_OBJECT_TABLE = '${t}' ORDER BY TRIGGER_NAME`, 1000);
+        return r.rows.map(x => (x[0] || '').toString()).filter(Boolean);
+      } catch { return []; }
+    }
+    return [];
   }
 
   // 스키마 레벨 패키지 목록 — DBeaver preparePackageLoadStatement 와 동일.
@@ -952,19 +1084,62 @@ export class JdbcBackend {
   // 반환: Map<tableName_uppercase, { bytes, display }>
   async tableSizes(schema?: string): Promise<Map<string, { bytes: number; display: string }>> {
     const out = new Map<string, { bytes: number; display: string }>();
-    if (this.type !== 'altibase') return out;
-    const s = escapeStr((schema || this.dbms?.user || '').toUpperCase());
-    try {
-      const r = await this.exec(
-        `SELECT TABLE_NAME, MEMORY_SIZE, DISK_SIZE FROM SYSTEM_.SYS_TABLE_SIZE_ WHERE USER_NAME = '${s}'`, 10000);
-      for (const row of r.rows) {
-        const nm = (row[0] || '').toString().toUpperCase();
-        const m = parseFloat((row[1] || '0').toString()) || 0;
-        const d = parseFloat((row[2] || '0').toString()) || 0;
-        const total = m + d;
-        if (nm && total > 0) out.set(nm, { bytes: total, display: formatBytes(total) });
+    if (this.type === 'altibase') {
+      const s = escapeStr((schema || this.dbms?.user || '').toUpperCase());
+      try {
+        const r = await this.exec(
+          `SELECT TABLE_NAME, MEMORY_SIZE, DISK_SIZE FROM SYSTEM_.SYS_TABLE_SIZE_ WHERE USER_NAME = '${s}'`, 10000);
+        for (const row of r.rows) {
+          const nm = (row[0] || '').toString().toUpperCase();
+          const m = parseFloat((row[1] || '0').toString()) || 0;
+          const d = parseFloat((row[2] || '0').toString()) || 0;
+          const total = m + d;
+          if (nm && total > 0) out.set(nm, { bytes: total, display: formatBytes(total) });
+        }
+      } catch {}
+      return out;
+    }
+    if (this.type === 'mysql') {
+      // INFORMATION_SCHEMA.TABLES — DATA_LENGTH + INDEX_LENGTH 가 일반적인 "테이블 사이즈"(bytes).
+      //   0 인 테이블(빈 테이블)도 포함해 일관된 게이지 렌더링.
+      const s = escapeStr(schema || this.dbms?.database || '');
+      try {
+        const r = await this.exec(
+          `SELECT TABLE_NAME, COALESCE(DATA_LENGTH,0) + COALESCE(INDEX_LENGTH,0) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '${s}'`, 10000);
+        for (const row of r.rows) {
+          const nm = (row[0] || '').toString();
+          const total = parseFloat((row[1] || '0').toString()) || 0;
+          if (nm) out.set(nm.toUpperCase(), { bytes: total, display: total > 0 ? formatBytes(total) : '0 B' });
+        }
+      } catch {}
+      return out;
+    }
+    if (this.type === 'oracle') {
+      // DBA_SEGMENTS 가 정확하지만 권한 필요. ALL_TABLES 의 NUM_ROWS*AVG_ROW_LEN 으로 추정 가능하나 의미 약함.
+      // 실제 사이즈는 USER_SEGMENTS 시도.
+      const s = escapeStr((schema || '').toUpperCase());
+      try {
+        const r = await this.exec(
+          `SELECT SEGMENT_NAME, SUM(BYTES) FROM DBA_SEGMENTS WHERE OWNER = '${s}' AND SEGMENT_TYPE = 'TABLE' GROUP BY SEGMENT_NAME`, 10000);
+        for (const row of r.rows) {
+          const nm = (row[0] || '').toString().toUpperCase();
+          const total = parseFloat((row[1] || '0').toString()) || 0;
+          if (nm && total > 0) out.set(nm, { bytes: total, display: formatBytes(total) });
+        }
+      } catch {
+        // DBA_SEGMENTS 권한 없으면 USER_SEGMENTS 시도 (current user 한정)
+        try {
+          const r = await this.exec(
+            `SELECT SEGMENT_NAME, SUM(BYTES) FROM USER_SEGMENTS WHERE SEGMENT_TYPE = 'TABLE' GROUP BY SEGMENT_NAME`, 10000);
+          for (const row of r.rows) {
+            const nm = (row[0] || '').toString().toUpperCase();
+            const total = parseFloat((row[1] || '0').toString()) || 0;
+            if (nm && total > 0) out.set(nm, { bytes: total, display: formatBytes(total) });
+          }
+        } catch {}
       }
-    } catch {}
+      return out;
+    }
     return out;
   }
   // 테이블스페이스 "Used Size" — DBeaver AltibaseTablespace.setQry4Size() 의 USED_SIZE 부분.
@@ -972,6 +1147,18 @@ export class JdbcBackend {
   //   메모리: v$memtbl_info.fixed_used_mem + var_used_mem 합 (bytes)
   async tablespaceSizes(): Promise<Map<string, { bytes: number; display: string }>> {
     const out = new Map<string, { bytes: number; display: string }>();
+    if (this.type === 'mysql') {
+      try {
+        // INNODB_TABLESPACES: NAME, FILE_SIZE / ALLOCATED_SIZE (bytes)
+        const r = await this.exec(`SELECT NAME, COALESCE(ALLOCATED_SIZE, FILE_SIZE, 0) FROM INFORMATION_SCHEMA.INNODB_TABLESPACES`, 5000);
+        for (const row of r.rows) {
+          const nm = (row[0] || '').toString().toUpperCase();
+          const bytes = parseFloat((row[1] || '0').toString()) || 0;
+          if (nm && bytes > 0) out.set(nm, { bytes, display: formatBytes(bytes) });
+        }
+      } catch {}
+      return out;
+    }
     if (this.type !== 'altibase') return out;
     // 디스크 — x$segment
     try {
@@ -1118,16 +1305,21 @@ export class JdbcBackend {
   // 스키마 레벨 트리거 목록 — DBeaver prepareTableTriggersLoadStatement 패턴.
   // 표시: "TRIGGER_NAME (OWNER_TABLE)" — 트리거가 어떤 테이블에 붙어 있는지 함께.
   async listSchemaTriggers(schema?: string): Promise<string[]> {
-    if (this.type !== 'altibase' && this.type !== 'oracle') return [];
-    const s = escapeStr((schema || '').toUpperCase());
+    if (this.type !== 'altibase' && this.type !== 'oracle' && this.type !== 'mysql') return [];
     let sql: string;
     if (this.type === 'altibase') {
-      // SYS_TRIGGERS_ + SYS_TABLES_ join 으로 트리거-테이블 매핑.
+      const s = escapeStr((schema || '').toUpperCase());
       sql = `SELECT TR.TRIGGER_NAME || ' (' || T.TABLE_NAME || ')' FROM SYSTEM_.SYS_TRIGGERS_ TR, SYSTEM_.SYS_TABLES_ T, SYSTEM_.SYS_USERS_ U `
           + `WHERE TR.TABLE_ID = T.TABLE_ID AND TR.USER_ID = T.USER_ID AND T.USER_ID = U.USER_ID `
           + `AND U.USER_NAME = '${s}' ORDER BY TR.TRIGGER_NAME`;
-    } else {
+    } else if (this.type === 'oracle') {
+      const s = escapeStr((schema || '').toUpperCase());
       sql = `SELECT TRIGGER_NAME || ' (' || TABLE_NAME || ')' FROM ALL_TRIGGERS WHERE OWNER = '${s}' ORDER BY TRIGGER_NAME`;
+    } else {
+      // MySQL/MariaDB
+      const s = escapeStr(schema || this.dbms?.database || '');
+      sql = `SELECT CONCAT(TRIGGER_NAME, ' (', EVENT_OBJECT_TABLE, ')') FROM INFORMATION_SCHEMA.TRIGGERS `
+          + `WHERE TRIGGER_SCHEMA = '${s}' ORDER BY TRIGGER_NAME`;
     }
     try {
       const r = await this.exec(sql, 5000);
@@ -1277,6 +1469,10 @@ export class JdbcBackend {
       case 'mssql':
         sql = `SELECT name FROM sys.filegroups ORDER BY name`;
         break;
+      case 'mysql':
+        // InnoDB tablespaces — 5.7+
+        sql = `SELECT NAME FROM INFORMATION_SCHEMA.INNODB_TABLESPACES ORDER BY NAME`;
+        break;
       default: return [];
     }
     try {
@@ -1300,6 +1496,97 @@ export class JdbcBackend {
       const res = await this.exec(`SELECT REPLICATION_NAME FROM SYSTEM_.SYS_REPLICATIONS_ ORDER BY REPLICATION_NAME`, 5000);
       return res.rows.map(r => (r[0] || '').trim()).filter(Boolean);
     } catch { return []; }
+  }
+  // Altibase 이중화 상세 — DBeaver AltibaseReplication 패턴.
+  //   - SYS_REPLICATIONS_      : 속성(역할/모드/충돌해결정책/시작상태/옵션 등)
+  //   - SYS_REPL_HOSTS_        : 원격 호스트 목록(IP/PORT/CONN_TYPE)
+  //   - SYS_REPL_ITEMS_        : 복제 대상 테이블 매핑(LOCAL ↔ REMOTE)
+  async replicationDetail(name: string): Promise<{
+    properties: Record<string, string>;
+    hosts: { hostNo: string; ip: string; port: string; connType: string }[];
+    items: { localUser: string; localTable: string; localPartition: string; remoteUser: string; remoteTable: string; remotePartition: string }[];
+  } | null> {
+    if (this.type !== 'altibase') return null;
+    const upName = name.toUpperCase().trim();
+    const properties: Record<string, string> = {};
+    // SYS_REPLICATIONS_ — DBeaver AltibaseReplication 가 사용하는 명시적 컬럼 셀렉트.
+    //   SELECT * 의 컬럼 메타가 빈 케이스 회피 + UPPER/TRIM 매칭.
+    const explicitCols = [
+      'REPLICATION_NAME', 'LAST_USED_HOST_NO', 'IS_STARTED', 'ITEM_COUNT', 'XSN',
+      'REMOTE_FAULT_DETECT_TIME', 'GIVE_UP_TIME', 'GIVE_UP_XSN',
+      'CONFLICT_RESOLUTION', 'REPL_MODE', 'ROLE', 'OPTIONS',
+      'INVALID_RECOVERY', 'PARALLEL_APPLIER_COUNT', 'PEER_REPLICATION_NAME',
+    ];
+    let propsLoaded = false;
+    // 1차: 명시 컬럼 + WHERE
+    try {
+      const sql = `SELECT ${explicitCols.join(', ')} FROM SYSTEM_.SYS_REPLICATIONS_ WHERE UPPER(TRIM(REPLICATION_NAME)) = '${upName}'`;
+      const res = await this.exec(sql, 5000);
+      if (res.rows.length > 0) {
+        const row = res.rows[0];
+        explicitCols.forEach((c, i) => { properties[c] = (row[i] ?? '').toString(); });
+        propsLoaded = true;
+      }
+    } catch { /* fall through */ }
+    // 2차: 전체 행 SELECT * 후 클라이언트 필터 (1차에 실패한 경우)
+    if (!propsLoaded) {
+      try {
+        const res = await this.exec(`SELECT * FROM SYSTEM_.SYS_REPLICATIONS_`, 5000);
+        const cols = (res.columns || []);
+        const upCols = cols.map(c => c.toUpperCase());
+        const nameIdx = upCols.indexOf('REPLICATION_NAME');
+        const matched = nameIdx >= 0
+          ? res.rows.find(r => (r[nameIdx] ?? '').toString().toUpperCase().trim() === upName)
+          : null;
+        if (matched && cols.length > 0) {
+          cols.forEach((c, i) => { properties[c] = (matched[i] ?? '').toString(); });
+          propsLoaded = true;
+        } else if (res.rows.length > 0 && cols.length === 0) {
+          // SELECT * 가 컬럼 메타를 반환하지 않은 케이스 — 위치 인덱스로 명시 컬럼명 부여
+          const matched2 = res.rows.find(r => (r[0] ?? '').toString().toUpperCase().trim() === upName) || res.rows[0];
+          explicitCols.forEach((c, i) => { properties[c] = (matched2[i] ?? '').toString(); });
+          propsLoaded = true;
+        }
+      } catch (e: any) { properties['(error)'] = String(e?.message || e); }
+    }
+    // SYS_REPL_HOSTS_ — 전체 조회 후 컬럼명 기반 매핑. CONN_TYPE 가 없는 버전에서는 빈 문자열.
+    let hosts: { hostNo: string; ip: string; port: string; connType: string }[] = [];
+    try {
+      const r2 = await this.exec(`SELECT * FROM SYSTEM_.SYS_REPL_HOSTS_`, 5000);
+      const cols = (r2.columns || []).map(c => c.toUpperCase());
+      const ix = (n: string) => cols.indexOf(n);
+      const iName = ix('REPLICATION_NAME');
+      const iHost = ix('HOST_NO');
+      const iIp   = ix('HOST_IP');
+      const iPort = ix('PORT_NO');
+      const iConn = ix('CONN_TYPE'); // 일부 버전에서 미존재 → -1
+      const filtered = iName >= 0
+        ? r2.rows.filter(r => (r[iName] ?? '').toString().toUpperCase().trim() === upName)
+        : r2.rows;
+      hosts = filtered.map(r => ({
+        hostNo:   iHost >= 0 ? (r[iHost] ?? '').toString() : '',
+        ip:       iIp   >= 0 ? (r[iIp]   ?? '').toString() : '',
+        port:     iPort >= 0 ? (r[iPort] ?? '').toString() : '',
+        connType: iConn >= 0 ? (r[iConn] ?? '').toString() : '',  // 컬럼 없으면 빈 문자열 — Port 값으로 잘못 채우지 않음
+      }));
+    } catch { /* ignore */ }
+    let items: { localUser: string; localTable: string; localPartition: string; remoteUser: string; remoteTable: string; remotePartition: string }[] = [];
+    try {
+      const r3 = await this.exec(
+        `SELECT LOCAL_USER_NAME, LOCAL_TABLE_NAME, LOCAL_PARTITION_NAME, REMOTE_USER_NAME, REMOTE_TABLE_NAME, REMOTE_PARTITION_NAME `
+        + `FROM SYSTEM_.SYS_REPL_ITEMS_ WHERE UPPER(REPLICATION_NAME) = '${upName}' ORDER BY LOCAL_USER_NAME, LOCAL_TABLE_NAME`,
+        5000
+      );
+      items = r3.rows.map(r => ({
+        localUser:       (r[0] ?? '').toString(),
+        localTable:      (r[1] ?? '').toString(),
+        localPartition:  (r[2] ?? '').toString(),
+        remoteUser:      (r[3] ?? '').toString(),
+        remoteTable:     (r[4] ?? '').toString(),
+        remotePartition: (r[5] ?? '').toString(),
+      }));
+    } catch { /* ignore */ }
+    return { properties, hosts, items };
   }
   // dialect 별 프로시저/함수 목록 SQL — JDBC getProcedures/getFunctions 가 부실한 드라이버 보강.
   private routineListSql(schema: string | undefined, kind: 'procedure' | 'function'): string | null {
@@ -1352,29 +1639,81 @@ export class JdbcBackend {
     if (!r?.success) return [];
     return ((r.result?.rows as any[]) || []).map(row => row.name).filter(Boolean);
   }
+  // MySQL JDBC 의 catalog/schema 매핑 — catalog 가 데이터베이스.
+  // schema 인자를 catalog 로도 함께 넘겨 다른 DB 의 동명 객체가 섞이지 않도록 강제 필터링.
+  private metaArgs(table: string, schema?: string): any {
+    const args: any = { connectionId: this.connectionId, table, schema };
+    if (this.type === 'mysql' && schema) args.catalog = schema;
+    return args;
+  }
   async indexes(table: string, schema?: string): Promise<{ name: string; columns: string[] }[]> {
     const api: any = (window as any).api || {};
-    const r = await api.jdbcMetaIndexes?.({ connectionId: this.connectionId, table, schema });
+    const r = await api.jdbcMetaIndexes?.(this.metaArgs(table, schema));
     if (!r?.success) return [];
     return ((r.result?.rows as any[]) || []).map(row => ({ name: row.name, columns: row.columns || [] }));
   }
 
   async columns(table: string, schema?: string): Promise<ColumnInfo[]> {
     const api: any = (window as any).api || {};
-    const r = await api.jdbcMetaColumns?.({ connectionId: this.connectionId, table, schema });
+    const r = await api.jdbcMetaColumns?.(this.metaArgs(table, schema));
     if (!r?.success) return [];
-    return ((r.result?.rows as any[]) || []).map((row: any) => ({
-      name: row.name,
-      typeText: formatType(row.typeName, row.size || 0, row.digits || 0),
-      nullable: !!row.nullable,
-    }));
+    // 중복 제거 — MySQL 등 일부 드라이버가 같은 컬럼을 여러 카탈로그/스키마에서 반환하는 경우 방어.
+    const seen = new Set<string>();
+    const out: ColumnInfo[] = [];
+    for (const row of ((r.result?.rows as any[]) || [])) {
+      const name = row.name as string;
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      out.push({
+        name,
+        typeText: formatType(row.typeName, row.size || 0, row.digits || 0),
+        nullable: !!row.nullable,
+      });
+    }
+    return out;
   }
 
   async primaryKey(table: string, schema?: string): Promise<string[]> {
+    // 1차: JDBC getPrimaryKeys (드라이버에 따라 빈 결과 나오는 케이스 존재)
     const api: any = (window as any).api || {};
-    const r = await api.jdbcMetaPrimaryKeys?.({ connectionId: this.connectionId, table, schema });
-    if (!r?.success) return [];
-    return (r.result?.cols as string[]) || [];
+    const r = await api.jdbcMetaPrimaryKeys?.(this.metaArgs(table, schema));
+    const jdbcCols = (r?.success ? ((r.result?.cols as string[]) || []) : []);
+    if (jdbcCols.length > 0) return jdbcCols;
+    // 2차: dialect 별 카탈로그 직접 조회 — Altibase JDBC 드라이버는 getPrimaryKeys 가 비어오는 경우가 많아 필수 폴백.
+    const s = escapeStr((schema || this.dbms?.user || '').toUpperCase());
+    const n = escapeStr(table.toUpperCase());
+    let sql: string | null = null;
+    switch (this.type) {
+      case 'altibase':
+        // SYS_CONSTRAINTS_.CONSTRAINT_TYPE = 3 → PRIMARY KEY (DBeaver AltibaseConstants).
+        sql = `SELECT COL.COLUMN_NAME FROM SYSTEM_.SYS_USERS_ U, SYSTEM_.SYS_TABLES_ T, SYSTEM_.SYS_COLUMNS_ COL, `
+            + `SYSTEM_.SYS_CONSTRAINTS_ C, SYSTEM_.SYS_CONSTRAINT_COLUMNS_ CCOL `
+            + `WHERE U.USER_NAME = '${s}' `
+            + `AND U.USER_ID = C.USER_ID AND U.USER_ID = T.USER_ID `
+            + `AND T.TABLE_ID = C.TABLE_ID AND C.CONSTRAINT_TYPE = 3 `
+            + `AND C.CONSTRAINT_ID = CCOL.CONSTRAINT_ID `
+            + `AND CCOL.COLUMN_ID = COL.COLUMN_ID `
+            + `AND T.TABLE_NAME = '${n}' `
+            + `ORDER BY CCOL.CONSTRAINT_COL_ORDER`;
+        break;
+      case 'oracle':
+        sql = `SELECT CC.COLUMN_NAME FROM ALL_CONSTRAINTS C `
+            + `JOIN ALL_CONS_COLUMNS CC ON CC.CONSTRAINT_NAME = C.CONSTRAINT_NAME AND CC.OWNER = C.OWNER `
+            + `WHERE C.OWNER = '${s}' AND C.TABLE_NAME = '${n}' AND C.CONSTRAINT_TYPE = 'P' ORDER BY CC.POSITION`;
+        break;
+      case 'mysql': {
+        const sm = escapeStr(schema || this.dbms?.database || ''); const nm = escapeStr(table);
+        sql = `SELECT KCU.COLUMN_NAME FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS TC `
+            + `JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE KCU ON KCU.CONSTRAINT_SCHEMA = TC.CONSTRAINT_SCHEMA AND KCU.CONSTRAINT_NAME = TC.CONSTRAINT_NAME AND KCU.TABLE_NAME = TC.TABLE_NAME `
+            + `WHERE TC.TABLE_SCHEMA = '${sm}' AND TC.TABLE_NAME = '${nm}' AND TC.CONSTRAINT_TYPE = 'PRIMARY KEY' ORDER BY KCU.ORDINAL_POSITION`;
+        break;
+      }
+      default: return [];
+    }
+    try {
+      const res = await this.exec(sql, 5000);
+      return res.rows.map(row => (row[0] || '').trim()).filter(Boolean);
+    } catch { return []; }
   }
 
   // ── Dialect-specific bits ──────────────────────────────────────────────────
@@ -1455,20 +1794,18 @@ export class JdbcBackend {
   // ── Transactions ───────────────────────────────────────────────────────────
 
   async beginTx(): Promise<void> {
-    // setAutoCommit(false) via SQL — different syntax per DBMS.
-    let sql: string;
-    switch (this.type) {
-      case 'altibase': sql = 'AUTOCOMMIT OFF'; break;
-      case 'mssql':    sql = 'BEGIN TRANSACTION'; break;
-      case 'oracle':   sql = 'SET TRANSACTION READ WRITE'; break;
-      default:         sql = 'START TRANSACTION';
-    }
-    try { await this.exec(sql, 1); } catch { /* not all drivers like explicit BEGIN — ignore */ }
+    // DBeaver 와 동일한 패턴 — Connection.setAutoCommit(false) 를 네이티브 API 로 호출.
+    //   SQL 형태(`AUTOCOMMIT OFF` / `COMMIT`) 는 Altibase 등에서 isql 전용으로 해석되어
+    //   JDBC autoCommit 상태와 어긋나 UPDATE 가 확정되지 않는 사례가 있다.
+    const api: any = (window as any).api || {};
+    const r = await api.jdbcTxBegin?.({ connectionId: this.connectionId });
+    if (r && !r.success) throw new Error(r.error || 'beginTx failed');
   }
 
   async commit(): Promise<void> {
-    try { await this.exec('COMMIT', 1); } catch {}
-    if (this.type === 'altibase') { try { await this.exec('AUTOCOMMIT ON', 1); } catch {} }
+    const api: any = (window as any).api || {};
+    const r = await api.jdbcTxCommit?.({ connectionId: this.connectionId });
+    if (r && !r.success) throw new Error(r.error || 'commit failed');
   }
 
   /**
@@ -1489,13 +1826,20 @@ export class JdbcBackend {
       case 'oracle':
         await this.exec(`EXPLAIN PLAN FOR ${t}`, 1);
         return this.exec(`SELECT PLAN_TABLE_OUTPUT FROM TABLE(DBMS_XPLAN.DISPLAY())`, 5000);
-      case 'altibase':
-        // Altibase: EXPLAIN PLAN ON 후 쿼리 실행 시 PLAN 이 stdout 으로 출력되지만
-        // JDBC ResultSet 에선 일반 결과만 반환된다. PLAN_TABLE 조회로 대체.
-        try { await this.exec(`EXPLAIN PLAN ON`, 1); } catch {}
-        try { return await this.exec(`SELECT * FROM SYSTEM_.SYS_PLAN_CACHE_`, 5000); } catch {}
-        // 폴백: 그냥 SQL 을 실행하지 않고 가이드 메시지 형태로 빈 결과 반환
-        return { columns: ['plan'], rows: [['Altibase: PLAN_CACHE 미지원 버전 — isql 의 EXPLAIN PLAN ON 사용 권장']], types: ['text'], rowsAffected: 0, truncated: false };
+      case 'altibase': {
+        // DBeaver 와 동일 — AltibaseConnection.setExplainPlan(EXPLAIN_PLAN_ONLY) + AltibaseStatement.getExplainPlan()
+        // 사이드카가 reflection 으로 호출하고 PLAN 문자열을 반환한다.
+        const api: any = (window as any).api || {};
+        const r = await api.jdbcAltibaseExplain?.({ connectionId: this.connectionId, sql: t });
+        if (r?.success) {
+          const planText = (r.result?.plan || '').toString();
+          // 한 행씩 분리해서 그리드에 트리 라인 형태로 표시.
+          const lines = planText.split(/\r?\n/);
+          return { columns: ['Plan'], rows: lines.map((l: string) => [l]), types: ['text'], rowsAffected: 0, truncated: false };
+        }
+        // 사이드카 실패 시 폴백 — 안내 메시지
+        return { columns: ['plan'], rows: [[`Altibase EXPLAIN 실패: ${r?.error || 'unknown'}`]], types: ['text'], rowsAffected: 0, truncated: false };
+      }
       case 'mssql':
         // MSSQL: SET SHOWPLAN_ALL ON 은 다음 BATCH 부터 적용. 사이드카는 단일 statement 만 — 베스트 에포트.
         return this.exec(`SET SHOWPLAN_ALL ON ${t}`, 5000).catch(() => this.exec(t, 5000));
@@ -1505,8 +1849,9 @@ export class JdbcBackend {
   }
 
   async rollback(): Promise<void> {
-    try { await this.exec('ROLLBACK', 1); } catch {}
-    if (this.type === 'altibase') { try { await this.exec('AUTOCOMMIT ON', 1); } catch {} }
+    const api: any = (window as any).api || {};
+    const r = await api.jdbcTxRollback?.({ connectionId: this.connectionId });
+    if (r && !r.success) throw new Error(r.error || 'rollback failed');
   }
 }
 
