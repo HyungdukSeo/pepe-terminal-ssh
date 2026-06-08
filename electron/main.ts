@@ -4351,6 +4351,15 @@ function buildAugmentedPath(): string {
   return [process.env.PATH || '', ...extraPaths].filter(Boolean).join(sep);
 }
 
+// SSH 세션의 대화형 셸 현재 작업 디렉토리 — 파일 전송 탭을 그 경로로 열 때 사용.
+ipcMain.handle('ssh:get-shell-cwd', async (_e, { termId }: { termId: string }) => {
+  try {
+    const bridge: any = getSSHBridge();
+    if (!termId || typeof bridge.getShellCwd !== 'function') return { ok: false };
+    const pwd = await bridge.getShellCwd(termId);
+    return pwd ? { ok: true, pwd } : { ok: false };
+  } catch { return { ok: false }; }
+});
 // Git 상태 조회 — 로컬 cwd 또는 SSH 세션에서 branch + diff stats 추출
 ipcMain.handle('git:status', async (_e, { mode, termId, cwd }: { mode: 'local' | 'remote'; termId?: string; cwd?: string }) => {
   try {

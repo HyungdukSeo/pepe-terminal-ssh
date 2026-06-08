@@ -59,7 +59,7 @@ export type { LayoutNode, ContainerNode, LeafNode, Panel, PanelSession } from '.
 
 export type TabId = string;
 export type TabType = 'terminal' | 'fileExplorer' | 'fileEditor' | 'browser' | 'compare' | 'logAnalyzer' | 'vpn' | 'i18nEditor' | 'sqlTool';
-export type Tab = { id: TabId; title: string; layout: LayoutNode; type?: TabType; customTitle?: boolean; editor?: { termId: string; remotePath: string; fileName: string }; sqlTool?: { sessionId: string; sessionName: string }; initialTermId?: string };
+export type Tab = { id: TabId; title: string; layout: LayoutNode; type?: TabType; customTitle?: boolean; editor?: { termId: string; remotePath: string; fileName: string }; sqlTool?: { sessionId: string; sessionName: string }; initialTermId?: string; initialRemotePath?: string };
 
 // 일괄전송 히스토리 (앱 실행 중 유지, 최대 50개)
 const broadcastHistory: string[] = [];
@@ -1227,6 +1227,32 @@ function App() {
     return find(activeTab.layout);
   }, [activeTab, selectedPanelId]);
 
+  // 활성 SSH 세션의 현재 작업 디렉토리(pwd) — 파일 전송 탭을 그 경로로 열 때 사용.
+  const getActiveRemotePwd = useCallback((): string | undefined => {
+    const tid = getActiveTermId();
+    if (!tid) return undefined;
+    // 로컬 셸(PTY) 은 원격 SFTP 경로로 의미 없음 → 제외
+    if (isTermPty(tid)) return undefined;
+    const pwd = getCurrentPwdForTerm(tid);
+    return pwd && pwd !== '/' ? pwd : undefined;
+  }, [getActiveTermId]);
+
+  // 파일 전송 탭 열기 — 활성 SSH 세션의 현재 pwd 를 (추적값 우선, 없으면 온디맨드 조회) 로 해석해 그 경로로 연다.
+  const openFileTransferTab = useCallback(async (title: string) => {
+    const tid = getActiveTermId() ?? undefined;
+    let remotePath = getActiveRemotePwd();
+    // 추적된 pwd 가 없으면 SSH 셸 cwd 를 온디맨드로 조회 (autoTrackPwd 꺼진 세션 대응)
+    if (!remotePath && tid && !isTermPty(tid)) {
+      try {
+        const r: any = await (window as any).api?.sshGetShellCwd?.({ termId: tid });
+        if (r?.ok && r.pwd) remotePath = r.pwd;
+      } catch {}
+    }
+    const id = `tab-fe-${Date.now()}`;
+    setTabs(prev => [...prev, { id, title, layout: createInitialLayout(id), type: 'fileExplorer', initialTermId: tid, initialRemotePath: remotePath }]);
+    setActiveTabId(id);
+  }, [getActiveTermId, getActiveRemotePwd]);
+
   // 글로벌 단축키
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -2034,10 +2060,22 @@ function App() {
     }
     const applySessionTheme = (termId: string) => {
       if (sessionScrollback) applyScrollbackToTerm(termId, sessionScrollback);
+      // backspace/delete 키 시퀀스 모드 — 즉시 + 세션 fetch 후 한 번 더 적용 (연결 직후 vi 등에서 바로 동작하도록)
+      (async () => {
+        try {
+          const data = await (window as any).api?.listSessions?.();
+          const all = data?.sessions ?? data ?? [];
+          const s = all.find((x: any) => x.id === sessionId);
+          if (s) {
+            setTermBackspaceMode(termId, s.backspaceKeyMode);
+            setTermDeleteMode(termId, s.deleteKeyMode);
+          }
+        } catch {}
+      })();
       setTimeout(() => {
         if (sessionTheme) applyThemeToTerm(termId, sessionTheme);
         if (sessionFontFamily || sessionFontSize) applyFontToTerm(termId, sessionFontFamily, sessionFontSize);
-        // cursorStyle / cursorBlink 도 적용 (세션 데이터에서 fetch)
+        // cursorStyle / cursorBlink + 키 시퀀스 모드 적용 (세션 데이터에서 fetch)
         (async () => {
           try {
             const data = await (window as any).api?.listSessions?.();
@@ -2045,6 +2083,11 @@ function App() {
             const s = all.find((x: any) => x.id === sessionId);
             // cursorStyle 미지정 시 'block' 으로 기본화. cursorBlink 는 항상 적용 (사용자 의도 반영)
             applyCursorStyleToTerm(termId, s?.cursorStyle || 'block', !!s?.cursorBlink);
+            // 키 시퀀스 모드 재적용 — 터미널 생성/마운트가 늦어 첫 적용이 누락되는 race 보강
+            if (s) {
+              setTermBackspaceMode(termId, s.backspaceKeyMode);
+              setTermDeleteMode(termId, s.deleteKeyMode);
+            }
           } catch {}
         })();
       }, 200);
@@ -2350,11 +2393,7 @@ function App() {
     {
       label: tMenu('tools.title'),
       items: [
-        { label: tMenu('tools.fileTransfer'), action: () => {
-          const id = `tab-fe-${Date.now()}`;
-          setTabs(prev => [...prev, { id, title: tMenu('tools.fileTransfer'), layout: createInitialLayout(id), type: 'fileExplorer', initialTermId: getActiveTermId() ?? undefined }]);
-          setActiveTabId(id);
-        }},
+        { label: tMenu('tools.fileTransfer'), action: () => { void openFileTransferTab(tMenu('tools.fileTransfer')); }},
         { label: tMenu('tools.browserWs'), action: addBrowserTab },
         { label: tMenu('tools.compareWs'), action: addCompareTab },
         { label: tMenu('tools.logAnalyzerWs'), action: addLogAnalyzerTab },
@@ -2919,11 +2958,7 @@ function App() {
                 title="드래그하여 빠른연결 좌/우 또는 상단으로"
                 onMouseDown={onDragStart}
               >⋮⋮</span>
-              <button className="tool-btn" title="파일 전송" onClick={() => {
-            const id = `tab-fe-${Date.now()}`;
-            setTabs(prev => [...prev, { id, title: '📁 파일 전송', layout: createInitialLayout(id), type: 'fileExplorer', initialTermId: getActiveTermId() ?? undefined }]);
-            setActiveTabId(id);
-          }}>📁</button>
+              <button className="tool-btn" title="파일 전송" onClick={() => { void openFileTransferTab('📁 파일 전송'); }}>📁</button>
           <button
             className="tool-btn"
             title="패널 비율 균등 정렬 (현재 워크스페이스의 모든 분할 비율 리셋)"
@@ -3091,6 +3126,7 @@ function App() {
                   .filter(s => s.sessionId || getTermSessionInfo(s.termId)?.quickSession)
               }
               initialTermId={t.initialTermId}
+              initialRemotePath={t.initialRemotePath}
             />
           </div>
         ))}

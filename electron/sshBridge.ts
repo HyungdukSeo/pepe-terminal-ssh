@@ -603,6 +603,45 @@ class SSHBridge extends EventEmitter {
   }
   // panel → 마지막으로 알려진 cwd (변경 감지용)
   private lastCwd: Map<string, string> = new Map();
+
+  /**
+   * 대화형 셸의 현재 작업 디렉토리(cwd) 온디맨드 조회 — autoTrackPwd 미사용 세션에서도 동작.
+   *   1) 이미 추적된 lastCwd 가 있으면 그대로 반환 (autoTrack/프롬프트 파싱 결과).
+   *   2) 없으면 별도 exec 채널에서 우리 SSH_CONNECTION 을 공유하는 tty 보유 프로세스(=대화형 셸)의
+   *      /proc/<pid>/cwd 를 readlink. 가장 깊은(자손) cwd 를 선택해 setview 같은 서브셸도 추적.
+   *   exec 채널은 home 에서 시작하지만, 우리는 그 채널 cwd 가 아니라 "셸 프로세스"의 cwd 를 읽는다.
+   */
+  public async getShellCwd(panelId: string): Promise<string | null> {
+    const tracked = this.lastCwd.get(panelId);
+    if (tracked && tracked.startsWith('/')) return tracked;
+    const rec = this.clients.get(panelId);
+    if (!rec?.conn) return null;
+    // /proc/self/environ 의 SSH_CONNECTION 으로 우리 연결의 프로세스만 필터, tty(pts) 있는 셸의 cwd 수집.
+    const script = `/bin/sh -c '`
+      + `CONN=$(tr "\\000" "\\n" < /proc/self/environ 2>/dev/null | grep "^SSH_CONNECTION="); `
+      + `[ -z "$CONN" ] && exit 0; `
+      + `best=""; bestlen=0; `
+      + `for d in /proc/[0-9]*; do `
+      + `grep -aqz "$CONN" $d/environ 2>/dev/null || continue; `
+      + `tty=$(readlink $d/fd/0 2>/dev/null); case "$tty" in *pts*|*tty*) ;; *) continue;; esac; `
+      + `cw=$(readlink $d/cwd 2>/dev/null); [ -z "$cw" ] && continue; `
+      + `l=\${#cw}; if [ "$l" -ge "$bestlen" ]; then best="$cw"; bestlen=$l; fi; `
+      + `done; printf "%s" "$best"'`;
+    try {
+      const out: string = await new Promise<string>((resolve, reject) => {
+        rec.conn.exec(script, (err: any, stream: any) => {
+          if (err) { reject(err); return; }
+          let buf = '';
+          const to = setTimeout(() => { try { stream.close(); } catch {}; resolve(buf); }, 4000);
+          stream.on('data', (d: Buffer) => { buf += d.toString('utf8'); });
+          stream.stderr?.on('data', () => {});
+          stream.on('close', () => { clearTimeout(to); resolve(buf); });
+        });
+      });
+      const cwd = (out || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean).pop() || '';
+      return cwd.startsWith('/') ? cwd : null;
+    } catch { return null; }
+  }
   // panel → 프롬프트 파싱용 tail 버퍼 (chunk 경계로 프롬프트가 잘리는 것 방지)
   private promptTail: Map<string, string> = new Map();
   // 프롬프트에서 cwd 를 성공적으로 파싱한 패널 — /proc 폴러가 이 패널의 cwd 를 덮어쓰지 않게 함

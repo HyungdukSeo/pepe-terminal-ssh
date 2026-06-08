@@ -106,6 +106,7 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('ssh:open-local-forward', args),
   sshCloseLocalForward: (args: { forwardId: string }) =>
     ipcRenderer.invoke('ssh:close-local-forward', args),
+  sshGetShellCwd: (args: { termId: string }) => ipcRenderer.invoke('ssh:get-shell-cwd', args),
   saveTextFile: (args: { defaultName?: string; content: string; filters?: { name: string; extensions: string[] }[] }) =>
     ipcRenderer.invoke('dialog:save-text-file', args),
   jdbcMetaTables: (args: { connectionId: string; catalog?: string; schema?: string; types?: string[] }) =>

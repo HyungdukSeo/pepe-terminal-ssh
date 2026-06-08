@@ -12,9 +12,11 @@ const api = (window as any).api || {};
 type Props = {
   sessions: PanelSession[];
   initialTermId?: string | null;
+  // 파일 전송 탭을 열 때 활성 SSH 세션의 현재 pwd — 있으면 홈 대신 이 경로로 우측 패널을 연다.
+  initialRemotePath?: string | null;
 };
 
-export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
+export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId, initialRemotePath }) => {
   // 이 FileExplorer 인스턴스의 고유 ID — 전송 이벤트 필터링에 사용
   const workspaceIdRef = React.useRef(`fe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
   const { t } = useTranslation('fileExplorer');
@@ -155,7 +157,12 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
     (async () => {
       try {
         const home = await api?.feGetHome?.();
-        if (home) { setLeftPath(home); setRightPath(home); }
+        if (home) {
+          setLeftPath(home);
+          // initialRemotePath(활성 SSH pwd) 가 있으면 우측은 원격 경로로 열 것이므로 로컬 home 으로 덮어쓰지 않음.
+          const hasRemoteInit = !!(initialRemotePath && initialRemotePath.trim() && initialRemotePath !== '/');
+          if (!hasRemoteInit) setRightPath(home);
+        }
       } catch {}
       setInitDone(true);
     })();
@@ -267,18 +274,32 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId }) => {
       const first = (initialTermId ? sessions.find(s => s.termId === initialTermId) : null) || sessions[0];
       const newSrc: PanelSource = { mode: 'remote', termId: first.termId, label: `🌐 ${first.sessionName}` };
       setRightSource(newSrc);
-      // SSH 연결 완료 대기 후 홈 디렉토리 가져오기 (최대 10초)
-      const tryGetHome = async (retries: number) => {
-        for (let i = 0; i < retries; i++) {
-          try {
-            const home = await api?.feHomeDir?.('remote', first.termId);
-            if (home && home !== '/') { setRightPath(home); return; }
-          } catch {}
-          await new Promise(r => setTimeout(r, 1000));
-        }
-        setRightPath('/');
-      };
-      tryGetHome(10);
+      // initialRemotePath(활성 SSH 세션의 현재 pwd) 가 있으면 그 경로로, 없으면 홈 디렉토리로 연다.
+      const initPath = (initialRemotePath && initialRemotePath.trim() && initialRemotePath !== '/') ? initialRemotePath.trim() : '';
+      if (initPath) {
+        // SFTP 준비 보장 후 경로 적용 — feHomeDir 로 연결을 establish/대기한 뒤 initPath 로 이동.
+        // (연결 직후 곧장 listDir 하면 SFTP 서브시스템 미준비로 에러나는 케이스 회피)
+        (async () => {
+          for (let i = 0; i < 10; i++) {
+            try { const h = await api?.feHomeDir?.('remote', first.termId); if (h) break; } catch {}
+            await new Promise(r => setTimeout(r, 500));
+          }
+          setRightPath(initPath);
+        })();
+      } else {
+        // SSH 연결 완료 대기 후 홈 디렉토리 가져오기 (최대 10초)
+        const tryGetHome = async (retries: number) => {
+          for (let i = 0; i < retries; i++) {
+            try {
+              const home = await api?.feHomeDir?.('remote', first.termId);
+              if (home && home !== '/') { setRightPath(home); return; }
+            } catch {}
+            await new Promise(r => setTimeout(r, 1000));
+          }
+          setRightPath('/');
+        };
+        tryGetHome(10);
+      }
     }
   }, [sessKey, initDone, sessionFolderMap, allSessionsList]);
 
