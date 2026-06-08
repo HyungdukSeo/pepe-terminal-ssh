@@ -15,7 +15,7 @@ import { fileURLToPath } from 'url';
 import { loadSessionsData, saveSessionsData, getSessionsPath, saveCustomPath, loadUIPrefs, saveUIPrefs, Session, Folder, SessionsData } from './sessionsStore';
 import { getSSHBridge } from './sshBridge';
 import { getSharedJdbcSidecar, shutdownAllJdbcSidecars, findSidecarJar, findJavaExecutable } from './jdbcBridge';
-import { listDrivers, upsertUserDriver, removeUserDriver, diagnoseDriver, getBundledDriversRoot, getUserJdbcDriversRoot, resolveDriverJarsExisting, JdbcDriverDef } from './driversStore';
+import { listDrivers, upsertUserDriver, removeUserDriver, diagnoseDriver, getBundledDriversRoot, getUserJdbcDriversRoot, resolveDriverJarsExisting, parseMavenCoord, mavenCoordToUrl, JdbcDriverDef } from './driversStore';
 import { getSessionState as getSqlToolState, setSessionState as setSqlToolState, SqlToolSessionState } from './sqlToolStore';
 import { createWebDAVBridge } from './webdavBridge';
 import { installX11DisplayHook } from './x11Display';
@@ -3044,22 +3044,17 @@ ipcMain.handle('jdbc:download-driver-libraries', async (_e, def: JdbcDriverDef) 
   const https = require('https');
   const http = require('http');
   for (const jar of def.jars) {
-    // classifier 지원: "maven:group:artifact:version" 또는 "maven:group:artifact:version:classifier"
-    const m4 = jar.match(/^maven:([^:]+):([^:]+):([^:]+):([^:]+)$/);
-    const m3 = jar.match(/^maven:([^:]+):([^:]+):([^:]+)$/);
-    if (!m3 && !m4) continue;
-    const groupId    = (m4 || m3)![1];
-    const artifactId = (m4 || m3)![2];
-    const version    = (m4 || m3)![3];
-    const classifier = m4 ? m4[4] : '';
-    const fileName = classifier ? `${artifactId}-${version}-${classifier}.jar` : `${artifactId}-${version}.jar`;
+    // 공용 파서 — classifier + @ext(packaging) 지원
+    const parsed = parseMavenCoord(jar);
+    if (!parsed) continue;
+    const fileName = parsed.fileName;
     const dst = path.join(userRoot, fileName);
     // 이미 캐시됨
     if (fs.existsSync(dst)) {
       results.push({ coord: jar, ok: true, cached: true, path: dst });
       continue;
     }
-    const url = `https://repo1.maven.org/maven2/${groupId.replace(/\./g, '/')}/${artifactId}/${version}/${fileName}`;
+    const url = mavenCoordToUrl(jar)!;
     try {
       await new Promise<void>((resolve, reject) => {
         const get = (u: string, depth: number) => {

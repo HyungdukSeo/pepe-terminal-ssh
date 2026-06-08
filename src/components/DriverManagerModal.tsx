@@ -418,10 +418,15 @@ export const DriverManagerModal: React.FC<Props> = ({ open, onClose }) => {
                   // DBeaver 와 동일한 좌측 트리 + 우측 버튼 컬럼 레이아웃.
                   const parseJar = (j: string) => {
                     if (/^maven:/.test(j)) {
-                      const m4 = j.match(/^maven:([^:]+):([^:]+):([^:]+):([^:]+)$/);
-                      if (m4) return { kind: 'maven' as const, group: m4[1], artifact: m4[2], version: m4[3], classifier: m4[4] };
-                      const m3 = j.match(/^maven:([^:]+):([^:]+):([^:]+)$/);
-                      if (m3) return { kind: 'maven' as const, group: m3[1], artifact: m3[2], version: m3[3], classifier: '' };
+                      // @ext (packaging) 접미사 분리
+                      let body = j.slice('maven:'.length);
+                      let ext = 'jar';
+                      const at = body.lastIndexOf('@');
+                      if (at >= 0) { ext = body.slice(at + 1) || 'jar'; body = body.slice(0, at); }
+                      const parts = body.split(':');
+                      if (parts.length >= 3) {
+                        return { kind: 'maven' as const, group: parts[0], artifact: parts[1], version: parts[2], classifier: parts[3] || '', ext };
+                      }
                     }
                     if (/\.(txt|md|html|license)$/i.test(j)) return { kind: 'license' as const };
                     return { kind: 'jar' as const };

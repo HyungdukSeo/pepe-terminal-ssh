@@ -295,7 +295,10 @@ function sanitizeMermaidLabels(src: string): string {
     // 순서: 가장 긴 멀티문자 형태부터 (그래야 [[]] 가 [] 보다 먼저 매치)
     // 엣지 라벨 형태: --|label|--, --label--> (공백 포함), == label ==>, -.label.->
     // asymmetric/flag shape '>label]' (워드 문자가 앞에 와야 함 — '-->A' 같은 화살표와 구분)
-    const labelProtectRe = /("[^"\n]*"|'[^'\n]*'|\[\[[^\]\n]*\]\]|\(\([^)\n]*\)\)|\{\{[^}\n]*\}\}|\[\([^)\n]*\)\]|\[\/[^\]\n]*\\\]|\[\\[^\]\n]*\/\]|\[\/[^\]\n]*\/\]|\[\\[^\]\n]*\\\]|\[[^\]\n]*\]|\([^)\n]*\)|\{[^}\n]*\}|(?<=[A-Za-z0-9_가-힯ㄱ-ㆎ])>[^>\n\]]*\]|\|[^|\n]*\||--+\s+[^-\n|]+\s+--+>?|==+\s+[^=\n|]+\s+==+>?|-\.+\s+[^\n|]+?\s+\.+-+>?)/g;
+    // 핵심: shape 안에 따옴표로 감싼 라벨(`["..."]` / `("..."")` / `{"..."}` 등) 을 generic `\[...\]`
+    //   보다 먼저 매치시켜야 함. 그렇지 않으면 라벨 안에 또 `[..]` 가 있을 때(예: `["log[새 blk_id]"]`)
+    //   바깥 `[`부터 안쪽 `]` 까지만 잘려서 나머지 라벨 텍스트가 보호 영역 밖으로 빠짐 → 한글 토큰 오인.
+    const labelProtectRe = /(\[\[\s*"[^"\n]*"\s*\]\]|\(\(\s*"[^"\n]*"\s*\)\)|\{\{\s*"[^"\n]*"\s*\}\}|\[\(\s*"[^"\n]*"\s*\)\]|\[\s*"[^"\n]*"\s*\]|\(\s*"[^"\n]*"\s*\)|\{\s*"[^"\n]*"\s*\}|"[^"\n]*"|'[^'\n]*'|\[\[[^\]\n]*\]\]|\(\([^)\n]*\)\)|\{\{[^}\n]*\}\}|\[\([^)\n]*\)\]|\[\/[^\]\n]*\\\]|\[\\[^\]\n]*\/\]|\[\/[^\]\n]*\/\]|\[\\[^\]\n]*\\\]|\[[^\]\n]*\]|\([^)\n]*\)|\{[^}\n]*\}|(?<=[A-Za-z0-9_가-힯ㄱ-ㆎ])>[^>\n\]]*\]|\|[^|\n]*\||--+\s+[^-\n|]+\s+--+>?|==+\s+[^=\n|]+\s+==+>?|-\.+\s+[^\n|]+?\s+\.+-+>?)/g;
     const aliasMap = new Map<string, string>();
     let ctr = 0;
     // 토큰 정의: 한글 시작 + (한글/영문/숫자/_)*
@@ -630,6 +633,30 @@ function neutralizeSetextHeadings(text: string): string {
 function renderMd(content: string): string {
   return marked.parse(autoConvertTablesInMd(autoFenceMermaid(closeDanglingMermaidFences(neutralizeSetextHeadings(content)))), { breaks: true }) as string;
 }
+
+// 메시지 마크다운 캐시 — 같은 (id, content) 는 한 번만 파싱.
+// 대화가 길어지면 marked.parse + mermaid 전처리가 매 렌더마다 모든 메시지에 대해 호출되어 누적 비용 폭발.
+const _mdCache = new Map<string, { content: string; html: string }>();
+const MAX_MD_CACHE = 500;
+function renderMdCached(id: string, content: string): string {
+  const hit = _mdCache.get(id);
+  if (hit && hit.content === content) return hit.html;
+  const html = renderMd(content);
+  _mdCache.set(id, { content, html });
+  // LRU 비슷한 정리 — 너무 커지면 가장 오래된 항목 제거
+  if (_mdCache.size > MAX_MD_CACHE) {
+    const firstKey = _mdCache.keys().next().value;
+    if (firstKey !== undefined) _mdCache.delete(firstKey);
+  }
+  return html;
+}
+
+// 메시지 본문 — React.memo 로 같은 (id, content) 는 재렌더 스킵.
+// 부모(ClaudeChat) 가 상태 변경으로 자주 재렌더되어도, 완료된 메시지의 HTML 은 재생성되지 않음.
+type MarkdownMessageProps = { id: string; content: string; className?: string };
+const MarkdownMessage = React.memo(({ id, content, className }: MarkdownMessageProps) => (
+  <div className={className} dangerouslySetInnerHTML={{ __html: renderMdCached(id, content) }} />
+), (prev, next) => prev.id === next.id && prev.content === next.content && prev.className === next.className);
 
 type AgentType = 'claude' | 'gemini' | 'codex';
 type Message = {
@@ -1110,7 +1137,12 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   // 이력 저장
   useEffect(() => {
     if (!chatHistoryLoadedRef.current) return;
-    try { (window as any).api?.setUIPrefs?.({ claudeChatHistory: chatHistory }); } catch {}
+    // chatHistory 는 스트리밍 중 매 chunk 마다 업데이트됨 → setUIPrefs 가 매 chunk 마다 직렬화/IPC/디스크 write 를 유발.
+    // 1.5s 디바운스로 쓰기 빈도 제한. 마지막 변경만 보존되면 충분.
+    const t = setTimeout(() => {
+      try { (window as any).api?.setUIPrefs?.({ claudeChatHistory: chatHistory }); } catch {}
+    }, 1500);
+    return () => clearTimeout(t);
   }, [chatHistory]);
   // 최근 대화에서 언급된 로컬 Windows 경로들 — 이후 턴에서도 --add-dir 로 유지
   const recentLocalPathsRef = useRef<Set<string>>(new Set());
@@ -3900,9 +3932,10 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                       ? <><CodexTabIcon /> Codex</>
                       : <><ClaudeTabIcon /> Claude</>
               }</div>
-              <div
+              <MarkdownMessage
+                id={g.m.id}
+                content={g.m.content}
                 className="claude-chat-msg-content"
-                dangerouslySetInnerHTML={{ __html: renderMd(g.m.content) }}
               />
             </div>
           ) : (() => {

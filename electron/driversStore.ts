@@ -73,10 +73,11 @@ const BUILTIN_DRIVERS: JdbcDriverDef[] = [
     defaultPort: 1433,
     // DBeaver 기본 라이브러리 셋 — 메인 드라이버 + Windows 통합 인증.
     //   jre11 변형 대신 jre8 변형 사용 (사이드카 JVM Java 8 호환).
-    //   mssql-jdbc_auth 는 Maven classifier 형식 (artifactId-version-classifier.jar).
+    //   mssql-jdbc_auth 는 Maven 에서 packaging=dll, version=<ver>.x64 형식 (네이티브 라이브러리).
+    //   → 좌표 @dll 로 확장자 지정. (classpath 에는 안 들어가고 java.library.path 용)
     jars: [
       'maven:com.microsoft.sqlserver:mssql-jdbc:12.8.1.jre8',
-      'maven:com.microsoft.sqlserver:mssql-jdbc_auth:12.8.1:x64',
+      'maven:com.microsoft.sqlserver:mssql-jdbc_auth:12.8.1.x64@dll',
     ],
     builtin: true,
     dialect: 'mssql',
@@ -147,21 +148,40 @@ export function getUserJdbcDriversRoot(): string {
   return root;
 }
 
-/** Maven 좌표(groupId:artifactId:version[:classifier]) → 로컬 캐시 경로. */
+/**
+ * Maven 좌표 파싱 — DBeaver 의 Maven dependency 표기와 호환.
+ *   maven:groupId:artifactId:version
+ *   maven:groupId:artifactId:version:classifier            (예: sources)
+ *   maven:groupId:artifactId:version@ext                   (packaging type 지정 — 예: dll)
+ *   maven:groupId:artifactId:version:classifier@ext
+ * Maven Central 파일명 규칙: {artifactId}-{version}[-{classifier}].{ext}
+ *   (ext 기본값 = jar. mssql-jdbc_auth 처럼 네이티브 라이브러리는 ext=dll)
+ */
+export function parseMavenCoord(coord: string): { groupId: string; artifactId: string; version: string; classifier: string; ext: string; fileName: string } | null {
+  if (!coord.startsWith('maven:')) return null;
+  let body = coord.slice('maven:'.length);
+  // @ext 접미사 분리 (확장자/패키징 타입)
+  let ext = 'jar';
+  const atIdx = body.lastIndexOf('@');
+  if (atIdx >= 0) { ext = body.slice(atIdx + 1) || 'jar'; body = body.slice(0, atIdx); }
+  const parts = body.split(':');
+  if (parts.length < 3) return null;
+  const [groupId, artifactId, version] = parts;
+  const classifier = parts.length >= 4 ? parts[3] : '';
+  const fileName = `${artifactId}-${version}${classifier ? '-' + classifier : ''}.${ext}`;
+  return { groupId, artifactId, version, classifier, ext, fileName };
+}
+/** Maven 좌표 → 로컬 캐시 경로 (`${userJdbc}/{fileName}`). */
 export function mavenCoordToCachedPath(coord: string): string | null {
-  // 형식: "maven:groupId:artifactId:version" 또는 "maven:groupId:artifactId:version:classifier"
-  //   classifier (x64, sources, javadoc 등) 가 있으면 파일명에 `-classifier` 가 붙음. (Maven Central 규칙)
-  const m4 = coord.match(/^maven:([^:]+):([^:]+):([^:]+):([^:]+)$/);
-  if (m4) {
-    const [, , artifactId, version, classifier] = m4;
-    return path.join(getUserJdbcDriversRoot(), `${artifactId}-${version}-${classifier}.jar`);
-  }
-  const m3 = coord.match(/^maven:([^:]+):([^:]+):([^:]+)$/);
-  if (m3) {
-    const [, , artifactId, version] = m3;
-    return path.join(getUserJdbcDriversRoot(), `${artifactId}-${version}.jar`);
-  }
-  return null;
+  const p = parseMavenCoord(coord);
+  if (!p) return null;
+  return path.join(getUserJdbcDriversRoot(), p.fileName);
+}
+/** Maven 좌표 → Maven Central 다운로드 URL. */
+export function mavenCoordToUrl(coord: string): string | null {
+  const p = parseMavenCoord(coord);
+  if (!p) return null;
+  return `https://repo1.maven.org/maven2/${p.groupId.replace(/\./g, '/')}/${p.artifactId}/${p.version}/${p.fileName}`;
 }
 export function resolveDriverJars(jars: string[]): string[] {
   const bundled = getBundledDriversRoot();
@@ -174,10 +194,14 @@ export function resolveDriverJars(jars: string[]): string[] {
   });
 }
 
-/** Existing JAR paths (after token resolve) — used by the sidecar to load classes. */
+/** Existing classpath JAR paths — 사이드카 URLClassLoader 용. .jar 만 포함(.dll 등 네이티브 라이브러리는 제외). */
 export function resolveDriverJarsExisting(jars: string[]): string[] {
   return resolveDriverJars(jars).filter(p => {
-    try { return fs.statSync(p).isFile(); } catch { return false; }
+    try {
+      if (!fs.statSync(p).isFile()) return false;
+      // .dll/.so/.dylib 같은 네이티브 라이브러리는 URLClassLoader 에 넣으면 안 됨 (classpath 는 .jar/.zip 만).
+      return /\.(jar|zip)$/i.test(p);
+    } catch { return false; }
   });
 }
 
