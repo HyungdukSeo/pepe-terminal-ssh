@@ -11,8 +11,37 @@ let sftp = null;       // SFTP 세션
 // 원격→원격 전송용 목적지 연결 캐시 (dstKey → { client, sftp })
 const dstConnections = new Map();
 
+// 처리량 우선 알고리즘 — AES-NI 가속 GCM 을 최우선(대부분 최신 CPU 에서 가장 빠름).
+// ⚠ ssh2 의 algorithms 옵션은 기본 목록을 "완전 대체" 하므로, 빠른 항목을 앞에 두되
+//    SUPPORTED_* 전체를 뒤에 붙여 구버전 서버 호환성을 유지한다(우선순위만 변경).
+const FAST_ALGORITHMS = (() => {
+  let SUP;
+  try { SUP = require('ssh2/lib/protocol/constants'); } catch (_e) { SUP = null; }
+  const dedup = (preferred, full) => {
+    const out = [];
+    const seen = new Set();
+    for (const a of preferred) { if (!seen.has(a)) { seen.add(a); out.push(a); } }
+    for (const a of (full || [])) { if (!seen.has(a)) { seen.add(a); out.push(a); } }
+    return out;
+  };
+  const fastCipher = ['aes128-gcm@openssh.com', 'aes256-gcm@openssh.com', 'aes128-ctr', 'aes192-ctr', 'aes256-ctr', 'chacha20-poly1305@openssh.com'];
+  const fastKex = ['curve25519-sha256', 'curve25519-sha256@libssh.org', 'ecdh-sha2-nistp256', 'ecdh-sha2-nistp384', 'ecdh-sha2-nistp521'];
+  if (!SUP) return { cipher: fastCipher, kex: fastKex };
+  return {
+    cipher: dedup(fastCipher, SUP.SUPPORTED_CIPHER),
+    kex: dedup(fastKex, SUP.SUPPORTED_KEX),
+    serverHostKey: SUP.SUPPORTED_SERVER_HOST_KEY,
+    hmac: SUP.SUPPORTED_MAC,
+  };
+})();
+
 function buildAuth(s) {
-  const cfg = { username: s.username, tryKeyboard: true, readyTimeout: 15000, keepaliveInterval: 10000 };
+  const cfg = {
+    username: s.username, tryKeyboard: true, readyTimeout: 15000, keepaliveInterval: 10000,
+    algorithms: FAST_ALGORITHMS,
+    // 압축 비활성 — LAN/고대역 환경에서 압축은 CPU 병목만 유발 (이미 압축된 파일도 많음)
+    compress: false,
+  };
   if (s.auth && s.auth.type === 'password' && s.auth.password) {
     cfg.password = s.auth.password;
   } else if (s.auth && s.auth.type === 'key' && s.auth.keyPath) {
@@ -64,7 +93,7 @@ function connectViaJump() {
       primary.forwardOut('127.0.0.1', 0, jumpHost, jumpPort, (err, stream) => {
         if (err) return reject(err);
         const jumpUser = session.jumpTargetUser || session.username;
-        const jumpCfg = { sock: stream, username: jumpUser, tryKeyboard: true, readyTimeout: 15000 };
+        const jumpCfg = { sock: stream, username: jumpUser, tryKeyboard: true, readyTimeout: 15000, algorithms: FAST_ALGORITHMS, compress: false };
         if (session.jumpAuth && session.jumpAuth.type === 'password' && session.jumpAuth.password) {
           jumpCfg.password = session.jumpAuth.password;
         } else if (session.jumpAuth && session.jumpAuth.type === 'key' && session.jumpAuth.keyPath) {
@@ -166,8 +195,9 @@ function processTransfer(msg) {
   if (action === 'remote-remote') {
     const totalSize = msg.totalSize || 0;
     getOrCreateDstSftp(msg.dstSession).then((dstSftp) => {
-      const readStream = sftp.createReadStream(srcPath);
-      const writeStream = dstSftp.createWriteStream(dstPath);
+      // 원격→원격 스트림 — 읽기/쓰기 버퍼와 동시 요청 수를 키워 파이프 처리량 향상.
+      const readStream = sftp.createReadStream(srcPath, { highWaterMark: 1024 * 1024, concurrency: 64, chunkSize: 65536 });
+      const writeStream = dstSftp.createWriteStream(dstPath, { highWaterMark: 1024 * 1024, concurrency: 64, chunkSize: 65536 });
       let transferred = 0;
       let lastEmit = 0;
       readStream.on('data', (chunk) => {
@@ -200,7 +230,10 @@ function processTransfer(msg) {
     lastEmit = now;
     parentPort.postMessage({ type: 'progress', id, transferred, total });
   };
-  const opts = { concurrency: 64, chunkSize: 65536, step };
+  // SFTP 파이프라인 윈도우 — 동시 요청 수 × 청크 크기 = in-flight 데이터(BDP 충족용).
+  //   기존 64×64KB=4MB → 128×64KB=8MB 로 상향. 고대역/고지연 링크에서 처리량 향상,
+  //   chunkSize 64KB 는 기존 출시값이라 호환성 검증됨.
+  const opts = { concurrency: 128, chunkSize: 65536, step };
   const cb = (err) => {
     if (err) parentPort.postMessage({ type: 'error', id, error: String(err) });
     else     parentPort.postMessage({ type: 'done',  id });
