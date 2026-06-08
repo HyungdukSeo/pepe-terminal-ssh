@@ -94,7 +94,7 @@ function loadFavorites(sessionId: string): FavoriteQuery[] {
 }
 
 // SQL 작성 탭 또는 객체 상세 탭. 같은 탭 스트립에 공존.
-export type ObjectKind = 'table' | 'view' | 'index' | 'sequence' | 'procedure' | 'function' | 'synonym' | 'package' | 'trigger' | 'tablespace' | 'replication';
+export type ObjectKind = 'table' | 'view' | 'index' | 'sequence' | 'procedure' | 'function' | 'synonym' | 'package' | 'trigger' | 'tablespace' | 'replication' | 'info';
 export type EditorTab = {
   id: string;
   title: string;
@@ -104,6 +104,8 @@ export type EditorTab = {
   objectName?: string;
   objectSchema?: string;
   objectTable?: string; // index 등 — 소속 테이블명 (인덱스명은 전역 유일하지 않으므로 필수)
+  objectInfoSql?: string; // kind='info' — 관리/시스템 정보 항목이 실행할 사전정의 쿼리
+  objectInfoTransform?: string; // kind='info' — 결과 후처리 변환 키 (예: 'altibaseProperty')
   objectSubTab?: string; // kind 별 자유 — 'columns' | 'definition' | 'data' | 'properties' | 'parameters' | 'source' | 'declaration' | 'constraints' | 'fks' | 'refs' | 'triggers' | 'ddl' | 'er'
   objectPropSubTab?: string; // Properties 안의 nested 탭 (table/view)
 };
@@ -231,19 +233,30 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
       const existing = prev.find(t => t.kind === 'object' && t.objectName === name && t.objectKind === kind && (t.objectSchema || '') === (schema || '') && (t.objectTable || '') === (table || ''));
       if (existing) { setActiveEditorTabId(existing.id); return prev; }
       const id = newTabId();
-      const iconMap: Record<ObjectKind, string> = { table: '📄', view: '👁', index: '🔑', sequence: '🔢', procedure: '⚙', function: 'ƒ', synonym: '🔗', package: '📦', trigger: '🔔', tablespace: '💾', replication: '🔄' };
+      const iconMap: Record<ObjectKind, string> = { table: '📄', view: '👁', index: '🔑', sequence: '🔢', procedure: '⚙', function: 'ƒ', synonym: '🔗', package: '📦', trigger: '🔔', tablespace: '💾', replication: '🔄', info: 'ℹ' };
       const icon = iconMap[kind] || '📄';
       // 기본 서브탭 — DBeaver 스타일
       const defaultSubMap: Record<ObjectKind, string> = {
         table: 'properties', view: 'properties', index: 'columns', sequence: 'declaration',
         procedure: 'parameters', function: 'parameters', synonym: 'declaration',
-        package: 'pkgProcs', trigger: 'source', tablespace: 'datafiles', replication: 'properties',
+        package: 'pkgProcs', trigger: 'source', tablespace: 'datafiles', replication: 'properties', info: 'properties',
       };
       const defaultPropSubMap: Record<ObjectKind, string> = {
         table: 'columns', view: 'columns', index: '', sequence: '', procedure: '', function: '', synonym: '',
-        package: '', trigger: '', tablespace: '', replication: '',
+        package: '', trigger: '', tablespace: '', replication: '', info: '',
       };
       const next = [...prev, { id, title: `${icon} ${name}`, sql: '', kind: 'object' as const, objectKind: kind, objectName: name, objectSchema: schema, objectTable: table, objectSubTab: defaultSubMap[kind], objectPropSubTab: defaultPropSubMap[kind] }];
+      setActiveEditorTabId(id);
+      return next;
+    });
+  }, []);
+  // 관리/시스템 정보 항목 — info 상세 탭으로 열기 (사전정의 쿼리 결과를 Properties 그리드로 표시)
+  const openInfoTab = useCallback((label: string, icon: string, sql: string, transform?: string) => {
+    setEditorTabs(prev => {
+      const existing = prev.find(t => t.kind === 'object' && t.objectKind === 'info' && t.objectName === label);
+      if (existing) { setActiveEditorTabId(existing.id); return prev; }
+      const id = newTabId();
+      const next = [...prev, { id, title: `${icon} ${label}`, sql: '', kind: 'object' as const, objectKind: 'info' as ObjectKind, objectName: label, objectSchema: '', objectInfoSql: sql, objectInfoTransform: transform, objectSubTab: 'properties', objectPropSubTab: '' }];
       setActiveEditorTabId(id);
       return next;
     });
@@ -1912,6 +1925,123 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
               );
             };
 
+            // 관리(Administer) / 시스템 정보(System Info) — DBeaver 패턴. 각 항목 더블클릭 시 사전정의 쿼리 실행.
+            type InfoItem = { label: string; icon: string; sql: string; transform?: string };
+            const adminInfoConfig = (): { admin: InfoItem[]; sysinfo: InfoItem[] } => {
+              switch (backend?.type) {
+                case 'mysql': return {
+                  admin: [
+                    { label: 'Session Manager', icon: '🧑‍💻', sql: 'SHOW FULL PROCESSLIST' },
+                    { label: 'Users', icon: '👤', sql: 'SELECT * FROM mysql.user' },
+                  ],
+                  sysinfo: [
+                    { label: 'Session Status', icon: '📊', sql: 'SHOW SESSION STATUS' },
+                    { label: 'Global Status', icon: '📊', sql: 'SHOW GLOBAL STATUS' },
+                    { label: 'Session Variables', icon: '🔧', sql: 'SHOW SESSION VARIABLES' },
+                    { label: 'Global Variables', icon: '🔧', sql: 'SHOW GLOBAL VARIABLES' },
+                    { label: 'Engines', icon: '⚙', sql: 'SHOW ENGINES' },
+                    { label: 'Charsets', icon: '🔤', sql: 'SHOW CHARACTER SET' },
+                    { label: 'User Privileges', icon: '🔐', sql: 'SHOW PRIVILEGES' },
+                    { label: 'Plugin', icon: '🔌', sql: 'SHOW PLUGINS' },
+                  ],
+                };
+                case 'altibase': return {
+                  admin: [
+                    // DBeaver AltibaseServerSessionManager.generateSessionReadQuery() 기반 — 컬럼 순서/이름을 DBeaver 화면과 동일하게.
+                    { label: '세션 관리자', icon: '🧑‍💻', sql:
+                      `SELECT s.id "Session ID", db_username "User", s.trans_id "Transaction ID", CURRENT_STMT_ID "Statement ID", `
+                    + `nvl2(s.query, s.query, ' ') AS "SQL", comm_name "Connection Information", client_type "Client Application Type", `
+                    + `CASE2(autocommit_flag = 1, 'T', 'F') "Autocommit", decode(sysdba_flag, 0, 'F', 1, 'T') "SYSDBA", `
+                    + `TO_CHAR(conv_timezone(UNIX_TO_DATE( login_time ), '+00:00', db_timezone()), 'YYYY-MM-DD HH24:MI:SS') "Login Time", `
+                    + `CASE2(IDLE_START_TIME < 1, '', TO_CHAR(conv_timezone(UNIX_TO_DATE( idle_start_time ), '+00:00', db_timezone()), 'YYYY-MM-DD HH24:MI:SS')) "Idle Since", `
+                    + `obj_name "Lock Target", DECODE(is_grant, 1, 'HOLDER', 0, 'WAITER', '') "Lock Status", lock_desc "Lock Type", `
+                    + `query_time_limit "Query Time Limit", ddl_time_limit "DDL Time Limit", fetch_time_limit "Fetch Time Limit", `
+                    + `utrans_time_limit "UTrans Time Limit", idle_time_limit "Idle Time Limit", nls_territory "NLS Territory", `
+                    + `time_zone "Time Zone", client_app_info "Client App Info", client_protocol_version "Client Protocol Version", client_pid "Client PID" `
+                    + `FROM (SELECT ss.*, st.query FROM v$session ss LEFT OUTER JOIN v$statement st ON st.session_id = ss.id AND st.tx_id = ss.trans_id AND st.id = ss.current_stmt_id) s `
+                    + `LEFT OUTER JOIN (SELECT u.user_name || '.' || a.table_name obj_name, b.trans_id, b.lock_desc, b.is_grant FROM system_.sys_tables_ a, v$lock b, system_.sys_users_ u WHERE u.user_id = a.user_id AND a.table_oid = b.table_oid) l ON s.trans_id = l.trans_id `
+                    + `ORDER BY s.id` },
+                    { label: '락 관리자', icon: '🔒', sql: 'SELECT * FROM V$LOCK' },
+                  ],
+                  sysinfo: [
+                    // 원시 컬럼만 조회 후 JS 에서 DBeaver AltibaseProperty 와 동일하게 가공(Name/Dynamic/값) — Altibase 타입변환 오류 회피.
+                    { label: 'Properties', icon: '📄', sql: `SELECT NAME, ATTR, "MIN", "MAX", VALUE1, VALUE2, VALUE3 FROM V$PROPERTY ORDER BY NAME`, transform: 'altibaseProperty' },
+                    // DBeaver AltibaseMemoryModule: 이름/Allocated Size(byte→1.3G)/Allocation Count, max_total_size DESC 정렬.
+                    { label: 'Module Memory Usage', icon: '📊', sql: 'SELECT NAME, ALLOC_SIZE, ALLOC_COUNT FROM V$MEMSTAT ORDER BY MAX_TOTAL_SIZE DESC', transform: 'altibaseMemoryModule' },
+                  ],
+                };
+                case 'oracle': return {
+                  admin: [
+                    { label: 'Session Manager', icon: '🧑‍💻', sql: 'SELECT * FROM V$SESSION' },
+                    { label: 'Lock Manager', icon: '🔒', sql: 'SELECT * FROM V$LOCK' },
+                  ],
+                  sysinfo: [
+                    { label: 'Parameters', icon: '🔧', sql: 'SELECT NAME, VALUE FROM V$PARAMETER ORDER BY NAME' },
+                    { label: 'Version', icon: '📄', sql: 'SELECT * FROM V$VERSION' },
+                    { label: 'SGA', icon: '📊', sql: 'SELECT * FROM V$SGA' },
+                  ],
+                };
+                case 'postgres': return {
+                  admin: [
+                    { label: 'Session Manager', icon: '🧑‍💻', sql: 'SELECT * FROM pg_stat_activity' },
+                    { label: 'Locks', icon: '🔒', sql: 'SELECT * FROM pg_locks' },
+                  ],
+                  sysinfo: [
+                    { label: 'Settings', icon: '🔧', sql: 'SELECT name, setting, unit, category FROM pg_settings ORDER BY name' },
+                    { label: 'Roles', icon: '🔐', sql: 'SELECT * FROM pg_roles' },
+                    { label: 'Extensions', icon: '🔌', sql: 'SELECT * FROM pg_extension' },
+                  ],
+                };
+                case 'mssql': return {
+                  admin: [
+                    { label: 'Session Manager', icon: '🧑‍💻', sql: 'SELECT * FROM sys.dm_exec_sessions' },
+                    { label: 'Locks', icon: '🔒', sql: 'SELECT * FROM sys.dm_tran_locks' },
+                  ],
+                  sysinfo: [
+                    { label: 'Configurations', icon: '🔧', sql: 'SELECT * FROM sys.configurations ORDER BY name' },
+                    { label: 'Databases', icon: '🗄', sql: 'SELECT * FROM sys.databases' },
+                  ],
+                };
+                default: return { admin: [], sysinfo: [] };
+              }
+            };
+            const renderInfoRoot = (rid: string, icon: string, label: string, items: InfoItem[]) => {
+              if (!items.length) return null;
+              const open = isExpanded(`schema:${rid}`);
+              return (
+                <div key={rid}>
+                  <div onClick={() => toggleExpanded(`schema:${rid}`)} style={{ ...rowStyle(0), color: '#dcdcaa', fontWeight: 600 }} {...hover}>
+                    {caret(open)}
+                    <span>{icon} {label}</span>
+                  </div>
+                  {open && (
+                    <div>
+                      {items.map(it => (
+                        <div key={it.label}
+                          title={`더블클릭: 상세 — ${it.sql}`}
+                          onDoubleClick={() => openInfoTab(it.label, it.icon, it.sql, it.transform)}
+                          style={{ ...rowStyle(1), cursor: 'pointer' }} {...hover}
+                        >
+                          <span style={{ width: 10, display: 'inline-block', flexShrink: 0 }} />
+                          <span style={nameSpanStyle}>{it.icon} {it.label}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            };
+            const renderAdminInfo = () => {
+              const cfg = adminInfoConfig();
+              if (!cfg.admin.length && !cfg.sysinfo.length) return null;
+              return (
+                <>
+                  {renderInfoRoot('admin-root', '🛠', '관리', cfg.admin)}
+                  {renderInfoRoot('sysinfo-root', 'ℹ', '시스템 정보', cfg.sysinfo)}
+                </>
+              );
+            };
+
             if (schemasLoading) return <div style={{ color: '#888', padding: 6 }}>스키마 로딩...</div>;
             // 스키마가 없는 DBMS(SQLite 등) — 그룹을 최상위로 평탄 표시 (schema='' 전달)
             if (schemas.length === 0) {
@@ -1929,6 +2059,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
                 {schemasRootOpen && <div>{schemas.map(s => renderSchema(s, 1))}</div>}
                 {renderStorageRoot()}
                 {renderGlobalMetadata()}
+                {renderAdminInfo()}
               </div>
             );
           })()}
@@ -2161,12 +2292,27 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
                 setEditorTabs(prev => prev.map(x => x.id === t.id ? { ...x, title: v } : x));
                 setRenamingTabId('');
               };
+              const closeThisTab = () => {
+                setEditorTabs(prev => {
+                  const next = prev.filter(x => x.id !== t.id);
+                  if (next.length === 0) return [{ id: newTabId(), title: 'Query 1', sql: '' }];
+                  return next;
+                });
+                // 활성 탭이 닫혔으면 인접 탭으로
+                if (activeEditorTabId === t.id) {
+                  const idx = editorTabs.findIndex(x => x.id === t.id);
+                  const neighbour = editorTabs[idx + 1] || editorTabs[idx - 1];
+                  if (neighbour) setActiveEditorTabId(neighbour.id);
+                }
+              };
               return (
                 <div
                   key={t.id}
                   onClick={() => setActiveEditorTabId(t.id)}
+                  onMouseDown={e => { if (e.button === 1 && editorTabs.length > 1 && !isRenaming) { e.preventDefault(); e.stopPropagation(); closeThisTab(); } }}
+                  onAuxClick={e => { if (e.button === 1) e.preventDefault(); }}
                   onDoubleClick={() => { if (isRenamable) { setRenamingTabId(t.id); setRenameDraft(t.title); } }}
-                  title={isRenamable ? '더블클릭: 이름 변경' : t.title}
+                  title={isRenamable ? '더블클릭: 이름 변경 / 휠클릭: 닫기' : t.title + ' (휠클릭: 닫기)'}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 6,
                     padding: '2px 10px', cursor: 'pointer', fontSize: 12,
@@ -2195,20 +2341,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
                   )}
                   {editorTabs.length > 1 && !isRenaming && (
                     <span
-                      onClick={e => {
-                        e.stopPropagation();
-                        setEditorTabs(prev => {
-                          const next = prev.filter(x => x.id !== t.id);
-                          if (next.length === 0) return [{ id: newTabId(), title: 'Query 1', sql: '' }];
-                          return next;
-                        });
-                        // 활성 탭이 닫혔으면 인접 탭으로
-                        if (activeEditorTabId === t.id) {
-                          const idx = editorTabs.findIndex(x => x.id === t.id);
-                          const neighbour = editorTabs[idx + 1] || editorTabs[idx - 1];
-                          if (neighbour) setActiveEditorTabId(neighbour.id);
-                        }
-                      }}
+                      onClick={e => { e.stopPropagation(); closeThisTab(); }}
                       title="탭 닫기"
                       style={{ color: '#888', fontSize: 14, lineHeight: 1, padding: '0 2px', borderRadius: 2 }}
                       onMouseEnter={e => (e.currentTarget.style.background = '#444')}

@@ -40,14 +40,81 @@ interface Props {
   onPropSubTab: (sub: string) => void;
 }
 
-const ICON_MAP: Record<ObjectKind, string> = { table: '📄', view: '👁', index: '🔑', sequence: '🔢', procedure: '⚙', function: 'ƒ', synonym: '🔗', package: '📦', trigger: '🔔', tablespace: '💾', replication: '🔄' };
-const LABEL_MAP: Record<ObjectKind, string> = { table: 'TABLE', view: 'VIEW', index: 'INDEX', sequence: 'SEQUENCE', procedure: 'PROCEDURE', function: 'FUNCTION', synonym: 'PUBLIC SYNONYM', package: 'PACKAGE', trigger: 'TRIGGER', tablespace: 'TABLESPACE', replication: 'REPLICATION' };
+// info(관리/시스템 정보) 결과 후처리 — DBeaver 모델과 동일한 컬럼으로 가공. Altibase 타입변환 오류 회피용으로 JS 에서 처리.
+type RowDetail = { name: string; value: string }[];
+function transformInfoResult(key: string, columns: string[], rows: any[][]): { columns: string[]; rows: any[][]; rowDetails?: RowDetail[] } {
+  const idx = (name: string) => columns.findIndex(c => c.toUpperCase() === name.toUpperCase());
+  const s = (v: any) => (v == null ? '' : String(v)).trim();
+  if (key === 'altibaseProperty') {
+    // DBeaver AltibaseProperty: Name / Dynamic((ATTR & 0x2)==0 → 동적) / 값(숫자면 "값  [min, max]", 문자면 VALUE1..n)
+    const iName = idx('NAME'), iAttr = idx('ATTR'), iMin = idx('MIN'), iMax = idx('MAX');
+    const vIdx = columns.map((c, i) => (/^VALUE\d+$/i.test(c) ? i : -1)).filter(i => i >= 0);
+    const out: any[][] = [];
+    const rowDetails: RowDetail[] = [];
+    for (const r of rows) {
+      const name = s(r[iName]);
+      const attr = parseInt(s(r[iAttr]), 10);
+      const dynamic = !isNaN(attr) && (attr & 0x2) === 0 ? '[v]' : '[ ]';
+      const min = iMin >= 0 ? s(r[iMin]) : '';
+      const max = iMax >= 0 ? s(r[iMax]) : '';
+      let value: string;
+      if (min !== '' || max !== '') {
+        value = `${vIdx.length ? s(r[vIdx[0]]) : ''}  [${min}, ${max}]`;
+      } else {
+        value = vIdx.map(i => s(r[i])).filter(x => x !== '').join(', ');
+      }
+      out.push([name, dynamic, value]);
+      // 하단 상세 — min/max/value 원시값 포함
+      const det: RowDetail = [
+        { name: 'Name', value: name },
+        { name: 'Dynamic', value: dynamic },
+        { name: 'Min', value: min },
+        { name: 'Max', value: max },
+      ];
+      vIdx.forEach((vi, k) => det.push({ name: `Value${k + 1}`, value: s(r[vi]) }));
+      det.push({ name: 'Attr', value: s(r[iAttr]) });
+      rowDetails.push(det);
+    }
+    return { columns: ['Name', 'Dynamic', '값'], rows: out, rowDetails };
+  }
+  if (key === 'altibaseMemoryModule') {
+    // DBeaver AltibaseMemoryModule: 이름 / Allocated Size(ByteNumberFormat) / Allocation Count
+    const iName = idx('NAME'), iSize = idx('ALLOC_SIZE'), iCount = idx('ALLOC_COUNT');
+    const fmtBytes = (raw: string): string => {
+      const n = parseFloat(raw);
+      if (!isFinite(n)) return raw;
+      const units = ['', 'K', 'M', 'G', 'T', 'P'];
+      let u = 0, v = n;
+      while (v >= 1024 && u < units.length - 1) { v /= 1024; u++; }
+      const str = u === 0 ? String(Math.round(v)) : (v >= 100 ? v.toFixed(0) : v.toFixed(1));
+      return str + units[u];
+    };
+    const fmtCount = (raw: string): string => { const n = parseInt(raw, 10); return isNaN(n) ? raw : n.toLocaleString(); };
+    const out = rows.map(r => [s(r[iName]), fmtBytes(s(r[iSize])), fmtCount(s(r[iCount]))]);
+    const rowDetails: RowDetail[] = rows.map(r => [
+      { name: 'Name', value: s(r[iName]) },
+      { name: 'Allocated Size', value: s(r[iSize]) },
+      { name: 'Allocation Count', value: s(r[iCount]) },
+    ]);
+    return { columns: ['이름', 'Allocated Size', 'Allocation Count'], rows: out, rowDetails };
+  }
+  return { columns, rows };
+}
+
+const ICON_MAP: Record<ObjectKind, string> = { table: '📄', view: '👁', index: '🔑', sequence: '🔢', procedure: '⚙', function: 'ƒ', synonym: '🔗', package: '📦', trigger: '🔔', tablespace: '💾', replication: '🔄', info: 'ℹ' };
+const LABEL_MAP: Record<ObjectKind, string> = { table: 'TABLE', view: 'VIEW', index: 'INDEX', sequence: 'SEQUENCE', procedure: 'PROCEDURE', function: 'FUNCTION', synonym: 'PUBLIC SYNONYM', package: 'PACKAGE', trigger: 'TRIGGER', tablespace: 'TABLESPACE', replication: 'REPLICATION', info: 'INFO' };
 
 export const ObjectDetailPanel: React.FC<Props> = (p) => {
   const { tab, backend, connected, running, colsCacheRef, pksCacheRef, defsCacheRef, inflightDefRef, detailCacheRef,
     columnsRev, pkRev, defRev, objDetailRev, setDefRev, setObjDetailRev,
     loadColumns, loadPrimaryKey, loadDefinition, runSql, setActiveEditorTabId, onSubTab, onPropSubTab } = p;
   void columnsRev; void pkRev; void defRev; void objDetailRev;
+
+  // info(관리/시스템 정보) 그리드에서 선택된 행 (마스터-디테일)
+  const [selectedInfoRow, setSelectedInfoRow] = React.useState<number>(-1);
+  const [showInfoSql, setShowInfoSql] = React.useState<boolean>(false);
+  const [infoSort, setInfoSort] = React.useState<{ col: number; dir: 'asc' | 'desc' } | null>(null);
+  const [tableSort, setTableSort] = React.useState<Record<string, { col: number; dir: 'asc' | 'desc' }>>({});
 
   const objName = tab.objectName!;
   const objKind = tab.objectKind!;
@@ -223,6 +290,17 @@ export const ObjectDetailPanel: React.FC<Props> = (p) => {
         backend.replicationDetail(objName).then(d => { detailCacheRef.current.set(detailKey, d || { properties: {}, hosts: [], items: [] }); setObjDetailRev(v => v + 1); });
       }
     }
+    // 관리/시스템 정보(info) — 사전정의 쿼리 실행 결과를 그리드로 표시
+    if (objKind === 'info' && detail === undefined && tab.objectInfoSql) {
+      backend.exec(tab.objectInfoSql, 5000)
+        .then(r => {
+          const t = tab.objectInfoTransform
+            ? transformInfoResult(tab.objectInfoTransform, r.columns || [], r.rows || [])
+            : { columns: r.columns || [], rows: r.rows || [], rowDetails: undefined as RowDetail[] | undefined };
+          detailCacheRef.current.set(detailKey, { columns: t.columns, rows: t.rows, rowDetails: t.rowDetails, error: '' }); setObjDetailRev(v => v + 1);
+        })
+        .catch((e: any) => { detailCacheRef.current.set(detailKey, { columns: [], rows: [], error: String(e?.message || e) }); setObjDetailRev(v => v + 1); });
+    }
     // SYNONYM Declaration — objSchema 있으면 user-소유, 없으면 PUBLIC 으로 합성.
     if (objKind === 'synonym' && sub === 'declaration' && declText === undefined) {
       backend.synonymTarget(objName, objSchema).then(t => {
@@ -263,6 +341,7 @@ export const ObjectDetailPanel: React.FC<Props> = (p) => {
       case 'trigger':   return [{ id: 'source', label: 'Source' }];
       case 'tablespace': return [{ id: 'datafiles', label: '데이터 파일' }, { id: 'tbsTables', label: '테이블' }, { id: 'tbsIndexes', label: '인덱스' }];
       case 'replication': return [{ id: 'properties', label: 'Properties' }, { id: 'replItems', label: '이중화 대상' }, { id: 'replHosts', label: '원격 호스트' }];
+      case 'info':      return [{ id: 'properties', label: 'Properties' }];
       default:          return [];
     }
   })();
@@ -290,57 +369,73 @@ export const ObjectDetailPanel: React.FC<Props> = (p) => {
   });
 
   // ── 렌더 헬퍼 ──
-  const renderColumnsTable = () => {
-    if (!colsCache) return <div style={{ padding: 12, color: '#888' }}>로딩...</div>;
-    if (colsCache.length === 0) return <div style={{ padding: 12, color: '#666' }}>컬럼 정보 없음</div>;
-    return (
-      <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, fontFamily: 'monospace', fontSize: 12 }}>
-        <thead>
-          <tr style={{ position: 'sticky', top: 0, background: '#2d2d2d', color: '#9cdcfe' }}>
-            <th style={{ padding: '4px 8px', textAlign: 'right', borderBottom: '1px solid #3f3f46' }}>#</th>
-            <th style={{ padding: '4px 8px', textAlign: 'left', borderBottom: '1px solid #3f3f46' }}>컬럼명</th>
-            <th style={{ padding: '4px 8px', textAlign: 'left', borderBottom: '1px solid #3f3f46' }}>타입</th>
-            <th style={{ padding: '4px 8px', textAlign: 'center', borderBottom: '1px solid #3f3f46' }}>NULL</th>
-            <th style={{ padding: '4px 8px', textAlign: 'center', borderBottom: '1px solid #3f3f46' }}>PK</th>
-          </tr>
-        </thead>
-        <tbody>
-          {colsCache.map((c, i) => {
-            const isPk = pkCols.some(p => p.toUpperCase() === c.name.toUpperCase());
-            return (
-              <tr key={c.name} style={{ background: i % 2 ? '#222' : '#1e1e1e' }}>
-                <td style={{ padding: '3px 8px', textAlign: 'right', color: '#888' }}>{i + 1}</td>
-                <td style={{ padding: '3px 8px', color: c.nullable ? '#d4d4d4' : '#ffd680' }}>{c.name}</td>
-                <td style={{ padding: '3px 8px', color: '#9cdcfe' }}>{c.typeText || '-'}</td>
-                <td style={{ padding: '3px 8px', textAlign: 'center' }}>{c.nullable ? 'Y' : 'N'}</td>
-                <td style={{ padding: '3px 8px', textAlign: 'center', color: isPk ? '#ffd680' : '#666' }}>{isPk ? '🔑' : ''}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    );
+  // 헤더 클릭 정렬을 지원하는 범용 테이블. sortId 로 표마다 정렬 상태 분리.
+  type SortCol = { label: string; align?: 'left' | 'right' | 'center'; thStyle?: React.CSSProperties; value: (row: any, idx: number) => any; render: (row: any, idx: number) => React.ReactNode };
+  const cmpVal = (a: any, b: any): number => {
+    const sa = a == null ? '' : String(a), sb = b == null ? '' : String(b);
+    const na = parseFloat(sa), nb = parseFloat(sb);
+    const bothNum = sa.trim() !== '' && sb.trim() !== '' && !isNaN(na) && !isNaN(nb) && /^-?[\d.,]+$/.test(sa.trim()) && /^-?[\d.,]+$/.test(sb.trim());
+    return bothNum ? na - nb : sa.localeCompare(sb);
   };
-
-  const renderSimpleListTable = (data: any[] | undefined, headers: { key: string; label: string; render?: (row: any) => React.ReactNode }[], emptyMsg = '없음') => {
-    if (data === undefined) return <div style={{ padding: 12, color: '#888' }}>로딩...</div>;
-    if (data.length === 0) return <div style={{ padding: 12, color: '#666' }}>{emptyMsg}</div>;
+  const toggleTableSort = (sortId: string, col: number) => setTableSort(p => {
+    const c = p[sortId];
+    const dir: 'asc' | 'desc' = c && c.col === col && c.dir === 'asc' ? 'desc' : 'asc';
+    return { ...p, [sortId]: { col, dir } };
+  });
+  const renderSortableTable = (sortId: string, columns: SortCol[], data: any[]) => {
+    const sc = tableSort[sortId];
+    const order = data.map((_, i) => i);
+    if (sc && sc.col >= 0 && sc.col < columns.length) {
+      const get = columns[sc.col].value;
+      order.sort((a, b) => cmpVal(get(data[a], a), get(data[b], b)) * (sc.dir === 'asc' ? 1 : -1));
+    }
     return (
       <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, fontFamily: 'monospace', fontSize: 12 }}>
         <thead>
           <tr style={{ position: 'sticky', top: 0, background: '#2d2d2d', color: '#9cdcfe' }}>
-            {headers.map(h => <th key={h.key} style={{ padding: '4px 8px', textAlign: 'left', borderBottom: '1px solid #3f3f46' }}>{h.label}</th>)}
+            {columns.map((c, ci) => (
+              <th key={ci} onClick={() => toggleTableSort(sortId, ci)} title="클릭: 정렬"
+                style={{ padding: '4px 8px', textAlign: c.align || 'left', borderBottom: '1px solid #3f3f46', cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap', ...c.thStyle }}>
+                {c.label}<span style={{ color: '#dcdcaa' }}>{sc && sc.col === ci ? (sc.dir === 'asc' ? ' ▲' : ' ▼') : ''}</span>
+              </th>
+            ))}
           </tr>
         </thead>
         <tbody>
-          {data.map((row, i) => (
-            <tr key={i} style={{ background: i % 2 ? '#222' : '#1e1e1e' }}>
-              {headers.map(h => <td key={h.key} style={{ padding: '3px 8px', color: '#d4d4d4' }}>{h.render ? h.render(row) : (row[h.key] ?? '-')}</td>)}
+          {order.map((orig, p) => (
+            <tr key={orig} style={{ background: p % 2 ? '#222' : '#1e1e1e' }}>
+              {columns.map((c, ci) => (
+                <td key={ci} style={{ padding: '3px 8px', color: '#d4d4d4', textAlign: c.align || 'left' }}>{c.render(data[orig], orig)}</td>
+              ))}
             </tr>
           ))}
         </tbody>
       </table>
     );
+  };
+
+  const renderColumnsTable = () => {
+    if (!colsCache) return <div style={{ padding: 12, color: '#888' }}>로딩...</div>;
+    if (colsCache.length === 0) return <div style={{ padding: 12, color: '#666' }}>컬럼 정보 없음</div>;
+    const isPkOf = (c: ColumnInfo) => pkCols.some(p => p.toUpperCase() === c.name.toUpperCase());
+    return renderSortableTable(`cols:${objName}`, [
+      { label: '#', align: 'right', value: (_r, i) => i, render: (_r, i) => <span style={{ color: '#888' }}>{i + 1}</span> },
+      { label: '컬럼명', value: r => r.name, render: r => <span style={{ color: r.nullable ? '#d4d4d4' : '#ffd680' }}>{r.name}</span> },
+      { label: '타입', value: r => r.typeText || '', render: r => <span style={{ color: '#9cdcfe' }}>{r.typeText || '-'}</span> },
+      { label: 'NULL', align: 'center', value: r => (r.nullable ? 1 : 0), render: r => (r.nullable ? 'Y' : 'N') },
+      { label: 'PK', align: 'center', value: r => (isPkOf(r) ? 1 : 0), render: r => <span style={{ color: isPkOf(r) ? '#ffd680' : '#666' }}>{isPkOf(r) ? '🔑' : ''}</span> },
+    ], colsCache);
+  };
+
+  const renderSimpleListTable = (data: any[] | undefined, headers: { key: string; label: string; render?: (row: any) => React.ReactNode }[], emptyMsg = '없음', sortId = 'list') => {
+    if (data === undefined) return <div style={{ padding: 12, color: '#888' }}>로딩...</div>;
+    if (data.length === 0) return <div style={{ padding: 12, color: '#666' }}>{emptyMsg}</div>;
+    const sortVal = (row: any, key: string) => { const v = row[key]; return Array.isArray(v) ? v.join(', ') : v; };
+    return renderSortableTable(`${sortId}:${objName}`, headers.map(h => ({
+      label: h.label,
+      value: (row: any) => sortVal(row, h.key),
+      render: (row: any) => (h.render ? h.render(row) : (row[h.key] ?? '-')),
+    })), data);
   };
 
   const renderMonacoText = (text: string | undefined, language = 'sql') => {
@@ -366,24 +461,24 @@ export const ObjectDetailPanel: React.FC<Props> = (p) => {
       { key: 'validated', label: 'Validated', render: r => r.validated === 'true' ? '[ ✓ ]' : (r.validated === 'false' ? '[   ]' : '') },
       { key: 'condition', label: 'Condition' },
       { key: 'columns', label: '컬럼', render: r => (r.columns || []).join(', ') },
-    ]);
+    ], '없음', 'constraints');
     if (propSub === 'fks') return renderSimpleListTable(fks, [
       { key: 'name', label: '이름' },
       { key: 'columns', label: '컬럼', render: r => (r.columns || []).join(', ') },
       { key: 'refTable', label: '참조 테이블' },
       { key: 'refColumns', label: '참조 컬럼', render: r => (r.refColumns || []).join(', ') },
-    ]);
+    ], '없음', 'fks');
     if (propSub === 'indexes') return renderSimpleListTable(detailCacheRef.current.get(subDataKey('indexes')), [
       { key: 'name', label: '이름' },
       { key: 'columns', label: '컬럼', render: r => (r.columns || []).join(', ') },
-    ]);
+    ], '없음', 'indexes');
     if (propSub === 'refs') return renderSimpleListTable(refs, [
       { key: 'name', label: '이름' }, { key: 'fromTable', label: '참조하는 테이블' },
       { key: 'fromColumns', label: '컬럼', render: r => (r.fromColumns || []).join(', ') },
-    ]);
+    ], '없음', 'refs');
     if (propSub === 'triggers') return renderSimpleListTable(triggers, [
       { key: 'name', label: '이름' }, { key: 'event', label: '이벤트' }, { key: 'timing', label: 'BEFORE/AFTER' },
-    ]);
+    ], '없음', 'triggers');
     if (propSub === 'ddl') return renderMonacoText(ddlText);
     return null;
   };
@@ -555,6 +650,159 @@ export const ObjectDetailPanel: React.FC<Props> = (p) => {
 
   // ── 상단 탭 컨텐츠 ──
   const renderContent = () => {
+    if (objKind === 'info') {
+      const d: any = detail || {};
+      const cols: string[] = d.columns || [];
+      const rows: any[][] = d.rows || [];
+      const refresh = () => { detailCacheRef.current.delete(detailKey); setObjDetailRev(v => v + 1); };
+      const toolbar = (
+        <div style={{ flex: '0 0 auto', borderBottom: '1px solid #333', background: '#252526' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '4px 8px' }}>
+            <button onClick={refresh} disabled={!connected || running}
+              style={{ background: '#0e639c', color: '#fff', border: 0, padding: '3px 10px', borderRadius: 3, cursor: 'pointer', fontSize: 11 }}>↻ 새로 고침</button>
+            <button onClick={() => setShowInfoSql(v => !v)} title="실행 쿼리 보기/숨기기"
+              style={{ background: showInfoSql ? '#37373d' : 'transparent', color: '#bbb', border: '1px solid #3f3f46', padding: '3px 10px', borderRadius: 3, cursor: 'pointer', fontSize: 11 }}>
+              {showInfoSql ? '쿼리 숨기기' : '쿼리 보기'}</button>
+            {detail !== undefined && !d.error && <span style={{ marginLeft: 'auto', color: '#888', fontSize: 11 }}>{rows.length.toLocaleString()}행</span>}
+          </div>
+          {showInfoSql && (
+            <div style={{ padding: '6px 10px', borderTop: '1px solid #333', maxHeight: 110, overflow: 'auto', color: '#9cdcfe', fontSize: 11, fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-all', background: '#1e1e1e' }}>{tab.objectInfoSql}</div>
+          )}
+        </div>
+      );
+      let body: React.ReactNode;
+      if (detail === undefined) body = <div style={{ padding: 12, color: '#888' }}>로딩...</div>;
+      else if (d.error) body = <div style={{ padding: 12, color: '#f48771', whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: 12 }}>✗ {d.error}</div>;
+      else if (cols.length === 0) body = <div style={{ padding: 12, color: '#666' }}>결과 없음</div>;
+      else {
+        // 헤더 클릭 정렬 — 원본 인덱스 배열(order)을 정렬해 rows/rowDetails 정합성 유지.
+        const order = rows.map((_, i) => i);
+        if (infoSort && infoSort.col >= 0 && infoSort.col < cols.length) {
+          const { col, dir } = infoSort;
+          const cmp = (a: any, b: any) => {
+            const sa = a == null ? '' : String(a), sb = b == null ? '' : String(b);
+            const na = parseFloat(sa), nb = parseFloat(sb);
+            const bothNum = sa.trim() !== '' && sb.trim() !== '' && !isNaN(na) && !isNaN(nb) && /^-?[\d.,]+$/.test(sa.trim()) && /^-?[\d.,]+$/.test(sb.trim());
+            if (bothNum) return na - nb;
+            return sa.localeCompare(sb);
+          };
+          order.sort((a, b) => cmp(rows[a][col], rows[b][col]) * (dir === 'asc' ? 1 : -1));
+        }
+        const origIdx = selectedInfoRow >= 0 && selectedInfoRow < order.length ? order[selectedInfoRow] : -1;
+        const sel = origIdx >= 0 ? rows[origIdx] : null;
+        const rowDetail: RowDetail | null = (origIdx >= 0 && d.rowDetails && d.rowDetails[origIdx]) || null;
+        const sqlColIdx = cols.findIndex(c => /^sql$|query/i.test(c));
+        const toggleSort = (ci: number) => {
+          setSelectedInfoRow(-1);
+          setInfoSort(p => p && p.col === ci ? { col: ci, dir: p.dir === 'asc' ? 'desc' : 'asc' } : { col: ci, dir: 'asc' });
+        };
+        const sqlText = sel && sqlColIdx >= 0 ? (sel[sqlColIdx] == null ? '' : String(sel[sqlColIdx])) : '';
+        // Name/Value 상세 그룹핑 (DBeaver Session Details 유사)
+        const grp = (name: string): string => {
+          if (/^sql$|query/i.test(name)) return 'SQL';
+          if (/lock/i.test(name)) return 'Wait';
+          if (/time.?limit|timeout/i.test(name)) return 'Timeout';
+          if (/login|idle|time.?zone|territory/i.test(name)) return '시간/세션';
+          if (/client|comm|connection|protocol|pid|app/i.test(name)) return '연결';
+          return '기타';
+        };
+        const grid = (
+          <div style={{ flex: 1, minHeight: 80, overflow: 'auto' }}>
+            <table style={{ borderCollapse: 'separate', borderSpacing: 0, fontFamily: 'monospace', fontSize: 12, minWidth: '100%' }}>
+              <thead>
+                <tr style={{ position: 'sticky', top: 0, background: '#2d2d2d', color: '#9cdcfe', zIndex: 1 }}>
+                  <th style={{ padding: '4px 8px', textAlign: 'right', borderBottom: '1px solid #3f3f46', borderRight: '1px solid #3f3f46' }}>#</th>
+                  {cols.map((c, i) => {
+                    const isSql = /^sql$|query/i.test(c);
+                    const arrow = infoSort && infoSort.col === i ? (infoSort.dir === 'asc' ? ' ▲' : ' ▼') : '';
+                    return (
+                      <th key={i} onClick={() => toggleSort(i)} title="클릭: 정렬"
+                        style={{ padding: '4px 10px', textAlign: 'left', borderBottom: '1px solid #3f3f46', whiteSpace: 'nowrap', cursor: 'pointer', userSelect: 'none', ...(isSql ? { maxWidth: 280 } : {}) }}>
+                        {c}<span style={{ color: '#dcdcaa' }}>{arrow}</span>
+                      </th>
+                    );
+                  })}
+                </tr>
+              </thead>
+              <tbody>
+                {order.map((orig, p) => {
+                  const row = rows[orig];
+                  const on = p === selectedInfoRow;
+                  return (
+                    <tr key={orig} onClick={() => setSelectedInfoRow(p === selectedInfoRow ? -1 : p)}
+                      style={{ background: on ? '#094771' : (p % 2 ? '#222' : '#1e1e1e'), cursor: 'pointer' }}>
+                      <td style={{ padding: '3px 8px', textAlign: 'right', color: '#888', borderRight: '1px solid #333' }}>{p + 1}</td>
+                      {cols.map((_c, ci) => {
+                        const isSql = /^sql$|query/i.test(cols[ci]);
+                        const val = row[ci] == null ? null : String(row[ci]);
+                        return (
+                          <td key={ci} title={isSql && val ? val : undefined}
+                            style={{ padding: '3px 10px', color: on ? '#fff' : '#d4d4d4', whiteSpace: 'nowrap', ...(isSql ? { maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis' } : {}) }}>
+                            {val == null ? <span style={{ color: '#666' }}>(null)</span> : val}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        );
+        // 하단 Session Details (선택 행) — SQL 전문 + Name/Value 그룹 트리
+        const detailPane = sel && (
+          <div style={{ flex: '0 0 220px', minHeight: 120, borderTop: '2px solid #3f3f46', display: 'flex', background: '#1e1e1e' }}>
+            {sqlColIdx >= 0 && (
+              <div style={{ flex: '0 0 42%', display: 'flex', flexDirection: 'column', borderRight: '1px solid #333' }}>
+                <div style={{ padding: '4px 8px', color: '#9cdcfe', fontSize: 11, background: '#252526', borderBottom: '1px solid #333' }}>📄 SQL</div>
+                <textarea readOnly value={sqlText || '(없음)'} style={{ flex: 1, resize: 'none', border: 0, outline: 'none', background: '#1e1e1e', color: '#d4d4d4', fontFamily: 'monospace', fontSize: 12, padding: 8, whiteSpace: 'pre-wrap' }} />
+              </div>
+            )}
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+              <div style={{ padding: '4px 8px', color: '#9cdcfe', fontSize: 11, background: '#252526', borderBottom: '1px solid #333' }}>🗂 상세 (행 {selectedInfoRow + 1})</div>
+              <div style={{ flex: 1, overflow: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: 'monospace', fontSize: 12 }}>
+                  <tbody>
+                    {rowDetail ? (
+                      // 변환된 항목(예: Altibase Property) — Min/Max/Value 원시값 평면 표시
+                      rowDetail.map((kv, i) => (
+                        <tr key={i} style={{ borderBottom: '1px solid #2a2a2a' }}>
+                          <td style={{ padding: '3px 8px', color: '#9cdcfe', width: 160, verticalAlign: 'top', whiteSpace: 'nowrap' }}>{kv.name}</td>
+                          <td style={{ padding: '3px 8px', color: '#d4d4d4', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{kv.value === '' ? <span style={{ color: '#666' }}>(없음)</span> : kv.value}</td>
+                        </tr>
+                      ))
+                    ) : (
+                      ['SQL', 'Wait', 'Timeout', '시간/세션', '연결', '기타'].map(group => {
+                        const idxs = cols.map((c, i) => ({ c, i })).filter(x => grp(x.c) === group);
+                        if (idxs.length === 0) return null;
+                        return (
+                          <React.Fragment key={group}>
+                            <tr><td colSpan={2} style={{ padding: '3px 8px', color: '#dcdcaa', background: '#2a2a2a', fontWeight: 700, borderBottom: '1px solid #3f3f46' }}>{group}</td></tr>
+                            {idxs.map(({ c, i }) => (
+                              <tr key={i} style={{ borderBottom: '1px solid #2a2a2a' }}>
+                                <td style={{ padding: '3px 8px 3px 18px', color: '#9cdcfe', width: 220, verticalAlign: 'top', whiteSpace: 'nowrap' }}>{c}</td>
+                                <td style={{ padding: '3px 8px', color: '#d4d4d4', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{sel[i] == null ? <span style={{ color: '#666' }}>(null)</span> : String(sel[i])}</td>
+                              </tr>
+                            ))}
+                          </React.Fragment>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        );
+        body = (
+          <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+            {grid}
+            {detailPane}
+          </div>
+        );
+      }
+      return <div style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%' }}>{toolbar}{body}</div>;
+    }
     if (sub === 'properties') return renderPropertiesContent();
     if (sub === 'data' && isTableLike) {
       return (
@@ -576,32 +824,13 @@ export const ObjectDetailPanel: React.FC<Props> = (p) => {
       const d: any = detail || {};
       const cols = (d.columns || []) as ({ name: string; sortOrder?: 'A' | 'D' } | string)[];
       if (!d.table && cols.length === 0) return <div style={{ padding: 12, color: '#666' }}>인덱스 정보 없음</div>;
-      return (
-        <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, fontFamily: 'monospace', fontSize: 12 }}>
-          <thead>
-            <tr style={{ position: 'sticky', top: 0, background: '#2d2d2d', color: '#9cdcfe' }}>
-              <th style={{ padding: '4px 8px', textAlign: 'left', borderBottom: '1px solid #3f3f46' }}>이름</th>
-              <th style={{ padding: '4px 8px', textAlign: 'left', borderBottom: '1px solid #3f3f46' }}>컬럼</th>
-              <th style={{ padding: '4px 8px', textAlign: 'center', borderBottom: '1px solid #3f3f46' }}>Ascending</th>
-            </tr>
-          </thead>
-          <tbody>
-            {cols.length === 0 ? (
-              <tr><td style={{ padding: '3px 8px', color: '#666' }} colSpan={3}>(없음)</td></tr>
-            ) : cols.map((c, i) => {
-              const cn = typeof c === 'string' ? c : c.name;
-              const so = typeof c === 'string' ? 'A' : (c.sortOrder || 'A');
-              return (
-                <tr key={i} style={{ background: i % 2 ? '#222' : '#1e1e1e' }}>
-                  <td style={{ padding: '3px 8px', color: '#d4d4d4' }}>{cn}</td>
-                  <td style={{ padding: '3px 8px', color: '#9cdcfe' }}>{cn}</td>
-                  <td style={{ padding: '3px 8px', textAlign: 'center', color: '#d4d4d4' }}>{so === 'D' ? '[   ]' : '[ ✓ ]'}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      );
+      if (cols.length === 0) return <div style={{ padding: 12, color: '#666' }}>(없음)</div>;
+      const norm = cols.map(c => (typeof c === 'string' ? { name: c, so: 'A' } : { name: c.name, so: c.sortOrder || 'A' }));
+      return renderSortableTable(`idxcols:${objName}`, [
+        { label: '이름', value: (r: any) => r.name, render: (r: any) => <span style={{ color: '#d4d4d4' }}>{r.name}</span> },
+        { label: '컬럼', value: (r: any) => r.name, render: (r: any) => <span style={{ color: '#9cdcfe' }}>{r.name}</span> },
+        { label: 'Ascending', align: 'center', value: (r: any) => r.so, render: (r: any) => (r.so === 'D' ? '[   ]' : '[ ✓ ]') },
+      ], norm);
     }
     if (false && sub === 'storage' && objKind === 'index') {
       if (detail === undefined) return <div style={{ padding: 12, color: '#888' }}>로딩...</div>;
@@ -640,28 +869,12 @@ export const ObjectDetailPanel: React.FC<Props> = (p) => {
         const rows = ((d.routines || []) as any[]).filter(r => r.type === kindFilter);
         if (!rows.length) return <div style={{ padding: 12, color: '#666' }}>{kindFilter === 'PROCEDURE' ? '프로시저' : '함수'} 없음</div>;
         const label = kindFilter === 'PROCEDURE' ? '프로시저명' : '함수명';
-        return (
-          <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, fontFamily: 'monospace', fontSize: 12 }}>
-            <thead>
-              <tr style={{ background: '#2d2d2d', color: '#9cdcfe' }}>
-                <th style={{ padding: '4px 8px', textAlign: 'left', borderBottom: '1px solid #3f3f46' }}>{label}</th>
-                <th style={{ padding: '4px 8px', textAlign: 'left', borderBottom: '1px solid #3f3f46' }}>Schema Name</th>
-                <th style={{ padding: '4px 8px', textAlign: 'left', borderBottom: '1px solid #3f3f46' }}>패키지</th>
-                <th style={{ padding: '4px 8px', textAlign: 'left', borderBottom: '1px solid #3f3f46' }}>타입</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r: any, i: number) => (
-                <tr key={i} style={{ background: i % 2 ? '#222' : '#1e1e1e' }}>
-                  <td style={{ padding: '3px 8px', color: '#d4d4d4' }}>{r.name}</td>
-                  <td style={{ padding: '3px 8px', color: '#9cdcfe' }}>{r.schema}</td>
-                  <td style={{ padding: '3px 8px', color: '#d4d4d4' }}>{r.package}</td>
-                  <td style={{ padding: '3px 8px', color: '#dcdcaa' }}>{r.type}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        );
+        return renderSortableTable(`pkg:${kindFilter}:${objName}`, [
+          { label, value: (r: any) => r.name, render: (r: any) => <span style={{ color: '#d4d4d4' }}>{r.name}</span> },
+          { label: 'Schema Name', value: (r: any) => r.schema, render: (r: any) => <span style={{ color: '#9cdcfe' }}>{r.schema}</span> },
+          { label: '패키지', value: (r: any) => r.package, render: (r: any) => <span style={{ color: '#d4d4d4' }}>{r.package}</span> },
+          { label: '타입', value: (r: any) => r.type, render: (r: any) => <span style={{ color: '#dcdcaa' }}>{r.type}</span> },
+        ], rows);
       };
       if (sub === 'pkgProcs') return renderRoutineTable('PROCEDURE');
       if (sub === 'pkgFuncs') return renderRoutineTable('FUNCTION');
@@ -683,54 +896,35 @@ export const ObjectDetailPanel: React.FC<Props> = (p) => {
       const th: React.CSSProperties = { padding: '4px 8px', textAlign: 'left', borderBottom: '1px solid #3f3f46' };
       const td: React.CSSProperties = { padding: '3px 8px' };
       const tableStyle: React.CSSProperties = { width: '100%', borderCollapse: 'separate', borderSpacing: 0, fontFamily: 'monospace', fontSize: 12 };
+      void th; void td; void tableStyle;
       if (sub === 'datafiles') {
         const cols: string[] = d.dataFileColumns || [];
         const rows: string[][] = d.dataFileRows || [];
         if (!rows.length) return <div style={{ padding: 12, color: '#666' }}>데이터 파일 없음</div>;
-        return (
-          <table style={tableStyle}>
-            <thead><tr style={{ background: '#2d2d2d', color: '#9cdcfe' }}>{cols.map((c, i) => <th key={i} style={th}>{c}</th>)}</tr></thead>
-            <tbody>{rows.map((r, i) => (
-              <tr key={i} style={{ background: i % 2 ? '#222' : '#1e1e1e' }}>
-                {cols.map((_c, ci) => <td key={ci} style={{ ...td, color: ci === 0 ? '#d4d4d4' : '#9cdcfe' }}>{(r[ci] || '').toString()}</td>)}
-              </tr>
-            ))}</tbody>
-          </table>
-        );
+        return renderSortableTable(`tbsDatafiles:${objName}`, cols.map((c, ci) => ({
+          label: c, value: (r: string[]) => (r[ci] || '').toString(),
+          render: (r: string[]) => <span style={{ color: ci === 0 ? '#d4d4d4' : '#9cdcfe' }}>{(r[ci] || '').toString()}</span>,
+        })), rows);
       }
       if (sub === 'tbsTables') {
         const rows = d.tables || [];
         if (!rows.length) return <div style={{ padding: 12, color: '#666' }}>테이블 없음</div>;
-        return (
-          <table style={tableStyle}>
-            <thead><tr style={{ background: '#2d2d2d', color: '#9cdcfe' }}><th style={th}>Schema</th><th style={th}>Table</th><th style={th}>Partition</th></tr></thead>
-            <tbody>{rows.map((r: any, i: number) => (
-              <tr key={i} style={{ background: i % 2 ? '#222' : '#1e1e1e' }}>
-                <td style={{ ...td, color: '#9cdcfe' }}>{r.schema}</td>
-                <td style={{ ...td, color: '#d4d4d4' }}>{r.table}</td>
-                <td style={{ ...td, color: '#888' }}>{r.partition || ''}</td>
-              </tr>
-            ))}</tbody>
-          </table>
-        );
+        return renderSortableTable(`tbsTables:${objName}`, [
+          { label: 'Schema', value: (r: any) => r.schema, render: (r: any) => <span style={{ color: '#9cdcfe' }}>{r.schema}</span> },
+          { label: 'Table', value: (r: any) => r.table, render: (r: any) => <span style={{ color: '#d4d4d4' }}>{r.table}</span> },
+          { label: 'Partition', value: (r: any) => r.partition || '', render: (r: any) => <span style={{ color: '#888' }}>{r.partition || ''}</span> },
+        ], rows);
       }
       if (sub === 'tbsIndexes') {
         const rows = d.indexes || [];
         if (!rows.length) return <div style={{ padding: 12, color: '#666' }}>인덱스 없음</div>;
-        return (
-          <table style={tableStyle}>
-            <thead><tr style={{ background: '#2d2d2d', color: '#9cdcfe' }}><th style={th}>Schema</th><th style={th}>Index</th><th style={th}>Partition</th><th style={th}>Table Schema</th><th style={th}>Table</th></tr></thead>
-            <tbody>{rows.map((r: any, i: number) => (
-              <tr key={i} style={{ background: i % 2 ? '#222' : '#1e1e1e' }}>
-                <td style={{ ...td, color: '#9cdcfe' }}>{r.schema}</td>
-                <td style={{ ...td, color: '#d4d4d4' }}>{r.index}</td>
-                <td style={{ ...td, color: '#888' }}>{r.partition || ''}</td>
-                <td style={{ ...td, color: '#9cdcfe' }}>{r.tableSchema}</td>
-                <td style={{ ...td, color: '#d4d4d4' }}>{r.table}</td>
-              </tr>
-            ))}</tbody>
-          </table>
-        );
+        return renderSortableTable(`tbsIndexes:${objName}`, [
+          { label: 'Schema', value: (r: any) => r.schema, render: (r: any) => <span style={{ color: '#9cdcfe' }}>{r.schema}</span> },
+          { label: 'Index', value: (r: any) => r.index, render: (r: any) => <span style={{ color: '#d4d4d4' }}>{r.index}</span> },
+          { label: 'Partition', value: (r: any) => r.partition || '', render: (r: any) => <span style={{ color: '#888' }}>{r.partition || ''}</span> },
+          { label: 'Table Schema', value: (r: any) => r.tableSchema, render: (r: any) => <span style={{ color: '#9cdcfe' }}>{r.tableSchema}</span> },
+          { label: 'Table', value: (r: any) => r.table, render: (r: any) => <span style={{ color: '#d4d4d4' }}>{r.table}</span> },
+        ], rows);
       }
     }
     // Replication: properties / 이중화 대상(SYS_REPL_ITEMS_) / 원격 호스트(SYS_REPL_HOSTS_)
