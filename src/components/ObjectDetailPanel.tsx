@@ -60,7 +60,7 @@ export const ObjectDetailPanel: React.FC<Props> = (p) => {
   // 캐시들
   const colsCache = isTableLike ? colsCacheRef.current.get(objName.toUpperCase()) : null;
   const pkCols = isTableLike ? (pksCacheRef.current.get(objName.toUpperCase()) || []) : [];
-  const detailKey = `${objKind}:${objSchema}:${objName.toUpperCase()}`;
+  const detailKey = `${objKind}:${objSchema}:${objName.toUpperCase()}${tab.objectTable ? ':' + tab.objectTable.toUpperCase() : ''}`;
   const detail = detailCacheRef.current.get(detailKey);
 
   // 다중 데이터 캐시 (constraints/fks/refs/triggers/params)
@@ -76,7 +76,7 @@ export const ObjectDetailPanel: React.FC<Props> = (p) => {
   const defText = defsCacheRef.current.get(defKey);
   const ddlKey = `${objKind}:ddl:${objName.toUpperCase()}`;
   const ddlText = defsCacheRef.current.get(ddlKey);
-  const declKey = `${objKind}:decl:${objName.toUpperCase()}`;
+  const declKey = `${objKind}:decl:${objName.toUpperCase()}${tab.objectTable ? ':' + tab.objectTable.toUpperCase() : ''}`;
   const declText = defsCacheRef.current.get(declKey);
   const srcKey = `${objKind}:src:${objName.toUpperCase()}`;
   const srcText = defsCacheRef.current.get(srcKey);
@@ -89,7 +89,7 @@ export const ObjectDetailPanel: React.FC<Props> = (p) => {
     if (isTableLike && pkCols.length === 0 && !pksCacheRef.current.has(objName.toUpperCase())) loadPrimaryKey(objName);
     // 인덱스 상세 — 무조건 set (실패 시 빈 객체) 해서 무한 로딩 방지
     if (objKind === 'index' && detail === undefined) {
-      backend.indexDetail(objName, objSchema).then(d => { detailCacheRef.current.set(detailKey, d || { table: '', columns: [], unique: false }); setObjDetailRev(v => v + 1); });
+      backend.indexDetail(objName, objSchema, tab.objectTable).then(d => { detailCacheRef.current.set(detailKey, d || { table: '', columns: [], unique: false }); setObjDetailRev(v => v + 1); });
     }
     // 시퀀스 상세
     if (objKind === 'sequence' && detail === undefined) {
@@ -131,24 +131,48 @@ export const ObjectDetailPanel: React.FC<Props> = (p) => {
     if (objKind === 'view' && sub === 'properties' && propSub === 'definition' && defText === undefined) {
       loadDefinition(objName, 'view').then(() => { setDefRev(v => v + 1); });
     }
+    // 엔티티 관계도(ER): 컬럼/PK/외래키/참조 lazy fetch
+    if (objKind === 'table' && sub === 'er') {
+      if (!colsCache) loadColumns(objName);
+      if (pkCols.length === 0 && !pksCacheRef.current.has(objName.toUpperCase())) loadPrimaryKey(objName);
+      if (fks === undefined) backend.tableForeignKeys(objName, objSchema).then(rows => { detailCacheRef.current.set(subDataKey('fks'), rows || []); setObjDetailRev(v => v + 1); });
+      if (refs === undefined) backend.tableReferencedBy(objName, objSchema).then(rows => { detailCacheRef.current.set(subDataKey('refs'), rows || []); setObjDetailRev(v => v + 1); });
+    }
     // 인덱스 Declaration: detail 가 캐시에 들어오면 CREATE INDEX 합성 (빈 detail 도 안내 메시지로)
     if (objKind === 'index' && sub === 'declaration' && declText === undefined && detail !== undefined) {
       const d: any = detail || {};
+      const dbType = backend?.type;
       let ddl: string;
       if (d.table) {
-        const q = (s: string) => `"${s}"`;
-        const sch = (d.tableSchema || objSchema || '').toUpperCase();
-        const idxSchema = (objSchema || '').toUpperCase();
-        const tblSchema = sch || idxSchema;
-        const cols = (d.columns || []).map((c: any) => typeof c === 'string'
-          ? q(c)
-          : (q(c.name) + (c.sortOrder === 'D' ? ' DESC' : '')));
-        // DBeaver Altibase 포맷: 첫 줄에 CREATE INDEX ... ON ... (cols), 그 다음 INDEXTYPE / TABLESPACE 줄.
-        const head = `CREATE ${d.unique ? 'UNIQUE ' : ''}INDEX ${idxSchema ? q(idxSchema) + '.' : ''}${q(objName)} ON ${tblSchema ? q(tblSchema) + '.' : ''}${q(d.table)} (${cols.join(', ')})`;
-        const parts: string[] = [head];
-        if (d.typeName) parts.push(`INDEXTYPE IS ${d.typeName}`);
-        if (d.tablespace) parts.push(`TABLESPACE ${q(d.tablespace)}`);
-        ddl = parts.join('\n') + ';';
+        if (dbType === 'mysql') {
+          // MySQL: 백틱 식별자. PRIMARY 는 CREATE INDEX 불가 → ALTER TABLE ADD PRIMARY KEY.
+          const q = (s: string) => '`' + String(s).replace(/`/g, '``') + '`';
+          const cols = (d.columns || []).map((c: any) => {
+            const cn = typeof c === 'string' ? c : c.name;
+            const desc = typeof c === 'string' ? false : c.sortOrder === 'D';
+            return q(cn) + (desc ? ' DESC' : '');
+          });
+          const using = d.typeName ? ` USING ${d.typeName}` : '';
+          if (objName.toUpperCase() === 'PRIMARY') {
+            ddl = `ALTER TABLE ${q(d.table)} ADD PRIMARY KEY (${cols.join(', ')})${using};`;
+          } else {
+            ddl = `CREATE ${d.unique ? 'UNIQUE ' : ''}INDEX ${q(objName)} ON ${q(d.table)} (${cols.join(', ')})${using};`;
+          }
+        } else {
+          // Altibase/Oracle 등: 큰따옴표 식별자 + INDEXTYPE/TABLESPACE 절.
+          const q = (s: string) => `"${s}"`;
+          const sch = (d.tableSchema || objSchema || '').toUpperCase();
+          const idxSchema = (objSchema || '').toUpperCase();
+          const tblSchema = sch || idxSchema;
+          const cols = (d.columns || []).map((c: any) => typeof c === 'string'
+            ? q(c)
+            : (q(c.name) + (c.sortOrder === 'D' ? ' DESC' : '')));
+          const head = `CREATE ${d.unique ? 'UNIQUE ' : ''}INDEX ${idxSchema ? q(idxSchema) + '.' : ''}${q(objName)} ON ${tblSchema ? q(tblSchema) + '.' : ''}${q(d.table)} (${cols.join(', ')})`;
+          const parts: string[] = [head];
+          if (d.typeName) parts.push(`INDEXTYPE IS ${d.typeName}`);
+          if (d.tablespace) parts.push(`TABLESPACE ${q(d.tablespace)}`);
+          ddl = parts.join('\n') + ';';
+        }
       } else {
         ddl = `-- 인덱스 정보 없음 (조회 실패 또는 카탈로그 미지원)`;
       }
@@ -214,6 +238,16 @@ export const ObjectDetailPanel: React.FC<Props> = (p) => {
     void inflightDefRef;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected, backend, sub, propSub, objName, objKind, objSchema, detail]);
+
+  // ── ER: 관련 테이블 컬럼 lazy fetch (외래키/참조 로딩 후) ──
+  React.useEffect(() => {
+    if (!connected || !backend || sub !== 'er' || objKind !== 'table') return;
+    const related = new Set<string>();
+    (fks || []).forEach((f: any) => { if (f.refTable) related.add(f.refTable.toUpperCase()); });
+    (refs || []).forEach((r: any) => { if (r.fromTable) related.add(r.fromTable.toUpperCase()); });
+    related.forEach(t => { if (!colsCacheRef.current.has(t)) loadColumns(t); });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connected, backend, sub, objKind, fks, refs]);
 
   // ── 상단 탭 정의 (kind 별) ──
   const topTabs: { id: string; label: string }[] = (() => {
@@ -354,6 +388,171 @@ export const ObjectDetailPanel: React.FC<Props> = (p) => {
     return null;
   };
 
+  // ── 엔티티 관계도(ER 다이어그램) ──
+  const renderER = () => {
+    // 뷰: 단일 박스(컬럼만)
+    if (objKind === 'view') {
+      if (colsCache === undefined) return <div style={{ padding: 12, color: '#888' }}>로딩...</div>;
+    } else {
+      if (colsCache === undefined || fks === undefined || refs === undefined) return <div style={{ padding: 12, color: '#888' }}>로딩...</div>;
+    }
+
+    type ERCol = { name: string; type: string; pk: boolean; fk: boolean };
+    type ERBox = { key: string; name: string; cols: ERCol[]; x: number; y: number; w: number; h: number; central?: boolean };
+
+    const BW = 230, HEAD = 26, RH = 18, GX = 130, GY = 30, PAD = 24, MAXROWS = 20;
+    const boxBodyRows = (n: number) => Math.min(n, MAXROWS) + (n > MAXROWS ? 1 : 0);
+    const boxH = (n: number) => HEAD + Math.max(1, boxBodyRows(n)) * RH;
+
+    const fkColSet = new Set<string>();
+    (fks || []).forEach((f: any) => (f.columns || []).forEach((c: string) => fkColSet.add(c.toUpperCase())));
+    const buildCols = (raw: ColumnInfo[] | undefined, pks: string[], fkCols: Set<string>): ERCol[] =>
+      (raw || []).map(c => ({
+        name: c.name, type: c.typeText || '',
+        pk: pks.some(p => p.toUpperCase() === c.name.toUpperCase()),
+        fk: fkCols.has(c.name.toUpperCase()),
+      }));
+
+    const central: ERBox = {
+      key: objName.toUpperCase(), name: objName, central: true,
+      cols: buildCols(colsCache || undefined, pkCols, fkColSet),
+      x: 0, y: 0, w: BW, h: boxH((colsCache || []).length),
+    };
+
+    const rightNames: string[] = objKind === 'table'
+      ? [...new Set<string>((fks || []).map((f: any) => String(f.refTable)).filter(Boolean))] : [];
+    const leftNames: string[] = objKind === 'table'
+      ? [...new Set<string>((refs || []).map((r: any) => String(r.fromTable)).filter(Boolean))]
+        .filter(t => t.toUpperCase() !== objName.toUpperCase()) : [];
+
+    const relColsOf = (name: string): ColumnInfo[] | undefined => colsCacheRef.current.get(name.toUpperCase());
+    const relPkOf = (name: string): string[] => pksCacheRef.current.get(name.toUpperCase()) || [];
+
+    const hasLeft = leftNames.length > 0;
+    const centralX = hasLeft ? PAD + BW + GX : PAD;
+    const rightX = centralX + BW + GX;
+
+    let ly = PAD;
+    const leftBoxes: ERBox[] = leftNames.map((name: string) => {
+      const raw = relColsOf(name);
+      const b: ERBox = { key: name.toUpperCase(), name, cols: buildCols(raw, relPkOf(name), new Set()), x: PAD, y: ly, w: BW, h: boxH((raw || []).length) };
+      ly += b.h + GY; return b;
+    });
+    let ry = PAD;
+    const rightBoxes: ERBox[] = rightNames.map((name: string) => {
+      const raw = relColsOf(name);
+      const b: ERBox = { key: name.toUpperCase(), name, cols: buildCols(raw, relPkOf(name), new Set()), x: rightX, y: ry, w: BW, h: boxH((raw || []).length) };
+      ry += b.h + GY; return b;
+    });
+
+    const sideMax = Math.max(ly, ry, PAD + central.h + PAD);
+    central.x = centralX;
+    central.y = Math.max(PAD, (sideMax - central.h) / 2);
+
+    const allBoxes = [central, ...leftBoxes, ...rightBoxes];
+    const canvasW = (rightBoxes.length ? rightX + BW : centralX + BW) + PAD;
+    const canvasH = Math.max(...allBoxes.map(b => b.y + b.h)) + PAD;
+
+    // 컬럼의 세로 중심 y (박스 내). 못 찾거나 범위 밖이면 헤더 중심.
+    const anchorY = (b: ERBox, colName?: string) => {
+      if (colName) {
+        const idx = b.cols.findIndex(c => c.name.toUpperCase() === colName.toUpperCase());
+        if (idx >= 0 && idx < MAXROWS) return b.y + HEAD + idx * RH + RH / 2;
+      }
+      return b.y + HEAD / 2;
+    };
+
+    type Link = { x1: number; y1: number; x2: number; y2: number };
+    const links: Link[] = [];
+    // 외래키: central(자식, FK 보유) → 참조 테이블(부모, PK)
+    (fks || []).forEach((f: any) => {
+      const rb = rightBoxes.find(b => b.name.toUpperCase() === String(f.refTable).toUpperCase());
+      if (!rb) return;
+      links.push({
+        x1: central.x + BW, y1: anchorY(central, (f.columns || [])[0]),
+        x2: rb.x, y2: anchorY(rb, (f.refColumns || [])[0]),
+      });
+    });
+    // 참조됨: 다른 테이블(자식, FK) → central(부모, PK)
+    (refs || []).forEach((r: any) => {
+      const lb = leftBoxes.find(b => b.name.toUpperCase() === String(r.fromTable).toUpperCase());
+      if (!lb) return;
+      links.push({
+        x1: lb.x + BW, y1: anchorY(lb, (r.fromColumns || [])[0]),
+        x2: central.x, y2: anchorY(central, pkCols[0]),
+      });
+    });
+
+    const orthoPath = (l: Link) => {
+      const midX = (l.x1 + l.x2) / 2;
+      return `M${l.x1},${l.y1} L${midX},${l.y1} L${midX},${l.y2} L${l.x2},${l.y2}`;
+    };
+
+    const renderBox = (b: ERBox) => {
+      const shown = b.cols.slice(0, MAXROWS);
+      const extra = b.cols.length - shown.length;
+      return (
+        <div key={b.key} style={{
+          position: 'absolute', left: b.x, top: b.y, width: b.w,
+          border: b.central ? '2px solid #0e9c6b' : '1px solid #3f3f46',
+          borderRadius: 4, background: '#252526', boxShadow: '0 2px 6px rgba(0,0,0,0.4)',
+          fontFamily: 'monospace', fontSize: 11, overflow: 'hidden',
+        }}>
+          <div style={{
+            height: HEAD, lineHeight: `${HEAD}px`, padding: '0 8px', fontWeight: 700,
+            background: b.central ? '#0e9c6b' : '#2d2d2d', color: b.central ? '#fff' : '#9cdcfe',
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+          }} title={b.name}>📄 {b.name}</div>
+          <div>
+            {shown.length === 0 ? (
+              <div style={{ height: RH, lineHeight: `${RH}px`, padding: '0 8px', color: '#666' }}>(컬럼 로딩...)</div>
+            ) : shown.map((c, i) => (
+              <div key={c.name} style={{
+                height: RH, lineHeight: `${RH}px`, padding: '0 8px', display: 'flex', gap: 6,
+                background: i % 2 ? '#222' : '#252526', whiteSpace: 'nowrap', overflow: 'hidden',
+              }}>
+                <span style={{ width: 14, flex: '0 0 auto', textAlign: 'center' }}>{c.pk ? '🔑' : (c.fk ? '🔗' : '')}</span>
+                <span style={{ color: c.pk ? '#ffd680' : '#d4d4d4', flex: '0 0 auto' }}>{c.name}</span>
+                <span style={{ color: '#6a9955', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.type}</span>
+              </div>
+            ))}
+            {extra > 0 && <div style={{ height: RH, lineHeight: `${RH}px`, padding: '0 8px', color: '#888' }}>… 외 {extra}개</div>}
+          </div>
+        </div>
+      );
+    };
+
+    return (
+      <div style={{ position: 'relative', width: '100%', height: '100%', overflow: 'auto', background: '#1e1e1e' }}>
+        <div style={{ position: 'absolute', top: 6, right: 10, zIndex: 5, color: '#888', fontSize: 11, background: 'rgba(30,30,30,0.8)', padding: '2px 8px', borderRadius: 3 }}>
+          🔑 PK · 🔗 FK · 선: 관계({links.length})
+        </div>
+        <div style={{ position: 'relative', width: canvasW, height: canvasH }}>
+          <svg width={canvasW} height={canvasH} style={{ position: 'absolute', left: 0, top: 0, pointerEvents: 'none' }}>
+            <defs>
+              <marker id="erFk" markerWidth="9" markerHeight="9" refX="4" refY="4" markerUnits="userSpaceOnUse">
+                <circle cx="4" cy="4" r="3" fill="#6a9955" />
+              </marker>
+              <marker id="erPk" markerWidth="10" markerHeight="12" refX="2" refY="6" orient="auto" markerUnits="userSpaceOnUse">
+                <line x1="2" y1="1" x2="2" y2="11" stroke="#6a9955" strokeWidth="2" />
+              </marker>
+            </defs>
+            {links.map((l, i) => (
+              <path key={i} d={orthoPath(l)} fill="none" stroke="#6a9955" strokeWidth="1.4"
+                markerStart="url(#erFk)" markerEnd="url(#erPk)" />
+            ))}
+          </svg>
+          {allBoxes.map(renderBox)}
+          {objKind === 'table' && links.length === 0 && (
+            <div style={{ position: 'absolute', left: central.x, top: central.y + central.h + 16, color: '#888', fontSize: 12 }}>
+              이 테이블과 연결된 외래키 관계가 없습니다.
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   // ── 상단 탭 컨텐츠 ──
   const renderContent = () => {
     if (sub === 'properties') return renderPropertiesContent();
@@ -371,7 +570,7 @@ export const ObjectDetailPanel: React.FC<Props> = (p) => {
         </div>
       );
     }
-    if (sub === 'er') return <div style={{ padding: 12, color: '#888' }}>엔티티 관계도(ER 다이어그램) — 추후 지원 예정</div>;
+    if (sub === 'er' && isTableLike) return renderER();
     if (sub === 'columns' && objKind === 'index') {
       if (detail === undefined) return <div style={{ padding: 12, color: '#888' }}>로딩...</div>;
       const d: any = detail || {};

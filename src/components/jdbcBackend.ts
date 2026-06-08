@@ -652,7 +652,7 @@ export class JdbcBackend {
   }
 
   // 인덱스 상세 — DBeaver 스타일. table/columns 외에 컬럼별 SORT_ORDER, INDEX_TYPE, TABLESPACE 도 반환.
-  async indexDetail(name: string, schema?: string): Promise<{ table: string; tableSchema?: string; columns: { name: string; sortOrder: 'A' | 'D' }[]; unique: boolean; typeName?: string; tablespace?: string }> {
+  async indexDetail(name: string, schema?: string, table?: string): Promise<{ table: string; tableSchema?: string; columns: { name: string; sortOrder: 'A' | 'D' }[]; unique: boolean; typeName?: string; tablespace?: string }> {
     const s = escapeStr((schema || '').toUpperCase());
     const n = escapeStr(name.toUpperCase());
     let listSql: string | null = null;
@@ -698,8 +698,13 @@ export class JdbcBackend {
         // INFORMATION_SCHEMA.STATISTICS: TABLE_NAME / COLUMN_NAME / NON_UNIQUE / INDEX_TYPE / COLLATION('A'|'D') / TABLE_SCHEMA
         const sm = escapeStr(schema || this.dbms?.database || '');
         const nm = escapeStr(name);
+        // ⚠ MySQL 은 모든 테이블의 PK 인덱스명이 'PRIMARY' 로 동일하고, 인덱스명은 테이블 단위로만 유일.
+        //    TABLE_NAME 필터가 없으면 스키마 내 동명 인덱스(특히 PRIMARY)가 전부 합쳐져 나온다.
+        const tm = escapeStr(table || '');
         listSql = `SELECT TABLE_NAME, COLUMN_NAME, (1 - NON_UNIQUE) AS IS_UNIQUE, INDEX_TYPE, COLLATION, NULL AS TBS, TABLE_SCHEMA `
-                + `FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = '${sm}' AND INDEX_NAME = '${nm}' ORDER BY SEQ_IN_INDEX`;
+                + `FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = '${sm}' AND INDEX_NAME = '${nm}' `
+                + (tm ? `AND TABLE_NAME = '${tm}' ` : '')
+                + `ORDER BY SEQ_IN_INDEX`;
         break;
       }
       default: return { table: '', columns: [], unique: false, tableSchema: undefined, typeName: undefined, tablespace: undefined };
@@ -1005,6 +1010,7 @@ export class JdbcBackend {
     if (this.type === 'mysql') {
       const s = escapeStr(schema || this.dbms?.database || ''); const t = escapeStr(table);
       try {
+        // MySQL 은 PK 도 PRIMARY 라는 인덱스로 저장 → DBeaver 처럼 인덱스 목록에 그대로 표시.
         const r = await this.exec(
           `SELECT DISTINCT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS `
         + `WHERE TABLE_SCHEMA = '${s}' AND TABLE_NAME = '${t}' ORDER BY INDEX_NAME`, 1000);

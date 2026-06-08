@@ -103,6 +103,7 @@ export type EditorTab = {
   objectKind?: ObjectKind;
   objectName?: string;
   objectSchema?: string;
+  objectTable?: string; // index 등 — 소속 테이블명 (인덱스명은 전역 유일하지 않으므로 필수)
   objectSubTab?: string; // kind 별 자유 — 'columns' | 'definition' | 'data' | 'properties' | 'parameters' | 'source' | 'declaration' | 'constraints' | 'fks' | 'refs' | 'triggers' | 'ddl' | 'er'
   objectPropSubTab?: string; // Properties 안의 nested 탭 (table/view)
 };
@@ -225,9 +226,9 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
   const [renameDraft, setRenameDraft] = useState<string>('');
   const [tabListOpen, setTabListOpen] = useState<boolean>(false);
   // 오브젝트 상세 탭 열기 (같은 객체 이미 있으면 그 탭으로 전환)
-  const openObjectDetail = useCallback((name: string, kind: ObjectKind, schema?: string) => {
+  const openObjectDetail = useCallback((name: string, kind: ObjectKind, schema?: string, table?: string) => {
     setEditorTabs(prev => {
-      const existing = prev.find(t => t.kind === 'object' && t.objectName === name && t.objectKind === kind && (t.objectSchema || '') === (schema || ''));
+      const existing = prev.find(t => t.kind === 'object' && t.objectName === name && t.objectKind === kind && (t.objectSchema || '') === (schema || '') && (t.objectTable || '') === (table || ''));
       if (existing) { setActiveEditorTabId(existing.id); return prev; }
       const id = newTabId();
       const iconMap: Record<ObjectKind, string> = { table: '📄', view: '👁', index: '🔑', sequence: '🔢', procedure: '⚙', function: 'ƒ', synonym: '🔗', package: '📦', trigger: '🔔', tablespace: '💾', replication: '🔄' };
@@ -242,7 +243,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
         table: 'columns', view: 'columns', index: '', sequence: '', procedure: '', function: '', synonym: '',
         package: '', trigger: '', tablespace: '', replication: '',
       };
-      const next = [...prev, { id, title: `${icon} ${name}`, sql: '', kind: 'object' as const, objectKind: kind, objectName: name, objectSchema: schema, objectSubTab: defaultSubMap[kind], objectPropSubTab: defaultPropSubMap[kind] }];
+      const next = [...prev, { id, title: `${icon} ${name}`, sql: '', kind: 'object' as const, objectKind: kind, objectName: name, objectSchema: schema, objectTable: table, objectSubTab: defaultSubMap[kind], objectPropSubTab: defaultPropSubMap[kind] }];
       setActiveEditorTabId(id);
       return next;
     });
@@ -1613,7 +1614,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
                         <div key={n} draggable
                           title={c.objKind ? '더블클릭: 상세' : '더블클릭: 삽입 / 드래그: 이름 삽입'}
                           onDragStart={e => { e.dataTransfer.setData('text/plain', n); e.dataTransfer.effectAllowed = 'copy'; }}
-                          onDoubleClick={() => { if (c.objKind) openObjectDetail(n, c.objKind, schema); else insertAtCursor(n); }}
+                          onDoubleClick={() => { if (c.objKind) openObjectDetail(n, c.objKind, schema, c.objKind === 'index' ? tableName : undefined); else insertAtCursor(n); }}
                           style={{ ...rowStyle(depth + 1), cursor: c.objKind ? 'pointer' : 'grab' }} {...hover}
                         >
                           <span style={{ width: 10, display: 'inline-block' }} />
@@ -1677,7 +1678,9 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
                       const detailName = (k === 'index' && name.includes('.')) ? name.split('.').slice(-1)[0]
                                        : (k === 'trigger' && name.includes(' (')) ? name.split(' (')[0]
                                        : name;
-                      if (k) openObjectDetail(detailName, k, schema);
+                      // INDEX 노드 "TABLE.INDEX" — 앞부분이 소속 테이블
+                      const detailTable = (k === 'index' && name.includes('.')) ? name.split('.').slice(0, -1).join('.') : undefined;
+                      if (k) openObjectDetail(detailName, k, schema, detailTable);
                       else insertAtCursor(insert(name));
                     }}
                     style={{ ...rowStyle(depth), cursor: expandable ? 'pointer' : 'grab' }} {...hover}
