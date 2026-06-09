@@ -221,6 +221,17 @@ contextBridge.exposeInMainWorld('api', {
   refocusWindow: () => ipcRenderer.invoke('win:refocus'),
   getAppVersion: () => ipcRenderer.invoke('app:get-version'),
   getReleaseNotes: () => ipcRenderer.invoke('app:get-release-notes'),
+
+  // ── 자동 업데이트 (electron-updater / GitHub Releases) ──
+  updaterCheck: () => ipcRenderer.invoke('updater:check'),
+  updaterDownload: () => ipcRenderer.invoke('updater:download'),
+  updaterQuitAndInstall: () => ipcRenderer.invoke('updater:quit-and-install'),
+  updaterGetState: () => ipcRenderer.invoke('updater:state'),
+  onUpdaterStatus: (handler: (payload: any) => void) => {
+    const listener = (_e: any, payload: any) => handler(payload);
+    ipcRenderer.on('updater:status', listener);
+    return () => ipcRenderer.removeListener('updater:status', listener);
+  },
   getStartupCwd: () => ipcRenderer.invoke('app:startup-cwd'),
   clearStartupCwd: () => ipcRenderer.invoke('app:clear-startup-cwd'),
   registerContextMenu: () => ipcRenderer.invoke('app:register-context-menu'),

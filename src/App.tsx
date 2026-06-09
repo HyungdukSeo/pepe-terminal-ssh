@@ -425,6 +425,8 @@ function App() {
   const [showManual, setShowManual] = useState(false);
   // 도움말/정보 등 단순 텍스트 모달 (alert 대체 — 스크롤 가능 + 닫을 때 터미널 포커스 복원)
   const [infoModal, setInfoModal] = useState<{ title: string; text: string } | null>(null);
+  // 자동 업데이트 상태 모달 (electron-updater)
+  const [updateStatus, setUpdateStatus] = useState<any | null>(null);
   // 활성 터미널로 포커스 복원 (모달 닫기 / 빠른연결 닫기 / 외부 영역 클릭 후 등)
   // activeTab/selectedPanelId 는 ref 로 읽음 (선언 순서 의존 회피)
   const restoreTermFocusRef = useRef<() => void>(() => {});
@@ -883,6 +885,22 @@ function App() {
     }
     overlayOpenRef.current = anyOpen;
   }, [showOptions, showManual, infoModal, restoreTerminalFocus]);
+
+  // 자동 업데이트 상태 구독 — 메인 프로세스 electron-updater 이벤트 수신
+  useEffect(() => {
+    const api = (window as any).api;
+    if (!api?.onUpdaterStatus) return;
+    const off = api.onUpdaterStatus((payload: any) => {
+      setUpdateStatus((prev: any) => {
+        // 자동(시작 시) 확인은 업데이트가 없거나 확인 중이면 모달을 띄우지 않음 (조용히)
+        if (!payload?.manual && (payload.state === 'not-available' || payload.state === 'checking' || payload.state === 'unsupported')) {
+          return prev;
+        }
+        return payload;
+      });
+    });
+    return off;
+  }, []);
 
   // 미니탭 우클릭 → '세션 편집' 이벤트 수신
   useEffect(() => {
@@ -2544,6 +2562,11 @@ function App() {
             'Enter — 연결\n' +
             'Esc — 무시 (닫기는 ✕ 버튼으로만)'
           ) });
+        }},
+        { separator: true, label: '' },
+        { label: '🔄 업데이트 확인', action: async () => {
+          setUpdateStatus({ state: 'checking', manual: true });
+          try { await (window as any).api?.updaterCheck?.(); } catch {}
         }},
         { separator: true, label: '' },
         { label: tMenu('help.about'), action: async () => {
@@ -4264,6 +4287,93 @@ function App() {
               <pre style={{ overflow: 'auto', margin: 0, padding: '12px 16px', fontFamily: 'inherit', fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#ddd' }}>
                 {infoModal.text}
               </pre>
+            </div>
+          </div>
+        );
+      })()}
+
+      {updateStatus && (() => {
+        const st = updateStatus.state as string;
+        const info = updateStatus.info || {};
+        const ver = info.version || '';
+        const close = () => { setUpdateStatus(null); restoreTerminalFocus(); };
+        const fmtBytes = (n: number) => {
+          if (!n && n !== 0) return '';
+          const u = ['B', 'KB', 'MB', 'GB']; let i = 0; let v = n;
+          while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+          return `${v.toFixed(v < 10 && i > 0 ? 1 : 0)} ${u[i]}`;
+        };
+        let title = '🔄 업데이트';
+        if (st === 'checking') title = '🔄 업데이트 확인 중';
+        else if (st === 'available') title = '🎉 새 버전 사용 가능';
+        else if (st === 'downloading') title = '⬇ 업데이트 다운로드 중';
+        else if (st === 'downloaded') title = '✅ 업데이트 준비 완료';
+        else if (st === 'not-available') title = '✔ 최신 버전';
+        else if (st === 'unsupported') title = '자동 업데이트 미지원';
+        else if (st === 'error') title = '⚠ 업데이트 오류';
+        const pct = updateStatus.progress?.percent || 0;
+        const rn = typeof info.releaseNotes === 'string' ? info.releaseNotes.replace(/<[^>]+>/g, '').trim() : '';
+        return (
+          <div className="session-editor-backdrop" onClick={st === 'downloading' ? undefined : close}>
+            <div className="session-editor" onClick={e => e.stopPropagation()}
+              style={{ minWidth: 360, maxWidth: 560, maxHeight: '70vh', display: 'flex', flexDirection: 'column' }}
+              onKeyDown={e => { if (e.key === 'Escape' && st !== 'downloading') close(); }}
+              tabIndex={-1}
+              ref={el => { if (el) setTimeout(() => el.focus(), 0); }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 4px 8px', borderBottom: '1px solid #333' }}>
+                <h3 style={{ margin: 0 }}>{title}</h3>
+                {st !== 'downloading' && <button onClick={close} title="닫기 (Esc)">✕</button>}
+              </div>
+              <div style={{ padding: '14px 16px', color: '#ddd', fontSize: 13, lineHeight: 1.6, overflow: 'auto' }}>
+                {st === 'checking' && <div>업데이트를 확인하고 있습니다…</div>}
+                {st === 'available' && (
+                  <div>
+                    <div>새 버전 <b style={{ color: '#7fd' }}>v{ver}</b> 이(가) 있습니다. 지금 다운로드할까요?</div>
+                    {rn && (
+                      <pre style={{ marginTop: 10, padding: '8px 10px', background: '#1c1c1c', border: '1px solid #333', borderRadius: 4, maxHeight: 220, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12, fontFamily: 'inherit' }}>{rn}</pre>
+                    )}
+                  </div>
+                )}
+                {st === 'downloading' && (
+                  <div>
+                    <div style={{ marginBottom: 8 }}>v{ver} 다운로드 중… {pct.toFixed(1)}%</div>
+                    <div style={{ height: 10, background: '#2a2a2a', borderRadius: 5, overflow: 'hidden' }}>
+                      <div style={{ height: '100%', width: `${pct}%`, background: 'linear-gradient(90deg,#3a8,#5cf)', transition: 'width .2s' }} />
+                    </div>
+                    <div style={{ marginTop: 6, fontSize: 11, color: '#999' }}>
+                      {fmtBytes(updateStatus.progress?.transferred)} / {fmtBytes(updateStatus.progress?.total)}
+                      {updateStatus.progress?.bytesPerSecond ? ` · ${fmtBytes(updateStatus.progress.bytesPerSecond)}/s` : ''}
+                    </div>
+                  </div>
+                )}
+                {st === 'downloaded' && <div>v{ver} 다운로드가 완료되었습니다.<br />지금 재시작하여 설치할까요? (작업 중인 내용은 저장 후 진행하세요)</div>}
+                {st === 'not-available' && <div>현재 최신 버전입니다.{ver ? ` (v${ver})` : ''}</div>}
+                {st === 'unsupported' && <div>이 빌드(개발 모드 또는 포터블)에서는 자동 업데이트를 사용할 수 없습니다.<br />설치본(installer)에서만 동작합니다.</div>}
+                {st === 'error' && <div style={{ color: '#f88' }}>업데이트 중 오류가 발생했습니다.<br /><span style={{ fontSize: 11, color: '#caa' }}>{String(updateStatus.error || '')}</span></div>}
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, padding: '8px 12px', borderTop: '1px solid #333' }}>
+                {st === 'available' && (
+                  <>
+                    <button onClick={close}>나중에</button>
+                    <button style={{ background: '#2a6', color: '#fff' }} onClick={async () => {
+                      setUpdateStatus({ state: 'downloading', info, progress: { percent: 0 } });
+                      try { await (window as any).api?.updaterDownload?.(); } catch {}
+                    }}>지금 다운로드</button>
+                  </>
+                )}
+                {st === 'downloaded' && (
+                  <>
+                    <button onClick={close}>나중에</button>
+                    <button style={{ background: '#2a6', color: '#fff' }} onClick={async () => {
+                      try { await (window as any).api?.updaterQuitAndInstall?.(); } catch {}
+                    }}>지금 재시작하여 설치</button>
+                  </>
+                )}
+                {(st === 'not-available' || st === 'unsupported' || st === 'error' || st === 'checking') && (
+                  <button onClick={close}>{st === 'checking' ? '백그라운드로' : '확인'}</button>
+                )}
+              </div>
             </div>
           </div>
         );

@@ -14,7 +14,7 @@ export default defineConfig({
         vite: {
           build: {
             rollupOptions: {
-              external: ['ssh2', 'cpu-features', 'iconv-lite', 'node-pty', 'webdav-server'],
+              external: ['ssh2', 'cpu-features', 'iconv-lite', 'node-pty', 'webdav-server', 'electron-updater'],
             },
           },
         },

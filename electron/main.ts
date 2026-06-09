@@ -28,6 +28,7 @@ import { stopEmbeddedX11 } from './x11Server';
 import { getVpnService } from './vpnService';
 import { listLanguages, listNamespaces, loadNamespace, loadBundledNamespace, loadOverrideNamespace, saveOverrideNamespace, addLanguage, removeLanguage } from './i18nStore';
 import { t, setCurrentLang } from './i18n';
+import { setupAutoUpdater, checkForUpdatesOnStartup } from './updater';
 // MCP 서버 스크립트를 번들에 임베드 (vite ?raw) — 런타임에 임시 파일로 추출 후 spawn
 // @ts-ignore
 import mcpSshServerScript from './mcpSshServer.cjs?raw';
@@ -228,6 +229,10 @@ app.whenReady().then(() => {
   cleanupStaleTempFiles();
   createWindow();
   installX11DisplayHook();
+
+  // 자동 업데이트 (GitHub Releases) — IPC 배선 + 시작 시 1회 확인
+  setupAutoUpdater(() => mainWindow);
+  checkForUpdatesOnStartup();
 
   // ── SFTP 고빈도 이벤트 배치 버퍼 ──────────────────────────────────────────
   // file-start / dir-list / complete / progress 를 setImmediate 로 묶어
