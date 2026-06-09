@@ -68,6 +68,7 @@ export type SessionsData = {
   folders: Folder[];
   sessions: Session[];
   childOrder?: Record<string, string[]>; // parentId → 자식 ID 목록 (폴더+세션 혼합 순서)
+  keySeqDefaultsV1?: boolean; // 키시퀀스 기본값(Delete=vt220, Backspace=backspace) 일괄 적용 완료 표식
 };
 
 let customSessionsPath: string | null = null;
@@ -139,16 +140,30 @@ function migrateSessions(sessions: Session[]): Session[] {
   return sessions;
 }
 
+// 키시퀀스 기본값 일괄 적용(1회) — 기존에 저장된 세션도 Delete=VT220, Backspace=Backspace(^H) 로 정규화.
+// 전역 플래그(keySeqDefaultsV1)로 단 한 번만 강제하므로, 이후 사용자가 개별 변경하면 그대로 유지된다.
+function applyKeySeqDefaultsOnce(data: SessionsData): SessionsData {
+  if (data.keySeqDefaultsV1) return data;
+  for (const s of data.sessions) {
+    if (!s) continue;
+    s.deleteKeyMode = 'vt220';
+    s.backspaceKeyMode = 'backspace';
+  }
+  data.keySeqDefaultsV1 = true;
+  try { saveSessionsData(data); } catch {}
+  return data;
+}
+
 export function loadSessionsData(): SessionsData {
   const filePath = getSessionsPath();
-  if (!fs.existsSync(filePath)) return { folders: [], sessions: [] };
+  if (!fs.existsSync(filePath)) return { folders: [], sessions: [], keySeqDefaultsV1: true };
   try {
     const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     // 기존 flat array 마이그레이션
-    if (Array.isArray(raw)) return { folders: [], sessions: migrateSessions(raw) };
-    return { folders: raw.folders ?? [], sessions: migrateSessions(raw.sessions ?? []), childOrder: raw.childOrder ?? undefined };
+    if (Array.isArray(raw)) return applyKeySeqDefaultsOnce({ folders: [], sessions: migrateSessions(raw) });
+    return applyKeySeqDefaultsOnce({ folders: raw.folders ?? [], sessions: migrateSessions(raw.sessions ?? []), childOrder: raw.childOrder ?? undefined, keySeqDefaultsV1: raw.keySeqDefaultsV1 === true });
   } catch {
-    return { folders: [], sessions: [] };
+    return { folders: [], sessions: [], keySeqDefaultsV1: true };
   }
 }
 

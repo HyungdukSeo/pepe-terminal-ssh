@@ -3932,11 +3932,17 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                       ? <><CodexTabIcon /> Codex</>
                       : <><ClaudeTabIcon /> Claude</>
               }</div>
-              <MarkdownMessage
-                id={g.m.id}
-                content={g.m.content}
-                className="claude-chat-msg-content"
-              />
+              {(streaming && g.m.role === 'assistant' && g.m.id === currentAsstIdRef.current) ? (
+                // 스트리밍 중에는 마크다운 재파싱 비용 회피 — 평문으로만 표시(메인스레드 점유↓ → 터미널 입력 지연 완화).
+                // 스트리밍 완료(streaming=false) 시 아래 MarkdownMessage 로 전환되어 1회만 마크다운 렌더.
+                <div className="claude-chat-msg-content" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{g.m.content}</div>
+              ) : (
+                <MarkdownMessage
+                  id={g.m.id}
+                  content={g.m.content}
+                  className="claude-chat-msg-content"
+                />
+              )}
             </div>
           ) : (() => {
             const groupKey = g.key;

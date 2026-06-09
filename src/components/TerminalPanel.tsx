@@ -566,6 +566,20 @@ function getOrCreateTerm(termId: string): { term: Terminal; fit: FitAddon; searc
       };
     } catch {}
     if (!termFontSizes.has(termId)) termFontSizes.set(termId, defaultFontSize);
+    // 벨(BEL, \x07) — 예: 프롬프트 시작에서 backspace 가 더 이상 안 지워질 때 셸이 울림.
+    // 파워(파티클) 커서 모드일 때 화면 전체를 잠깐 흔든다(hyperpower 시그니처). CSS: .xterm-power-shake
+    try {
+      term.onBell(() => {
+        const style = termCursorStyleCache.get(termId);
+        if (!style || !PARTICLE_THEMES[style as CustomCursorStyle]) return;
+        const el = term.element as HTMLElement | undefined;
+        if (!el) return;
+        el.classList.remove('xterm-power-shake');
+        void el.offsetWidth; // reflow 강제 → 애니메이션 재시작
+        el.classList.add('xterm-power-shake');
+        window.setTimeout(() => { try { el.classList.remove('xterm-power-shake'); } catch {} }, 450);
+      });
+    } catch {}
     const fit = new FitAddon();
     // FitAddon.fit() 안전 패치 — 컨테이너가 layout 갱신 중 일시적으로 0-size 가 될 때
     // proposeDimensions 가 {cols:2, rows:1} 같은 비현실 값을 반환 → term.resize(2,1) 가
@@ -692,7 +706,7 @@ function getOrCreateTerm(termId: string): { term: Terminal; fit: FitAddon; searc
           return null;
         };
         if ((plain || ctrlOnly) && (e.code === 'Backspace' || e.key === 'Backspace')) {
-          const base = termBackspaceMode.get(termId) ?? 'ascii127'; // Xshell/PuTTY 기본
+          const base = termBackspaceMode.get(termId) ?? 'backspace'; // 기본 Backspace(^H)
           const mode = ctrlOnly ? flipBs(base) : base;
           const s = seqOf(mode);
           if (s !== null) { send(s); return false; }
@@ -1415,7 +1429,11 @@ export function applyCursorStyleToTerm(termId: string, style?: 'block' | 'underl
       const origTheme = { ...(term.options.theme || {}) };
       let phase = 0;
       const tick = () => {
-        phase = (phase + 0.015) % 1;
+        // 숨겨진 패널(비활성 탭/분할, display:none → offsetParent===null)에서는 갱신 스킵.
+        // term.options.theme 재할당은 xterm 전체 색 재계산+전 행 refresh 를 유발하므로 매우 비싸다.
+        const el = term.element as HTMLElement | undefined;
+        if (el && el.offsetParent === null) return;
+        phase = (phase + 0.03) % 1; // 주기 보정(틱 간격 2배 → 위상 증가 2배)로 체감 속도 유지
         const f = phase * colors.length;
         const idx = Math.floor(f);
         const next = (idx + 1) % colors.length;
@@ -1424,7 +1442,7 @@ export function applyCursorStyleToTerm(termId: string, style?: 'block' | 'underl
         try { term.options.theme = { ...origTheme, cursor: color, cursorAccent: origTheme.background || '#000000' }; } catch {}
       };
       tick();
-      const intervalId = window.setInterval(tick, 25);
+      const intervalId = window.setInterval(tick, 50); // 25→50ms (40→20fps): 그라데이션엔 충분, 비용 절반
       flameOverlayCleanup.set(termId, () => {
         try { window.clearInterval(intervalId); } catch {}
         try { term.options.theme = origTheme; } catch {}

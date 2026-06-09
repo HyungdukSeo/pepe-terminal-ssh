@@ -92,7 +92,7 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
   const [fileTreeEnabled, setFileTreeEnabled] = useState<boolean>(session?.fileTreeEnabled ?? false);
   const [autoTrackPwd, setAutoTrackPwd] = useState<boolean>(!!session?.autoTrackPwd);
   type KeySeqMode = 'vt220' | 'ascii127' | 'backspace';
-  const [backspaceKeyMode, setBackspaceKeyMode] = useState<KeySeqMode>((session?.backspaceKeyMode as KeySeqMode) || 'ascii127');
+  const [backspaceKeyMode, setBackspaceKeyMode] = useState<KeySeqMode>((session?.backspaceKeyMode as KeySeqMode) || 'backspace');
   const [deleteKeyMode, setDeleteKeyMode] = useState<KeySeqMode>((session?.deleteKeyMode as KeySeqMode) || 'vt220');
   const [logPath, setLogPath] = useState(session?.logPath ?? '');
   const [codePath, setCodePath] = useState(session?.codePath ?? '');
