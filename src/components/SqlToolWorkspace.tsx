@@ -346,6 +346,13 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
   const [running, setRunning] = useState(false);
   const runningRef = useRef(false);
   useEffect(() => { runningRef.current = running; }, [running]);
+  // 실행 표시(버튼 색/문구/취소버튼)는 180ms 이상 걸릴 때만 켠다 — 빠른 쿼리에서 순간 깜빡임 방지.
+  const [showRunning, setShowRunning] = useState(false);
+  useEffect(() => {
+    if (!running) { setShowRunning(false); return; }
+    const t = window.setTimeout(() => setShowRunning(true), 180);
+    return () => window.clearTimeout(t);
+  }, [running]);
   // ── JDBC keep-alive — 유휴 시 주기적 검증으로 DB/SSH터널 idle timeout 끊김 방지.
   //    실행 중(running)에는 같은 connection 동시 사용 방지를 위해 건너뜀.
   useEffect(() => {
@@ -672,7 +679,8 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
     setResultError('');
     setEdits(new Map());
     if (!isAuto) {
-      setResult(null);
+      // 이전 결과를 즉시 null 로 비우지 않음 — 새 결과 도착 시 원자적 교체로 그리드 깜빡임 방지.
+      // (실행 중에는 running 상태로 표시되고, 새 데이터/에러가 오면 setResult 가 한 번에 갈아끼움)
       // FROM 테이블명 추출 — 라인/블록 주석 안의 FROM 이 잘못 잡히는 문제 회피 (DBeaver 와 동일하게 주석 제거 후 매칭).
       const cleaned = sqlText
         .replace(/--[^\n]*/g, '')
@@ -2210,8 +2218,8 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
         </div>
         {connectError && <div style={{ background: '#5a1d1d', color: '#fcc', padding: 6, fontSize: 12 }}>{connectError}</div>}
         <div style={{ padding: 6, borderBottom: '1px solid #333', display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-          <button onClick={runCurrent} disabled={!connected || running} style={{ background: running ? '#555' : '#0e639c', color: '#fff', border: 0, padding: '4px 12px', borderRadius: 3, cursor: running ? 'wait' : 'pointer' }} title="Ctrl+Enter — 선택 영역(있으면)/없으면 커서 위치 문장 실행">
-            {running ? '실행 중...' : '▶ 실행 (Ctrl+Enter)'}
+          <button onClick={runCurrent} disabled={!connected || running} style={{ background: showRunning ? '#555' : '#0e639c', color: '#fff', border: 0, padding: '4px 12px', borderRadius: 3, cursor: running ? 'wait' : 'pointer' }} title="Ctrl+Enter — 선택 영역(있으면)/없으면 커서 위치 문장 실행">
+            {showRunning ? '실행 중...' : '▶ 실행 (Ctrl+Enter)'}
           </button>
           <button onClick={runAll} disabled={!connected || running} style={{ background: '#3a7d3a', color: '#fff', border: 0, padding: '4px 12px', borderRadius: 3, cursor: running ? 'wait' : 'pointer' }} title="Ctrl+Shift+Enter — 모든 문장 순차 실행">
             ▶▶ 전체 실행
@@ -2246,7 +2254,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
               </div>
             )}
           </div>
-          {running && (
+          {showRunning && (
             <button
               onClick={() => { runIdRef.current++; setRunning(false); setResult(prev => prev ? { ...prev, affectedText: '✕ 사용자 취소' } : null); }}
               style={{ background: '#a33', color: '#fff', border: 0, padding: '4px 10px', borderRadius: 3, cursor: 'pointer' }}
