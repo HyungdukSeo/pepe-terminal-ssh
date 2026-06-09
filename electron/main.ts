@@ -1,6 +1,10 @@
 ﻿// electron/main.ts
 import { app, BrowserWindow, ipcMain, dialog, Menu, shell, clipboard, nativeImage, safeStorage, screen } from 'electron';
 
+// 패키지된(production/설치본) 빌드에서는 메인 프로세스 console.log(진단 로그)를 끈다.
+// dev 실행 시에만 [claude]/[codex]/[mcp-control] 등 디버그 로그 출력. console.error/warn 은 유지.
+if (app.isPackaged) { console.log = () => {}; }
+
 // 백그라운드/blur 상태에서도 렌더러가 정상 동작하도록
 // (Windows 에서 자식 프로세스 spawn 이 잠깐 foreground 를 뺏어가도 input/caret 영향 최소화)
 app.commandLine.appendSwitch('disable-renderer-backgrounding');

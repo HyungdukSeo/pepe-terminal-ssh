@@ -344,6 +344,23 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
     return n;
   });
   const [running, setRunning] = useState(false);
+  const runningRef = useRef(false);
+  useEffect(() => { runningRef.current = running; }, [running]);
+  // ── JDBC keep-alive — 유휴 시 주기적 검증으로 DB/SSH터널 idle timeout 끊김 방지.
+  //    실행 중(running)에는 같은 connection 동시 사용 방지를 위해 건너뜀.
+  useEffect(() => {
+    if (!connected || !backend) return;
+    let busy = false;
+    const id = window.setInterval(async () => {
+      if (busy || runningRef.current) return;
+      busy = true;
+      try {
+        const ok = await backend.keepAlive();
+        if (!ok) { setConnected(false); setConnectError('연결이 끊어졌습니다 — 다시 연결하세요.'); }
+      } catch {} finally { busy = false; }
+    }, 60000);
+    return () => window.clearInterval(id);
+  }, [connected, backend]);
   const [result, setResult] = useState<ParsedResult | null>(null);
   const [resultError, setResultError] = useState<string>('');
   // 새 result 가 도착하면 그리드 사용자 상태 초기화 — 컬럼 구조가 바뀌었을 가능성
@@ -610,11 +627,29 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
     }
   }, [session, sessionId]);
 
+  // 자동 연결은 세션당 1회만 — 실패 시 effect 가 즉시 재호출해 무한 재시도(상태 깜빡임)되던 문제 방지.
+  const autoConnectedRef = useRef(false);
+  useEffect(() => { autoConnectedRef.current = false; }, [sessionId]);
   useEffect(() => {
-    if (session && !connected && !connecting) {
+    if (session && !connected && !connecting && !autoConnectedRef.current) {
+      autoConnectedRef.current = true;
       connect();
     }
   }, [session, connected, connecting, connect]);
+
+  // 재연결 — 기존 연결/터널 정리 후 새로 연결.
+  const reconnect = useCallback(async () => {
+    const b = backend;
+    if (b) {
+      try { await b.disconnect(); } catch {}
+      const fwd = (b as any).__forwardId;
+      if (fwd) { try { await (window as any).api?.sshCloseLocalForward?.({ forwardId: fwd }); } catch {} }
+    }
+    setBackend(null);
+    setConnected(false);
+    autoConnectedRef.current = true; // 자동 연결 effect 와 충돌 방지 (수동 재연결이 주도)
+    await connect();
+  }, [backend, connect]);
 
   // 언마운트 시 JDBC 연결 종료 (사이드카 측) + SSH 터널 정리
   useEffect(() => {
@@ -2093,9 +2128,22 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
             </span>
           )}
           <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 4 }}>
-            <span style={{ width: 8, height: 8, borderRadius: '50%', background: connected ? '#4caf50' : connecting ? '#ff9800' : '#888' }} />
-            <span style={{ fontSize: 11, color: '#888' }}>{connected ? '연결됨' : connecting ? '연결 중' : '연결 안됨'}</span>
+            {(() => {
+              const st = connecting ? 'connecting' : connected ? 'connected' : 'disconnected';
+              const cfg = {
+                connecting:   { bg: 'rgba(255,152,0,0.18)',  border: '#ff9800', dot: '#ff9800', text: '#ffb74d', label: '연결 중…' },
+                connected:    { bg: 'rgba(76,175,80,0.18)',  border: '#4caf50', dot: '#4caf50', text: '#81c784', label: '연결됨' },
+                disconnected: { bg: 'rgba(244,67,54,0.18)',  border: '#f44336', dot: '#f44336', text: '#e57373', label: '연결 안됨' },
+              }[st];
+              return (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '2px 10px', borderRadius: 12, background: cfg.bg, border: `1px solid ${cfg.border}`, fontSize: 11, fontWeight: 700, color: cfg.text }}>
+                  <span style={{ width: 9, height: 9, borderRadius: '50%', background: cfg.dot, boxShadow: st === 'connected' ? `0 0 6px ${cfg.dot}` : 'none' }} />
+                  {cfg.label}
+                </span>
+              );
+            })()}
             {!connected && !connecting && <button onClick={connect} style={{ marginLeft: 6, background: '#0e639c', color: '#fff', border: 0, padding: '3px 8px', borderRadius: 3, cursor: 'pointer' }}>연결</button>}
+            {connected && !connecting && <button onClick={reconnect} title="연결을 끊고 다시 연결" style={{ marginLeft: 6, background: '#37373d', color: '#ddd', border: '1px solid #555', padding: '3px 8px', borderRadius: 3, cursor: 'pointer' }}>↻ 재연결</button>}
             <button
               onClick={async () => {
                 try {

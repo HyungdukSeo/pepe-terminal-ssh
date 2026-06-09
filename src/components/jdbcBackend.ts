@@ -157,9 +157,38 @@ export class JdbcBackend {
     this._connected = false;
   }
 
+  // 연결 끊김류 오류 판별 — 유휴 timeout / 소켓 단절 등.
+  private isConnClosedError(msg: string): boolean {
+    return /closed|broken pipe|connection reset|communications link failure|terminated|not connected|\bEOF\b|socket|no operations allowed|io exception|connection is closed|네트워크|끊|timed out|connection refused/i.test(msg || '');
+  }
+  // 가벼운 검증 쿼리 — dialect 별 trivial SELECT.
+  private pingSql(): string {
+    return (this.type === 'altibase' || this.type === 'oracle') ? 'SELECT 1 FROM DUAL' : 'SELECT 1';
+  }
+  // keep-alive: 주기 호출로 DB/SSH터널 유휴 끊김 방지. 끊겨 있으면 재연결 시도.
+  // 반환: 현재 사용 가능 여부.
+  async keepAlive(): Promise<boolean> {
+    if (!this._connected) return false;
+    const api: any = (window as any).api || {};
+    try {
+      const r = await api.jdbcExec?.({ connectionId: this.connectionId, sql: this.pingSql(), maxRows: 1 });
+      if (r?.success) return true;
+    } catch {}
+    // 실패 → 재연결 시도 (같은 connectionId 로 connect 재호출, 사이드카가 덮어씀)
+    this._connected = false;
+    const re = await this.ensureConnected();
+    return re.ok;
+  }
+
   async exec(sql: string, maxRows = 2000): Promise<ExecResult> {
     const api: any = (window as any).api || {};
-    const r = await api.jdbcExec?.({ connectionId: this.connectionId, sql, maxRows });
+    let r = await api.jdbcExec?.({ connectionId: this.connectionId, sql, maxRows });
+    // 연결 끊김으로 실패하면 1회 재연결 후 재시도 (유휴 timeout 자동 복구)
+    if (!r?.success && this.isConnClosedError(String(r?.error || ''))) {
+      this._connected = false;
+      const re = await this.ensureConnected();
+      if (re.ok) r = await api.jdbcExec?.({ connectionId: this.connectionId, sql, maxRows });
+    }
     if (!r?.success) throw new Error(r?.error || 'exec failed');
     const res = r.result || {};
     return {

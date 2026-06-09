@@ -352,13 +352,9 @@ export function refitTerm(termId: string) {
   try {
     const term: any = entry.term;
     const prevRows = term.rows;
-    const bufA = term._core?.buffer;
-    console.log('[REFIT] start prevRows=' + prevRows + ' buf=' + (bufA ? JSON.stringify({ybase:bufA.ybase,y:bufA.y,len:bufA.lines?.length}) : 'null'));
     entry.fit.fit();
     const c = term.cols;
     const r = term.rows;
-    const bufB = term._core?.buffer;
-    console.log('[REFIT] after fit rows=' + r + ' buf=' + (bufB ? JSON.stringify({ybase:bufB.ybase,y:bufB.y,len:bufB.lines?.length}) : 'null'));
     if (c && r) {
       if (ptyConnected.has(termId)) schedulePtyResize(termId, c, r);
       else (window as any).api?.resizeSSH?.(termId, c, r);
@@ -368,11 +364,7 @@ export function refitTerm(termId: string) {
     } else {
       try { term._core?._viewport?.syncScrollArea?.(); } catch {}
     }
-    const bufC = term._core?.buffer;
-    console.log('[REFIT] before refresh buf=' + (bufC ? JSON.stringify({ybase:bufC.ybase,y:bufC.y,len:bufC.lines?.length}) : 'null'));
     term.refresh?.(0, term.rows - 1);
-    const bufD = term._core?.buffer;
-    console.log('[REFIT] after refresh buf=' + (bufD ? JSON.stringify({ybase:bufD.ybase,y:bufD.y,len:bufD.lines?.length}) : 'null'));
     // viewport 의 overflow 토글 + scrollTop 만지기로 브라우저 scrollbar 재렌더 강제
     const elem = term.element as HTMLElement | undefined;
     const viewport = elem?.querySelector?.('.xterm-viewport') as HTMLElement | null;
@@ -385,13 +377,6 @@ export function refitTerm(termId: string) {
       viewport.scrollTop = st + 1;
       viewport.scrollTop = st;
     }
-    const bufE = term._core?.buffer;
-    console.log('[REFIT] end buf=' + (bufE ? JSON.stringify({ybase:bufE.ybase,y:bufE.y,len:bufE.lines?.length}) : 'null'));
-    // 80ms 후 다시 확인 — 누가 cursor 를 되돌리는지 추적
-    setTimeout(() => {
-      const bufF = term._core?.buffer;
-      console.log('[REFIT] +80ms buf=' + (bufF ? JSON.stringify({ybase:bufF.ybase,y:bufF.y,len:bufF.lines?.length}) : 'null'));
-    }, 80);
   } catch {}
 }
 const sshInitialized = new Set<string>();
@@ -1944,7 +1929,6 @@ function schedulePtyResize(termId: string, cols: number, rows: number) {
   // 이후 ptyResize 가 실제로 전송되고 ConPTY 가 SIGWINCH-기반 repaint 를 보내는 시점까지 모두 cover.
   const totalWindow = PTY_RESIZE_DEBOUNCE_MS + PTY_DROP_WINDOW_MS;
   ptyDropRepaintUntil.set(termId, Date.now() + totalWindow);
-  console.log('[SCHED-RESIZE] tid=' + termId + ' set drop window until=' + (Date.now() + totalWindow) + ' (cols=' + cols + ' rows=' + rows + ')');
   const prev = ptyResizeTimers.get(termId);
   if (prev) clearTimeout(prev);
   const t = setTimeout(() => {
@@ -1952,7 +1936,6 @@ function schedulePtyResize(termId: string, cols: number, rows: number) {
     (window as any).api?.ptyResize?.(termId, cols, rows);
     // 실제 PTY resize 전송 시점부터 다시 3s 연장 — ConPTY repaint 도 cover
     ptyDropRepaintUntil.set(termId, Date.now() + PTY_DROP_WINDOW_MS);
-    console.log('[SCHED-RESIZE] ptyResize sent. drop window extended');
   }, PTY_RESIZE_DEBOUNCE_MS);
   ptyResizeTimers.set(termId, t);
 }
@@ -1984,12 +1967,6 @@ function ensurePtySetup(termId: string) {
   ptyDataHandlers.set(termId, (p: any) => {
     try {
       const data: string = p.data;
-      // 디버그: 데이터 들어올 때마다 head 와 buf 상태 로그
-      const head = data.slice(0, 40).replace(/\x1b/g, '<ESC>').replace(/[\r\n]/g, '?');
-      const bufP = (term as any)._core?.buffer;
-      const dropUntilVal = ptyDropRepaintUntil.get(termId);
-      const inWindow = dropUntilVal && Date.now() < dropUntilVal;
-      console.log('[PTY-IN] tid=' + termId + ' len=' + data.length + ' head="' + head + '" buf=' + (bufP ? JSON.stringify({ybase:bufP.ybase,y:bufP.y,len:bufP.lines?.length}) : 'null') + ' dropUntil=' + dropUntilVal + ' inWin=' + inWindow);
       // ConPTY drop window: PTY resize 직후 오는 전체화면 repaint 를 억제해 커서 위치 깨짐 방지.
       // ConPTY/PSReadLine 이 보내는 full-screen repaint 시그니처 패턴들:
       //   sigE — \x1b[?25l \x1b[H        (커서숨김 + 커서홈)
@@ -2006,8 +1983,7 @@ function ensurePtySetup(termId: string) {
         const sigHideHome = /^\x1b\[\?25l(?:\x1b\[[\d;]*m)*\x1b\[H/.test(data);
         // 화면 클리어 (cursor home + ED) 패턴
         const sigClear = /^\x1b\[H\x1b\[2J/.test(data) || /^\x1b\[2J\x1b\[H/.test(data);
-        if (sigHideHome || sigClear) { console.log('[PTY-IN] DROPPED (in window) head="' + head + '"'); return; }
-        console.log('[PTY-IN] in drop window but no match → passing through');
+        if (sigHideHome || sigClear) { return; }
       }
       // 스크롤 위로 올린 상태에서 빠른 출력 (tail -F 등) 시 viewport drift 방지
       const core = (term as any)._core;
@@ -2949,15 +2925,9 @@ export const TerminalPanel: React.FC<Props> = ({
         lastContainerSizeMap.set(activeTermId, { w: cw, h: ch });
         // 안전한 사이즈 확인 후 실제 fit 적용
         const prevRows1 = (e.term as any).rows;
-        const bufBefore1 = (e.term as any)._core?.buffer;
-        const before1 = bufBefore1 ? { ybase: bufBefore1.ybase, y: bufBefore1.y, len: bufBefore1.lines?.length } : null;
-        console.log('[DOFIT-1] before fit prevRows=' + prevRows1 + ' buf=' + JSON.stringify(before1) + ' cw=' + cw + ' ch=' + ch);
         fit.fit();
         const newCols = (e.term as any).cols;
         const newRows = (e.term as any).rows;
-        const bufAfter1 = (e.term as any)._core?.buffer;
-        const after1 = bufAfter1 ? { ybase: bufAfter1.ybase, y: bufAfter1.y, len: bufAfter1.lines?.length } : null;
-        console.log('[DOFIT-1] after fit rows=' + newRows + ' cols=' + newCols + ' buf=' + JSON.stringify(after1));
         // 비정상 사이즈 차단 (proposeDimensions 통과 후에도 체크)
         if (!newCols || !newRows || !isFinite(newCols) || !isFinite(newRows)) return;
         // rows 증가 시 xterm grow bug 보정 (분할창 닫기 등으로 viewport 가 커진 경우)
@@ -2978,14 +2948,8 @@ export const TerminalPanel: React.FC<Props> = ({
               const proposed2 = (fit as any).proposeDimensions?.();
               if (!proposed2 || !proposed2.cols || !proposed2.rows || !isFinite(proposed2.cols) || !isFinite(proposed2.rows)) return;
               const prevRows2 = (e2.term as any).rows;
-              const bufBefore2 = (e2.term as any)._core?.buffer;
-              const before2 = bufBefore2 ? { ybase: bufBefore2.ybase, y: bufBefore2.y, len: bufBefore2.lines?.length } : null;
-              console.log('[DOFIT-2] before fit prevRows=' + prevRows2 + ' buf=' + JSON.stringify(before2));
               fit.fit();
               const c2 = (e2.term as any).cols, r2 = (e2.term as any).rows;
-              const bufAfter2 = (e2.term as any)._core?.buffer;
-              const after2 = bufAfter2 ? { ybase: bufAfter2.ybase, y: bufAfter2.y, len: bufAfter2.lines?.length } : null;
-              console.log('[DOFIT-2] after fit rows=' + r2 + ' cols=' + c2 + ' buf=' + JSON.stringify(after2));
               if (!c2 || !r2 || !isFinite(c2) || !isFinite(r2)) return;
               if (r2 > prevRows2) applyXtermGrowFix(e2.term, prevRows2);
               const p = pendingResize.get(activeTermId);
