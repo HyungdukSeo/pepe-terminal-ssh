@@ -556,7 +556,7 @@ function getOrCreateTerm(termId: string): { term: Terminal; fit: FitAddon; searc
     try {
       term.onBell(() => {
         const style = termCursorStyleCache.get(termId);
-        if (!style || !PARTICLE_THEMES[style as CustomCursorStyle]) return;
+        if (style !== 'power') return; // 파워 커서일 때만 화면 흔들림
         const el = term.element as HTMLElement | undefined;
         if (!el) return;
         el.classList.remove('xterm-power-shake');
