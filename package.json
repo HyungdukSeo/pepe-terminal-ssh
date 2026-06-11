@@ -159,7 +159,11 @@
       "perMachine": true,
       "allowToChangeInstallationDirectory": true,
       "include": "build/installer.nsh",
-      "shortcutName": "PePe Terminal(SSH)"
+      "shortcutName": "PePe Terminal(SSH)",
+      "artifactName": "PePe-Terminal-SSH-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "PePe-Terminal-SSH-${version}-portable.${ext}"
     },
     "mac": {
       "target": [
