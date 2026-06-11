@@ -3661,8 +3661,13 @@ ipcMain.handle('ssh:open-local-forward', async (_e, args: { sessionId: string; r
         panelId = active[0];
         console.log(`[ssh-tunnel] only 1 active SSH panel — using ${panelId} as fallback`);
       } else {
+        // 전체 디버그 dump 는 메인 콘솔로만 — UI 에는 핵심 정보만 노출 (이전엔 16+ 터미널 상세를 빨간 박스에 쏟아냈음)
         const dump = bridge.dumpSessionInfo?.() || '(dump unavailable)';
-        return { success: false, error: `세션(${args.sessionId})의 활성 SSH 연결 매칭 실패. sshHost 힌트=${args.sshHost || '(없음)'}, 활성: ${active.length === 0 ? '(없음)' : active.join(', ')}, 상세: ${dump}` };
+        console.log(`[ssh-tunnel] match fail. sessionId=${args.sessionId}, sshHost=${args.sshHost}, sshPort=${args.sshPort}, dump=${dump}`);
+        const hosts: string[] = bridge.listActiveHosts?.() || [];
+        const hint = args.sshHost ? `${args.sshHost}${args.sshPort && args.sshPort !== 22 ? ':' + args.sshPort : ''}` : '(없음)';
+        const hostsTxt = hosts.length === 0 ? '(연결된 SSH 터미널 없음)' : hosts.slice(0, 8).join(', ') + (hosts.length > 8 ? ` 외 ${hosts.length - 8}개` : '');
+        return { success: false, error: `${hint} 에 연결된 활성 SSH 터미널이 없습니다.\n현재 연결된 SSH: ${hostsTxt}\n→ 먼저 ${hint} 로 SSH 세션을 연결한 뒤 다시 시도하세요.` };
       }
     }
     const { forwardId, localPort } = await bridge.openLocalForward(panelId, args.remoteHost, args.remotePort);
@@ -4298,6 +4303,18 @@ const geminiProcesses: Map<string, any> = new Map();
 // ── Codex CLI 연동 ──
 const codexProcesses: Map<string, any> = new Map();
 
+// stop() 후에도 stdout 버퍼에 남아있던 데이터/지연 close 이벤트가
+// 렌더러로 흘러가 "응답이 계속 오는" 문제를 막기 위한 procKey 차단 집합.
+// stop 핸들러에서 즉시 add → stdout/stderr/close 핸들러는 송신 전 has() 확인.
+// 같은 procKey 가 재사용될 일은 없지만(매 send 마다 새 requestId), 메모리 안전을 위해
+// proc.on('close') 시 정리. taskkill 이 늦게 끝나는 케이스 대비 60초 fallback 정리.
+const stoppedAgentProcs: Set<string> = new Set();
+function markAgentStopped(procKey: string) {
+  if (!procKey) return;
+  stoppedAgentProcs.add(procKey);
+  setTimeout(() => stoppedAgentProcs.delete(procKey), 60_000);
+}
+
 // GUI .app 실행 환경의 minimal PATH 보강 — npm global bin / Homebrew / nvm 경로 추가.
 // claude:send 와 claude:check 양쪽에서 사용. nvm 은 versions/node/* glob 으로 모든 버전 bin 포함.
 // nvm alias 체인 resolve → 활성 버전의 bin 경로 반환
@@ -4703,6 +4720,7 @@ ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowB
     let stdoutBuf = '';
     proc.stdout.setEncoding('utf-8');
     proc.stdout.on('data', (data: string) => {
+      if (stoppedAgentProcs.has(procKey)) return; // stop 후 잔여 stdout 차단
       stdoutBuf += data;
       const lines = stdoutBuf.split('\n');
       stdoutBuf = lines.pop() || ''; // 마지막 불완전 라인은 보류
@@ -4719,11 +4737,13 @@ ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowB
       }
     });
     proc.stderr.on('data', (data: Buffer) => {
+      if (stoppedAgentProcs.has(procKey)) return;
       const err = data.toString();
       console.log('[claude] stderr:', err);
       mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: err } });
     });
     proc.on('error', (err: any) => {
+      if (stoppedAgentProcs.has(procKey)) return;
       console.log('[claude] spawn error:', err);
       mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: String(err) } });
     });
@@ -4731,6 +4751,7 @@ ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowB
       console.log('[claude] close, code:', code);
       cleanupTmp();
       claudeProcesses.delete(procKey);
+      if (stoppedAgentProcs.has(procKey)) { stoppedAgentProcs.delete(procKey); return; }
       mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'done', code } });
     });
     return { success: true };
@@ -4970,6 +4991,9 @@ ipcMain.handle('claude:stop', (_e, { sessionId, requestId }: { sessionId: string
   const { spawn } = require('child_process');
   // requestId 가 명시되면 해당 프로세스만 종료, 아니면 sessionId 키로 fallback (legacy)
   const procKey = requestId || sessionId;
+  // 즉시 stream 차단 — taskkill 비동기 완료 전 stdout 버퍼에 남은 데이터/지연 close 가
+  // 렌더러로 흘러가서 "응답이 계속 오는" 문제를 막는다.
+  markAgentStopped(procKey);
   const proc = claudeProcesses.get(procKey);
   if (proc) {
     // shell 을 통해 spawn 했으므로 proc.kill() 만으로는 자식 claude 가 살아남는다.
@@ -5273,6 +5297,7 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
     let stdoutBuf = '';
     proc.stdout.setEncoding('utf-8');
     proc.stdout.on('data', (data: string) => {
+      if (stoppedAgentProcs.has(procKey)) return; // stop 후 잔여 stdout 차단
       stdoutBuf += data;
       const lines = stdoutBuf.split('\n');
       stdoutBuf = lines.pop() || '';
@@ -5287,11 +5312,13 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
     const GEMINI_NOISE = /YOLO mode is enabled|Ripgrep is not available|Falling back to GrepTool|256-color|overriding the built-in|^\s*$/;
     let stderrBuf = '';
     proc.stderr.on('data', (data: Buffer) => {
+      if (stoppedAgentProcs.has(procKey)) return;
       const s = data.toString();
       stderrBuf += s;
       console.log('[gemini] stderr:', s.slice(0, 300).replace(/\n/g, ' '));
     });
     proc.on('error', (err: any) => {
+      if (stoppedAgentProcs.has(procKey)) return;
       console.log('[gemini] spawn error:', err);
       sendStream({ type: 'error', text: String(err) });
     });
@@ -5324,6 +5351,7 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
       }
       cleanupTmp();
       geminiProcesses.delete(procKey);
+      if (stoppedAgentProcs.has(procKey)) { stoppedAgentProcs.delete(procKey); return; }
       sendStream({ type: 'done', code });
     });
     return { success: true };
@@ -5335,6 +5363,7 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
 ipcMain.handle('gemini:stop', (_e, { sessionId, requestId }: { sessionId: string; requestId?: string }) => {
   const { spawn } = require('child_process');
   const procKey = requestId || sessionId;
+  markAgentStopped(procKey);
   const proc = geminiProcesses.get(procKey);
   if (proc) {
     try {
@@ -5694,6 +5723,7 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
     };
 
     proc.stdout.on('data', (data: string) => {
+      if (stoppedAgentProcs.has(procKey)) return; // stop 후 잔여 stdout 차단
       stdoutBuf += data;
       const lines = stdoutBuf.split('\n');
       stdoutBuf = lines.pop() || '';
@@ -5704,11 +5734,13 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
     const CODEX_STDERR_ERR = /^(error|Error|failed|invalid|quota|unauthorized|rate.limit|\d{3}\s)/i;
     const CODEX_META_RE = /^(Reading prompt from stdin|OpenAI Codex v|-----+|workdir:|model:|provider:|approval:|sandbox:|reasoning effort:|reasoning summaries:|session id:|tokens used|user$|codex$)/m;
     proc.stderr.on('data', (data: Buffer | string) => {
+      if (stoppedAgentProcs.has(procKey)) return;
       const s = Buffer.isBuffer(data) ? data.toString('utf-8') : data;
       console.log('[codex] stderr:', s.slice(0, 300));
       codexStderrBuf += s;
     });
     proc.on('error', (err: any) => {
+      if (stoppedAgentProcs.has(procKey)) return;
       console.log('[codex] spawn error:', err);
       mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: String(err) } });
     });
@@ -5735,6 +5767,7 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
       } catch (e) { console.log('[codex] session info read fail:', e); }
       cleanupTmp();
       codexProcesses.delete(procKey);
+      if (stoppedAgentProcs.has(procKey)) { stoppedAgentProcs.delete(procKey); return; }
       mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'done', code } });
     });
     return { success: true };
@@ -5747,6 +5780,7 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
 ipcMain.handle('codex:stop', (_e, { sessionId, requestId }: { sessionId: string; requestId?: string }) => {
   const { spawn } = require('child_process');
   const procKey = requestId || sessionId;
+  markAgentStopped(procKey);
   const proc = codexProcesses.get(procKey);
   if (proc) {
     try {

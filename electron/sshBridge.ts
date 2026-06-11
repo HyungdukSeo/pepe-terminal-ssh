@@ -6,6 +6,24 @@ import net from 'net';
 import fs from 'fs';
 import path from 'path';
 import iconv from 'iconv-lite';
+
+// ssh2 의 기본 KEX/Cipher 목록은 modern 만 포함 — 레거시 서버(예: 구버전 OpenSSH,
+// 임베디드, Solaris/RHEL5) 는 diffie-hellman-group14-sha1 / ssh-rsa 만 제공해 negotiate 실패함.
+// SUPPORTED_* 는 ssh2 가 현재 시스템 crypto 기준으로 이미 필터한 안전 목록이라 그대로 허용해도 무방.
+// 모든 connect 경로(메인 SSH/jump primary/dedicated SFTP 등)에서 이 객체를 spread.
+const LEGACY_ALGO_OPT = (() => {
+  try {
+    const c = require('ssh2/lib/protocol/constants');
+    return {
+      algorithms: {
+        kex: c.SUPPORTED_KEX,
+        serverHostKey: c.SUPPORTED_SERVER_HOST_KEY,
+        cipher: c.SUPPORTED_CIPHER,
+        hmac: c.SUPPORTED_MAC,
+      },
+    } as any;
+  } catch { return {} as any; }
+})();
 import type { LoginScriptRule } from './sessionsStore';
 import { startEmbeddedX11 } from './x11Server';
 import { startBundledX11 } from './x11Bundled';
@@ -230,6 +248,7 @@ class SSHBridge extends EventEmitter {
       readyTimeout: 15000,
       keepaliveInterval: 10000,
       keepaliveCountMax: 3,
+      ...LEGACY_ALGO_OPT,
     } as any;
 
     // X11 forwarding 디버그 — ssh2 protocol 메시지 로깅
@@ -1042,7 +1061,7 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
   private localForwards = new Map<string, { server: net.Server; localPort: number; panelId: string }>();
   public hasActiveClient(panelId: string): boolean { return this.clients.has(panelId); }
   public listActivePanels(): string[] { return [...this.clients.keys()]; }
-  // 디버그용 — 각 활성 패널의 sessionStore 정보(id, host, port) 한 줄 요약.
+  // 디버그용 — 각 활성 패널의 sessionStore 정보(id, host, port) 한 줄 요약. (메인 콘솔 로그 전용)
   public dumpSessionInfo(): string {
     const lines: string[] = [];
     for (const panelId of this.clients.keys()) {
@@ -1050,6 +1069,21 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
       lines.push(`${panelId}=[id=${s?.id}, host=${s?.host}, port=${s?.port}]`);
     }
     return lines.length === 0 ? '(없음)' : lines.join('; ');
+  }
+  // 사용자 친화적 — host 가 있는 활성 SSH 세션의 유니크 host[:port] 목록.
+  // (host=undefined 인 sftp-only/local shell 등은 제외 — 사용자에겐 무관)
+  public listActiveHosts(): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const panelId of this.clients.keys()) {
+      const s = this.sessionStore.get(panelId);
+      if (!s?.host) continue;
+      const key = s.port && s.port !== 22 ? `${s.host}:${s.port}` : s.host;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(key);
+    }
+    return out;
   }
   // sessionStore(panelId → session) 에서 session.id 가 일치하는 첫 panelId 반환 — JDBC 터널이 사용할 SSH 연결 찾기용.
   // 1) session.id 정확 매칭
@@ -1319,11 +1353,11 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
             finish(jumpCfg.password ? [jumpCfg.password] : []);
           });
           dedicatedConn.once('ready', openSftp);
-          dedicatedConn.connect(jumpCfg);
+          dedicatedConn.connect({ ...jumpCfg, ...LEGACY_ALGO_OPT });
         });
       } else {
         dedicatedConn.once('ready', openSftp);
-        dedicatedConn.connect({ host: session.host, port: session.port || 22, ...authCfg });
+        dedicatedConn.connect({ host: session.host, port: session.port || 22, ...authCfg, ...LEGACY_ALGO_OPT });
       }
     });
   }
@@ -2492,7 +2526,10 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
       });
       // tryKeyboard: true 로 확장 — 비밀번호 모저장 세션 등 대비
       // keepalive — SQL Tool 등 장시간 idle 후 다시 명령 보낼 때 끊김 방지
-      const cfg: any = { host, port, username, tryKeyboard: true, readyTimeout: 15000, keepaliveInterval: 10000, keepaliveCountMax: 3 };
+      const cfg: any = {
+        host, port, username, tryKeyboard: true, readyTimeout: 15000, keepaliveInterval: 10000, keepaliveCountMax: 3,
+        ...LEGACY_ALGO_OPT,
+      };
       if (auth?.type === 'password') {
         cfg.password = auth.password;
       } else if (auth?.type === 'key') {

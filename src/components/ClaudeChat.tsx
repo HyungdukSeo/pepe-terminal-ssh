@@ -637,7 +637,7 @@ function renderMd(content: string): string {
 // 메시지 마크다운 캐시 — 같은 (id, content) 는 한 번만 파싱.
 // 대화가 길어지면 marked.parse + mermaid 전처리가 매 렌더마다 모든 메시지에 대해 호출되어 누적 비용 폭발.
 const _mdCache = new Map<string, { content: string; html: string }>();
-const MAX_MD_CACHE = 500;
+const MAX_MD_CACHE = 200; // 500→200: HTML 캐시 메모리 누적 완화 (실측 mermaid 포함 메시지는 메시지당 수~수십KB)
 function renderMdCached(id: string, content: string): string {
   const hit = _mdCache.get(id);
   if (hit && hit.content === content) return hit.html;
@@ -1875,13 +1875,14 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         codeEl.setAttribute('data-mermaid-src', source);
         // 특수문자 라벨을 따옴표로 감싸 mermaid 파서 에러 방지 (codex 다이어그램 대응)
         const renderSrc = sanitizeMermaidLabels(source);
+        let mermaidTimeoutId: ReturnType<typeof setTimeout> | null = null;
         try {
           const { svg } = await Promise.race([
             mermaid.render(id, renderSrc),
-            new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error('mermaid render timeout (8s)')), 8000)
-            ),
-          ]);
+            new Promise<never>((_, reject) => {
+              mermaidTimeoutId = setTimeout(() => reject(new Error('mermaid render timeout (8s)')), 8000);
+            }),
+          ]).finally(() => { if (mermaidTimeoutId) { clearTimeout(mermaidTimeoutId); mermaidTimeoutId = null; } });
           const wrap = document.createElement('div');
           wrap.className = 'claude-chat-mermaid';
           wrap.setAttribute('data-mermaid-rendered', '1');

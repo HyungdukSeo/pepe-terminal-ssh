@@ -300,6 +300,12 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
   const [colWidths, setColWidths] = useState<Map<number, number>>(new Map());
   // 좌측 고정 컬럼 — sticky left 로 가로 스크롤시 화면에 유지.
   const [pinnedCols, setPinnedCols] = useState<Set<number>>(new Set());
+  // 컬럼 표시 순서 — 원본 인덱스의 permutation. 헤더 드래그로 변경.
+  // 빈 배열 = 기본 순서(0..n-1). 결과 컬럼이 바뀌면 리셋.
+  const [colOrder, setColOrder] = useState<number[]>([]);
+  // 드래그 중인 원본 컬럼 인덱스 (헤더 드래그 reorder)
+  const [dragColIdx, setDragColIdx] = useState<number | null>(null);
+  const [dragOverColIdx, setDragOverColIdx] = useState<number | null>(null);
   // 핀된 결과 스냅샷 — 현재 결과를 보관해두고 다른 쿼리 결과와 병행 비교.
   type ResultSnapshot = {
     id: string; title: string; ts: number; sql: string;
@@ -372,7 +378,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
   const [resultError, setResultError] = useState<string>('');
   // 새 result 가 도착하면 그리드 사용자 상태 초기화 — 컬럼 구조가 바뀌었을 가능성
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { setSortState(null); setColFilters(new Map()); setColWidths(new Map()); setPinnedCols(new Set()); }, [result?.columns.join('|'), viewingTabId]);
+  useEffect(() => { setSortState(null); setColFilters(new Map()); setColWidths(new Map()); setPinnedCols(new Set()); setColOrder([]); }, [result?.columns.join('|'), viewingTabId]);
   // 자동완성용 테이블 목록 (현재 활성 스키마의 테이블)
   const [tables, setTables] = useState<string[]>([]);
   const [tableFilter, setTableFilter] = useState('');
@@ -599,7 +605,9 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
         }
         console.log('[SqlTool] sshOpenLocalForward result =', fwd);
         if (!fwd || fwd.success !== true) {
-          setConnectError(`SSH 터널 열기 실패: ${fwd?.error || '응답 없음'} — 먼저 같은 세션의 터미널을 연결하세요.`);
+          // 메인 프로세스가 이미 상황별 친화 메시지를 줌 (활성 호스트 목록 + 안내).
+          // 중복 문구 붙이지 말고 그대로 노출.
+          setConnectError(fwd?.error ? `SSH 터널 열기 실패\n${fwd.error}` : 'SSH 터널 열기 실패 — 응답 없음');
           return;
         }
         if (!fwd.localPort) {
@@ -2216,7 +2224,12 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
             >🗂 드라이버 관리자</button>
           </span>
         </div>
-        {connectError && <div style={{ background: '#5a1d1d', color: '#fcc', padding: 6, fontSize: 12 }}>{connectError}</div>}
+        {connectError && (
+          <div style={{ background: '#5a1d1d', color: '#fcc', padding: '6px 8px', fontSize: 12, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+            <div style={{ flex: 1, whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 96, overflow: 'auto', lineHeight: 1.5 }}>{connectError}</div>
+            <button onClick={() => setConnectError('')} title="닫기" style={{ background: 'transparent', border: 0, color: '#fcc', cursor: 'pointer', padding: '0 4px', fontSize: 14, lineHeight: 1, flexShrink: 0 }}>✕</button>
+          </div>
+        )}
         <div style={{ padding: 6, borderBottom: '1px solid #333', display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
           <button onClick={runCurrent} disabled={!connected || running} style={{ background: showRunning ? '#555' : '#0e639c', color: '#fff', border: 0, padding: '4px 12px', borderRadius: 3, cursor: running ? 'wait' : 'pointer' }} title="Ctrl+Enter — 선택 영역(있으면)/없으면 커서 위치 문장 실행">
             {showRunning ? '실행 중...' : '▶ 실행 (Ctrl+Enter)'}
@@ -3022,25 +3035,53 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
                   <tr>
                     {/* # 컬럼: 항상 좌상단 sticky */}
                     <th style={{ position: 'sticky', top: 0, left: 0, background: '#2d2d2d', color: '#9cdcfe', padding: '5px 10px', textAlign: 'center', border: '1px solid #3f3f46', fontWeight: 600, zIndex: 5, width: INDEX_COL_W, minWidth: INDEX_COL_W }}>#</th>
-                    {displayedResult.columns.map((c, i) => {
+                    {(colOrder.length === displayedResult.columns.length ? colOrder : displayedResult.columns.map((_, k) => k)).map((i) => {
+                      const c = displayedResult.columns[i];
                       const sortDir = sortState?.col === i ? sortState.dir : null;
                       const sortIcon = sortDir === 'asc' ? '▲' : sortDir === 'desc' ? '▼' : '';
                       const pinned = pinnedCols.has(i);
                       const w = getColWidth(i);
+                      const isDragging = dragColIdx === i;
+                      const isDropTarget = dragOverColIdx === i && dragColIdx !== null && dragColIdx !== i;
                       return (
                         <th
                           key={i}
+                          draggable
+                          onDragStart={e => { setDragColIdx(i); try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(i)); } catch {} }}
+                          onDragOver={e => { if (dragColIdx !== null && dragColIdx !== i) { e.preventDefault(); try { e.dataTransfer.dropEffect = 'move'; } catch {} if (dragOverColIdx !== i) setDragOverColIdx(i); } }}
+                          onDragLeave={() => { if (dragOverColIdx === i) setDragOverColIdx(null); }}
+                          onDrop={e => {
+                            e.preventDefault();
+                            const from = dragColIdx;
+                            setDragColIdx(null); setDragOverColIdx(null);
+                            if (from === null || from === i) return;
+                            // 현재 순서(없으면 기본) 에서 from 을 i 의 표시 위치로 이동
+                            const cur = colOrder.length === displayedResult.columns.length ? [...colOrder] : displayedResult.columns.map((_, k) => k);
+                            const fromPos = cur.indexOf(from);
+                            const toPos = cur.indexOf(i);
+                            if (fromPos < 0 || toPos < 0) return;
+                            cur.splice(fromPos, 1);
+                            cur.splice(toPos, 0, from);
+                            setColOrder(cur);
+                          }}
+                          onDragEnd={() => { setDragColIdx(null); setDragOverColIdx(null); }}
                           onClick={() => setSortState(prev => {
                             if (!prev || prev.col !== i) return { col: i, dir: 'asc' };
                             if (prev.dir === 'asc') return { col: i, dir: 'desc' };
                             return null; // asc → desc → 없음
                           })}
-                          title="클릭: 정렬 (오름→내림→해제)"
+                          title="클릭: 정렬 (오름→내림→해제) · 헤더 드래그: 컬럼 순서 이동"
                           style={{
                             position: 'sticky', top: 0,
                             ...(pinned ? { left: pinnedLeftFor(i), zIndex: 4 } : { zIndex: 2 }),
-                            background: '#2d2d2d', color: '#9cdcfe', padding: '5px 12px', textAlign: 'left', border: '1px solid #3f3f46', borderLeft: 0, fontWeight: 600, whiteSpace: 'nowrap', cursor: 'pointer', userSelect: 'none',
+                            background: isDropTarget ? '#3d3d8a' : '#2d2d2d',
+                            color: '#9cdcfe', padding: '5px 12px', textAlign: 'left',
+                            border: '1px solid #3f3f46', borderLeft: 0,
+                            borderLeftColor: isDropTarget ? '#5a8eff' : undefined,
+                            borderLeftWidth: isDropTarget ? 2 : undefined,
+                            fontWeight: 600, whiteSpace: 'nowrap', cursor: 'pointer', userSelect: 'none',
                             width: w, minWidth: w, maxWidth: w, overflow: 'hidden',
+                            opacity: isDragging ? 0.4 : 1,
                           }}
                         >
                           <span
@@ -3049,8 +3090,10 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
                             style={{ marginRight: 4, opacity: pinned ? 1 : 0.4, cursor: 'pointer' }}
                           >📌</span>
                           {c}{sortIcon ? ` ${sortIcon}` : ''}
-                          {/* 우측 리사이즈 핸들 */}
+                          {/* 우측 리사이즈 핸들 — draggable=false 로 컬럼 드래그와 분리 */}
                           <span
+                            draggable={false}
+                            onDragStart={e => { e.preventDefault(); e.stopPropagation(); }}
                             onMouseDown={(e) => beginColResize(i, e)}
                             onClick={e => e.stopPropagation()}
                             title="드래그: 컬럼 폭 조절 (더블클릭: 기본)"
@@ -3064,7 +3107,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
                   {/* 컬럼별 필터 행 */}
                   <tr>
                     <th style={{ position: 'sticky', top: 28, left: 0, background: '#252526', border: '1px solid #3f3f46', borderTop: 0, padding: 0, zIndex: 5 }} title="필터 행" />
-                    {displayedResult.columns.map((_c, i) => {
+                    {(colOrder.length === displayedResult.columns.length ? colOrder : displayedResult.columns.map((_, k) => k)).map((i) => {
                       const pinned = pinnedCols.has(i);
                       const w = getColWidth(i);
                       return (
@@ -3156,7 +3199,8 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
                           </span>
                         )}
                       </td>
-                      {row.map((c, j) => {
+                      {(colOrder.length === displayedResult.columns.length ? colOrder : row.map((_, k) => k)).map((j) => {
+                        const c = row[j];
                         const key = `${i},${j}`;
                         const edited = !isPinnedView && edits.has(key);
                         const value = edited ? edits.get(key)! : c;

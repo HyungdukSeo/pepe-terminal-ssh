@@ -54,6 +54,8 @@ let currentWordSeparator = localStorage.getItem('terminalWordSeparator') ?? DEFA
 const termFontSizes: Map<string, number> = new Map();
 
 export const termStore: Map<string, { term: Terminal; fit: FitAddon; search: SearchAddon }> = new Map();
+// 현재 selectAll 상태인 termId 들 — 스크롤/사용자 입력 시 자동 해제 (disposeTermFully 가 참조하므로 hoist)
+const selectAllActive: Set<string> = new Set();
 // 마지막 PTY/SSH resize 크기 — 변경 없을 때 SIGWINCH 송신 안 하기 위함 (vim W11 경고 회피)
 const lastResizeMap: Map<string, { cols: number; rows: number }> = new Map();
 // 마지막 fit 시점의 컨테이너 px 사이즈 — 같으면 fit 자체 skip (탭 전환 시 잦은 SIGWINCH 회피)
@@ -1579,6 +1581,86 @@ export function getAllTermIds(): string[] {
   return [...termStore.keys()];
 }
 
+// 패널/세션 종료 시 xterm 인스턴스 + 관련 termId-keyed 캐시를 완전 정리해
+// 메모리에서 회수 가능하게 만든다. (호출 전 백엔드 disconnectSSH/feReleaseSftp 는 이미 됐다고 가정)
+// 호출처: App.tsx releaseTermResources 끝, closeTab/closePanel/handleCloseSession
+export function disposeTermFully(termId: string) {
+  if (!termId) return;
+  // 1) flame/prism cursor overlay (setInterval) 정리
+  try { flameOverlayCleanup.get(termId)?.(); } catch {}
+  flameOverlayCleanup.delete(termId);
+  // 2) 활성 비밀번호 프롬프트 disposable 정리
+  try { activePasswordPrompt.get(termId)?.dispose(); } catch {}
+  activePasswordPrompt.delete(termId);
+  // 3) 검색 하이라이트 오버레이 DOM 제거
+  try {
+    const ov = highlightOverlays.get(termId);
+    if (ov && ov.parentElement) ov.parentElement.removeChild(ov);
+  } catch {}
+  highlightOverlays.delete(termId);
+  try { highlightListeners.get(termId)?.(); } catch {}
+  highlightListeners.delete(termId);
+  // 4) reconnect timer 등 ssh/pty 보조 상태 정리
+  try {
+    const st = reconnectState.get(termId);
+    if (st) {
+      if (st.timer) { try { clearInterval(st.timer as any); } catch {} }
+      if (st.fireTimer) { try { clearTimeout(st.fireTimer as any); } catch {} }
+      try { st.disp?.dispose?.(); } catch {}
+    }
+  } catch {}
+  reconnectState.delete(termId);
+  try { ptyResizeTimers.get(termId) && clearTimeout(ptyResizeTimers.get(termId) as any); } catch {}
+  ptyResizeTimers.delete(termId);
+  // 5) IPC 이벤트 핸들러 (preload onSshXxx / onPtyData 가 termId당 1개 등록되어 있다고 가정)
+  //    핸들러 자체는 컴포넌트 useEffect 가 등록한 게 아닌 모듈 레벨 Map 이므로 여기서 정리.
+  sshConnectedHandlers.delete(termId);
+  sshDataHandlers.delete(termId);
+  sshClosedHandlers.delete(termId);
+  sshErrorHandlers.delete(termId);
+  sshAuthPromptHandlers.delete(termId);
+  ptyDataHandlers.delete(termId);
+  // 6) Set/Map flag 들 정리
+  sshInitialized.delete(termId);
+  globalConnected.delete(termId);
+  quickConnectPending.delete(termId);
+  quickConnectPlaceholderShown.delete(termId);
+  ptyInitialized.delete(termId);
+  ptyConnected.delete(termId);
+  ptyExitSuppressed.delete(termId);
+  ptyDropRepaintUntil.delete(termId);
+  selectAllActive.delete(termId);
+  ttymouseSgrInjected.delete(termId);
+  // 7) 캐시 Map 정리
+  termOpacity.delete(termId);
+  termThemeCache.delete(termId);
+  termFontSizes.delete(termId);
+  lastResizeMap.delete(termId);
+  lastContainerSizeMap.delete(termId);
+  fitCooldownUntil.delete(termId);
+  pendingResize.delete(termId);
+  termSavedScroll.delete(termId);
+  termCurrentPwd.delete(termId);
+  pwdChangeListeners.delete(termId);
+  termIMEComposing.delete(termId);
+  termJustComposed.delete(termId);
+  recordingState.delete(termId);
+  termScrollbackOverride.delete(termId);
+  termCursorStyleCache.delete(termId);
+  termCursorBlinkCache.delete(termId);
+  termBackspaceMode.delete(termId);
+  termDeleteMode.delete(termId);
+  freshlyEnteredPassword.delete(termId);
+  // 8) 마지막으로 xterm Terminal.dispose() — 내부 IRenderService/buffer/element 모두 해제
+  try {
+    const entry = termStore.get(termId);
+    if (entry) {
+      try { entry.term.dispose(); } catch {}
+    }
+  } catch {}
+  termStore.delete(termId);
+}
+
 // Ctrl+Shift+B: 현재 보이는 화면은 유지, 안 보이는 스크롤 버퍼만 삭제
 export function clearScrollbackInTerm(termId: string) {
   try {
@@ -2027,8 +2109,6 @@ function ensurePtySetup(termId: string) {
 // 프로그램 호출로 selectAll 할 때 autoCopyOnSelect 건너뛰기 위한 플래그
 let _skipAutoCopyOnSelect = false;
 export function isSelectAllSkippingAutoCopy(): boolean { return _skipAutoCopyOnSelect; }
-// 현재 selectAll 상태인 termId 들 — 스크롤/사용자 입력 시 자동 해제
-const selectAllActive: Set<string> = new Set();
 export function selectAllInTerm(termId: string) {
   try {
     _skipAutoCopyOnSelect = true;
