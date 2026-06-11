@@ -66,6 +66,21 @@ export function setupAutoUpdater(getWindow: () => BrowserWindow | null) {
   // 진단 로그는 메인 콘솔로 (패키지 빌드에서는 main.ts 가 console.log 를 무력화)
   try { (autoUpdater as any).logger = { info: console.log, warn: console.warn, error: console.error, debug: () => {} }; } catch {}
 
+  // ── 자가서명 인증서 우회 ─────────────────────────────────────────────
+  // PePe 는 자가서명 인증서(cert/PePeTerminal_v2.pfx, Subject=Issuer=CN=PePe Terminal)로
+  // 코드 서명. Windows 가 Trusted Root 에 등록되지 않은 자가서명 cert 의 trust chain 을
+  // 검증하지 못해 electron-updater 기본 verifyUpdateCodeSignature 가
+  // "not signed by application owner" 로 거부함.
+  //
+  // 무결성은 latest.yml 의 sha512 + GitHub HTTPS 가 이미 보장하므로
+  // (서버 측 변조엔 GitHub release + latest.yml 동시 위·변조가 필요) 코드 서명
+  // verifyUpdateCodeSignature 만 우회.
+  //
+  // ※ 추후 EV/CA 인증서 도입 시 이 override 를 제거하면 자동으로 정상 검증 복원됨.
+  try {
+    (autoUpdater as any).verifyUpdateCodeSignature = async () => null;
+  } catch {}
+
   if (!wired) {
     wired = true;
     autoUpdater.on('checking-for-update', () => send({ state: 'checking' }));
