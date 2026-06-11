@@ -634,6 +634,178 @@ function renderMd(content: string): string {
   return marked.parse(autoConvertTablesInMd(autoFenceMermaid(closeDanglingMermaidFences(neutralizeSetextHeadings(content)))), { breaks: true }) as string;
 }
 
+// Mermaid OFF 모드: flowchart/graph 를 트리 스타일 ASCII 다이어그램으로 변환.
+// SVG 렌더 실패/한글 깨짐을 회피. 지원되지 않는 다이어그램 종류는 원본 소스를 그대로 표시.
+function mermaidToAscii(src: string): string {
+  const raw = src.replace(/^```mermaid\s*\n?|^```\s*$/gm, '').trim();
+  const firstLine = raw.split('\n')[0].trim();
+  const flowMatch = firstLine.match(/^(?:flowchart|graph)\s+(\w+)/i);
+  if (!flowMatch) {
+    // flowchart 가 아닌 다른 diagram 은 그대로 (원본 텍스트 표시 + 헤더)
+    return `[ Mermaid: ${firstLine || '다이어그램'} — ASCII 변환 미지원 ]\n\n${raw}`;
+  }
+  type Node = { id: string; label: string; shape: 'box' | 'round' | 'diamond' | 'circle' };
+  const nodes = new Map<string, Node>();
+  const edges: Array<{ from: string; to: string; label?: string }> = [];
+  const parseShape = (s: string): { label: string; shape: Node['shape'] } => {
+    let label = s, shape: Node['shape'] = 'box';
+    if (s.startsWith('((') && s.endsWith('))')) { label = s.slice(2, -2); shape = 'circle'; }
+    else if (s.startsWith('{') && s.endsWith('}')) { label = s.slice(1, -1); shape = 'diamond'; }
+    else if (s.startsWith('(') && s.endsWith(')')) { label = s.slice(1, -1); shape = 'round'; }
+    else if (s.startsWith('[') && s.endsWith(']')) { label = s.slice(1, -1); }
+    return { label: label.replace(/^["']|["']$/g, '').trim(), shape };
+  };
+  const ensureNode = (id: string, shapeText?: string) => {
+    if (!nodes.has(id)) nodes.set(id, { id, label: id, shape: 'box' });
+    if (shapeText) {
+      const { label, shape } = parseShape(shapeText);
+      const n = nodes.get(id)!;
+      n.label = label; n.shape = shape;
+    }
+  };
+  // edge regex: ID[shape]? --(label)?--> ID[shape]?
+  // 지원: -->, ---, ==>, -.->, -->|label|, |label| 위치
+  const NODE_TOKEN = `([\\w\\-]+)((?:\\(\\([^)]*\\)\\))|(?:\\[[^\\]]*\\])|(?:\\([^)]*\\))|(?:\\{[^}]*\\}))?`;
+  const ARROW_RE = new RegExp(`^${NODE_TOKEN}\\s*(-->|---|==>|-\\.->|\\.->|==)\\s*(?:\\|([^|]*)\\|\\s*)?${NODE_TOKEN}\\s*$`);
+  const NODE_DECL_RE = new RegExp(`^${NODE_TOKEN}\\s*$`);
+  for (const rawLine of raw.split('\n').slice(1)) {
+    const line = rawLine.trim().replace(/^\s*%%.*$/, ''); // 주석 제거
+    if (!line) continue;
+    if (/^(subgraph|end|classDef|class|click|style|linkStyle|direction)\b/i.test(line)) continue;
+    const m = ARROW_RE.exec(line);
+    if (m) {
+      const [, fromId, fromShape, , label, toId, toShape] = m;
+      ensureNode(fromId, fromShape || undefined);
+      ensureNode(toId, toShape || undefined);
+      edges.push({ from: fromId, to: toId, label: label?.trim() || undefined });
+    } else {
+      const nm = NODE_DECL_RE.exec(line);
+      if (nm) ensureNode(nm[1], nm[2] || undefined);
+    }
+  }
+  if (nodes.size === 0) {
+    return `[ Mermaid flowchart — 파싱된 노드 없음 ]\n\n${raw}`;
+  }
+  // 부모→자식 인접 리스트
+  const children = new Map<string, Array<{ to: string; label?: string }>>();
+  const incoming = new Map<string, number>();
+  for (const id of nodes.keys()) { children.set(id, []); incoming.set(id, 0); }
+  for (const e of edges) {
+    children.get(e.from)?.push({ to: e.to, label: e.label });
+    incoming.set(e.to, (incoming.get(e.to) || 0) + 1);
+  }
+  const roots = [...nodes.keys()].filter(id => (incoming.get(id) || 0) === 0);
+  if (roots.length === 0 && nodes.size > 0) roots.push(nodes.keys().next().value as string); // 사이클 케이스
+  const fmtNode = (n: Node) => {
+    const l = n.label || n.id;
+    switch (n.shape) {
+      case 'diamond': return `< ${l} >`;
+      case 'round':   return `( ${l} )`;
+      case 'circle':  return `(( ${l} ))`;
+      default:        return `[ ${l} ]`;
+    }
+  };
+  const out: string[] = [];
+  out.push(`◆ Mermaid flowchart (${flowMatch[1].toUpperCase()})`);
+  out.push('');
+  const visited = new Set<string>();
+  const walk = (id: string, prefix: string, isLast: boolean, edgeLabel?: string) => {
+    const n = nodes.get(id); if (!n) return;
+    const conn = prefix === '' ? '' : (isLast ? '└─→ ' : '├─→ ');
+    const labelTxt = edgeLabel ? `─|${edgeLabel}|→ ` : '';
+    if (prefix === '') {
+      out.push(`${fmtNode(n)}`);
+    } else {
+      out.push(`${prefix}${conn}${labelTxt ? labelTxt : ''}${fmtNode(n)}`);
+    }
+    if (visited.has(id)) {
+      out.push(`${prefix}${isLast ? '    ' : '│   '}     ↺ (이미 표시됨)`);
+      return;
+    }
+    visited.add(id);
+    const kids = children.get(id) || [];
+    const childPrefix = prefix + (prefix === '' ? '' : (isLast ? '    ' : '│   '));
+    kids.forEach((k, i) => walk(k.to, childPrefix === '' ? '  ' : childPrefix, i === kids.length - 1, k.label));
+  };
+  roots.forEach((r, i) => {
+    if (i > 0) out.push('');
+    walk(r, '', true);
+  });
+  // 방문되지 않은(고립된) 노드도 표시
+  const orphans = [...nodes.keys()].filter(id => !visited.has(id));
+  if (orphans.length > 0) {
+    out.push('');
+    out.push('── 미연결 노드 ──');
+    for (const id of orphans) out.push(`  ${fmtNode(nodes.get(id)!)}`);
+  }
+  return out.join('\n');
+}
+
+// 도구 호출 라벨에서 핵심 정보만 추출 — DBeaver/Claude 가 보내는 긴 WebDAV UNC 경로
+// (\\127.0.0.1@PORT\DavWWWRoot\term-xxx\...) 가 앞을 다 차지해 정작 파일명이 잘리는 문제 해소.
+// 도구별로 의미있는 필드(file_path / pattern / command 등)만 골라 표시.
+function shortenWebdavPath(p: string): string {
+  if (typeof p !== 'string') return String(p ?? '');
+  // \\<ip>@<port>\DavWWWRoot\term-<id>\<remote-path> → /<remote-path>
+  const m = p.match(/^\\\\[^\\]+\\DavWWWRoot\\term-[^\\]+\\(.+)$/);
+  if (m) return '/' + m[1].replace(/\\/g, '/');
+  // UNC 그대로지만 너무 길면 마지막 2~3 segment 만
+  if (p.length > 80 && p.includes('\\')) {
+    const parts = p.split('\\').filter(Boolean);
+    if (parts.length > 3) return '…\\' + parts.slice(-3).join('\\');
+  }
+  return p;
+}
+function summarizeToolInput(name: string, input: any): string {
+  if (!input || typeof input !== 'object') return JSON.stringify(input ?? '').slice(0, 80);
+  const truncate = (s: string, n: number) => s.length > n ? s.slice(0, n) + '…' : s;
+  const fp = input.file_path || input.path || input.filePath;
+  switch (name) {
+    case 'Read':
+    case 'Write':
+    case 'Edit':
+    case 'NotebookEdit':
+      if (fp) return truncate(shortenWebdavPath(String(fp)), 100);
+      break;
+    case 'Glob':
+      return truncate([input.pattern, input.path ? `in ${shortenWebdavPath(String(input.path))}` : ''].filter(Boolean).join(' '), 100);
+    case 'Grep':
+      return truncate([input.pattern, input.path ? `in ${shortenWebdavPath(String(input.path))}` : '', input.glob ? `(${input.glob})` : ''].filter(Boolean).join(' '), 100);
+    case 'Bash':
+    case 'PowerShell':
+      return truncate(String(input.command || ''), 100);
+    case 'LS':
+      if (fp) return truncate(shortenWebdavPath(String(fp)), 100);
+      break;
+    case 'WebFetch':
+      return truncate(String(input.url || ''), 100);
+    case 'WebSearch':
+      return truncate(String(input.query || ''), 100);
+    case 'Agent':
+    case 'Task':
+      return truncate(String(input.description || input.subagent_type || ''), 100);
+    case 'TodoWrite':
+      return Array.isArray(input.todos) ? `${input.todos.length} todos` : '';
+    case 'mcp__pepe_ssh__ssh_exec':
+      return truncate([input.session ? `[${input.session}]` : '', String(input.command || '')].filter(Boolean).join(' '), 100);
+    case 'mcp__pepe_ssh__ssh_read':
+    case 'mcp__pepe_ssh__ssh_write':
+      if (input.path) return truncate(String(input.path), 100);
+      break;
+    case 'ExitPlanMode':
+      return '계획 승인 요청';
+  }
+  // 기본: JSON 직렬화 — WebDAV 경로면 단축
+  let s = JSON.stringify(input);
+  if (s.includes('DavWWWRoot')) {
+    s = s.replace(/"(?:[^"\\]|\\.)*DavWWWRoot[^"]*"/g, (m) => '"' + shortenWebdavPath(JSON.parse(m)) + '"');
+  }
+  return truncate(s, 120);
+}
+function buildToolLabel(name: string, input: any): string {
+  return `🔧 ${name}(${summarizeToolInput(name, input)})`;
+}
+
 // 메시지 마크다운 캐시 — 같은 (id, content) 는 한 번만 파싱.
 // 대화가 길어지면 marked.parse + mermaid 전처리가 매 렌더마다 모든 메시지에 대해 호출되어 누적 비용 폭발.
 const _mdCache = new Map<string, { content: string; html: string }>();
@@ -838,6 +1010,25 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [streaming, setStreaming] = useState(false);
+  // 안전망 — 메인 프로세스 close 이벤트 누락 등으로 result/done 이 도달하지 못해
+  // streaming 플래그가 영원히 true 로 남는 케이스 방지. 10초간 stream 이벤트가 없으면
+  // 진행 중 상태를 강제 해제 → 메시지가 마크다운으로 정상 렌더되도록.
+  useEffect(() => {
+    if (!streaming) return;
+    const id = window.setInterval(() => {
+      const idle = Date.now() - (lastStreamEventAtRef.current || 0);
+      if (idle > 10_000) {
+        console.warn('[ClaudeChat] stream stuck — auto-finalize after 10s idle');
+        setStreaming(false);
+        setActivity('');
+        currentAsstIdRef.current = null;
+        activeRequestIdRef.current = null;
+        const aid = activeHistoryIdRef.current;
+        if (aid) setChatHistory(hList => hList.map(h => h.id === aid ? { ...h, streaming: false, pendingRequestId: null } : h));
+      }
+    }, 2000);
+    return () => window.clearInterval(id);
+  }, [streaming]);
   // 현재 진행 중 활동(툴 이름 등) — 스트리밍 인디케이터 옆에 표시
   const [activity, setActivity] = useState<string>('');
   // 툴 호출 타임라인 (각 호출을 별도 항목으로)
@@ -1060,6 +1251,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       try {
         const prefs = await (window as any).api?.getUIPrefs?.();
         if (typeof prefs?.aiShareContext === 'boolean') setShareContext(prefs.aiShareContext);
+        if (typeof prefs?.claudeChatMermaidEnabled === 'boolean') setMermaidEnabled(prefs.claudeChatMermaidEnabled);
       } catch {}
       shareContextLoadedRef.current = true;
     })();
@@ -1068,6 +1260,15 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     if (!shareContextLoadedRef.current) return;
     try { (window as any).api?.setUIPrefs?.({ aiShareContext: shareContext }); } catch {}
   }, [shareContext]);
+  // Mermaid 다이어그램 렌더링 on/off — 렌더 실패/한글 깨짐/메인스레드 점유 회피용.
+  // OFF 면 ```mermaid``` 코드블록을 일반 코드블록으로 그대로 표시.
+  const [mermaidEnabled, setMermaidEnabled] = useState<boolean>(true);
+  const mermaidEnabledLoadedRef = useRef(false);
+  useEffect(() => { mermaidEnabledLoadedRef.current = true; }, []);
+  useEffect(() => {
+    if (!mermaidEnabledLoadedRef.current) return;
+    try { (window as any).api?.setUIPrefs?.({ claudeChatMermaidEnabled: mermaidEnabled }); } catch {}
+  }, [mermaidEnabled]);
 
   // 공유 OFF 모드에서 에이전트별로 streaming 상태를 추적 — 한 에이전트 응답 대기 중에
   // 다른 에이전트로 프롬프트 전송이 가능하도록.
@@ -1487,10 +1688,13 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     })();
   }, [selectedSshSessions.map(s => s.termId).join(',')]);
 
+  // 스트림 이벤트 도착 시각 — 안전망 타이머용
+  const lastStreamEventAtRef = useRef<number>(0);
   // 스트리밍 응답 리스너
   useEffect(() => {
     const dispose = (window as any).api?.onClaudeStream?.((p: any) => {
       if (p.sessionId !== sessionId) return;
+      lastStreamEventAtRef.current = Date.now();
       const reqId: string | undefined = p.requestId;
       // requestId → historyId 매핑으로 어느 대화에 속하는 이벤트인지 판별
       const targetHistoryId = reqId ? requestToHistoryRef.current.get(reqId) : null;
@@ -1609,8 +1813,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             const next = [...prev];
             for (const t of toolUses) {
               if (next.find(x => x.id === t.id)) continue;
-              const args = JSON.stringify(t.input).slice(0, 120);
-              next.push({ id: t.id, label: `🔧 ${t.name}(${args}${args.length >= 120 ? '…' : ''})`, status: 'running', seq: nextSeq() });
+              next.push({ id: t.id, label: buildToolLabel(t.name, t.input), status: 'running', seq: nextSeq() });
             }
             return next;
           });
@@ -1824,6 +2027,39 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
 
   // Mermaid 다이어그램 렌더링 — messages 변경 / pendingPlan 시 미렌더 mermaid 코드블록을 SVG 로 변환
   useEffect(() => {
+    // mermaid 비활성화 모드: SVG 렌더 대신 ASCII 트리 다이어그램으로 변환
+    if (!mermaidEnabled) {
+      const __asciiTimer = setTimeout(() => {
+        const roots: HTMLElement[] = [];
+        if (scrollRef.current) roots.push(scrollRef.current);
+        document.querySelectorAll<HTMLElement>('.claude-chat-plan-body').forEach(el => roots.push(el));
+        for (const r of roots) {
+          r.querySelectorAll<HTMLElement>('pre > code').forEach(el => {
+            if (el.getAttribute('data-mermaid-rendered') === 'ascii') return;
+            const source = (el.textContent || '').trim();
+            if (!(el.classList.contains('language-mermaid') || MERMAID_START_RE.test(source))) return;
+            // 스트리밍 중인 partial 블록은 skip — 완성된 후 시도
+            const last = source.split('\n').slice(-1)[0];
+            if (!last.includes(']') && !last.includes(')') && !last.includes('}') && !/end\s*$/.test(last) && source.length < 60) return;
+            try {
+              const ascii = mermaidToAscii(source);
+              const pre = el.parentElement;
+              if (!pre) return;
+              const wrap = document.createElement('pre');
+              wrap.className = 'claude-chat-mermaid-ascii';
+              wrap.setAttribute('data-mermaid-rendered', 'ascii');
+              wrap.setAttribute('data-mermaid-src', source);
+              wrap.style.cssText = 'font-family: ui-monospace,Consolas,monospace; font-size: 12px; line-height: 1.5; padding: 10px 12px; background: #1e1e1e; border: 1px solid #3a3a3a; border-radius: 4px; overflow-x: auto; color: #d4d4d4; white-space: pre;';
+              wrap.textContent = ascii;
+              pre.parentElement?.replaceChild(wrap, pre);
+            } catch (e) {
+              el.setAttribute('data-mermaid-rendered', 'ascii');
+            }
+          });
+        }
+      }, 250);
+      return () => clearTimeout(__asciiTimer);
+    }
     // 스트리밍 중엔 messages 가 빠르게 변함 → 디바운스로 마지막 변경 후 1회만 렌더.
     // (미완성 mermaid 블록을 렌더 시도하다 에러 div 가 남는 문제 방지)
     const __mermaidTimer = setTimeout(() => {
@@ -2164,7 +2400,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     })();
     }, 250);
     return () => clearTimeout(__mermaidTimer);
-  }, [messages, toolTimeline, pendingPlan, currentAgent, activeHistoryId, installed]);
+  }, [messages, toolTimeline, pendingPlan, currentAgent, activeHistoryId, installed, mermaidEnabled]);
 
   // 메시지/세션ID 변경 시 활성 이력 항목에 동기화
   // 단, 활성 이력이 막 전환되었을 때(loadHistory 직후) 의 첫 실행은 스킵 — 그렇지 않으면
@@ -4171,6 +4407,12 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             style={{ display: 'none' }}
             onChange={e => { onFilePicked(e.target.files, { fromFolder: true }); if (folderUploadRef.current) folderUploadRef.current.value = ''; }}
           />
+          <button
+            className="claude-chat-tool-btn"
+            title={`Mermaid 다이어그램 렌더링 ${mermaidEnabled ? 'ON (클릭: ASCII 모드로 전환)' : 'OFF (클릭: SVG 렌더링)'}`}
+            onClick={() => setMermaidEnabled(v => !v)}
+            style={{ opacity: mermaidEnabled ? 1 : 0.5 }}
+          >{mermaidEnabled ? '◆' : '◇'}</button>
           <div className="claude-chat-cmd-wrap">
             <button
               className="claude-chat-tool-btn"
