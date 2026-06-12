@@ -368,6 +368,13 @@ function App() {
   // 옵션 다이얼로그 열림 시 글로벌 플래그 동기화 (TerminalPanel에서 참조)
   useEffect(() => { setKeybindingListening(showOptions); }, [showOptions]);
 
+  // 터미널 마우스 동작 '등록 정보 대화 상자' → 옵션 다이얼로그 열기
+  useEffect(() => {
+    const open = () => setShowOptions(true);
+    window.addEventListener('open-options', open);
+    return () => window.removeEventListener('open-options', open);
+  }, []);
+
   // 단축키 변경 listening 중: window capture phase에서 키 캡처
   useEffect(() => {
     if (!listeningAction) return;
@@ -3908,6 +3915,41 @@ function App() {
                         <span>여러 줄 붙여넣기 창에 내용 누적 (끄면 교체)</span>
                       </label>
                     )}
+                  </div>
+                </div>
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>마우스</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ width: 110, color: '#bbb', fontSize: 13 }}>오른쪽 단추</span>
+                      <select
+                        style={{ flex: 1, background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '6px', fontSize: 13, cursor: 'pointer' }}
+                        value={termSettings.rightClickAction}
+                        onChange={e => setTermSettings(s => ({ ...s, rightClickAction: e.target.value as TerminalSettings['rightClickAction'] }))}
+                      >
+                        <option value="none">아무것도 하지 않습니다</option>
+                        <option value="menu">팝업 메뉴를 엽니다</option>
+                        <option value="paste">클립보드의 내용을 붙여 넣습니다</option>
+                        <option value="properties">등록 정보 대화 상자를 엽니다</option>
+                        <option value="enter">캐리지 리턴을 보냅니다</option>
+                        <option value="paste-selection">선택된 텍스트를 붙여 넣습니다</option>
+                      </select>
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ width: 110, color: '#bbb', fontSize: 13 }}>가운데 단추</span>
+                      <select
+                        style={{ flex: 1, background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '6px', fontSize: 13, cursor: 'pointer' }}
+                        value={termSettings.middleClickAction}
+                        onChange={e => setTermSettings(s => ({ ...s, middleClickAction: e.target.value as TerminalSettings['middleClickAction'] }))}
+                      >
+                        <option value="none">아무것도 하지 않습니다</option>
+                        <option value="menu">팝업 메뉴를 엽니다</option>
+                        <option value="paste">클립보드의 내용을 붙여 넣습니다</option>
+                        <option value="properties">등록 정보 대화 상자를 엽니다</option>
+                        <option value="enter">캐리지 리턴을 보냅니다</option>
+                        <option value="paste-selection">선택된 텍스트를 붙여 넣습니다</option>
+                      </select>
+                    </label>
                   </div>
                 </div>
                 <div style={{ marginBottom: 16 }}>

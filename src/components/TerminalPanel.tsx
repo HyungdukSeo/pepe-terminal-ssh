@@ -11,7 +11,7 @@ import { FitAddon } from 'xterm-addon-fit';
 import { SearchAddon } from 'xterm-addon-search';
 import { Unicode11Addon } from 'xterm-addon-unicode11';
 import { getThemeByName, terminalThemes } from '../utils/terminalThemes';
-import { getTerminalSettings } from '../utils/terminalSettings';
+import { getTerminalSettings, type MouseButtonAction } from '../utils/terminalSettings';
 import { matchKeybinding, isKeybindingListening } from '../utils/keybindings';
 import 'xterm/css/xterm.css';
 
@@ -814,10 +814,22 @@ function getOrCreateTerm(termId: string): { term: Terminal; fit: FitAddon; searc
           }
         }
       }, true);
-      // 우클릭 → 항상 앱 컨텍스트 메뉴 (mouse mode 여부 무관, 복사/붙여넣기 등 사용 가능)
+      // 우클릭 → 설정된 동작 (기본: 팝업 메뉴)
       el.addEventListener('contextmenu', (e: MouseEvent) => {
         e.preventDefault();
-        el.dispatchEvent(new CustomEvent('term-contextmenu', { detail: { x: e.clientX, y: e.clientY }, bubbles: true }));
+        runMouseAction(getTerminalSettings().rightClickAction || 'menu', termId, el, e.clientX, e.clientY);
+      });
+      // 가운데(휠) 단추 → 설정된 동작 (기본: 아무것도 안 함)
+      el.addEventListener('auxclick', (e: MouseEvent) => {
+        if (e.button !== 1) return;
+        const action = getTerminalSettings().middleClickAction;
+        if (action === 'none') return;
+        e.preventDefault();
+        runMouseAction(action, termId, el, e.clientX, e.clientY);
+      });
+      // 가운데 단추 기본 동작(자동 스크롤 앵커 등) 방지
+      el.addEventListener('mousedown', (e: MouseEvent) => {
+        if (e.button === 1 && getTerminalSettings().middleClickAction !== 'none') e.preventDefault();
       });
     });
     // 선택 시 자동 클립보드 복사 + selectAll 상태 유지
@@ -2001,6 +2013,60 @@ function ensureSSHSetup(termId: string) {
 // ── 로컬 셸 (PTY) ──
 const ptyInitialized = new Set<string>();
 const ptyConnected = new Set<string>();
+
+// 터미널에 원시 문자열 송신 (PTY/SSH 자동 분기)
+function sendToTerm(tid: string, data: string) {
+  try {
+    if (ptyConnected.has(tid)) (window as any).api.ptyInput(tid, data);
+    else (window as any).api.sendSSHInput(tid, data);
+  } catch {}
+}
+
+// 클립보드 내용을 터미널에 붙여넣기 (우클릭/가운데클릭 붙여넣기 공용).
+// 여러 줄이면 설정에 따라 붙여넣기 다이얼로그(별도 BrowserWindow)로, 아니면 바로 송신.
+export function pasteClipboardToTerm(tid: string) {
+  navigator.clipboard.readText().then(text => {
+    if (!text) return;
+    const settings = getTerminalSettings();
+    if (text.includes('\n') && settings.multiLinePaste === 'dialog') {
+      try { termStore.get(tid)?.term?.blur?.(); } catch {}
+      try { (window as any).api?.pasteModalOpen?.(tid, text, settings.multiLinePasteAccumulate); } catch {}
+    } else {
+      // vi insert 모드 호환 — ENTER 는 \r, bracketed paste 래핑 회피
+      sendToTerm(tid, text.replace(/\r?\n/g, '\r'));
+      setTimeout(() => focusTerm(tid), 0);
+    }
+  }).catch(() => {});
+}
+
+// 마우스 단추 동작 실행 — 우/가운데 단추 공용.
+function runMouseAction(action: MouseButtonAction, tid: string, el: HTMLElement, x: number, y: number) {
+  switch (action) {
+    case 'menu':
+      el.dispatchEvent(new CustomEvent('term-contextmenu', { detail: { x, y }, bubbles: true }));
+      break;
+    case 'paste':
+      pasteClipboardToTerm(tid);
+      break;
+    case 'paste-selection': {
+      // 터미널에 현재 선택된 텍스트를 그대로 송신 (X11 primary selection 스타일)
+      const sel = termStore.get(tid)?.term?.getSelection?.();
+      if (sel) { sendToTerm(tid, sel.replace(/\r?\n/g, '\r')); setTimeout(() => focusTerm(tid), 0); }
+      break;
+    }
+    case 'enter':
+      sendToTerm(tid, '\r');
+      setTimeout(() => focusTerm(tid), 0);
+      break;
+    case 'properties':
+      try { window.dispatchEvent(new CustomEvent('open-options')); } catch {}
+      break;
+    case 'none':
+    default:
+      break;
+  }
+}
+
 // ConPTY 는 SIGWINCH 직후 전체화면 repaint 를 보냄 — resize 후 일정 시간 해당 패턴을 drop 해서 커서 깨짐 방지
 const ptyDropRepaintUntil = new Map<string, number>();
 const ptyResizeTimers = new Map<string, ReturnType<typeof setTimeout>>();
