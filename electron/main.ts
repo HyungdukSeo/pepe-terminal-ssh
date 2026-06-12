@@ -609,7 +609,10 @@ ipcMain.handle('paste-modal:open', (_e, { id, text }: { id: string; text: string
   try { win.setAlwaysOnTop(true, 'floating'); } catch {}
   win.once('ready-to-show', () => { try { win.show(); win.focus(); } catch {} });
   pasteWindows.set(id, win);
-  win.on('closed', () => { pasteWindows.delete(id); });
+  // ⚠ 같은 id 로 빠르게 두 번 열면: 옛 창 close() → 새 창 set() → 옛 창의 closed 이벤트가
+  //   뒤늦게 발화해 새 창을 맵에서 지워버림 → 새 창이 맵에 없어 취소/닫기가 안 먹는 버그.
+  //   맵이 여전히 '이 창' 을 가리킬 때만 삭제하도록 가드.
+  win.on('closed', () => { if (pasteWindows.get(id) === win) pasteWindows.delete(id); });
 
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
     html,body { margin:0; padding:0; background:#1a1a1a; color:#eee; font-family: 'Segoe UI', sans-serif; height:100%; overflow:hidden; -webkit-user-select:none; user-select:none; }

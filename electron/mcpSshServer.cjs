@@ -87,9 +87,32 @@ function callExec(termId, command, timeoutMs) {
 }
 
 // ── MCP stdio JSON-RPC protocol ──
+// Claude Code 가 컨텍스트 전환/재연결 시 MCP 서버의 stdout 파이프를 닫으면
+// 다음 write 가 Windows 에서 EPIPE("nonexistent pipe") 를 던져 프로세스가 죽고,
+// 이후 Claude 가 죽은 프로세스 stdin 에 쓰면 같은 오류가 사용자에게 노출됨.
+// → write 를 try/catch 로 감싸고, stdout error 이벤트도 삼켜서 조용히 종료만 한다.
+let stdoutBroken = false;
+try {
+  process.stdout.on('error', (err) => {
+    if (err && (err.code === 'EPIPE' || err.code === 'ERR_STREAM_DESTROYED')) {
+      stdoutBroken = true;
+      try { process.exit(0); } catch (_) {}
+    }
+  });
+} catch (_) {}
 function sendMsg(msg) {
-  const json = JSON.stringify(msg);
-  process.stdout.write(json + '\n');
+  if (stdoutBroken) return;
+  try {
+    const json = JSON.stringify(msg);
+    process.stdout.write(json + '\n');
+  } catch (err) {
+    if (err && (err.code === 'EPIPE' || err.code === 'ERR_STREAM_DESTROYED')) {
+      stdoutBroken = true;
+      try { process.exit(0); } catch (_) {}
+      return;
+    }
+    // 기타 직렬화 오류 등은 무시 (프로세스 유지)
+  }
 }
 
 // 원격 경로를 셸에 안전하게 넣기 (단일따옴표 escape)
@@ -266,5 +289,15 @@ process.stdin.on('data', (chunk) => {
 
 process.stdin.on('end', () => { process.exit(0); });
 process.on('SIGTERM', () => process.exit(0));
+// stdin 파이프가 닫히며 던지는 EPIPE/ECONNRESET 도 조용히 종료 (사용자 노출 방지)
+process.stdin.on('error', () => { try { process.exit(0); } catch (_) {} });
+// 최종 안전망 — 어디서든 뒤늦게 올라온 EPIPE 류는 삼키고, 그 외만 로깅
+process.on('uncaughtException', (err) => {
+  if (err && (err.code === 'EPIPE' || err.code === 'ERR_STREAM_DESTROYED' || err.code === 'ECONNRESET')) {
+    try { process.exit(0); } catch (_) {}
+    return;
+  }
+  try { log('uncaught:', err && (err.stack || err.message || err)); } catch (_) {}
+});
 
 log('ready', `port=${CTRL_PORT}`, `term=${DEFAULT_TERM_ID}`);
