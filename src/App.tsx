@@ -3847,6 +3847,13 @@ function App() {
                         onChange={() => setTermSettings(s => ({ ...s, multiLinePaste: 'direct' }))} />
                       <span>{tOpt('paste.direct')}</span>
                     </label>
+                    {termSettings.multiLinePaste === 'dialog' && (
+                      <label className="settings-radio" style={{ marginTop: 4, opacity: 0.95 }} title="창이 떠 있을 때 다시 여러 줄을 붙여넣으면 기존 내용 뒤에 이어붙입니다. 끄면 새 내용으로 교체됩니다.">
+                        <input type="checkbox" checked={!!termSettings.multiLinePasteAccumulate}
+                          onChange={e => setTermSettings(s => ({ ...s, multiLinePasteAccumulate: e.target.checked }))} />
+                        <span>여러 줄 붙여넣기 창에 내용 누적 (끄면 교체)</span>
+                      </label>
+                    )}
                   </div>
                 </div>
                 <div style={{ marginBottom: 16 }}>

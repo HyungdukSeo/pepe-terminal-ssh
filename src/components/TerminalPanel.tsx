@@ -2960,7 +2960,7 @@ export const TerminalPanel: React.FC<Props> = ({
         const xtermEl = termEl?.querySelector?.('textarea.xterm-helper-textarea') as HTMLTextAreaElement | null;
         xtermEl?.blur?.();
       } catch {}
-      try { (window as any).api?.pasteModalOpen?.(tid, text); } catch {}
+      try { (window as any).api?.pasteModalOpen?.(tid, text, getTerminalSettings().multiLinePasteAccumulate); } catch {}
     };
     containerRef.current.addEventListener('term-multi-paste', handler);
     return () => {
@@ -3123,7 +3123,7 @@ export const TerminalPanel: React.FC<Props> = ({
       const entry = termStore.get(tid);
       entry?.term?.blur?.();
     } catch {}
-    try { (window as any).api?.pasteModalOpen?.(tid, text); } catch {}
+    try { (window as any).api?.pasteModalOpen?.(tid, text, getTerminalSettings().multiLinePasteAccumulate); } catch {}
   };
   const [renamingTermId, setRenamingTermId] = useState<string | null>(null);
   // 수동 더블클릭 감지 — 첫 클릭이 layout 재렌더를 유발해 native dblclick 이 발화 안 하는 케이스 보강

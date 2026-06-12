@@ -5,6 +5,8 @@ export type TerminalSettings = {
   includeTrailingNewline: boolean;
   trimTrailingWhitespace: boolean;
   multiLinePaste: 'dialog' | 'direct';
+  // 여러 줄 붙여넣기 창이 떠 있을 때 다시 붙여넣으면: true=기존 내용에 누적, false=새 내용으로 교체
+  multiLinePasteAccumulate: boolean;
   scrollback: number;
   aiAgent: 'claude' | 'gemini' | 'codex';
 };
@@ -14,6 +16,7 @@ const DEFAULTS: TerminalSettings = {
   includeTrailingNewline: false,
   trimTrailingWhitespace: true,
   multiLinePaste: 'dialog',
+  multiLinePasteAccumulate: false,
   scrollback: 10000,
   aiAgent: 'claude',
 };

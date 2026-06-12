@@ -578,10 +578,16 @@ ipcMain.handle('app:clear-startup-cwd', () => {
 
 // 여러 줄 붙여넣기 — 별도 BrowserWindow (다른 모니터로도 이동 가능)
 const pasteWindows = new Map<string, BrowserWindow>();
-ipcMain.handle('paste-modal:open', (_e, { id, text }: { id: string; text: string }) => {
-  // 같은 id 의 기존 창은 닫기
-  const exist = pasteWindows.get(id);
-  if (exist && !exist.isDestroyed()) { try { exist.close(); } catch {} }
+ipcMain.handle('paste-modal:open', (_e, { id, text, accumulate }: { id: string; text: string; accumulate?: boolean }) => {
+  // 붙여넣기 창은 항상 1개만 — 기존에 떠 있던 모든 붙여넣기 창을 닫는다.
+  // (같은 터미널이면 같은 id, 다른 패널이면 다른 id 라 id 기준만으로는 중복 창이 남았음)
+  for (const [eid, ew] of pasteWindows) {
+    if (ew && !ew.isDestroyed()) {
+      try { ew.removeAllListeners('closed'); } catch {}  // closed 핸들러의 지연 delete 와의 race 차단
+      try { ew.destroy(); } catch {}
+    }
+    pasteWindows.delete(eid);
+  }
 
   // 메인 창의 우상단 부근에 위치 (검색창과 같은 영역)
   let pasteX = 100, pasteY = 100;
@@ -601,12 +607,13 @@ ipcMain.handle('paste-modal:open', (_e, { id, text }: { id: string; text: string
     parent: mainWindow ?? undefined,
     modal: false,
     skipTaskbar: true,
-    alwaysOnTop: true,
+    // alwaysOnTop floating 을 쓰면 PePe 밖 다른 앱을 클릭해도 이 창만 최상단에 떠 있어
+    // 거슬림. parent 관계로 메인 위에는 유지되되, 다른 앱으로 전환하면 같이 뒤로 가도록 false.
+    alwaysOnTop: false,
     show: false,
     title: t('popup.pasteModalTitle'),
     webPreferences: { nodeIntegration: true, contextIsolation: false },
   });
-  try { win.setAlwaysOnTop(true, 'floating'); } catch {}
   win.once('ready-to-show', () => { try { win.show(); win.focus(); } catch {} });
   pasteWindows.set(id, win);
   // ⚠ 같은 id 로 빠르게 두 번 열면: 옛 창 close() → 새 창 set() → 옛 창의 closed 이벤트가
@@ -651,6 +658,30 @@ ipcMain.handle('paste-modal:open', (_e, { id, text }: { id: string; text: string
       t.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') sendResult('cancel');
         else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendResult('paste'); }
+      });
+      // 창이 떠 있는 상태에서 다시 여러 줄 붙여넣기(Ctrl+V) 시:
+      //   accumulate=true  → 기존 내용 끝에 이어붙임(누적)
+      //   accumulate=false → 새 내용으로 통째 교체('새로 뜬 것'처럼 최신만 표시)
+      // (정규식/개행 리터럴은 data: URL 인라인 스크립트에서 깨질 수 있어 charCode 로 처리)
+      var NL = String.fromCharCode(10);
+      var ACCUMULATE = ${accumulate ? 'true' : 'false'};
+      t.addEventListener('paste', function(e) {
+        try {
+          var pasted = (e.clipboardData || window.clipboardData).getData('text');
+          if (!pasted) return;
+          var lines = pasted.split(NL).filter(function(l){ return l.trim().length > 0; });
+          if (lines.length >= 2) {
+            e.preventDefault();
+            if (ACCUMULATE) {
+              var cur = t.value;
+              t.value = cur && cur.length > 0 ? (cur.replace(/\\s+$/, '') + NL + pasted) : pasted;
+            } else {
+              t.value = pasted;
+            }
+            t.setSelectionRange(t.value.length, t.value.length);
+            t.scrollTop = t.scrollHeight;
+          }
+        } catch (_) {}
       });
     </script>
   </body></html>`;

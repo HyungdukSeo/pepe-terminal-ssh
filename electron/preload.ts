@@ -365,7 +365,7 @@ contextBridge.exposeInMainWorld('api', {
   x11Start: (displayNum?: number) => ipcRenderer.invoke('x11:start', displayNum ?? 0),
   x11Stop: (displayNum?: number) => ipcRenderer.invoke('x11:stop', displayNum ?? 0),
   x11Status: () => ipcRenderer.invoke('x11:status'),
-  pasteModalOpen: (id: string, text: string) => ipcRenderer.invoke('paste-modal:open', { id, text }),
+  pasteModalOpen: (id: string, text: string, accumulate?: boolean) => ipcRenderer.invoke('paste-modal:open', { id, text, accumulate: !!accumulate }),
   onPasteModalResult: (cb: (p: { id: string; action: 'paste' | 'cancel'; text: string }) => void) => {
     const handler = (_: any, p: any) => cb(p);
     ipcRenderer.on('paste-modal:result', handler);
