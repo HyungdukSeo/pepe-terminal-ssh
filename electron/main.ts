@@ -5695,7 +5695,7 @@ ipcMain.handle('codex:check', async () => {
     const augmentedPath = buildAugmentedPath();
     const env = { ...process.env, PATH: augmentedPath, Path: augmentedPath };
     return await new Promise<{ installed: boolean; version?: string }>(resolve => {
-      const proc = spawn('codex', ['--version'], { shell: true, env, stdio: ['ignore', 'pipe', 'pipe'] });
+      const proc = spawn('codex', ['--version'], { shell: true, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
       let output = '';
       proc.stdout?.on('data', (d: Buffer) => { output += d.toString(); });
       proc.on('error', () => resolve({ installed: false }));
@@ -5839,20 +5839,20 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
       const args = buildCodexArgs();
       console.log('[codex] direct exe:', codexExePath);
       console.log('[codex] args:', args.join(' '));
-      proc = spawn(codexExePath, args, { shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: spawnEnv, cwd });
+      proc = spawn(codexExePath, args, { shell: false, stdio: ['pipe', 'pipe', 'pipe'], env: spawnEnv, cwd, windowsHide: true });
       usedDirectExe = true;
     } else if (isWin) {
       // fallback: codex.exe 못 찾으면 shell 방식 (한글 깨질 수 있음)
       const sandbox = `--sandbox danger-full-access`;
       const shellCmd = `chcp 65001 >nul && type "${tmpFile}" | codex exec --json${modelFlag}${effortFlag} --skip-git-repo-check ${sandbox}`;
       console.log('[codex] shell fallback (win):', shellCmd);
-      proc = spawn(shellCmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd });
+      proc = spawn(shellCmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd, windowsHide: true });
     } else {
       // Mac/Linux
       const sandbox = `--sandbox danger-full-access`;
       const shellCmd = `cat "${tmpFile}" | codex exec --json${modelFlag}${effortFlag} --skip-git-repo-check ${sandbox}`;
       console.log('[codex] shell cmd (unix):', shellCmd);
-      proc = spawn(shellCmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd });
+      proc = spawn(shellCmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd, windowsHide: true });
     }
     console.log('[codex] PATH has npm:', augmentedPath.toLowerCase().includes('npm'));
     codexProcesses.set(procKey, proc);
