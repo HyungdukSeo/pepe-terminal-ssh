@@ -1477,6 +1477,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const folderUploadRef = useRef<HTMLInputElement | null>(null);
   // 로컬 파일 첨부 (사용자 PC 파일 내용)
   const [localFileAttachments, setLocalFileAttachments] = useState<{ name: string; content: string }[]>([]);
+  // 입력창 paste/drop 으로 받은 이미지·바이너리 첨부 — 메인이 임시 파일로 저장 후 절대경로 반환
+  const [binaryAttachments, setBinaryAttachments] = useState<{ name: string; path: string; size: number; mime: string; previewUrl?: string }[]>([]);
+  const [isDragOver, setIsDragOver] = useState(false);
   // 첨부 파일 미리보기 모달
   const [attachmentPreview, setAttachmentPreview] = useState<{ name: string; content: string } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -2751,6 +2754,20 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       prompt = `${fileBlocks}\n\n${prompt}`;
       attachBadge += `📁 로컬 ${localFileAttachments.length}개 파일\n\n`;
     }
+    // 3-1) 바이너리/이미지 첨부 — paste/drop 으로 받은 파일들 (스크린샷 등)
+    //      Claude 가 직접 Read 할 수 있게 절대경로를 prompt 에 명시 + 부모 dir 을 addDirs 에 추가
+    if (binaryAttachments.length > 0) {
+      for (const b of binaryAttachments) {
+        try { addDirsSet.add(b.path.replace(/[\\/][^\\/]+$/, '')); } catch {}
+      }
+      const lines = binaryAttachments.map(b => {
+        const kb = (b.size / 1024).toFixed(1);
+        const kind = b.mime.startsWith('image/') ? '이미지' : '파일';
+        return `- \`${b.path}\` (${b.name}, ${b.mime || '?'}, ${kb}KB) — ${kind} 첨부`;
+      }).join('\n');
+      prompt = `첨부된 ${binaryAttachments.length}개 파일을 Read 도구로 확인하세요:\n${lines}\n\n${prompt}`;
+      attachBadge += `🖼 첨부 ${binaryAttachments.length}개 (paste/drop)\n\n`;
+    }
 
     // user 메시지에도 agent (보낸 대상 에이전트) 를 박아 공유 OFF 시 다른 에이전트 view 로 누설 방지
     const userMsg: Message = { role: 'user', content: attachBadge + text, id: `user-${Date.now()}`, seq: nextSeq(), agent: currentAgentRef.current as AgentType };
@@ -2822,6 +2839,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     const sshSessions = selForSend.length > 0 ? selForSend : undefined;
     // 전송 후 로컬 파일 첨부는 해제
     setLocalFileAttachments([]);
+    setBinaryAttachments([]);
     try {
       if (currentAgentRef.current === 'gemini') {
         // 요금제에서 못 쓰는 모델(또는 미등록 모델)이면 안전한 기본 모델로 대체
@@ -3223,6 +3241,192 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       setMessages(prev => [...prev, { role: 'assistant', content: tt('errorNoTextFiles', { count: skipped.length }), id: `err-${Date.now()}`, seq: nextSeq() }]);
     }
   };
+
+  // File/Blob → 메인 IPC 로 저장 → 첨부 목록에 추가.
+  // 이미지(image/*) 는 dataUrl 프리뷰도 보관해 attachment chip 에서 썸네일 표시.
+  const attachBinary = async (file: File | Blob, suggestedName?: string) => {
+    try {
+      const name = suggestedName || (file as File).name || `paste-${Date.now()}.bin`;
+      const mime = file.type || '';
+      const MAX_MB = 20;
+      if (file.size > MAX_MB * 1024 * 1024) {
+        setMessages(prev => [...prev, { role: 'assistant', content: `❌ 첨부 ${name} 너무 큼 (${(file.size/1024/1024).toFixed(1)}MB > ${MAX_MB}MB)`, id: `err-${Date.now()}`, seq: nextSeq() }]);
+        return;
+      }
+      const dataUrl: string = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result || ''));
+        r.onerror = () => reject(r.error || new Error('FileReader 실패'));
+        r.readAsDataURL(file);
+      });
+      const res = await (window as any).api?.chatSavePastedBlob?.(dataUrl, name, mime);
+      if (!res?.success) {
+        setMessages(prev => [...prev, { role: 'assistant', content: `❌ 첨부 저장 실패: ${res?.error || '응답 없음'}`, id: `err-${Date.now()}`, seq: nextSeq() }]);
+        return;
+      }
+      const previewUrl = mime.startsWith('image/') ? dataUrl : undefined;
+      setBinaryAttachments(prev => [...prev, { name: res.displayName || name, path: res.path, size: res.size, mime, previewUrl }]);
+    } catch (e: any) {
+      console.error('[attachBinary]', e);
+      setMessages(prev => [...prev, { role: 'assistant', content: `❌ 첨부 실패: ${e?.message || e}`, id: `err-${Date.now()}`, seq: nextSeq() }]);
+    }
+  };
+
+  // 입력창 paste — 클립보드의 이미지/파일 감지
+  const onInputPaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items;
+    if (!items || items.length === 0) return;
+    const blobs: { blob: Blob; name?: string }[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      if (it.kind === 'file') {
+        const f = it.getAsFile();
+        if (f) blobs.push({ blob: f, name: f.name });
+      }
+    }
+    if (blobs.length === 0) return; // 텍스트만 — 기본 paste 동작
+    e.preventDefault();
+    for (const b of blobs) await attachBinary(b.blob, b.name);
+  };
+
+  const isDragOverRef = useRef(false);
+  const dropzoneRef = useRef<HTMLDivElement | null>(null);
+  // 메인 프로세스의 will-navigate file:// 가로채기에서 호출됨 — File 객체 없이 절대경로만 받음.
+  // transparent BrowserWindow 에서 drop 이벤트가 렌더러로 안 와도 이 경로로 첨부 동작.
+  const attachExternalByAbsolutePath = async (srcPath: string) => {
+    try {
+      const name = srcPath.split(/[\\/]/).pop() || 'file';
+      const res = await (window as any).api?.chatCopyExternalFile?.(srcPath, name);
+      if (!res?.success) {
+        setMessages(prev => [...prev, { role: 'assistant', content: `❌ 첨부 실패: ${res?.error || '응답 없음'}`, id: `err-${Date.now()}`, seq: nextSeq() }]);
+        return;
+      }
+      setBinaryAttachments(prev => [...prev, { name: res.displayName || name, path: res.path, size: res.size, mime: res.mime }]);
+    } catch (e: any) {
+      console.error('[attachExternalByAbsolutePath]', e);
+    }
+  };
+  // 메인의 will-navigate 가 가로챈 file drop 을 받아 첨부 처리
+  useEffect(() => {
+    const off = (window as any).api?.onChatExternalFileDropped?.((payload: { path: string }) => {
+      if (payload?.path) {
+        console.log('[drag-drop] external-file-dropped IPC received:', payload.path);
+        attachExternalByAbsolutePath(payload.path);
+      }
+    });
+    const offStatus = (window as any).api?.onChatDragDropStatus?.((p: { ok: boolean; msg: string }) => {
+      console.log('%c[drag-drop status]', p.ok ? 'color:#0a0' : 'color:#a00', p.msg);
+    });
+    return () => { try { off?.(); offStatus?.(); } catch {} };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // 외부(Explorer) 에서 드래그된 File 의 실제 절대경로를 가져와 메인에서 복사.
+  // FileReader 보다 안정적이고 큰 파일도 처리 가능.
+  const attachExternalFileByPath = async (file: File) => {
+    try {
+      const fsPath: string | null = (window as any).api?.getPathForFile?.(file) || null;
+      if (!fsPath) { await attachBinary(file); return; } // path 못 얻으면 FileReader 폴백
+      const res = await (window as any).api?.chatCopyExternalFile?.(fsPath, file.name);
+      if (!res?.success) {
+        setMessages(prev => [...prev, { role: 'assistant', content: `❌ 첨부 실패: ${res?.error || '응답 없음'}`, id: `err-${Date.now()}`, seq: nextSeq() }]);
+        return;
+      }
+      // 이미지면 dataUrl 프리뷰 — 작은 이미지만(2MB 미만) 미리보기 생성, 큰 파일은 아이콘
+      let previewUrl: string | undefined;
+      if (res.mime?.startsWith('image/') && file.size < 2 * 1024 * 1024) {
+        try {
+          previewUrl = await new Promise<string>((resolve, reject) => {
+            const r = new FileReader();
+            r.onload = () => resolve(String(r.result || ''));
+            r.onerror = () => reject(r.error);
+            r.readAsDataURL(file);
+          });
+        } catch {}
+      }
+      setBinaryAttachments(prev => [...prev, { name: res.displayName || file.name, path: res.path, size: res.size, mime: res.mime, previewUrl }]);
+    } catch (e: any) {
+      console.error('[attachExternalFileByPath]', e);
+      await attachBinary(file); // 실패 시 dataUrl 경로로 폴백
+    }
+  };
+  // 파일 드롭 라우터 — 분기 처리 + 첨부 (텍스트는 onFilePicked, 바이너리는 attachExternalFileByPath)
+  const routeDroppedFiles = async (files: FileList) => {
+    const textFiles: File[] = [];
+    const binaryFiles: File[] = [];
+    for (const f of Array.from(files)) {
+      const ext = f.name.split('.').pop()?.toLowerCase() || '';
+      const isBinaryByExt = BINARY_LOCAL_EXT.has(ext);
+      const isBinaryByMime = !!f.type && !f.type.startsWith('text/') && !/json|xml|yaml|javascript|typescript/i.test(f.type);
+      if (isBinaryByExt || isBinaryByMime) binaryFiles.push(f);
+      else textFiles.push(f);
+    }
+    if (textFiles.length > 0) {
+      // 텍스트도 외부 드래그면 onFilePicked 의 f.text() 가 실패할 수 있어 path 기반으로 복사
+      for (const f of textFiles) {
+        const fsPath = (window as any).api?.getPathForFile?.(f);
+        if (fsPath) await attachExternalFileByPath(f); // 일관성 위해 binary 처럼 path 첨부로
+        else {
+          const dt = new DataTransfer();
+          dt.items.add(f);
+          await onFilePicked(dt.files, { fromFolder: false });
+        }
+      }
+    }
+    for (const f of binaryFiles) await attachExternalFileByPath(f);
+  };
+  // Electron 기본 동작 — 윈도우에 파일 드래그 시 브라우저가 파일 위치로 navigate.
+  // document 레벨에서 모든 dragover/drop 을 가로채:
+  //   - 항상 preventDefault → navigate 차단
+  //   - drop 위치가 ClaudeChat input dropzone(또는 그 자손) 이면 routeDroppedFiles 로 첨부
+  //   - 그 외 위치는 그냥 무시 (사용자가 입력창에 정확히 놓도록 유도)
+  // textarea 가 자체 drop 핸들러로 또 처리하지 않도록 textarea 의 onDrop 은 제거함.
+  useEffect(() => {
+    const hasFilesType = (dt: DataTransfer | null): boolean => {
+      if (!dt) return false;
+      try {
+        const types = Array.from(dt.types as any) as string[];
+        return types.indexOf('Files') >= 0;
+      } catch { return false; }
+    };
+    // AI Chat 사이드바 어디에 떨어뜨려도 첨부되도록 컨테이너 전체를 드롭존으로 인정.
+    const inChatArea = (target: HTMLElement | null) =>
+      !!(target && target.closest && (
+        target.closest('.claude-chat-input-dropzone') ||
+        target.closest('.claude-chat-sidebar') ||
+        target.closest('.claude-chat-container')
+      ));
+    const onWinDragOver = (e: DragEvent) => {
+      if (!hasFilesType(e.dataTransfer)) return;
+      const target = e.target as HTMLElement | null;
+      if (!inChatArea(target)) {
+        if (isDragOverRef.current) { isDragOverRef.current = false; setIsDragOver(false); }
+        return;
+      }
+      // 드롭존 안에서만 preventDefault → drop 이벤트가 JS 로 들어오게 함 (+ navigate 차단)
+      e.preventDefault();
+      try { if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; } catch {}
+      if (!isDragOverRef.current) { isDragOverRef.current = true; setIsDragOver(true); }
+    };
+    const onWinDrop = async (e: DragEvent) => {
+      if (!hasFilesType(e.dataTransfer)) return;
+      const target = e.target as HTMLElement | null;
+      if (!inChatArea(target)) return;  // 채팅 영역 밖 → main 의 will-navigate 백스톱에 맡김
+      e.preventDefault();
+      isDragOverRef.current = false;
+      setIsDragOver(false);
+      const files = e.dataTransfer?.files;
+      console.log('[drag-drop] chat drop —', files?.length ?? 0, 'file(s)');
+      if (files && files.length > 0) await routeDroppedFiles(files);
+    };
+    // document 에만 등록 — window+document 양쪽에 걸면 같은 이벤트가 두 번 처리되어 중복 첨부됨
+    document.addEventListener('dragover', onWinDragOver, true);
+    document.addEventListener('drop', onWinDrop, true);
+    return () => {
+      document.removeEventListener('dragover', onWinDragOver, true);
+      document.removeEventListener('drop', onWinDrop, true);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // 슬래시 명령 프리셋
   const commandPresets: { label: string; insert: string; desc: string }[] = [
@@ -4357,6 +4561,28 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             </div>
           </div>
         )}
+        {binaryAttachments.length > 0 && (
+          <div className="claude-chat-attachments">
+            <div className="claude-chat-attachments-header">
+              <span>🖼 첨부 {binaryAttachments.length}개 (paste/drop)</span>
+              <button className="claude-chat-attachments-clear" onClick={() => setBinaryAttachments([])}>모두 제거</button>
+            </div>
+            <div className="claude-chat-attachments-list">
+              {binaryAttachments.map((b, i) => (
+                <div key={`${b.path}-${i}`} className="claude-chat-attachment" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  {b.previewUrl ? (
+                    <img src={b.previewUrl} alt={b.name} style={{ width: 32, height: 32, objectFit: 'cover', borderRadius: 3, border: '1px solid #444' }} />
+                  ) : (
+                    <span style={{ fontSize: 18 }}>{b.mime.startsWith('image/') ? '🖼' : '📎'}</span>
+                  )}
+                  <span className="claude-chat-attachment-path" title={b.path}>{b.name}</span>
+                  <span style={{ color: '#888', fontSize: 10 }}>{(b.size / 1024).toFixed(1)}KB</span>
+                  <button className="claude-chat-attachment-remove" onClick={() => setBinaryAttachments(prev => prev.filter((_, x) => x !== i))}>×</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         {localFileAttachments.length > 0 && (
           <div className="claude-chat-attachments">
             <div className="claude-chat-attachments-header">
@@ -4382,15 +4608,19 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         <div className="claude-chat-toolbar">
           <button
             className="claude-chat-tool-btn"
-            title={tt('attachLocalFile')}
+            title={`파일 첨부 (이미지/PDF/zip 등 모두 지원) — 또는 입력창에 Ctrl+V 로 스크린샷 붙여넣기`}
             onClick={() => fileUploadRef.current?.click()}
-          >📄+</button>
+          >📎 파일</button>
           <input
             ref={fileUploadRef}
             type="file"
             multiple
             style={{ display: 'none' }}
-            onChange={e => { onFilePicked(e.target.files, { fromFolder: false }); if (fileUploadRef.current) fileUploadRef.current.value = ''; }}
+            onChange={async e => {
+              const files = e.target.files;
+              if (files && files.length > 0) await routeDroppedFiles(files);
+              if (fileUploadRef.current) fileUploadRef.current.value = '';
+            }}
           />
           <button
             className="claude-chat-tool-btn"
@@ -4642,20 +4872,35 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             </>
           )}
         </div>
-        <textarea
-          className="claude-chat-input"
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={e => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              handleSend();
-            }
-          }}
-          placeholder={tt('inputPlaceholder')}
-          rows={3}
-          disabled={currentAgentStreaming}
-        />
+        <div
+          ref={dropzoneRef}
+          className={`claude-chat-input-dropzone${isDragOver ? ' is-dragover' : ''}`}
+          style={{ position: 'relative' }}
+        >
+          <textarea
+            className="claude-chat-input"
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onPaste={onInputPaste}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                handleSend();
+              }
+            }}
+            placeholder={`${tt('inputPlaceholder')}\n\n📎 첨부: 스크린샷은 Ctrl+V · 파일은 📎 파일 버튼`}
+            rows={3}
+            disabled={currentAgentStreaming}
+          />
+          {isDragOver && (
+            <div style={{
+              position: 'absolute', inset: 0, pointerEvents: 'none',
+              border: '2px dashed #58a6ff', background: 'rgba(88,166,255,0.08)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: '#58a6ff', fontSize: 13, fontWeight: 600, borderRadius: 4,
+            }}>📎 파일을 놓으면 첨부됩니다</div>
+          )}
+        </div>
         <div className="claude-chat-input-actions">
           <div
             ref={usageTriggerRef}

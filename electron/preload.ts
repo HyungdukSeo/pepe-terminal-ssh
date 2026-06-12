@@ -221,6 +221,32 @@ contextBridge.exposeInMainWorld('api', {
   refocusWindow: () => ipcRenderer.invoke('win:refocus'),
   getAppVersion: () => ipcRenderer.invoke('app:get-version'),
   getReleaseNotes: () => ipcRenderer.invoke('app:get-release-notes'),
+  // AI Chat: paste/drop 된 이미지·바이너리를 디스크 임시 파일로 저장 후 경로 반환
+  chatSavePastedBlob: (dataUrl: string, name?: string, mimeType?: string) => ipcRenderer.invoke('chat:save-pasted-blob', { dataUrl, name, mimeType }),
+  // 외부 드래그(Explorer) 로 받은 File 의 실제 파일시스템 경로 조회 (Electron 30+ webUtils API)
+  getPathForFile: (file: File): string | null => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { webUtils } = require('electron');
+      const p = webUtils?.getPathForFile?.(file);
+      return p || null;
+    } catch { return null; }
+  },
+  // 메인 프로세스에서 절대경로 파일을 chat 첨부 디렉토리로 복사 후 경로 반환
+  chatCopyExternalFile: (srcPath: string, displayName?: string) => ipcRenderer.invoke('chat:copy-external-file', { srcPath, displayName }),
+  // transparent BrowserWindow drag-drop 우회 — 메인의 will-navigate 가 file:// 을 가로채면
+  // 여기로 파일 경로가 도착. ClaudeChat 이 구독해 첨부 처리.
+  onChatExternalFileDropped: (handler: (payload: { path: string }) => void) => {
+    const listener = (_e: any, payload: any) => handler(payload);
+    ipcRenderer.on('chat:external-file-dropped', listener);
+    return () => ipcRenderer.removeListener('chat:external-file-dropped', listener);
+  },
+  // native drag-drop 등록 결과 진단용 (DevTools 콘솔에서 확인 가능)
+  onChatDragDropStatus: (handler: (payload: { ok: boolean; msg: string }) => void) => {
+    const listener = (_e: any, payload: any) => handler(payload);
+    ipcRenderer.on('chat:drag-drop-status', listener);
+    return () => ipcRenderer.removeListener('chat:drag-drop-status', listener);
+  },
 
   // ── 자동 업데이트 (electron-updater / GitHub Releases) ──
   updaterCheck: () => ipcRenderer.invoke('updater:check'),

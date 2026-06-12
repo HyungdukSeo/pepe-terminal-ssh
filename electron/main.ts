@@ -10,6 +10,12 @@ if (app.isPackaged) { console.log = () => {}; }
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 app.commandLine.appendSwitch('disable-background-timer-throttling');
+// transparent BrowserWindow + file drag-drop 은 Chromium 의 GPU 합성기/IDropTarget
+// 레이어 때문에 우리 프로세스에서 드롭 이벤트를 받을 수 없는 알려진 한계.
+// (3개 HWND 모두 IDropTarget COM 등록 성공해도 OS 가 GPU 프로세스 합성 윈도우로 라우팅)
+// disable-direct-composition 은 캐시 에러만 만들고 효과 없어 적용 안 함.
+// 사용자는 Ctrl+V (paste) 또는 📄+ 버튼(파일 픽커) 으로 첨부 가능.
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -114,6 +120,9 @@ function createWindow() {
     icon: path.join(__dirname, '../public/icon.ico'),
     frame: false,
     transparent: true,
+    // transparent + drag-drop 의 Chromium 합성 이슈 우회 — 명시적 backgroundColor
+    // 지정 시 일부 케이스에서 drop 이벤트가 렌더러로 정상 라우팅됨.
+    backgroundColor: '#00000000',
     hasShadow: false,
     show: false, // 준비 완료 후 표시
     webPreferences: {
@@ -136,6 +145,73 @@ function createWindow() {
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
+
+  // transparent BrowserWindow 에서 Chromium 이 drop 이벤트를 렌더러로 전달하지 못해도
+  // 파일을 드롭하면 file:// URL 로 navigate 를 시도함. 이 navigate 를 가로채서:
+  //   1) 페이지 이동은 차단 (preventDefault)
+  //   2) URL 에서 파일 경로를 추출해 렌더러로 IPC 전송 → ClaudeChat 이 첨부 처리
+  // 결과: drop 이벤트가 안 와도 file drop 자체는 작동.
+  const fileUrlToPath = (fileUrl: string): string | null => {
+    try {
+      let u = decodeURI(fileUrl.replace(/^file:\/{2,}/, ''));
+      // Windows: file:///C:/foo → C:/foo 추출. /가 leading 이면 제거
+      if (/^[A-Za-z]:[/\\]/.test(u)) return u.replace(/\//g, '\\');
+      if (u.startsWith('/')) u = u.slice(1);
+      if (/^[A-Za-z]:[/\\]/.test(u)) return u.replace(/\//g, '\\');
+      return u || null;
+    } catch { return null; }
+  };
+  // ── 외부 파일 드래그앤드롭 백스톱 ──────────────────────────────────────────
+  // 패키지 빌드(file:// origin)에서 렌더러가 drop 을 preventDefault 하지 못하고 흘려보내면
+  // Chromium 이 드롭한 파일로 navigate/download 를 시도한다. 그걸 가로채 경로만 추출해
+  // 렌더러(AI Chat)로 전달. (정상 경로는 렌더러의 window drop 핸들러가 직접 처리)
+  // ※ dev 모드(http://localhost)에서는 http→file navigate 가 보안 차단되어 발화하지 않음 —
+  //    드래그앤드롭은 패키지 설치본에서 테스트해야 함.
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (!url.startsWith('file://')) return;
+    const cur = mainWindow?.webContents.getURL() || '';
+    if (url === cur) return;
+    event.preventDefault();
+    const fp = fileUrlToPath(url);
+    if (fp && fs.existsSync(fp)) {
+      console.log('[drag-drop] will-navigate intercepted →', fp);
+      mainWindow?.webContents.send('chat:external-file-dropped', { path: fp });
+    }
+  });
+  // will-download — Chromium 이 navigate 대신 다운로드로 처리하는 경우(zip 등)
+  mainWindow.webContents.session.on('will-download', (event, item) => {
+    const url = item.getURL();
+    if (url.startsWith('file://')) {
+      event.preventDefault();
+      const fp = fileUrlToPath(url);
+      if (fp && fs.existsSync(fp)) {
+        console.log('[drag-drop] will-download intercepted →', fp);
+        mainWindow?.webContents.send('chat:external-file-dropped', { path: fp });
+      }
+    }
+  });
+  // will-frame-navigate 도 보강
+  mainWindow.webContents.on('will-frame-navigate' as any, (event: any, url: any) => {
+    if (typeof url === 'string' && url.startsWith('file://')) {
+      event.preventDefault();
+      const fp = fileUrlToPath(url);
+      if (fp && fs.existsSync(fp)) {
+        console.log('[drag-drop] frame file navigate intercepted → renderer:', fp);
+        mainWindow?.webContents.send('chat:external-file-dropped', { path: fp });
+      }
+    }
+  });
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('file://')) {
+      const fp = fileUrlToPath(url);
+      if (fp && fs.existsSync(fp)) {
+        console.log('[drag-drop] window-open file intercepted → renderer:', fp);
+        mainWindow?.webContents.send('chat:external-file-dropped', { path: fp });
+      }
+      return { action: 'deny' };
+    }
+    return { action: 'allow' };
+  });
 
   // 타이틀바 더블클릭 → 최대화 토글
   mainWindow.on('maximize', () => {
@@ -395,6 +471,78 @@ ipcMain.handle('sessions:open-editor', () => {
 
 ipcMain.handle('ui-prefs:get', () => loadUIPrefs());
 ipcMain.handle('ui-prefs:set', (_e, prefs: Record<string, any>) => { saveUIPrefs(prefs); return true; });
+
+// 외부(Explorer) 에서 드래그된 파일을 chat 첨부 디렉토리로 복사 후 경로 반환.
+// 렌더러는 webUtils.getPathForFile() 로 얻은 원본 절대경로를 전달.
+ipcMain.handle('chat:copy-external-file', async (_e, { srcPath, displayName }: { srcPath: string; displayName?: string }) => {
+  try {
+    if (!srcPath || !fs.existsSync(srcPath)) return { success: false, error: '원본 파일 없음: ' + srcPath };
+    const st = fs.statSync(srcPath);
+    const MAX_BYTES = 50 * 1024 * 1024; // 50MB
+    if (st.size > MAX_BYTES) return { success: false, error: `파일이 너무 큼 (${(st.size/1024/1024).toFixed(1)}MB > 50MB)` };
+    const dir = path.join(os.tmpdir(), 'pepe-chat-attachments');
+    try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+    const base = displayName || path.basename(srcPath);
+    const ext = path.extname(base).replace(/[^.\w]/g, '').slice(0, 8);
+    const ts = Date.now().toString(36);
+    const rand = Math.random().toString(36).slice(2, 6);
+    const safe = `pepe-${ts}-${rand}${ext}`;
+    const fpath = path.join(dir, safe);
+    fs.copyFileSync(srcPath, fpath);
+    // mime 유추 — 확장자 기반 단순 매핑 (없으면 application/octet-stream)
+    const mime = (() => {
+      const e = ext.toLowerCase();
+      if (['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.ico'].includes(e)) return 'image/' + e.slice(1).replace('jpg', 'jpeg');
+      if (e === '.pdf') return 'application/pdf';
+      if (['.zip', '.gz', '.tar', '.7z', '.rar'].includes(e)) return 'application/' + e.slice(1);
+      if (['.txt', '.md', '.log'].includes(e)) return 'text/plain';
+      if (['.json'].includes(e)) return 'application/json';
+      return 'application/octet-stream';
+    })();
+    return { success: true, path: fpath, dir, displayName: base, size: st.size, mime };
+  } catch (e: any) {
+    return { success: false, error: String(e?.message || e) };
+  }
+});
+
+// AI Chat 입력창 paste/drop 으로 받은 이미지/바이너리 파일을 디스크에 저장 후 경로 반환.
+// Claude 가 절대경로로 Read 할 수 있도록 add-dir 에 부모 디렉토리 함께 전달됨.
+// 저장 위치: <tmpdir>/pepe-chat-attachments/ — 앱 종료 후에도 잠시 남지만 OS 가 정리.
+ipcMain.handle('chat:save-pasted-blob', async (_e, { dataUrl, name, mimeType }: { dataUrl: string; name?: string; mimeType?: string }) => {
+  try {
+    const m = /^data:([^;]+);base64,(.+)$/.exec(dataUrl || '');
+    if (!m) return { success: false, error: '유효하지 않은 dataUrl' };
+    const mime = mimeType || m[1] || 'application/octet-stream';
+    const buf = Buffer.from(m[2], 'base64');
+    const MAX_BYTES = 20 * 1024 * 1024; // 20MB 안전 한계
+    if (buf.length > MAX_BYTES) return { success: false, error: `파일이 너무 큼 (${(buf.length/1024/1024).toFixed(1)}MB > 20MB)` };
+    const dir = path.join(os.tmpdir(), 'pepe-chat-attachments');
+    try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+    // 확장자: name 우선, 없으면 mime 으로 유추
+    let ext = '';
+    if (name && name.includes('.')) ext = name.split('.').pop()!.toLowerCase();
+    if (!ext) {
+      if (/png/i.test(mime)) ext = 'png';
+      else if (/jpe?g/i.test(mime)) ext = 'jpg';
+      else if (/gif/i.test(mime)) ext = 'gif';
+      else if (/webp/i.test(mime)) ext = 'webp';
+      else if (/svg/i.test(mime)) ext = 'svg';
+      else if (/pdf/i.test(mime)) ext = 'pdf';
+      else ext = 'bin';
+    }
+    ext = ext.replace(/[^a-zA-Z0-9]/g, '').slice(0, 5) || 'bin';
+    // 파일명 정리 — 표시명에는 사용자 원래 이름 보존
+    const ts = Date.now().toString(36);
+    const rand = Math.random().toString(36).slice(2, 6);
+    const displayName = name && name.length < 80 ? name : `paste-${ts}.${ext}`;
+    const safe = `pepe-${ts}-${rand}.${ext}`;
+    const fpath = path.join(dir, safe);
+    fs.writeFileSync(fpath, buf);
+    return { success: true, path: fpath, dir, displayName, size: buf.length, mime };
+  } catch (e: any) {
+    return { success: false, error: String(e?.message || e) };
+  }
+});
 
 ipcMain.handle('app:get-version', () => app.getVersion());
 ipcMain.handle('app:get-release-notes', () => {
