@@ -67,6 +67,7 @@
   "build": {
     "appId": "com.ghjeong.pepe-terminal-ssh",
     "productName": "PePe Terminal(SSH)",
+    "afterPack": "./scripts/strip-publishername.cjs",
     "extraMetadata": {
       "name": "PePe Terminal(SSH)"
     },

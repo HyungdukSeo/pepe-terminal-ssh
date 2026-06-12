@@ -88,6 +88,7 @@ export function setupAutoUpdater(getWindow: () => BrowserWindow | null) {
     autoUpdater.on('update-not-available', (info) => { lastInfo = info; send({ state: 'not-available', info }); });
     autoUpdater.on('download-progress', (p) => send({
       state: 'downloading',
+      info: lastInfo,   // download-progress 이벤트엔 version 이 없어 'available' 때의 info 를 같이 보냄
       progress: {
         percent: Math.round((p.percent || 0) * 10) / 10,
         transferred: p.transferred,
