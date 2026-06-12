@@ -4744,7 +4744,7 @@ ipcMain.handle('claude:check', async () => {
     const augmentedPath = buildAugmentedPath();
     const env = { ...process.env, PATH: augmentedPath, Path: augmentedPath };
     return await new Promise<{ installed: boolean; version?: string }>(resolve => {
-      const proc = spawn('claude', ['--version'], { shell: true, env });
+      const proc = spawn('claude', ['--version'], { shell: true, env, windowsHide: true });
       let output = '';
       proc.stdout?.on('data', (d: Buffer) => { output += d.toString(); });
       proc.on('error', () => resolve({ installed: false }));
@@ -5016,7 +5016,7 @@ ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowB
     // claude 프로세스 cwd — Electron 앱 폴더가 기본인데 그러면 Claude 가 이 앱을 분석 대상으로 오해.
     // 사용자 홈으로 시작 (사용자 의도 상 작업 대상은 --add-dir 또는 SSH mount 로 명시됨)
     const claudeCwd = process.env.USERPROFILE || process.env.HOME || os.homedir();
-    const proc = spawn(shellCmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd: claudeCwd });
+    const proc = spawn(shellCmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd: claudeCwd, windowsHide: true });
     claudeProcesses.set(procKey, proc);
 
     // 임시 파일 정리 (프로세스 종료 후)
@@ -5331,7 +5331,7 @@ ipcMain.handle('gemini:check', async () => {
     const augmentedPath = buildAugmentedPath();
     const env = { ...process.env, PATH: augmentedPath, Path: augmentedPath };
     return await new Promise<{ installed: boolean; version?: string }>(resolve => {
-      const proc = spawn('gemini', ['--version'], { shell: true, env, stdio: ['ignore', 'pipe', 'pipe'] });
+      const proc = spawn('gemini', ['--version'], { shell: true, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
       let output = '';
       proc.stdout?.on('data', (d: Buffer) => { output += d.toString(); });
       proc.on('error', () => resolve({ installed: false }));
@@ -5477,7 +5477,7 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
       : `cat "${tmpFile}" | gemini -o stream-json${modelFlag}${yoloFlag}${trustFlag}${includeFlag}`;
     console.log('[gemini] include-dirs(local):', localDirs.length ? localDirs.join(', ') : '(none)');
     if (skippedUnc.length) console.log('[gemini] UNC dirs skipped (realpathSync hang 회피):', skippedUnc.join(', '));
-    const proc = spawn(shellCmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd });
+    const proc = spawn(shellCmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd, windowsHide: true });
     geminiProcesses.set(procKey, proc);
 
     const cleanupTmp = () => {
