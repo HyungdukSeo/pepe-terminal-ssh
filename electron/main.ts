@@ -16,6 +16,15 @@ app.commandLine.appendSwitch('disable-background-timer-throttling');
 // disable-direct-composition 은 캐시 에러만 만들고 효과 없어 적용 안 함.
 // 사용자는 Ctrl+V (paste) 또는 📄+ 버튼(파일 픽커) 으로 첨부 가능.
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
+// ── 다중 인스턴스 캐시 충돌 제거 ────────────────────────────────────────────
+// 여러 PePe 인스턴스를 동시에 띄우면 같은 userData 의 캐시 디렉토리를 두고 충돌해
+// 'Unable to move the cache (0x5) / Gpu Cache Creation failed / Unable to create cache' 가
+// 반복 출력된다. (userData/sessionData 를 인스턴스별로 분리하면 충돌은 없지만 Windows
+//  safeStorage 키가 Local State 에 따로 생겨 저장된 자격증명 복호화가 깨지므로 분리 불가.)
+// → 충돌의 원인인 디스크 캐시(GPU 셰이더 + HTTP)를 끈다. 터미널/SSH 앱이라 HTTP 캐시는
+//   거의 쓰이지 않아 영향이 미미하고, userData 는 공유되어 자격증명은 그대로 동작.
+app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
+app.commandLine.appendSwitch('disable-http-cache');
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -692,8 +701,21 @@ ipcMain.handle('paste-modal:open', (_e, { id, text, accumulate }: { id: string; 
 // 결과 IPC — id 별로 main → renderer 로 forward
 ipcMain.on('paste-modal:result', (_e, payload: { id: string; action: 'paste' | 'cancel'; text: string }) => {
   const win = pasteWindows.get(payload.id);
-  if (win && !win.isDestroyed()) { try { win.close(); } catch {} }
+  if (win && !win.isDestroyed()) {
+    try { win.removeAllListeners('closed'); } catch {}
+    try { win.destroy(); } catch {}
+  }
+  pasteWindows.delete(payload.id);
   if (mainWindow && !mainWindow.isDestroyed()) {
+    // 붙여넣기 창을 닫은 뒤 메인 창으로 포커스 복원 — 안 그러면(특히 앱 밖 클릭 후 복귀했을 때)
+    // 자식 창이 닫히며 메인이 다른 윈도우 뒤로 가려지는 문제.
+    try {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.moveTop();
+      mainWindow.focus();
+      mainWindow.webContents.focus();
+    } catch {}
     mainWindow.webContents.send('paste-modal:result', payload);
   }
 });
