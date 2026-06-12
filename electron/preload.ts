@@ -260,6 +260,9 @@ contextBridge.exposeInMainWorld('api', {
   },
   getStartupCwd: () => ipcRenderer.invoke('app:startup-cwd'),
   clearStartupCwd: () => ipcRenderer.invoke('app:clear-startup-cwd'),
+  // 외부 프로그램이 ssh://host:port 인자로 호출 시 자동 접속 대상
+  getStartupSshTarget: () => ipcRenderer.invoke('app:startup-ssh-target'),
+  clearStartupSshTarget: () => ipcRenderer.invoke('app:clear-startup-ssh-target'),
   registerContextMenu: () => ipcRenderer.invoke('app:register-context-menu'),
   unregisterContextMenu: () => ipcRenderer.invoke('app:unregister-context-menu'),
   checkContextMenu: () => ipcRenderer.invoke('app:check-context-menu'),

@@ -2370,6 +2370,35 @@ function App() {
     connect(termId);
   };
 
+  // 외부 프로그램(자산관리툴 등)이 ssh://host:port 인자로 PePe 를 호출한 경우 자동 SSH 접속.
+  // 앱 초기화(shellPrefsLoaded) + 활성 탭 준비 후 1회만 실행.
+  const startupSshHandledRef = useRef(false);
+  useEffect(() => {
+    if (startupSshHandledRef.current) return;
+    if (!shellPrefsLoaded || !activeTab) return;
+    startupSshHandledRef.current = true;
+    (async () => {
+      try {
+        const tgt = await (window as any).api?.getStartupSshTarget?.();
+        if (!tgt?.host) return;
+        // 한 번 쓰고 비워서 이후 새 탭/리로드 시 재접속 안 되게
+        try { (window as any).api?.clearStartupSshTarget?.(); } catch {}
+        const info: QuickConnectResult = {
+          name: tgt.username ? `${tgt.username}@${tgt.host}` : tgt.host,
+          host: tgt.host,
+          port: tgt.port || 22,
+          username: tgt.username || '',
+          auth: { type: 'password', password: tgt.password || '' },
+          encoding: 'utf-8',
+          protocol: 'ssh',
+        };
+        // 약간 지연 — 레이아웃/패널 마운트 완료 후 연결
+        setTimeout(() => { try { handleQuickConnect(info); } catch (e) { console.error('[startup-ssh]', e); } }, 300);
+      } catch (e) { console.error('[startup-ssh] fetch fail', e); }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shellPrefsLoaded, activeTab]);
+
   const handleDisconnectSession = (targetPanelId?: string | null) => {
     if (!activeTab) return;
     const findTerm = (node: LayoutNode): string | null => {

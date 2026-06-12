@@ -115,6 +115,54 @@ function getStartupCwd(): string | null {
 }
 let startupCwd: string | null = getStartupCwd();
 
+// 외부 프로그램(HIWARE/자산관리툴 등)이 "터미널 프로그램"으로 PePe 를 호출하면서
+// 넘겨주는 접속 정보 파싱. 자산관리툴마다 터미널별 파라미터 형식이 제각각이라 모두 지원:
+//   • SecureCRT/Xshell : ... telnet://<IP>:<PORT> ...   (URL 형식)
+//   • PuTTY            : -telnet <IP> <PORT>  (또는 -ssh <IP> -P <PORT>)
+//   • TeraTerm         : /T=1 <IP>:<PORT>     (bare host:port 토큰)
+// telnet:// 은 자산관리툴의 URL 관례일 뿐, 실제 대상은 SSH 서버이므로 host:port 만
+// 뽑아 SSH 로 접속한다. <TITLE_CHANGE_OFF>, /url, -newtab, "<TITLE>" 등 나머지 인자는 무시.
+type StartupSsh = { host: string; port: number; username?: string; password?: string };
+function getStartupSshTarget(): StartupSsh | null {
+  const args = process.argv.slice(app.isPackaged ? 1 : 2);
+  // 1) URL 형식: ssh://... / telnet://...  (SecureCRT, Xshell)
+  const urlRe = /(?:ssh|telnet):\/\/(?:([^:@/\s]+)(?::([^@/\s]+))?@)?([^:/\s]+)(?::(\d+))?/i;
+  for (const a of args) {
+    const m = urlRe.exec(a);
+    if (m) {
+      return {
+        username: m[1] ? decodeURIComponent(m[1]) : undefined,
+        password: m[2] ? decodeURIComponent(m[2]) : undefined,
+        host: m[3],
+        port: m[4] ? parseInt(m[4], 10) : 22,
+      };
+    }
+  }
+  // 2) PuTTY: -telnet <IP> <PORT>  /  -ssh <IP> [-P <PORT>]
+  const lower = args.map(a => a.toLowerCase());
+  const flagIdx = lower.findIndex(a => a === '-telnet' || a === '-ssh');
+  if (flagIdx >= 0) {
+    let host: string | null = null;
+    let port = 22;
+    for (let i = flagIdx + 1; i < args.length; i++) {
+      const tok = args[i];
+      if (!tok || tok.startsWith('-') || tok.startsWith('/')) continue;
+      if (!host) { host = tok; continue; }
+      if (/^\d+$/.test(tok)) { port = parseInt(tok, 10); break; }
+    }
+    const pIdx = lower.findIndex(a => a === '-p');
+    if (pIdx >= 0 && /^\d+$/.test(args[pIdx + 1] || '')) port = parseInt(args[pIdx + 1], 10);
+    if (host) return { host, port };
+  }
+  // 3) bare host:port 토큰 (TeraTerm /T=1 <IP>:<PORT>)
+  for (const a of args) {
+    const m = /^([A-Za-z0-9][A-Za-z0-9._-]*):(\d{1,5})$/.exec(a);
+    if (m) return { host: m[1], port: parseInt(m[2], 10) };
+  }
+  return null;
+}
+let startupSshTarget: StartupSsh | null = getStartupSshTarget();
+
 // 창 최대화 상태 + 복원 좌표
 let isMaximized = false;
 let savedBounds = { x: 100, y: 100, width: 1400, height: 900 };
@@ -584,6 +632,9 @@ ipcMain.handle('app:clear-startup-cwd', () => {
   // 임시 파일도 확실히 삭제
   try { fs.unlinkSync(path.join(require('os').tmpdir(), '.pepe-terminal-cwd')); } catch {}
 });
+// 외부 프로그램이 ssh://host:port 인자로 PePe 를 호출한 경우의 자동 접속 대상
+ipcMain.handle('app:startup-ssh-target', () => startupSshTarget);
+ipcMain.handle('app:clear-startup-ssh-target', () => { startupSshTarget = null; });
 
 // 여러 줄 붙여넣기 — 별도 BrowserWindow (다른 모니터로도 이동 가능)
 const pasteWindows = new Map<string, BrowserWindow>();
