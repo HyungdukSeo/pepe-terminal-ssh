@@ -80,7 +80,13 @@ module.exports = async function (configuration) {
   const filePath = configuration.path;
   const cscInfo = configuration.options || {};
   const hash = configuration.hash || (cscInfo.signingHashAlgorithms && cscInfo.signingHashAlgorithms[0]) || 'sha256';
-  const tr = 'http://timestamp.digicert.com';
+  // RFC3161 타임스탬프 서버 목록 — 하나가 일시적으로 불통이면 다음 서버로 자동 로테이션.
+  const tsServers = [
+    'http://timestamp.digicert.com',
+    'http://timestamp.sectigo.com',
+    'http://timestamp.globalsign.com/tsa/r6advanced1',
+    'http://time.certum.pl',
+  ];
 
   // PFX 위치 — package.json 의 win.certificateFile / certificatePassword 사용
   // configuration.cscInfo 또는 configuration.options.cscInfo 위치 차이 처리
@@ -105,46 +111,54 @@ module.exports = async function (configuration) {
     console.warn(`[sign-with-retry] winCodeSign cache unavailable; using Windows Kits signtool: ${signtoolPath}`);
   }
 
-  const baseArgs = [
-    'sign',
-    '/tr', tr,
-    '/f', cscFile,
-    '/fd', hash,
-    '/td', hash,
-  ];
-  if (productName) baseArgs.push('/d', productName);
-  if (site) baseArgs.push('/du', site);
-  if (cscPass) baseArgs.push('/p', cscPass);
+  const argsFor = (tsUrl) => {
+    const a = ['sign', '/tr', tsUrl, '/f', cscFile, '/fd', hash, '/td', hash];
+    if (productName) a.push('/d', productName);
+    if (site) a.push('/du', site);
+    if (cscPass) a.push('/p', cscPass);
+    return a;
+  };
 
   console.log(`[sign-with-retry] 서명 시작: ${path.basename(filePath)}`);
 
   // 1) 파일 unlock 대기
   await waitForUnlock(filePath, INITIAL_WAIT);
 
-  // 2) signtool 시도 — 실패 시 백오프
+  // 2) signtool 시도 — 락/타임스탬프 오류 시 백오프 + 타임스탬프 서버 로테이션
   const backoff = [2000, 5000, 10000, 20000, 30000, 45000, 60000, 90000];
+  // 락 외 오류(주로 타임스탬프)는 최소 서버 개수만큼은 더 돌려본다
+  const maxRetry = Math.max(MAX_RETRY, tsServers.length + 2);
   let lastErr;
-  for (let attempt = 0; attempt < MAX_RETRY; attempt++) {
+  let tsIdx = 0;
+  for (let attempt = 0; attempt < maxRetry; attempt++) {
+    const tsUrl = tsServers[tsIdx % tsServers.length];
     try {
-      await runSigntool(signtoolPath, baseArgs, filePath);
-      console.log(`[sign-with-retry] ✓ 서명 성공: ${path.basename(filePath)} (시도 ${attempt + 1})`);
+      await runSigntool(signtoolPath, argsFor(tsUrl), filePath);
+      console.log(`[sign-with-retry] ✓ 서명 성공: ${path.basename(filePath)} (시도 ${attempt + 1}, ts=${tsUrl})`);
       return;
     } catch (err) {
       lastErr = err;
       const out = (err.stdout || '') + (err.stderr || '');
       const isLock = /file is being used|sharing violation|access is denied/i.test(out);
-      if (!isLock) {
-        // 락 외 다른 에러는 즉시 실패
-        console.error(`[sign-with-retry] ✕ 서명 실패 (락 아님):`, out.trim());
+      const isTs = /timestamp server|could not be reached|RFC3161|timestamp/i.test(out);
+      if (!isLock && !isTs) {
+        console.error(`[sign-with-retry] ✕ 서명 실패 (락/타임스탬프 아님):`, out.trim());
         throw err;
       }
-      const wait = backoff[Math.min(attempt, backoff.length - 1)];
-      console.warn(`[sign-with-retry] 시도 ${attempt + 1} 락 에러 — ${wait}ms 후 재시도`);
-      await sleep(wait);
-      // 다음 시도 전 다시 unlock 폴링
-      await waitForUnlock(filePath, 10);
+      if (isTs) {
+        // 다음 타임스탬프 서버로 로테이션 후 짧게 재시도
+        tsIdx++;
+        const wait = Math.min(3000 + attempt * 2000, 15000);
+        console.warn(`[sign-with-retry] 시도 ${attempt + 1} 타임스탬프 오류(${tsUrl}) — 다음 서버로 ${wait}ms 후 재시도`);
+        await sleep(wait);
+      } else {
+        const wait = backoff[Math.min(attempt, backoff.length - 1)];
+        console.warn(`[sign-with-retry] 시도 ${attempt + 1} 락 에러 — ${wait}ms 후 재시도`);
+        await sleep(wait);
+        await waitForUnlock(filePath, 10);
+      }
     }
   }
-  console.error(`[sign-with-retry] ✕ 최대 재시도 (${MAX_RETRY}) 초과`);
+  console.error(`[sign-with-retry] ✕ 최대 재시도 (${maxRetry}) 초과`);
   throw lastErr || new Error('서명 실패');
 };
