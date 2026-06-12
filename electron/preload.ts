@@ -202,6 +202,9 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('ssh:connect-with-password', { panelId, sessionId, password, cols, rows }),
   quickConnectSSH: (panelId: string, session: any, cols?: number, rows?: number) =>
     ipcRenderer.invoke('ssh:quick-connect', { panelId, session, cols, rows }),
+  // 텔넷(raw TCP) 접속 — 접근통제 솔루션 로컬 평문 프록시용
+  telnetConnect: (panelId: string, host: string, port: number, cols?: number, rows?: number, encoding?: string) =>
+    ipcRenderer.invoke('telnet:connect', { panelId, host, port, cols, rows, encoding }),
   isSSHConnected: (panelId: string) =>
     ipcRenderer.invoke('ssh:is-connected', panelId),
   sendSSHInput: (panelId: string, data?: string, b64?: string) =>

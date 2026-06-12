@@ -10,7 +10,7 @@ export type QuickConnectResult = {
   username: string;
   auth: { type: 'password'; password: string };
   encoding: string;
-  protocol: 'ssh' | 'sftp';
+  protocol: 'ssh' | 'sftp' | 'telnet';
 };
 
 type Props = {

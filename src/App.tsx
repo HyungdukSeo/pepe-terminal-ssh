@@ -2279,6 +2279,15 @@ function App() {
       // 빠른연결은 sessionId='' 이지만 SSH 핸드셰이크 진행 중 — PTY 스폰 차단 표식
       markQuickConnectPending(tid);
       registerTermSession(tid, '', displayName, info.host, info);
+      // 텔넷(raw TCP) — 접근통제 솔루션 로컬 평문 프록시. 자격증명 모달 없이 바로 raw 접속,
+      // 로그인은 터미널 안에서(프록시가 보내는 로그인 프롬프트에) 사용자가 직접 입력.
+      if ((info as any).protocol === 'telnet') {
+        setTimeout(() => {
+          try { (window as any).api?.telnetConnect?.(tid, info.host, info.port, undefined, undefined, info.encoding); }
+          catch (e) { console.error('[telnet]', e); }
+        }, 60);
+        return;
+      }
       setTimeout(async () => {
         const tryConnect = async (sessInfo: QuickConnectResult): Promise<void> => {
           const r = await (window as any).api?.quickConnectSSH?.(tid, sessInfo);
@@ -2383,14 +2392,15 @@ function App() {
         if (!tgt?.host) return;
         // 한 번 쓰고 비워서 이후 새 탭/리로드 시 재접속 안 되게
         try { (window as any).api?.clearStartupSshTarget?.(); } catch {}
+        const proto: 'ssh' | 'telnet' = tgt.protocol === 'telnet' ? 'telnet' : 'ssh';
         const info: QuickConnectResult = {
-          name: tgt.username ? `${tgt.username}@${tgt.host}` : tgt.host,
+          name: tgt.username ? `${tgt.username}@${tgt.host}` : `${tgt.host}:${tgt.port || (proto === 'telnet' ? 23 : 22)}`,
           host: tgt.host,
-          port: tgt.port || 22,
+          port: tgt.port || (proto === 'telnet' ? 23 : 22),
           username: tgt.username || '',
           auth: { type: 'password', password: tgt.password || '' },
           encoding: 'utf-8',
-          protocol: 'ssh',
+          protocol: proto,
         };
         // 약간 지연 — 레이아웃/패널 마운트 완료 후 연결
         setTimeout(() => { try { handleQuickConnect(info); } catch (e) { console.error('[startup-ssh]', e); } }, 300);

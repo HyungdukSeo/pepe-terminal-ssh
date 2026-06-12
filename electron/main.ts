@@ -33,6 +33,7 @@ import * as pty from 'node-pty';
 import { fileURLToPath } from 'url';
 import { loadSessionsData, saveSessionsData, getSessionsPath, saveCustomPath, loadUIPrefs, saveUIPrefs, Session, Folder, SessionsData } from './sessionsStore';
 import { getSSHBridge } from './sshBridge';
+import { getTelnetBridge } from './telnetBridge';
 import { getSharedJdbcSidecar, shutdownAllJdbcSidecars, findSidecarJar, findJavaExecutable } from './jdbcBridge';
 import { listDrivers, upsertUserDriver, removeUserDriver, diagnoseDriver, getBundledDriversRoot, getUserJdbcDriversRoot, resolveDriverJarsExisting, parseMavenCoord, mavenCoordToUrl, JdbcDriverDef } from './driversStore';
 import { getSessionState as getSqlToolState, setSessionState as setSqlToolState, SqlToolSessionState } from './sqlToolStore';
@@ -66,6 +67,8 @@ let mainWindow: BrowserWindow | null = null;
 let sessionsData: SessionsData = { folders: [], sessions: [] };
 const connectedPanels = new Set<string>();
 const connectingPanels = new Set<string>();
+// 텔넷(raw TCP)으로 접속한 패널 — ssh:input/resize/disconnect 등을 텔넷 브리지로 라우팅
+const telnetPanels = new Set<string>();
 
 // Safety net — ssh2 같은 라이브러리에서 뒤늦게 던지는 stray error 로 앱 전체가
 // 다이얼로그와 함께 죽지 않도록 uncaught 를 로깅만 하고 삼킨다.
@@ -122,19 +125,22 @@ let startupCwd: string | null = getStartupCwd();
 //   • TeraTerm         : /T=1 <IP>:<PORT>     (bare host:port 토큰)
 // telnet:// 은 자산관리툴의 URL 관례일 뿐, 실제 대상은 SSH 서버이므로 host:port 만
 // 뽑아 SSH 로 접속한다. <TITLE_CHANGE_OFF>, /url, -newtab, "<TITLE>" 등 나머지 인자는 무시.
-type StartupSsh = { host: string; port: number; username?: string; password?: string };
+// telnet:// / -telnet / bare host:port 는 접근통제 솔루션의 평문 프록시 → protocol 'telnet'.
+// ssh:// / -ssh 는 실제 SSH → 'ssh'. (telnet 으로 잡힌 건 PePe 가 raw TCP 로 접속)
+type StartupSsh = { host: string; port: number; username?: string; password?: string; protocol: 'ssh' | 'telnet' };
 function getStartupSshTarget(): StartupSsh | null {
   const args = process.argv.slice(app.isPackaged ? 1 : 2);
   // 1) URL 형식: ssh://... / telnet://...  (SecureCRT, Xshell)
-  const urlRe = /(?:ssh|telnet):\/\/(?:([^:@/\s]+)(?::([^@/\s]+))?@)?([^:/\s]+)(?::(\d+))?/i;
+  const urlRe = /(ssh|telnet):\/\/(?:([^:@/\s]+)(?::([^@/\s]+))?@)?([^:/\s]+)(?::(\d+))?/i;
   for (const a of args) {
     const m = urlRe.exec(a);
     if (m) {
       return {
-        username: m[1] ? decodeURIComponent(m[1]) : undefined,
-        password: m[2] ? decodeURIComponent(m[2]) : undefined,
-        host: m[3],
-        port: m[4] ? parseInt(m[4], 10) : 22,
+        protocol: m[1].toLowerCase() === 'ssh' ? 'ssh' : 'telnet',
+        username: m[2] ? decodeURIComponent(m[2]) : undefined,
+        password: m[3] ? decodeURIComponent(m[3]) : undefined,
+        host: m[4],
+        port: m[5] ? parseInt(m[5], 10) : (m[1].toLowerCase() === 'ssh' ? 22 : 23),
       };
     }
   }
@@ -142,22 +148,25 @@ function getStartupSshTarget(): StartupSsh | null {
   const lower = args.map(a => a.toLowerCase());
   const flagIdx = lower.findIndex(a => a === '-telnet' || a === '-ssh');
   if (flagIdx >= 0) {
+    const isSsh = lower[flagIdx] === '-ssh';
     let host: string | null = null;
-    let port = 22;
+    let port = isSsh ? 22 : 23;
+    let portSeen = false;
     for (let i = flagIdx + 1; i < args.length; i++) {
       const tok = args[i];
       if (!tok || tok.startsWith('-') || tok.startsWith('/')) continue;
       if (!host) { host = tok; continue; }
-      if (/^\d+$/.test(tok)) { port = parseInt(tok, 10); break; }
+      if (/^\d+$/.test(tok)) { port = parseInt(tok, 10); portSeen = true; break; }
     }
     const pIdx = lower.findIndex(a => a === '-p');
-    if (pIdx >= 0 && /^\d+$/.test(args[pIdx + 1] || '')) port = parseInt(args[pIdx + 1], 10);
-    if (host) return { host, port };
+    if (pIdx >= 0 && /^\d+$/.test(args[pIdx + 1] || '')) { port = parseInt(args[pIdx + 1], 10); portSeen = true; }
+    void portSeen;
+    if (host) return { host, port, protocol: isSsh ? 'ssh' : 'telnet' };
   }
-  // 3) bare host:port 토큰 (TeraTerm /T=1 <IP>:<PORT>)
+  // 3) bare host:port 토큰 (TeraTerm /T=1 <IP>:<PORT>) — 접근통제 평문 프록시로 간주(telnet)
   for (const a of args) {
     const m = /^([A-Za-z0-9][A-Za-z0-9._-]*):(\d{1,5})$/.exec(a);
-    if (m) return { host: m[1], port: parseInt(m[2], 10) };
+    if (m) return { host: m[1], port: parseInt(m[2], 10), protocol: 'telnet' };
   }
   return null;
 }
@@ -384,6 +393,31 @@ app.whenReady().then(() => {
     sftpBatchBuf.push({ channel, payload });
     if (!sftpBatchScheduled) { sftpBatchScheduled = true; setImmediate(flushSftpBatch); }
   }
+
+  // TELNET 브리지 — 평문 raw TCP. SSH 와 동일한 ssh:* 렌더러 채널로 메시지 라우팅.
+  getTelnetBridge().onMessage((msg) => {
+    if (!mainWindow) return;
+    switch (msg.type) {
+      case 'data':
+        mainWindow.webContents.send('ssh:data', { panelId: msg.panelId, data: msg.data });
+        break;
+      case 'connected':
+        connectingPanels.delete(msg.panelId);
+        connectedPanels.add(msg.panelId);
+        mainWindow.webContents.send('ssh:connected', { panelId: msg.panelId });
+        break;
+      case 'closed':
+        connectingPanels.delete(msg.panelId);
+        connectedPanels.delete(msg.panelId);
+        telnetPanels.delete(msg.panelId);
+        mainWindow.webContents.send('ssh:closed', { panelId: msg.panelId });
+        break;
+      case 'error':
+        connectingPanels.delete(msg.panelId);
+        mainWindow.webContents.send('ssh:error', { panelId: msg.panelId, error: msg.error });
+        break;
+    }
+  });
 
   const bridge = getSSHBridge();
   bridge.onMessage((msg) => {
@@ -3993,11 +4027,29 @@ ipcMain.handle('ssh:is-connected', (_e, panelId: string) => {
   return connectedPanels.has(panelId);
 });
 
+// 텔넷(raw TCP) 접속 — 접근통제 솔루션의 로컬 평문 프록시(127.0.0.1:port) 용.
+ipcMain.handle('telnet:connect', (_e, { panelId, host, port, cols, rows, encoding }: { panelId: string; host: string; port: number; cols?: number; rows?: number; encoding?: string }) => {
+  if (connectingPanels.has(panelId) || connectedPanels.has(panelId)) return 'already';
+  if (!host || !port) throw new Error('Invalid telnet target');
+  connectingPanels.add(panelId);
+  telnetPanels.add(panelId);
+  getTelnetBridge().connect(panelId, host, port, cols, rows, encoding);
+  return 'ok';
+});
+
 ipcMain.on('ssh:input', (_e, { panelId, data, b64 }) => {
+  if (telnetPanels.has(panelId)) { getTelnetBridge().input(panelId, data, b64); return; }
   getSSHBridge().handleInput(panelId, data, b64);
 });
 
 ipcMain.on('ssh:disconnect', (_e, { panelId }) => {
+  if (telnetPanels.has(panelId)) {
+    telnetPanels.delete(panelId);
+    connectedPanels.delete(panelId);
+    connectingPanels.delete(panelId);
+    getTelnetBridge().disconnect(panelId);
+    return;
+  }
   getSSHBridge().handleDisconnect(panelId);
   if (webdavBridge) {
     try { webdavBridge.unregisterSession(panelId); } catch {}
@@ -4011,10 +4063,12 @@ ipcMain.on('ssh:resize', (_e, { panelId, cols, rows, force }: { panelId: string;
   // force 가 명시되면 dedup 우회 (vim 등 alt-buffer 진입 시 PTY 사이즈 재동기화)
   if (!force && last && last.cols === cols && last.rows === rows) return;
   _lastSshResize.set(panelId, { cols, rows });
+  if (telnetPanels.has(panelId)) { getTelnetBridge().resize(panelId, cols, rows); return; }
   getSSHBridge().handleResize(panelId, cols, rows);
 });
 
 ipcMain.handle('ssh:set-encoding', (_e, { panelId, encoding }) => {
+  if (telnetPanels.has(panelId)) return getTelnetBridge().setEncoding(panelId, encoding);
   return getSSHBridge().setEncoding(panelId, encoding);
 });
 
