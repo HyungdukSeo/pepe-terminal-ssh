@@ -2865,9 +2865,11 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       } else if (currentAgentRef.current === 'codex') {
         // codex 는 비대화형(exec)이라 실행 중 승인이 불가 → claude 처럼 "계획 먼저 보여주고 승인" 2단계로 처리.
         // plan 모드(또는 default + 승인성 발화 아님)면 계획 단계로 전송.
+        // 단, Codex 승인 정책이 '전체 권한'(full-auto)이면 계획/승인 단계 없이 바로 실행.
         const approveKeywords = ['실행', '진행', '좋아', 'yes', 'ok', '승인', 'approve', '해줘', 'go ahead', '네'];
         const isApproval = approveKeywords.some(k => text.toLowerCase().includes(k.toLowerCase()));
-        const codexPlanPhase = permissionMode === 'plan' || (permissionMode === 'default' && !isApproval);
+        const codexPlanPhase = codexApprovalPolicy !== 'full-auto'
+          && (permissionMode === 'plan' || (permissionMode === 'default' && !isApproval));
         let codexPrompt = prompt;
         if (codexPlanPhase) {
           codexPrompt += '\n\n' + [
@@ -2910,7 +2912,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       setStreaming(false);
       removeStreamingAgent(currentAgentRef.current);
     }
-  }, [sessionId, streaming, streamingAgents, mountEntries, activeMount, localFileAttachments, permissionMode, model, perToolApproval, messages, toolTimeline, geminiTier, geminiYolo]);
+  }, [sessionId, streaming, streamingAgents, mountEntries, activeMount, localFileAttachments, permissionMode, model, perToolApproval, messages, toolTimeline, geminiTier, geminiYolo, codexApprovalPolicy]);
 
   // 외부에서 컨텍스트 전달되면 추가 (기존 첨부에 append, 중복 제거)
   useEffect(() => {
