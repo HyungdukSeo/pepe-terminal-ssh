@@ -2426,8 +2426,8 @@ function App() {
     {
       label: tMenu('window.title'),
       items: [
-        { label: tMenu('window.splitV'), action: () => { if (activeTab && selectedPanelId) openSplitSessionPicker('row', selectedPanelId); }, disabled: !selectedPanelId },
-        { label: tMenu('window.splitH'), action: () => { if (activeTab && selectedPanelId) openSplitSessionPicker('column', selectedPanelId); }, disabled: !selectedPanelId },
+        { label: tMenu('window.splitV'), action: () => { if (activeTab && selectedPanelId) openSplitSessionPicker('column', selectedPanelId); }, disabled: !selectedPanelId },
+        { label: tMenu('window.splitH'), action: () => { if (activeTab && selectedPanelId) openSplitSessionPicker('row', selectedPanelId); }, disabled: !selectedPanelId },
         { separator: true, label: '' },
         { label: tMenu('window.clearScreen'), shortcut: 'Ctrl+Shift+L', action: () => { const tid = getActiveTermId(); if (tid) clearScreenInTerm(tid); } },
         { label: tMenu('window.clearScrollback'), shortcut: 'Ctrl+Shift+B', action: () => { const tid = getActiveTermId(); if (tid) clearScrollbackInTerm(tid); } },
@@ -4265,7 +4265,7 @@ function App() {
               className="folder-picker"
               onClick={e => e.stopPropagation()}
             >
-              <div className="folder-picker-title">세션 선택 ({splitSessionPicker.dir === 'row' ? '세로 분할' : '가로 분할'})</div>
+              <div className="folder-picker-title">세션 선택 ({splitSessionPicker.dir === 'row' ? '가로 분할 (좌/우)' : '세로 분할 (상/하)'})</div>
               <div className="folder-picker-list">
                 {renderTree(undefined, 0)}
               </div>
