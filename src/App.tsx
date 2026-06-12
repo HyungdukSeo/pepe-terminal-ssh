@@ -2758,27 +2758,42 @@ function App() {
         activeTabId={activeTabId}
         onMultiConnect={(sessList, mode, opts) => {
           if (sessList.length === 0) return;
-          let targetTabId: string;
+          let targetTabId = '';
           let targetPanelId: string | null = null;
-          if (opts?.newWorkspace) {
+          // 터미널 세션을 받을 수 있는 워크스페이스인지(파일 전송/편집기/브라우저/SQL 등 특수 탭 제외)
+          const isTerminalWs = (t: any) => !t?.type || t.type === 'terminal';
+          const openInNewWorkspace = () => {
             const newTabId = `tab-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
             const newTab = { id: newTabId, title: `Workspace ${tabs.length + 1}`, layout: createInitialLayout(newTabId) } as any;
             setTabs(prev => [...prev, newTab]);
             setActiveTabId(newTabId);
             targetTabId = newTabId;
             targetPanelId = findFirstLeafId(newTab.layout);
+          };
+          if (opts?.newWorkspace) {
+            openInNewWorkspace();
           } else if (opts?.targetTabId) {
             const wsTab = tabs.find(t => t.id === opts.targetTabId);
             if (!wsTab) return;
-            targetTabId = wsTab.id;
-            setActiveTabId(wsTab.id);
-            targetPanelId = findFirstLeafId(wsTab.layout);
+            if (!isTerminalWs(wsTab)) {
+              notifyError('연결할 수 없는 워크스페이스', `'${wsTab.title}' 은(는) 터미널 세션을 추가할 수 없는 워크스페이스입니다.\n\n새 워크스페이스로 엽니다.`);
+              openInNewWorkspace();
+            } else {
+              targetTabId = wsTab.id;
+              setActiveTabId(wsTab.id);
+              targetPanelId = findFirstLeafId(wsTab.layout);
+            }
           } else {
             if (!activeTab) return;
-            targetTabId = activeTab.id;
-            targetPanelId = selectedPanelId || findFirstLeafId(activeTab.layout);
+            if (!isTerminalWs(activeTab)) {
+              notifyError('연결할 수 없는 워크스페이스', `현재 워크스페이스 '${activeTab.title}' 은(는) 터미널 세션을 추가할 수 없습니다.\n\n새 워크스페이스로 엽니다.`);
+              openInNewWorkspace();
+            } else {
+              targetTabId = activeTab.id;
+              targetPanelId = selectedPanelId || findFirstLeafId(activeTab.layout);
+            }
           }
-          if (!targetPanelId) return;
+          if (!targetTabId || !targetPanelId) return;
           const panelId = targetPanelId;
           if (mode === 'minitab') {
             // 한 번의 layout 업데이트로 모든 세션을 미니탭에 추가
