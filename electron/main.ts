@@ -23,8 +23,13 @@ app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 //  safeStorage 키가 Local State 에 따로 생겨 저장된 자격증명 복호화가 깨지므로 분리 불가.)
 // → 충돌의 원인인 디스크 캐시(GPU 셰이더 + HTTP)를 끈다. 터미널/SSH 앱이라 HTTP 캐시는
 //   거의 쓰이지 않아 영향이 미미하고, userData 는 공유되어 자격증명은 그대로 동작.
-app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
-app.commandLine.appendSwitch('disable-http-cache');
+// Mac: disable-gpu-shader-disk-cache 를 적용하면 transparent BrowserWindow 의 GPU
+// 합성 컨텍스트가 초기화될 때 셰이더 재컴파일 타이밍에 창 전체가 투명(invisible)해지는
+// 문제가 발생. 다중 인스턴스 캐시 충돌은 Windows 전용 현상이므로 Mac 에선 스킵.
+if (process.platform === 'win32') {
+  app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
+  app.commandLine.appendSwitch('disable-http-cache');
+}
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -287,7 +292,8 @@ function createWindow() {
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show();
     // Aero Snap 미리보기 창 사전 생성 + 로드 — 첫 드래그 시 BrowserWindow 생성 지연(수백ms) 제거
-    setTimeout(() => ensureSnapPreview(), 500);
+    // Mac 에선 Aero Snap 이 없으므로 불필요한 transparent 창을 만들지 않음
+    if (process.platform === 'win32') setTimeout(() => ensureSnapPreview(), 500);
   });
 
   const devServerUrl = process.env['ELECTRON_RENDERER_URL'] || process.env['VITE_DEV_SERVER_URL'];
@@ -4811,6 +4817,9 @@ const claudeProcesses: Map<string, any> = new Map();
 const geminiProcesses: Map<string, any> = new Map();
 
 function findGeminiBundlePath(): string | null {
+  // Mac/Linux: gemini CLI 를 shell 로 직접 실행 (bundle 경로 불필요 → null 반환)
+  if (process.platform !== 'win32') return null;
+  // Windows: gemini.cmd 래퍼의 실제 bundle JS 를 찾아 node 모드로 직접 실행
   try {
     const { execFileSync } = require('child_process');
     const fs = require('fs');
@@ -5134,10 +5143,16 @@ ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowB
     };
 
     // --add-dir 옵션으로 스테이징된 디렉토리를 작업 범위에 추가
-    const addDirArgs = (addDirs && addDirs.length > 0)
-      ? addDirs.map(d => `--add-dir "${d.replace(/"/g, '\\"')}"`).join(' ')
+    // Mac/Linux: WebDAV UNC 경로(\\127.0.0.1@port\...)는 유효한 파일시스템 경로가 아니므로
+    // 필터링. 경로를 넘기면 Claude CLI 가 존재하지 않는 경로를 스캔하거나 cwd 로 fallback 해
+    // 로컬 디렉토리 전체를 탐색하는 지연이 발생함.
+    const validAddDirs = addDirs
+      ? addDirs.filter(d => d && (process.platform === 'win32' || !d.startsWith('\\\\')))
+      : [];
+    const addDirArgs = validAddDirs.length > 0
+      ? validAddDirs.map(d => `--add-dir "${d.replace(/"/g, '\\"')}"`).join(' ')
       : '';
-    console.log('[claude] addDirs:', addDirs);
+    console.log('[claude] addDirs (valid):', validAddDirs);
 
     // 권한 모드: bypassPermissions=모두허용 / acceptEdits=편집만자동 / plan=계획만 / default=요청시
     // -p (print) 모드는 인터랙티브 불가 → 대부분 bypassPermissions 가 안전
@@ -5569,14 +5584,20 @@ ipcMain.handle('gemini:check', async () => {
     const augmentedPath = buildAugmentedPath();
     const env = { ...process.env, PATH: augmentedPath, Path: augmentedPath };
     const bundlePath = findGeminiBundlePath();
-    if (!bundlePath) return { installed: false };
     return await new Promise<{ installed: boolean; version?: string }>(resolve => {
-      const proc = spawn(process.execPath, [bundlePath, '--version'], {
-        shell: false,
-        env: { ...env, ELECTRON_RUN_AS_NODE: '1' },
-        stdio: ['ignore', 'pipe', 'pipe'],
-        windowsHide: true,
-      });
+      // Windows: bundle JS 직접 실행 / Mac·Linux: gemini CLI shell 실행
+      const proc = bundlePath
+        ? spawn(process.execPath, [bundlePath, '--version'], {
+            shell: false,
+            env: { ...env, ELECTRON_RUN_AS_NODE: '1' },
+            stdio: ['ignore', 'pipe', 'pipe'],
+            windowsHide: true,
+          })
+        : spawn('gemini', ['--version'], {
+            shell: true,
+            env,
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
       let output = '';
       proc.stdout?.on('data', (d: Buffer) => { output += d.toString(); });
       proc.on('error', () => resolve({ installed: false }));
@@ -5722,18 +5743,23 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
     ];
     console.log('[gemini] args:', geminiArgs.join(' '));
     const bundlePath = findGeminiBundlePath();
-    if (!bundlePath) {
-      return { success: false, error: 'Gemini CLI bundle not found. Please reinstall Gemini CLI.' };
-    }
-    // Windows 에서 gemini.cmd 래퍼를 직접 spawn 하지 말고, 실제 bundle JS 를 node 모드로 실행한다.
-    // 이렇게 하면 `-p` 인자와 stdin 이 안정적으로 전달된다.
-    const proc = spawn(process.execPath, [bundlePath, ...geminiArgs], {
-      shell: false,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...spawnEnv, ELECTRON_RUN_AS_NODE: '1' },
-      cwd,
-      windowsHide: true,
-    });
+    // Windows: bundle JS 직접 실행 / Mac·Linux: gemini CLI shell 실행 (기존 방식)
+    const modelFlagStr = model ? ` -m ${model}` : '';
+    const includeFlagStr = localDirs.length > 0 ? ' ' + localDirs.map(d => `--include-directories "${d}"`).join(' ') : '';
+    const proc = bundlePath
+      ? spawn(process.execPath, [bundlePath, ...geminiArgs], {
+          shell: false,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: { ...spawnEnv, ELECTRON_RUN_AS_NODE: '1' },
+          cwd,
+          windowsHide: true,
+        })
+      : spawn(`cat "${tmpFile}" | gemini -o stream-json${modelFlagStr} --yolo --skip-trust${includeFlagStr}`, [], {
+          shell: true,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: spawnEnv,
+          cwd,
+        });
     geminiProcesses.set(procKey, proc);
 
     try {
