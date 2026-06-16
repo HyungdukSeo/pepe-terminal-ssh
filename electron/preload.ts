@@ -193,6 +193,7 @@ contextBridge.exposeInMainWorld('api', {
   },
   getDetachedInit: () => ipcRenderer.invoke('window:get-detached-init'),
   getConnectedPanels: () => ipcRenderer.invoke('ssh:connected-panels'),
+  agentIsRunning: (args: { sessionId?: string; requestId?: string }) => ipcRenderer.invoke('agent:is-running', args),
   getCursorPoint: () => ipcRenderer.invoke('window:cursor-point'),
   getWindowBounds: () => ipcRenderer.invoke('window:get-bounds'),
   onWindowMaximized: (cb: (m: boolean) => void) => {

@@ -343,6 +343,16 @@ function createWindow() {
       }
     } catch {}
     app.quit();
+    // 강제 종료 보장 — before-quit 의 process.exit 가 어떤 이유로든 안 되면,
+    // 자기 프로세스 트리(에이전트/MCP/JDBC/git 등 모든 자식 포함)를 detached taskkill 로 확실히 정리.
+    // detached 라 main 종료와 무관하게 살아남아 트리를 정리한다.
+    if (process.platform === 'win32') {
+      setTimeout(() => {
+        try {
+          require('child_process').spawn('taskkill', ['/pid', String(process.pid), '/T', '/F'], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+        } catch {}
+      }, 1200);
+    }
   });
 }
 
@@ -4733,6 +4743,18 @@ const geminiProcesses: Map<string, any> = new Map();
 // ── Codex CLI 연동 ──
 const codexProcesses: Map<string, any> = new Map();
 
+// AI 에이전트(claude/gemini/codex) 프로세스가 아직 살아있는지 — 렌더러 streaming 안전망용.
+// procKey = requestId || sessionId 로 저장되므로 둘 다로 조회.
+ipcMain.handle('agent:is-running', (_e, { sessionId, requestId }: { sessionId?: string; requestId?: string }) => {
+  const maps = [claudeProcesses, geminiProcesses, codexProcesses];
+  const alive = (proc: any) => !!proc && proc.killed !== true && (proc.exitCode === null || proc.exitCode === undefined);
+  for (const m of maps) {
+    if (requestId && m.has(requestId) && alive(m.get(requestId))) return true;
+    if (sessionId && m.has(sessionId) && alive(m.get(sessionId))) return true;
+  }
+  return false;
+});
+
 // stop() 후에도 stdout 버퍼에 남아있던 데이터/지연 close 이벤트가
 // 렌더러로 흘러가 "응답이 계속 오는" 문제를 막기 위한 procKey 차단 집합.
 // stop 핸들러에서 즉시 add → stdout/stderr/close 핸들러는 송신 전 has() 확인.
@@ -4842,7 +4864,9 @@ ipcMain.handle('git:status', async (_e, { mode, termId, cwd }: { mode: 'local' |
     } else {
       // local
       const { execFileSync } = require('child_process');
-      const opts: any = { cwd: cwd || process.cwd(), encoding: 'utf-8', windowsHide: true, timeout: 3000 };
+      // stdio: stderr 를 'ignore' 로 — git 이 비-저장소에서 내는 'fatal: not a git repository'
+      // 메시지가 부모(앱) 콘솔로 그대로 흘러나오는 것 차단.
+      const opts: any = { cwd: cwd || process.cwd(), encoding: 'utf-8', windowsHide: true, timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] };
       try {
         execFileSync('git', ['rev-parse', '--is-inside-work-tree'], opts);
       } catch { return { ok: false, notRepo: true }; }
