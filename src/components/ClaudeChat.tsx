@@ -2432,6 +2432,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     const guardBusy = shareContextRef.current ? streaming : streamingAgents.has(currentAgentRef.current);
     if (guardBusy) return;
     addStreamingAgent(currentAgentRef.current);
+    // 스트리밍 플래그는 진입 즉시 켠다 — 이후 프롬프트 빌드 중 예외/지연이 있어도
+    // '중단' 버튼이 요청 시작과 동시에 활성화되도록 보장 (공유 ON/OFF 모두 일관)
+    setStreaming(true);
     // 이번 send 의 대화 세대 기록 — 이후 도착하는 stream 이벤트가 이 세대에 속한 경우만 처리
     activeGenRef.current = conversationGenRef.current;
     // 이번 send 의 고유 requestId
@@ -2824,7 +2827,6 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     requestToAgentRef.current.set(requestId, currentAgentRef.current);
     setMessages(prev => [...prev, userMsg]);
     setInput('');
-    setStreaming(true);
     setActivity(tt('started'));
     setToolTimeline([]);
     currentAsstIdRef.current = null;
@@ -4612,7 +4614,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             className="claude-chat-tool-btn"
             title={`파일 첨부 (이미지/PDF/zip 등 모두 지원) — 또는 입력창에 Ctrl+V 로 스크린샷 붙여넣기`}
             onClick={() => fileUploadRef.current?.click()}
-          >📎 파일</button>
+          >📎 +</button>
           <input
             ref={fileUploadRef}
             type="file"
@@ -4890,7 +4892,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                 handleSend();
               }
             }}
-            placeholder={`${tt('inputPlaceholder')}\n\n📎 첨부: 스크린샷은 Ctrl+V · 파일은 📎 파일 버튼`}
+            placeholder={`${tt('inputPlaceholder')}\n\n📎 첨부: 스크린샷은 Ctrl+V · 파일은 📎 + 버튼 · 드래그 앤 드롭`}
             rows={3}
             disabled={currentAgentStreaming}
           />
