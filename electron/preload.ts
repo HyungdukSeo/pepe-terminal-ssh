@@ -371,8 +371,8 @@ contextBridge.exposeInMainWorld('api', {
   geminiStop: (sessionId: string, requestId?: string) => ipcRenderer.invoke('gemini:stop', { sessionId, requestId }),
   codexCheck: () => ipcRenderer.invoke('codex:check'),
   codexRateLimits: () => ipcRenderer.invoke('codex:rateLimits'),
-  codexSend: (sessionId: string, prompt: string, requestId?: string, model?: string, approvalPolicy?: string, effort?: string) =>
-    ipcRenderer.invoke('codex:send', { sessionId, prompt, requestId, model, approvalPolicy, effort }),
+  codexSend: (sessionId: string, prompt: string, requestId?: string, model?: string, approvalPolicy?: string, effort?: string, sshTermId?: string) =>
+    ipcRenderer.invoke('codex:send', { sessionId, prompt, requestId, model, approvalPolicy, effort, sshTermId }),
   codexStop: (sessionId: string, requestId?: string) => ipcRenderer.invoke('codex:stop', { sessionId, requestId }),
   claudeProbeUsage: () => ipcRenderer.invoke('claude:probe-usage'),
   claudeProbeUsageTui: () => ipcRenderer.invoke('claude:probe-usage-tui'),

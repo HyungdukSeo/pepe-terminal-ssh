@@ -15,6 +15,7 @@ dist-ssr
 # Build output
 dist-electron
 release
+.cache/
 
 # Java sidecar build artifacts (compiled by scripts/build-sidecar.js)
 java-sidecar/build/
@@ -22,6 +23,9 @@ resources/jdbc-sidecar/*.jar
 
 # Downloaded Adoptium Temurin JRE (scripts/download-jre.js)
 resources/jre/
+
+# Downloaded ripgrep binary bundle (scripts/download-ripgrep.js)
+resources/rg/
 
 # Downloaded JDBC driver JARs (scripts/download-jdbc-drivers.js)
 resources/jdbc-drivers/bundled/*.jar
