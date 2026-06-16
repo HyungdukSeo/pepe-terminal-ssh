@@ -820,7 +820,13 @@ function summarizeToolInput(name: string, input: any): string {
   // 기본: JSON 직렬화 — WebDAV 경로면 단축
   let s = JSON.stringify(input);
   if (s.includes('DavWWWRoot')) {
-    s = s.replace(/"(?:[^"\\]|\\.)*DavWWWRoot[^"]*"/g, (m) => '"' + shortenWebdavPath(JSON.parse(m)) + '"');
+    s = s.replace(/"(?:[^"\\]|\\.)*DavWWWRoot[^"]*"/g, (m) => {
+      try {
+        return '"' + shortenWebdavPath(JSON.parse(m)) + '"';
+      } catch {
+        return m;
+      }
+    });
   }
   return truncate(s, 120);
 }
