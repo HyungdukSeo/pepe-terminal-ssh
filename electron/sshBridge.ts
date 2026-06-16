@@ -625,14 +625,16 @@ class SSHBridge extends EventEmitter {
 
   /**
    * 대화형 셸의 현재 작업 디렉토리(cwd) 온디맨드 조회 — autoTrackPwd 미사용 세션에서도 동작.
-   *   1) 이미 추적된 lastCwd 가 있으면 그대로 반환 (autoTrack/프롬프트 파싱 결과).
-   *   2) 없으면 별도 exec 채널에서 우리 SSH_CONNECTION 을 공유하는 tty 보유 프로세스(=대화형 셸)의
+   *   1) 자동추적이 켜진 세션은 lastCwd 가 실시간이므로 그대로 반환 (빠름).
+   *      자동추적이 꺼진 세션은 lastCwd 가 접속 초기값 등으로 stale 할 수 있어 신뢰하지 않고 항상 2)로.
+   *   2) 별도 exec 채널에서 우리 SSH_CONNECTION 을 공유하는 tty 보유 프로세스(=대화형 셸)의
    *      /proc/<pid>/cwd 를 readlink. 가장 깊은(자손) cwd 를 선택해 setview 같은 서브셸도 추적.
    *   exec 채널은 home 에서 시작하지만, 우리는 그 채널 cwd 가 아니라 "셸 프로세스"의 cwd 를 읽는다.
    */
   public async getShellCwd(panelId: string): Promise<string | null> {
+    // 자동추적 ON 일 때만 lastCwd 를 신뢰 (실시간). OFF 면 stale 가능 → 항상 /proc 으로 신선 조회.
     const tracked = this.lastCwd.get(panelId);
-    if (tracked && tracked.startsWith('/')) return tracked;
+    if (this.autoTrackOn.has(panelId) && tracked && tracked.startsWith('/')) return tracked;
     const rec = this.clients.get(panelId);
     if (!rec?.conn) return null;
     // /proc/self/environ 의 SSH_CONNECTION 으로 우리 연결의 프로세스만 필터, tty(pts) 있는 셸의 cwd 수집.
@@ -658,8 +660,10 @@ class SSHBridge extends EventEmitter {
         });
       });
       const cwd = (out || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean).pop() || '';
-      return cwd.startsWith('/') ? cwd : null;
-    } catch { return null; }
+      if (cwd.startsWith('/')) return cwd;
+      // /proc 조회 실패(비Linux 등) → 추적값이라도 있으면 폴백
+      return (tracked && tracked.startsWith('/')) ? tracked : null;
+    } catch { return (tracked && tracked.startsWith('/')) ? tracked : null; }
   }
   // panel → 프롬프트 파싱용 tail 버퍼 (chunk 경계로 프롬프트가 잘리는 것 방지)
   private promptTail: Map<string, string> = new Map();
