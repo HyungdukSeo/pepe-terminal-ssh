@@ -15,6 +15,7 @@ dist-ssr
 # Build output
 dist-electron
 release
+.cache/
 
 # Java sidecar build artifacts (compiled by scripts/build-sidecar.js)
 java-sidecar/build/

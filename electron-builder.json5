@@ -8,6 +8,8 @@
   "directories": {
     "output": "release/${version}"
   },
+  "npmRebuild": false,
+  "buildDependenciesFromSource": false,
   "files": [
     "dist",
     "dist-electron",
