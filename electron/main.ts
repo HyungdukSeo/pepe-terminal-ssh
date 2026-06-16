@@ -4814,6 +4814,22 @@ const claudeProcesses: Map<string, any> = new Map();
 // ── Gemini CLI 연동 ──
 const geminiProcesses: Map<string, any> = new Map();
 
+function findGeminiBundlePath(): string | null {
+  try {
+    const { execFileSync } = require('child_process');
+    const fs = require('fs');
+    const path = require('path');
+    const whereOutput = execFileSync('where.exe', ['gemini.cmd'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).trim();
+    const cmdPath = whereOutput.split(/\r?\n/).find(Boolean);
+    if (!cmdPath) return null;
+    const baseDir = path.dirname(cmdPath);
+    const bundlePath = path.join(baseDir, 'node_modules', '@google', 'gemini-cli', 'bundle', 'gemini.js');
+    return fs.existsSync(bundlePath) ? bundlePath : null;
+  } catch {
+    return null;
+  }
+}
+
 // ── Codex CLI 연동 ──
 const codexProcesses: Map<string, any> = new Map();
 
@@ -4887,6 +4903,21 @@ function buildAugmentedPath(): string {
     // Homebrew prefix (Apple Silicon vs Intel)
     extraPaths.push('/opt/homebrew/bin', '/usr/local/bin');
   }
+  try {
+    const resourcesBase = app.isPackaged ? process.resourcesPath : path.resolve(process.cwd(), 'resources');
+    const rgRoot = path.join(resourcesBase, 'rg');
+    const platKey = process.platform === 'win32'
+      ? (process.arch === 'arm64' ? 'win-arm64' : 'win-x64')
+      : process.platform === 'darwin'
+        ? (process.arch === 'arm64' ? 'mac-arm64' : 'mac-x64')
+        : process.platform === 'linux'
+          ? (process.arch === 'arm64' ? 'linux-arm64' : 'linux-x64')
+          : null;
+    if (platKey) {
+      const rgBinDir = path.join(rgRoot, platKey);
+      if (fs.existsSync(rgBinDir)) extraPaths.unshift(rgBinDir);
+    }
+  } catch {}
   const sep = isWin ? ';' : ':';
   return [process.env.PATH || '', ...extraPaths].filter(Boolean).join(sep);
 }
@@ -5541,8 +5572,15 @@ ipcMain.handle('gemini:check', async () => {
     const { spawn } = require('child_process');
     const augmentedPath = buildAugmentedPath();
     const env = { ...process.env, PATH: augmentedPath, Path: augmentedPath };
+    const bundlePath = findGeminiBundlePath();
+    if (!bundlePath) return { installed: false };
     return await new Promise<{ installed: boolean; version?: string }>(resolve => {
-      const proc = spawn('gemini', ['--version'], { shell: true, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+      const proc = spawn(process.execPath, [bundlePath, '--version'], {
+        shell: false,
+        env: { ...env, ELECTRON_RUN_AS_NODE: '1' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
       let output = '';
       proc.stdout?.on('data', (d: Buffer) => { output += d.toString(); });
       proc.on('error', () => resolve({ installed: false }));
@@ -5676,7 +5714,6 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
     const localDirs = Array.isArray(addDirs) ? addDirs.filter(d => d && !d.startsWith('\\\\')) : [];
     const skippedUnc = Array.isArray(addDirs) ? addDirs.filter(d => d && d.startsWith('\\\\')) : [];
     const cwd = process.env.USERPROFILE || process.env.HOME || os.homedir();
-    const isWin = process.platform === 'win32';
     console.log('[gemini] include-dirs(local):', localDirs.length ? localDirs.join(', ') : '(none)');
     if (skippedUnc.length) console.log('[gemini] UNC dirs skipped (realpathSync hang 회피):', skippedUnc.join(', '));
     const geminiArgs = [
@@ -5688,7 +5725,19 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
       ...localDirs.flatMap(d => ['--include-directories', d]),
     ];
     console.log('[gemini] args:', geminiArgs.join(' '));
-    const proc = spawn('gemini', geminiArgs, { shell: isWin, stdio: ['pipe', 'pipe', 'pipe'], env: spawnEnv, cwd, windowsHide: true });
+    const bundlePath = findGeminiBundlePath();
+    if (!bundlePath) {
+      return { success: false, error: 'Gemini CLI bundle not found. Please reinstall Gemini CLI.' };
+    }
+    // Windows 에서 gemini.cmd 래퍼를 직접 spawn 하지 말고, 실제 bundle JS 를 node 모드로 실행한다.
+    // 이렇게 하면 `-p` 인자와 stdin 이 안정적으로 전달된다.
+    const proc = spawn(process.execPath, [bundlePath, ...geminiArgs], {
+      shell: false,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...spawnEnv, ELECTRON_RUN_AS_NODE: '1' },
+      cwd,
+      windowsHide: true,
+    });
     geminiProcesses.set(procKey, proc);
 
     try {

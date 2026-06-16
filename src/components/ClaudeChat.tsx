@@ -2424,8 +2424,12 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       : x));
   }, [messages, toolTimeline, usage, lastRejectedPlan, activeHistoryId]);
 
-  // 현재 에이전트 view 에 적용할 streaming — 공유 OFF 시 다른 에이전트 stream 은 제외
-  const currentAgentStreaming = shareContext ? streaming : streamingAgents.has(currentAgent);
+  // 현재 에이전트 view 에 적용할 streaming — ref 기준의 즉시 활성 요청도 반영해서
+  // state batching / view 전환 사이에 "처리 중" 표시가 잠깐 사라지는 현상을 막는다.
+  const activeReqAgent = activeRequestIdRef.current ? requestToAgentRef.current.get(activeRequestIdRef.current) || null : null;
+  const currentAgentStreaming = shareContext
+    ? (streaming || activeReqAgent === currentAgent)
+    : (streamingAgents.has(currentAgent) || activeReqAgent === currentAgent);
   const send = useCallback(async (text: string, contextItems: FileContextItem[]) => {
     if (!text.trim()) return;
     // 공유 OFF: 현재 에이전트만 busy 이면 차단, 다른 에이전트 stream 은 신경 안 씀
@@ -4441,7 +4445,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           })());
         })()}
       </div>
-      {currentAgentStreaming && !showHistoryPanel && (
+      {currentAgentStreaming && (
         <div className="claude-chat-streaming">
           <span className="claude-chat-streaming-dots">●●●</span>
           <span className="claude-chat-streaming-activity">{activity || tt('thinking')}</span>
