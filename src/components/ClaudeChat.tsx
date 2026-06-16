@@ -269,6 +269,28 @@ function sanitizeMermaidLabels(src: string): string {
       if (!trimmed) return _m;
       return `${open}"${trimmed}"${close}`;
     });
+    // 엣지 인라인 라벨을 파이프 형식(-->|"..."|)으로 정규화 — 특수문자/공백/한글 라벨이
+    // -. 라벨 .-> / -- 라벨 --> 형태일 때 파서가 자주 깨지는 문제 회피.
+    out = out.split('\n').map(line => {
+      if (line.includes('|')) return line; // 이미 파이프 라벨이면 그대로
+      const esc = (t: string) => t.trim().replace(/"/g, '&quot;');
+      // 점선: X -. 라벨 .-> Y  →  X -.->|"라벨"| Y  (공백 유무 무관)
+      line = line.replace(/-\.\s*([^>\n][^>\n]*?)\s*\.-*->/g, (m, txt) => {
+        const t = esc(txt); if (!t || /^[-.\s]+$/.test(t)) return m;
+        return `-.->|"${t}"|`;
+      });
+      // 실선: X -- 라벨 --> Y  →  X -->|"라벨"| Y
+      line = line.replace(/(^|[^-])--\s*([^>\-\s][^>\n]*?)\s*--+>/g, (m, pre, txt) => {
+        const t = esc(txt); if (!t || /^[-\s]+$/.test(t)) return m;
+        return `${pre}-->|"${t}"|`;
+      });
+      // 굵은선: X == 라벨 ==> Y  →  X ==>|"라벨"| Y
+      line = line.replace(/(^|[^=])==\s*([^>=\s][^>\n]*?)\s*==+>/g, (m, pre, txt) => {
+        const t = esc(txt); if (!t || /^[=\s]+$/.test(t)) return m;
+        return `${pre}==>|"${t}"|`;
+      });
+      return line;
+    }).join('\n');
     // 빈 줄(공백만 있는 줄 포함) 을 단일 newline 으로 축약.
     while (/\n[ \t]*\n/.test(out)) out = out.replace(/\n[ \t]*\n/g, '\n');
   }
@@ -806,6 +828,52 @@ function buildToolLabel(name: string, input: any): string {
   return `🔧 ${name}(${summarizeToolInput(name, input)})`;
 }
 
+// 도구 입력의 '핵심'을 보여주는 상세 — 편집은 diff(+/-), 명령은 커맨드, 계획/할일은 본문.
+// 너무 길면 잘라서(라인/문자 캡) 핵심만. 결과 출력(resultPreview)과 별개로 '무엇을 했는지' 표시용.
+function buildToolDetail(name: string, input: any): string {
+  if (!input || typeof input !== 'object') return '';
+  const cap = (s: string, lines = 40, chars = 2000): string => {
+    let arr = String(s).split('\n');
+    let cut = false;
+    if (arr.length > lines) { arr = arr.slice(0, lines); cut = true; }
+    let out = arr.join('\n');
+    if (out.length > chars) out = out.slice(0, chars) + ' …';
+    else if (cut) out += '\n…';
+    return out;
+  };
+  const diffOf = (oldS: string, newS: string): string => {
+    const minus = oldS ? oldS.split('\n').map(l => '- ' + l).join('\n') : '';
+    const plus = newS ? newS.split('\n').map(l => '+ ' + l).join('\n') : '';
+    return [minus, plus].filter(Boolean).join('\n');
+  };
+  switch (name) {
+    case 'Edit':
+    case 'NotebookEdit':
+      return cap(diffOf(String(input.old_string ?? input.old_source ?? ''), String(input.new_string ?? input.new_source ?? '')));
+    case 'MultiEdit':
+      if (Array.isArray(input.edits)) {
+        return cap(input.edits.map((e: any, i: number) =>
+          `@@ edit ${i + 1} @@\n${diffOf(String(e.old_string ?? ''), String(e.new_string ?? ''))}`).join('\n'));
+      }
+      return '';
+    case 'Write':
+      return input.content ? cap(String(input.content).split('\n').map((l: string) => '+ ' + l).join('\n')) : '';
+    case 'Bash':
+    case 'PowerShell':
+      return cap(String(input.command || ''), 25, 1500);
+    case 'mcp__pepe_ssh__ssh_exec':
+      return cap([input.session ? `[${input.session}]` : '', String(input.command || '')].filter(Boolean).join(' '), 25, 1500);
+    case 'mcp__pepe_ssh__ssh_write':
+      return input.content ? cap(String(input.content).split('\n').map((l: string) => '+ ' + l).join('\n')) : '';
+    case 'TodoWrite':
+      return Array.isArray(input.todos) ? cap(input.todos.map((td: any) => `• ${td.content || td.activeForm || ''}`).join('\n')) : '';
+    case 'ExitPlanMode':
+      return input.plan ? cap(String(input.plan), 60, 3000) : '';
+    default:
+      return '';
+  }
+}
+
 // 메시지 마크다운 캐시 — 같은 (id, content) 는 한 번만 파싱.
 // 대화가 길어지면 marked.parse + mermaid 전처리가 매 렌더마다 모든 메시지에 대해 호출되어 누적 비용 폭발.
 const _mdCache = new Map<string, { content: string; html: string }>();
@@ -838,7 +906,7 @@ type Message = {
   seq?: number; // 발생 순서 (타임라인 인터리브용)
   agent?: AgentType; // 응답한 에이전트 (assistant 메시지에만)
 };
-type ToolTimelineItem = { id: string; label: string; status: 'running' | 'done' | 'error'; resultPreview?: string; seq?: number };
+type ToolTimelineItem = { id: string; label: string; status: 'running' | 'done' | 'error'; resultPreview?: string; detail?: string; seq?: number };
 type ChatHistoryEntry = {
   id: string; // 로컬 고유 id
   claudeSessionId?: string | null; // Claude CLI session_id (resume 용)
@@ -1010,23 +1078,37 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [streaming, setStreaming] = useState(false);
+  // 요청 시작 시각 + 첫 이벤트 수신 여부 — 안전망이 콜드스타트를 조기 종료하지 않도록.
+  const reqStartedAtRef = useRef<number>(0);
+  const hadStreamEventRef = useRef<boolean>(false);
   // 안전망 — 메인 프로세스 close 이벤트 누락 등으로 result/done 이 도달하지 못해
-  // streaming 플래그가 영원히 true 로 남는 케이스 방지. 10초간 stream 이벤트가 없으면
-  // 진행 중 상태를 강제 해제 → 메시지가 마크다운으로 정상 렌더되도록.
+  // streaming 플래그가 영원히 true 로 남는 케이스 방지.
+  //  - 이벤트가 한 번이라도 왔으면: 10초 idle 시 강제 해제
+  //  - 아직 한 번도 안 왔으면(에이전트 콜드스타트): 60초까지 대기 후 해제
   useEffect(() => {
     if (!streaming) return;
-    const id = window.setInterval(() => {
+    let busy = false;
+    const id = window.setInterval(async () => {
+      if (busy) return;
       const idle = Date.now() - (lastStreamEventAtRef.current || 0);
-      if (idle > 10_000) {
-        console.warn('[ClaudeChat] stream stuck — auto-finalize after 10s idle');
-        setStreaming(false);
-        setActivity('');
-        currentAsstIdRef.current = null;
-        activeRequestIdRef.current = null;
-        const aid = activeHistoryIdRef.current;
-        if (aid) setChatHistory(hList => hList.map(h => h.id === aid ? { ...h, streaming: false, pendingRequestId: null } : h));
-      }
-    }, 2000);
+      const sinceStart = Date.now() - (reqStartedAtRef.current || 0);
+      // 이벤트 공백이 길어도(긴 툴 실행/딥 reasoning) 곧바로 끊지 않는다.
+      const overTime = hadStreamEventRef.current ? (idle > 12_000) : (sinceStart > 90_000);
+      if (!overTime) return;
+      // 진짜 끊긴 건지 확인 — 에이전트 프로세스가 아직 살아있으면 계속 대기.
+      busy = true;
+      let running = false;
+      try { running = await (window as any).api?.agentIsRunning?.({ requestId: activeRequestIdRef.current || undefined }); } catch {}
+      busy = false;
+      if (running) { lastStreamEventAtRef.current = Date.now(); return; } // 살아있음 → idle 리셋 후 계속
+      console.warn('[ClaudeChat] stream finalize — agent process not running', { idle, sinceStart });
+      setStreaming(false);
+      setActivity('');
+      currentAsstIdRef.current = null;
+      activeRequestIdRef.current = null;
+      const aid = activeHistoryIdRef.current;
+      if (aid) setChatHistory(hList => hList.map(h => h.id === aid ? { ...h, streaming: false, pendingRequestId: null } : h));
+    }, 3000);
     return () => window.clearInterval(id);
   }, [streaming]);
   // 현재 진행 중 활동(툴 이름 등) — 스트리밍 인디케이터 옆에 표시
@@ -1698,6 +1780,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     const dispose = (window as any).api?.onClaudeStream?.((p: any) => {
       if (p.sessionId !== sessionId) return;
       lastStreamEventAtRef.current = Date.now();
+      hadStreamEventRef.current = true; // 에이전트가 출력 시작 — 콜드스타트 유예 해제
       const reqId: string | undefined = p.requestId;
       // requestId → historyId 매핑으로 어느 대화에 속하는 이벤트인지 판별
       const targetHistoryId = reqId ? requestToHistoryRef.current.get(reqId) : null;
@@ -1726,8 +1809,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             }
             for (const t of toolUses) {
               if (newTimeline.find(x => x.id === t.id)) continue;
-              const args = JSON.stringify(t.input).slice(0, 120);
-              newTimeline.push({ id: t.id, label: `🔧 ${t.name}(${args}${args.length >= 120 ? '…' : ''})`, status: 'running', seq: nextSeq() });
+              newTimeline.push({ id: t.id, label: buildToolLabel(t.name, t.input), detail: buildToolDetail(t.name, t.input), status: 'running', seq: nextSeq() });
             }
             const u = (msg.message as any).usage;
             if (u) {
@@ -1816,7 +1898,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             const next = [...prev];
             for (const t of toolUses) {
               if (next.find(x => x.id === t.id)) continue;
-              next.push({ id: t.id, label: buildToolLabel(t.name, t.input), status: 'running', seq: nextSeq() });
+              next.push({ id: t.id, label: buildToolLabel(t.name, t.input), detail: buildToolDetail(t.name, t.input), status: 'running', seq: nextSeq() });
             }
             return next;
           });
@@ -1850,7 +1932,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             const match = results.find((r: any) => r.tool_use_id === t.id);
             if (!match) return t;
             const content = typeof match.content === 'string' ? match.content : JSON.stringify(match.content);
-            const preview = content.slice(0, 80).replace(/\n/g, ' ');
+            const preview = content.slice(0, 1500).replace(/\n/g, ' ');
             return { ...t, status: match.is_error ? 'error' : 'done', resultPreview: preview };
           }));
           setActivity('');
@@ -2385,19 +2467,28 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             requestAnimationFrame(() => adjustMermaidNodeLabelContrast(wrap));
           }
         } catch (err) {
-          codeEl.setAttribute('data-mermaid-rendered', 'error');
-          const err1 = document.createElement('div');
-          err1.className = 'claude-chat-mermaid-error';
-          err1.textContent = tt('mermaid.renderFailed', { msg: String(err).slice(0, 200) });
-          if (pre && pre.parentElement) pre.parentElement.insertBefore(err1, pre);
           // mermaid 가 body 에 남긴 에러 SVG/임시 element 정리 (id 기반)
           try {
             const stale = document.getElementById(id);
             stale?.parentElement?.removeChild(stale);
-            // 추가 안전장치: 'd' + id 형태의 임시 element 도 mermaid 가 사용
             const stale2 = document.getElementById('d' + id);
             stale2?.parentElement?.removeChild(stale2);
           } catch {}
+          // 렌더 실패 시 빨간 에러 대신 ASCII 다이어그램으로 자동 폴백 — 항상 읽을 수 있게.
+          codeEl.setAttribute('data-mermaid-rendered', 'ascii');
+          try {
+            const ascii = mermaidToAscii(source);
+            const wrap2 = document.createElement('pre');
+            wrap2.className = 'claude-chat-mermaid-ascii';
+            wrap2.setAttribute('data-mermaid-rendered', 'ascii');
+            wrap2.setAttribute('data-mermaid-src', source);
+            wrap2.style.cssText = 'font-family: ui-monospace,Consolas,monospace; font-size: 12px; line-height: 1.5; padding: 10px 12px; background: #1e1e1e; border: 1px solid #3a3a3a; border-radius: 4px; overflow-x: auto; color: #d4d4d4; white-space: pre;';
+            wrap2.textContent = ascii;
+            if (pre && pre.parentElement) pre.parentElement.replaceChild(wrap2, pre);
+          } catch {
+            // ASCII 변환도 실패하면 원본 소스를 그대로 (코드블록 유지)
+            codeEl.setAttribute('data-mermaid-rendered', 'error');
+          }
         }
       }
     })();
@@ -2427,13 +2518,19 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   // 현재 에이전트 view 에 적용할 streaming — 공유 OFF 시 다른 에이전트 stream 은 제외
   const currentAgentStreaming = shareContext ? streaming : streamingAgents.has(currentAgent);
   const send = useCallback(async (text: string, contextItems: FileContextItem[]) => {
-    if (!text.trim()) return;
+    // 첨부만 있고 텍스트가 없어도 전송 허용 (이미지/문서만 보내는 경우)
+    if (!text.trim() && binaryAttachments.length === 0 && localFileAttachments.length === 0 && (contextItems?.length || 0) === 0) return;
     // 공유 OFF: 현재 에이전트만 busy 이면 차단, 다른 에이전트 stream 은 신경 안 씀
     const guardBusy = shareContextRef.current ? streaming : streamingAgents.has(currentAgentRef.current);
     if (guardBusy) return;
     addStreamingAgent(currentAgentRef.current);
     // 스트리밍 플래그는 진입 즉시 켠다 — 이후 프롬프트 빌드 중 예외/지연이 있어도
     // '중단' 버튼이 요청 시작과 동시에 활성화되도록 보장 (공유 ON/OFF 모두 일관)
+    // ⚠ 세이프티넷이 직전 요청의 stale 타임스탬프로 즉시 발동하지 않도록 now 로 리셋.
+    //    첫 이벤트 수신 전(콜드스타트)에는 60초까지 대기하도록 플래그도 초기화.
+    lastStreamEventAtRef.current = Date.now();
+    reqStartedAtRef.current = Date.now();
+    hadStreamEventRef.current = false;
     setStreaming(true);
     // 이번 send 의 대화 세대 기록 — 이후 도착하는 stream 이벤트가 이 세대에 속한 경우만 처리
     activeGenRef.current = conversationGenRef.current;
@@ -2914,7 +3011,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       setStreaming(false);
       removeStreamingAgent(currentAgentRef.current);
     }
-  }, [sessionId, streaming, streamingAgents, mountEntries, activeMount, localFileAttachments, permissionMode, model, perToolApproval, messages, toolTimeline, geminiTier, geminiYolo, codexApprovalPolicy]);
+  }, [sessionId, streaming, streamingAgents, mountEntries, activeMount, localFileAttachments, binaryAttachments, permissionMode, model, perToolApproval, messages, toolTimeline, geminiTier, geminiYolo, codexApprovalPolicy]);
 
   // 외부에서 컨텍스트 전달되면 추가 (기존 첨부에 append, 중복 제거)
   useEffect(() => {
@@ -3210,7 +3307,11 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   };
 
   // 로컬 PC 파일/폴더 업로드 → 인라인 첨부
-  const BINARY_LOCAL_EXT = new Set(['png','jpg','jpeg','gif','bmp','ico','webp','zip','gz','tar','bz2','7z','rar','exe','dll','so','dylib','bin','pdf','mp3','mp4','avi','mkv','wav','flac','ogg','class','o','a','obj','lib','pyc','woff','woff2','ttf','otf','eot']);
+  const BINARY_LOCAL_EXT = new Set(['png','jpg','jpeg','gif','bmp','ico','webp','tiff','heic','zip','gz','tar','bz2','7z','rar','exe','dll','so','dylib','bin','pdf','mp3','mp4','avi','mkv','mov','wav','flac','ogg','class','o','a','obj','lib','pyc','woff','woff2','ttf','otf','eot',
+    // Office/문서 — 텍스트로 읽으면 깨지므로 path-copy 첨부
+    'pptx','ppt','docx','doc','xlsx','xls','hwp','hwpx','odt','ods','odp']);
+  // 텍스트로 인라인 첨부할 확장자 — 이 외엔(특히 drop 시 mime 비어도) 바이너리로 안전 처리.
+  const TEXT_LOCAL_EXT = new Set(['txt','md','markdown','log','json','xml','yaml','yml','csv','tsv','ini','conf','cfg','toml','env','sh','bash','zsh','ps1','bat','cmd','js','jsx','ts','tsx','mjs','cjs','py','rb','go','rs','java','kt','c','h','cpp','hpp','cc','cs','php','pl','lua','sql','html','htm','css','scss','less','vue','svelte','gradle','properties','dockerfile','makefile','gitignore','tf','tfvars']);
   const EXCLUDE_FOLDER_DIR = new Set(['node_modules','.git','.svn','dist','build','__pycache__','.venv','venv','.next','target','coverage','.cache','.idea','.vscode']);
 
   const onFilePicked = async (files: FileList | null, opts: { fromFolder?: boolean; maxFiles?: number; maxPerFileKB?: number; maxTotalMB?: number } = {}) => {
@@ -3359,10 +3460,12 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     const binaryFiles: File[] = [];
     for (const f of Array.from(files)) {
       const ext = f.name.split('.').pop()?.toLowerCase() || '';
-      const isBinaryByExt = BINARY_LOCAL_EXT.has(ext);
-      const isBinaryByMime = !!f.type && !f.type.startsWith('text/') && !/json|xml|yaml|javascript|typescript/i.test(f.type);
-      if (isBinaryByExt || isBinaryByMime) binaryFiles.push(f);
-      else textFiles.push(f);
+      // 텍스트로 인라인 첨부할지 판정 — 확실히 텍스트인 경우만. 그 외(Office/이미지/미지/빈 mime)는 바이너리 path-copy.
+      const isTextByExt = TEXT_LOCAL_EXT.has(ext);
+      const isTextByMime = !!f.type && (f.type.startsWith('text/') || /json|xml|yaml|javascript|typescript/i.test(f.type));
+      const isText = !BINARY_LOCAL_EXT.has(ext) && (isTextByExt || isTextByMime);
+      if (isText) textFiles.push(f);
+      else binaryFiles.push(f);
     }
     if (textFiles.length > 0) {
       // 텍스트도 외부 드래그면 onFilePicked 의 f.text() 가 실패할 수 있어 path 기반으로 복사
@@ -3400,24 +3503,21 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         target.closest('.claude-chat-container')
       ));
     const onWinDragOver = (e: DragEvent) => {
+      // 파일 드래그는 창 어디서든 허용(preventDefault) — 안 하면 OS 가 '금지' 커서로 드롭을 막음.
+      // (투명/프레임리스 창에서 타깃 영역 판정이 빗나가도 첨부가 되도록 전역 허용)
       if (!hasFilesType(e.dataTransfer)) return;
-      const target = e.target as HTMLElement | null;
-      if (!inChatArea(target)) {
-        if (isDragOverRef.current) { isDragOverRef.current = false; setIsDragOver(false); }
-        return;
-      }
-      // 드롭존 안에서만 preventDefault → drop 이벤트가 JS 로 들어오게 함 (+ navigate 차단)
       e.preventDefault();
       try { if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; } catch {}
-      if (!isDragOverRef.current) { isDragOverRef.current = true; setIsDragOver(true); }
+      const overChat = inChatArea(e.target as HTMLElement | null);
+      if (overChat !== isDragOverRef.current) { isDragOverRef.current = !!overChat; setIsDragOver(!!overChat); }
     };
     const onWinDrop = async (e: DragEvent) => {
       if (!hasFilesType(e.dataTransfer)) return;
-      const target = e.target as HTMLElement | null;
-      if (!inChatArea(target)) return;  // 채팅 영역 밖 → main 의 will-navigate 백스톱에 맡김
-      e.preventDefault();
       isDragOverRef.current = false;
       setIsDragOver(false);
+      // 채팅 영역 위 드롭만 첨부로 가로챈다. 그 외(파일 전송 패널 등)는 통과시켜 각자 처리.
+      if (!inChatArea(e.target as HTMLElement | null)) return;
+      e.preventDefault();
       const files = e.dataTransfer?.files;
       console.log('[drag-drop] chat drop —', files?.length ?? 0, 'file(s)');
       if (files && files.length > 0) await routeDroppedFiles(files);
@@ -4428,6 +4528,17 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                             </span>
                             <span className="claude-chat-timeline-label">{isOpen ? t.label : labelShort}</span>
                           </button>
+                          {isOpen && t.detail && (
+                            <pre className="claude-chat-timeline-detail claude-chat-timeline-diff">
+                              {t.detail.split('\n').map((ln, li) => {
+                                const add = ln.startsWith('+ ');
+                                const del = ln.startsWith('- ');
+                                return (
+                                  <span key={li} style={{ display: 'block', color: add ? '#5cd97a' : del ? '#ff7a7a' : undefined }}>{ln || ' '}</span>
+                                );
+                              })}
+                            </pre>
+                          )}
                           {isOpen && t.resultPreview && (
                             <pre className="claude-chat-timeline-detail">{t.resultPreview}</pre>
                           )}
@@ -4963,7 +5074,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           {currentAgentStreaming ? (
             <button className="claude-chat-btn stop" onClick={stop}>{tt('stopShort')}</button>
           ) : (
-            <button className="claude-chat-btn send" onClick={handleSend} disabled={!input.trim()}>{tt('send')}</button>
+            <button className="claude-chat-btn send" onClick={handleSend} disabled={!input.trim() && binaryAttachments.length === 0 && localFileAttachments.length === 0}>{tt('send')}</button>
           )}
         </div>
       </div>
