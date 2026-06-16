@@ -175,12 +175,16 @@ function sanitizeMermaidLabels(src: string): string {
   const quote = (label: string): string | null => {
     const t = label.trim();
     if (!t || t.startsWith('"')) return null; // 이미 따옴표 / 빈 값 → 그대로
-    // 특수문자 없으면 굳이 감싸지 않음 (단순 라벨은 원형 유지)
-    if (!/[()#:;<>&]/.test(t)) return null;
+    // 순수 영숫자/언더스코어 단일 토큰만 그대로 두고, 그 외(공백·한글·?·,·. 등
+    // 특수문자 포함)는 모두 따옴표로 감싼다 — codex/한글 라벨이 unquoted 일 때
+    // mermaid v11 파서가 깨지는 문제(예: {D_PABX_GRP_NO 존재?})를 근본 차단.
+    if (/^[A-Za-z0-9_]+$/.test(t)) return null;
     return `"${t.replace(/"/g, '&quot;')}"`;
   };
   // id[label]  ([[ / [( 같은 더블/복합 모양은 제외 — 안쪽에 [] 없을 때만)
   out = out.replace(/([A-Za-z0-9_]+)\[([^\[\]\n]+)\]/g, (m, id, label) => {
+    // 평행사변형/사다리꼴 등 shape 구분자(/ \)로 시작·끝나는 라벨은 보존 (따옴표 시 모양 깨짐)
+    if (/^[/\\]|[/\\]$/.test(label.trim())) return m;
     const q = quote(label);
     return q ? `${id}[${q}]` : m;
   });
@@ -782,6 +786,17 @@ function summarizeToolInput(name: string, input: any): string {
   if (!input || typeof input !== 'object') return JSON.stringify(input ?? '').slice(0, 80);
   const truncate = (s: string, n: number) => s.length > n ? s.slice(0, n) + '…' : s;
   const fp = input.file_path || input.path || input.filePath;
+  // pepe_ssh MCP 도구 — claude(mcp__pepe_ssh__*) / codex(pepe_ssh.*) 이름 모두 정규화해 경로/패턴만 표시
+  const bn = bareToolName(name);
+  if (bn === 'ssh_read_file' || bn === 'ssh_write_file' || bn === 'ssh_read' || bn === 'ssh_write') {
+    if (input.path) return truncate(String(input.path), 120);
+  } else if (bn === 'ssh_grep') {
+    return truncate([input.pattern, input.path ? `in ${input.path}` : '', input.glob ? `(${input.glob})` : ''].filter(Boolean).join(' '), 120);
+  } else if (bn === 'ssh_glob') {
+    return truncate([input.pattern, input.path ? `in ${input.path}` : ''].filter(Boolean).join(' '), 120);
+  } else if (bn === 'ssh_exec') {
+    return truncate([input.session ? `[${input.session}]` : '', String(input.command || '')].filter(Boolean).join(' '), 120);
+  }
   switch (name) {
     case 'Read':
     case 'Write':
@@ -834,6 +849,89 @@ function buildToolLabel(name: string, input: any): string {
   return `🔧 ${name}(${summarizeToolInput(name, input)})`;
 }
 
+// tool_result content → 표시용 텍스트. content 는 문자열이거나 MCP content 블록
+// 배열([{type:'text',text}])일 수 있음 → text 만 추출해 JSON/이스케이프 노출·줄바꿈 깨짐 방지.
+function extractToolResultText(content: any): string {
+  if (content == null) return '';
+  if (typeof content === 'string') {
+    const s = content.trimStart();
+    // 문자열이 content 배열/객체를 직렬화한 것이면 파싱해 재추출
+    if (s.startsWith('[') || s.startsWith('{')) {
+      try { return extractToolResultText(JSON.parse(content)); } catch { return content; }
+    }
+    return content;
+  }
+  if (Array.isArray(content)) {
+    const txt = content
+      .map((c: any) => (typeof c === 'string' ? c : (c?.type === 'text' ? c.text : (c?.text ?? ''))))
+      .filter(Boolean).join('\n');
+    if (txt) return txt;
+  } else if (typeof content === 'object') {
+    if (Array.isArray(content.content)) return extractToolResultText(content.content);
+    if (typeof content.text === 'string') return content.text;
+  }
+  try { return JSON.stringify(content, null, 2); } catch { return String(content); }
+}
+
+// MCP/네임스페이스 prefix 제거 → 순수 도구명. (mcp__pepe_ssh__ssh_read_file → ssh_read_file, pepe_ssh.ssh_exec → ssh_exec)
+function bareToolName(name: string): string {
+  let n = String(name || '');
+  if (n.startsWith('mcp__')) { const i = n.lastIndexOf('__'); if (i >= 0) n = n.slice(i + 2); }
+  else if (n.includes('.')) n = n.slice(n.lastIndexOf('.') + 1);
+  return n;
+}
+// 경로의 마지막 세그먼트(파일명)만 — 디렉토리 경로 제거.
+function baseName(p: any): string {
+  const s = shortenWebdavPath(String(p ?? ''));
+  const parts = s.split(/[\\/]/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : s;
+}
+// 도구별 동작 동사(아이콘 포함) — 접힌 라벨/그룹 요약에 공통 사용.
+const TOOL_VERB: Record<string, string> = {
+  Read: '📖 읽기', ssh_read_file: '📖 읽기', ssh_read: '📖 읽기',
+  Write: '📝 쓰기', ssh_write_file: '📝 쓰기', ssh_write: '📝 쓰기',
+  Edit: '✏️ 수정', MultiEdit: '✏️ 수정', NotebookEdit: '✏️ 수정',
+  LS: '📂 목록',
+  Glob: '🔍 찾기', ssh_glob: '🔍 찾기',
+  Grep: '🔍 검색', ssh_grep: '🔍 검색', WebSearch: '🔍 검색',
+  Bash: '▶ 실행', PowerShell: '▶ 실행', ssh_exec: '▶ 실행', mcp__pepe_ssh__ssh_exec: '▶ 실행',
+  WebFetch: '🌐 가져오기',
+  TodoWrite: '📋 할일', ExitPlanMode: '📋 계획',
+  Agent: '🤖 에이전트', Task: '🤖 에이전트',
+};
+// 접힌 상태 라벨 — 동작 + 대상 파일명(경로 제외). 펼치면 buildToolLabel(전체 경로) 표시.
+function buildToolLabelShort(name: string, input: any): string {
+  const n = bareToolName(name);
+  const verb = TOOL_VERB[n] || `🔧 ${n}`;
+  const fp = input?.file_path || input?.path || input?.filePath;
+  const firstTok = (s: any) => String(s || '').trim().split(/\s+/)[0] || '';
+  switch (n) {
+    case 'Read': case 'ssh_read_file': case 'ssh_read':
+    case 'Write': case 'ssh_write_file': case 'ssh_write':
+    case 'Edit': case 'MultiEdit': case 'NotebookEdit':
+    case 'LS':
+      return `${verb} ${fp ? baseName(fp) : ''}`.trim();
+    case 'Glob': case 'ssh_glob':
+      return `${verb} ${input?.pattern || ''}`.trim();
+    case 'Grep': case 'ssh_grep':
+      return `${verb} ${input?.pattern ? `"${input.pattern}"` : ''}`.trim();
+    case 'WebSearch':
+      return `${verb} ${input?.query || ''}`.trim();
+    case 'Bash': case 'PowerShell': case 'ssh_exec': case 'mcp__pepe_ssh__ssh_exec':
+      return `${verb} ${firstTok(input?.command)}`.trim();
+    case 'WebFetch':
+      try { return `${verb} ${new URL(String(input.url)).hostname}`; } catch { return verb; }
+    case 'TodoWrite':
+      return `${verb} ${Array.isArray(input?.todos) ? input.todos.length : 0}개`;
+    case 'ExitPlanMode':
+      return '📋 계획 승인 요청';
+    case 'Agent': case 'Task':
+      return `${verb} ${input?.description || input?.subagent_type || ''}`.trim();
+    default:
+      return verb;
+  }
+}
+
 // 도구 입력의 '핵심'을 보여주는 상세 — 편집은 diff(+/-), 명령은 커맨드, 계획/할일은 본문.
 // 너무 길면 잘라서(라인/문자 캡) 핵심만. 결과 출력(resultPreview)과 별개로 '무엇을 했는지' 표시용.
 function buildToolDetail(name: string, input: any): string {
@@ -847,10 +945,42 @@ function buildToolDetail(name: string, input: any): string {
     else if (cut) out += '\n…';
     return out;
   };
+  // 라인 단위 LCS diff — 공통 줄은 컨텍스트('  '), 바뀐 줄만 '- '/'+ '.
+  // 긴 공통 구간은 변경 주변 컨텍스트(±3줄)만 남기고 '  …' 로 접는다.
   const diffOf = (oldS: string, newS: string): string => {
-    const minus = oldS ? oldS.split('\n').map(l => '- ' + l).join('\n') : '';
-    const plus = newS ? newS.split('\n').map(l => '+ ' + l).join('\n') : '';
-    return [minus, plus].filter(Boolean).join('\n');
+    const a = oldS ? oldS.split('\n') : [];
+    const b = newS ? newS.split('\n') : [];
+    if (a.length === 0) return b.map(l => '+ ' + l).join('\n');
+    if (b.length === 0) return a.map(l => '- ' + l).join('\n');
+    const n = a.length, m = b.length;
+    // LCS 길이표 (역방향) — 입력이 큰 경우 cap 으로 보호되므로 충분.
+    const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+    for (let i = n - 1; i >= 0; i--)
+      for (let j = m - 1; j >= 0; j--)
+        dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    const raw: string[] = [];
+    let i = 0, j = 0;
+    while (i < n && j < m) {
+      if (a[i] === b[j]) { raw.push('  ' + a[i]); i++; j++; }
+      else if (dp[i + 1][j] >= dp[i][j + 1]) { raw.push('- ' + a[i]); i++; }
+      else { raw.push('+ ' + b[j]); j++; }
+    }
+    while (i < n) { raw.push('- ' + a[i]); i++; }
+    while (j < m) { raw.push('+ ' + b[j]); j++; }
+    // 변경 주변 컨텍스트만 남기고 긴 공통 구간 접기
+    const CTX = 3;
+    const isCtx = (l: string) => l.startsWith('  ');
+    const keep = new Array(raw.length).fill(false);
+    for (let k = 0; k < raw.length; k++) {
+      if (!isCtx(raw[k])) for (let d = -CTX; d <= CTX; d++) { const idx = k + d; if (idx >= 0 && idx < raw.length) keep[idx] = true; }
+    }
+    const out: string[] = [];
+    let skipping = false;
+    for (let k = 0; k < raw.length; k++) {
+      if (keep[k]) { out.push(raw[k]); skipping = false; }
+      else if (!skipping) { out.push('  …'); skipping = true; }
+    }
+    return out.join('\n');
   };
   switch (name) {
     case 'Edit':
@@ -912,7 +1042,7 @@ type Message = {
   seq?: number; // 발생 순서 (타임라인 인터리브용)
   agent?: AgentType; // 응답한 에이전트 (assistant 메시지에만)
 };
-type ToolTimelineItem = { id: string; label: string; status: 'running' | 'done' | 'error'; resultPreview?: string; detail?: string; seq?: number };
+type ToolTimelineItem = { id: string; name?: string; label: string; labelShort?: string; status: 'running' | 'done' | 'error'; resultPreview?: string; detail?: string; seq?: number };
 type ChatHistoryEntry = {
   id: string; // 로컬 고유 id
   claudeSessionId?: string | null; // Claude CLI session_id (resume 용)
@@ -1759,24 +1889,11 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     return () => { if (dispose) dispose(); };
   }, []);
 
-  // 선택된 SSH 세션들이 바뀌면 각각 WebDAV 마운트 등록 + 루트 경로 저장 (멀티)
+  // 선택된 SSH 세션 목록을 AI 대상으로 등록 (WebDAV 마운트 없이 — 파일 접근은 pepe_ssh MCP 도구로).
+  // WebDAV 가 느리고 불안정해서 제거: 이제 ssh_read_file/ssh_write_file/ssh_exec/ssh_grep/ssh_glob 로만 접근.
   useEffect(() => {
-    (async () => {
-      if (selectedSshSessions.length === 0) { setActiveMounts([]); return; }
-      const results: { termId: string; mountRoot: string; label: string }[] = [];
-      for (const sess of selectedSshSessions) {
-        try {
-          const reg: any = await (window as any).api?.claudeRegisterMount?.(sess.termId, sess.label);
-          if (!reg?.success) continue;
-          const pathRes: any = await (window as any).api?.claudeGetMountPath?.(sess.termId, '/');
-          if (!pathRes?.success) continue;
-          results.push({ termId: sess.termId, mountRoot: pathRes.uncPath.replace(/\\$/, ''), label: sess.label });
-        } catch (err) {
-          console.error('[ClaudeChat] auto-mount failed:', sess.label, err);
-        }
-      }
-      setActiveMounts(results);
-    })();
+    if (selectedSshSessions.length === 0) { setActiveMounts([]); return; }
+    setActiveMounts(selectedSshSessions.map(s => ({ termId: s.termId, mountRoot: '', label: s.label })));
   }, [selectedSshSessions.map(s => s.termId).join(',')]);
 
   // 스트림 이벤트 도착 시각 — 안전망 타이머용
@@ -1815,7 +1932,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             }
             for (const t of toolUses) {
               if (newTimeline.find(x => x.id === t.id)) continue;
-              newTimeline.push({ id: t.id, label: buildToolLabel(t.name, t.input), detail: buildToolDetail(t.name, t.input), status: 'running', seq: nextSeq() });
+              newTimeline.push({ id: t.id, name: t.name, label: buildToolLabel(t.name, t.input), labelShort: buildToolLabelShort(t.name, t.input), detail: buildToolDetail(t.name, t.input), status: 'running', seq: nextSeq() });
             }
             const u = (msg.message as any).usage;
             if (u) {
@@ -1839,7 +1956,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               newTimeline = newTimeline.map(t => {
                 const match = results.find((r: any) => r.tool_use_id === t.id);
                 if (!match) return t;
-                const content = typeof match.content === 'string' ? match.content : JSON.stringify(match.content);
+                const content = extractToolResultText(match.content);
                 const preview = content.slice(0, 1500); // 줄바꿈 보존 — pre 에서 그대로 표시 (Read 등 멀티라인 출력 깨짐 방지)
                 return { ...t, status: match.is_error ? 'error' : 'done', resultPreview: preview };
               });
@@ -1904,7 +2021,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             const next = [...prev];
             for (const t of toolUses) {
               if (next.find(x => x.id === t.id)) continue;
-              next.push({ id: t.id, label: buildToolLabel(t.name, t.input), detail: buildToolDetail(t.name, t.input), status: 'running', seq: nextSeq() });
+              next.push({ id: t.id, name: t.name, label: buildToolLabel(t.name, t.input), labelShort: buildToolLabelShort(t.name, t.input), detail: buildToolDetail(t.name, t.input), status: 'running', seq: nextSeq() });
             }
             return next;
           });
@@ -1937,7 +2054,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           setToolTimeline(prev => prev.map(t => {
             const match = results.find((r: any) => r.tool_use_id === t.id);
             if (!match) return t;
-            const content = typeof match.content === 'string' ? match.content : JSON.stringify(match.content);
+            const content = extractToolResultText(match.content);
             const preview = content.slice(0, 1500); // 줄바꿈 보존 — pre 에서 그대로 표시 (Read 등 멀티라인 출력 깨짐 방지)
             return { ...t, status: match.is_error ? 'error' : 'done', resultPreview: preview };
           }));
@@ -2183,6 +2300,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     (async () => {
       for (let i = 0; i < codeBlocks.length; i++) {
         const codeEl = codeBlocks[i];
+        // React 가 innerHTML 을 다시 그려 노드가 분리됐으면 skip — 다음 effect 실행에서
+        // 갱신된 DOM 으로 재처리됨 (분리된 노드에 작업하다 raw 코드블록이 남는 race 방지).
+        if (!codeEl.isConnected) continue;
         const pre = codeEl.parentElement; // <pre>
         const source = (codeEl.textContent || '').trim();
         const id = `mermaid-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 6)}`;
@@ -2594,66 +2714,30 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       }
     }
 
-    // 0) 활성 SSH 세션: 전체 파일시스템이 WebDAV 에 마운트됨 — 자동 context 주입
+    // 0) 활성 SSH 세션: 원격 파일/명령은 pepe_ssh MCP 도구로 접근 (WebDAV 제거 — 빠르고 안정적)
     if (activeMount) {
-      addDirsSet.add(activeMount.mountRoot);
-
-      // 사용자 메시지에서 Unix 절대 경로 추출 → UNC 번역 매핑 생성
-      const unixPathRegex = /\/[A-Za-z0-9_\-./]+/g;
-      const matches = Array.from(new Set(text.match(unixPathRegex) || []));
-      const pathMappings = matches
-        .filter(p => p.length > 2 && !p.startsWith('//'))
-        .map(p => {
-          const uncRel = p.replace(/^\/+/, '').replace(/\//g, '\\');
-          return { unix: p, unc: `${activeMount.mountRoot}\\${uncRel}` };
-        });
-
-      if (currentAgentRef.current === 'gemini') {
-        // Gemini 는 WebDAV UNC 워크스페이스를 못 씀 → pepe_ssh MCP 도구로만 원격 접근
+      const multi = activeMounts.length > 1;
+      contextLines.push(
+        `# 중요: 원격 SSH 접근 규칙 (필수)`,
+        ``,
+        `현재 SSH 세션: **${activeMount.label}** — 원격 Linux 호스트입니다. 원격 파일은 이 PC 에 없습니다.`,
+        `원격 파일/명령은 **반드시 pepe_ssh MCP 도구**로 접근하세요.`,
+        `❌ 로컬 Read / Write / Edit / Glob / Grep / LS / Bash 를 원격 경로(\`/view/...\` 등)에 쓰지 마세요 — 동작하지 않습니다.`,
+        ``,
+        `## 도구 (모든 경로는 원격 Unix 절대경로 그대로 — UNC/Windows 변환 불필요)`,
+        `✅ 파일 읽기: \`ssh_read_file(path="/원격/절대경로")\``,
+        `✅ 파일 쓰기/수정: \`ssh_write_file(path="...", content="...")\` — 수정 시 먼저 ssh_read_file 로 읽고 수정된 전체 내용을 다시 씀`,
+        `✅ 내용 검색(grep): \`ssh_grep(pattern="정규식", path="/dir", glob="*.c")\``,
+        `✅ 파일 찾기(glob): \`ssh_glob(pattern="*.c", path="/dir")\``,
+        `✅ 명령 실행: \`ssh_exec(command="...")\` — cleartool, ctco, git, make, ls, sed 등`,
+      );
+      if (multi) {
         contextLines.push(
-          `# 중요: 원격 SSH 접근 규칙 (필수)`,
           ``,
-          `현재 SSH 세션: **${activeMount.label}** — 원격 Linux 호스트입니다.`,
-          `원격 파일/명령은 반드시 **pepe_ssh MCP 도구**로 접근하세요.`,
-          ``,
-          `## 도구 사용 규칙 (반드시 준수)`,
-          `❌ Read / Write / Edit / Glob / LS / Bash 등 로컬 파일·셸 도구를 원격 경로에 쓰지 마세요 — 원격 파일은 이 PC 에 없습니다.`,
-          `✅ **원격 파일 읽기**: \`ssh_read_file(path="/원격/유닉스/절대경로")\``,
-          `✅ **원격 파일 쓰기/수정**: \`ssh_write_file(path="...", content="...")\` — 수정 시 먼저 ssh_read_file 로 읽고 수정된 전체 내용을 다시 씁니다`,
-          `✅ **원격 명령 실행**: \`ssh_exec(command="...")\` — cleartool, ctco, git, make, grep, find, ls 등`,
-          `✅ 모든 경로는 **원격 Unix 절대경로 그대로** 사용 (예: \`/view/ghj_view/vobs/...\`). Windows/UNC 경로 변환 불필요.`,
-          ``,
-        );
-      } else {
-        contextLines.push(
-          `# 중요: 원격 SSH 파일 접근 규칙`,
-          ``,
-          `현재 SSH 세션: **${activeMount.label}**`,
-          `이 세션의 원격 Linux 파일시스템 전체가 로컬 WebDAV 에 마운트되어 있습니다.`,
-          ``,
-          `## 경로 매핑 규칙`,
-          `- 원격 Unix 루트 \`/\` ↔ 로컬 UNC \`${activeMount.mountRoot}\\\``,
-          `- 원격 \`/a/b/c.txt\` ↔ 로컬 \`${activeMount.mountRoot}\\a\\b\\c.txt\``,
-          ``,
-          `## 도구 사용 규칙 (반드시 준수)`,
-          `❌ **로컬 Bash 툴을 쓰지 마세요** — 이 시스템은 Windows 이며 Unix 경로 \`/view/...\` 를 Bash 로 접근할 수 없습니다.`,
-          `✅ **파일 읽기/탐색**: Read / Glob / Grep / LS 툴을 UNC 경로로 호출`,
-          `✅ **파일 편집/작성**: Edit / Write 툴을 UNC 경로로 호출 (실제 원격 SSH 서버에 실시간 반영됨)`,
-          `✅ **원격 명령 실행 (cleartool, ctco, make, git 등)**: \`mcp__pepe_ssh__ssh_exec\` 툴 사용 — command 만 원격 Unix 경로로 전달 (UNC 변환 NO). 예: \`ssh_exec(command="ctco /view/.../file.c")\``,
-          `✅ 파일 경로가 언급되면: 파일 I/O 는 UNC 변환, 쉘 명령 argument 는 Unix 경로 그대로`,
-          ``,
+          `여러 SSH 세션 연결됨 (${activeMounts.map(m => m.label).join(', ')}) — 각 도구의 **session 인자(라벨)**로 대상 호스트 지정. 생략 시 첫 세션.`,
         );
       }
-
-      if (pathMappings.length > 0) {
-        contextLines.push(`## 이번 질문에서 감지된 경로 (미리 번역됨)`);
-        for (const m of pathMappings) {
-          contextLines.push(`- 원격: \`${m.unix}\` → 로컬 UNC: \`${m.unc}\``);
-        }
-        contextLines.push('');
-      }
-
-      contextLines.push(`분석 결과를 말할 때는 **원격 Unix 경로 기준**으로 설명해주세요 (사용자가 이해하기 쉽게).`);
+      contextLines.push(``, `분석 결과는 **원격 Unix 경로 기준**으로 설명해주세요.`);
     }
 
     // 0.5) 사용자 메시지에서 Windows 로컬 절대 경로 자동 감지 → --add-dir 추가
@@ -2733,11 +2817,10 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       contextLines.push('', '[명시적으로 첨부된 파일/폴더]', pathMap);
       attachBadge = `📂 첨부 ${mountEntries.length}개:\n${mountEntries.slice(0, 5).map(m => `• ${m.remotePath}${m.isDir ? '/' : ''}`).join('\n')}${mountEntries.length > 5 ? `\n외 ${mountEntries.length - 5}개` : ''}\n\n`;
     } else if (activeMounts.length > 0) {
-      // 멀티 SSH 컨텍스트 — 각 세션의 WebDAV 루트를 addDirs 에 추가 + 매핑 안내
-      for (const m of activeMounts) addDirsSet.add(m.mountRoot);
+      // 멀티 SSH 컨텍스트 — 파일 접근은 pepe_ssh MCP 도구로 (WebDAV 마운트 없음)
       if (activeMounts.length > 1) {
-        const mapLines = activeMounts.map(m => `- ${m.label}: \`${m.mountRoot}\` (이 세션 원격 루트 \`/\`)`).join('\n');
-        contextLines.push('', '[연결된 여러 SSH 세션 — 각 루트로 파일 접근 가능]', mapLines);
+        const mapLines = activeMounts.map(m => `- ${m.label}`).join('\n');
+        contextLines.push('', '[연결된 여러 SSH 세션 — pepe_ssh 도구의 session 인자로 대상 지정]', mapLines);
         attachBadge = `🔗 활성 SSH ${activeMounts.length}개: ${activeMounts.map(m => m.label).join(', ')}\n\n`;
       } else {
         attachBadge = `🔗 활성 SSH: ${activeMounts[0].label}\n\n`;
@@ -2800,9 +2883,13 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       // 오래된 transcript 안의 UNC mountRoot 는 현재 세션과 다를 수 있음 (포트/termId 매 세션 변경).
       // 현재 active mountRoot 가 있으면 모든 옛 \\127.0.0.1@PORT\DavWWWRoot\term-XXX 패턴을 현재 것으로 치환.
       const sanitizeUNC = (s: string): string => {
-        if (!activeMount) return s;
+        // WebDAV 제거 후 mountRoot 가 없으므로, 옛 transcript 의 UNC 경로를 원격 Unix 경로로 되돌린다.
         const oldUncRe = /\\\\127\.0\.0\.1@\d+\\DavWWWRoot\\term-[^\\\s"')]+/g;
-        return s.replace(oldUncRe, activeMount.mountRoot);
+        return s.replace(oldUncRe, (m) => {
+          // ...\term-xxx\a\b\c → /a/b/c
+          const rel = m.replace(/^\\\\127\.0\.0\.1@\d+\\DavWWWRoot\\term-[^\\]+/, '').replace(/\\/g, '/');
+          return rel.startsWith('/') ? rel : '/' + rel;
+        });
       };
       const transcriptLines: string[] = [];
       for (const it of items) {
@@ -2987,7 +3074,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           ].join('\n');
           codexPlanRequestsRef.current.add(requestId);
         }
-        await (window as any).api?.codexSend?.(sessionId, codexPrompt, requestId, model, codexApprovalPolicy, effort);
+        // sshTermId 전달 → codex 에 SSH MCP(pepe_ssh) 제공 (원격 파일/명령/검색)
+        await (window as any).api?.codexSend?.(sessionId, codexPrompt, requestId, model, codexApprovalPolicy, effort, sshTermId, sshSessions);
       } else {
         const disallowBash = !!sshTermId;
         const resumeSessionId = claudeSessionIdRef.current;
@@ -4504,9 +4592,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               // 툴 이름별 카운트로 요약 — "검색함 Read 2개, Bash 1개" 식
               const counts: Record<string, number> = {};
               for (const t of g.tools) {
-                const m = (t.label || '').match(/^([A-Za-z_][A-Za-z0-9_]*)/);
-                const name = m ? m[1] : tt('tool');
-                counts[name] = (counts[name] || 0) + 1;
+                const verb = t.name ? (TOOL_VERB[bareToolName(t.name)] || `🔧 ${bareToolName(t.name)}`) : tt('tool');
+                counts[verb] = (counts[verb] || 0) + 1;
               }
               return Object.entries(counts).map(([k, v]) => `${k} ${tt('toolCount', { count: v })}`).join(', ');
             })();
@@ -4524,7 +4611,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                     {g.tools.map(t => {
                       // 실행 중인 도구는 자동 펼침 (진행 상황 보이도록)
                       const isOpen = expandedToolItems.has(t.id) || t.status === 'running';
-                      const labelShort = t.label.length > 80 ? t.label.slice(0, 80) + '…' : t.label;
+                      // 접힘: 동작+파일명(경로 X) / 펼침: 전체 경로 라벨 + 상세/내용
+                      const collapsedLabel = t.labelShort || (t.label.length > 80 ? t.label.slice(0, 80) + '…' : t.label);
                       return (
                         <div key={`t-${t.id}`} className={`claude-chat-timeline-item ${t.status} ${isOpen ? 'open' : 'closed'}`}>
                           <button className="claude-chat-timeline-row" onClick={() => toggleToolItem(t.id)} title={isOpen ? tt('collapse') : tt('expand')}>
@@ -4532,17 +4620,17 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                             <span className="claude-chat-timeline-status">
                               {t.status === 'running' ? '⏳' : t.status === 'done' ? '✓' : '✕'}
                             </span>
-                            <span className="claude-chat-timeline-label">{isOpen ? t.label : labelShort}</span>
+                            <span className="claude-chat-timeline-label">{isOpen ? t.label : collapsedLabel}</span>
                           </button>
                           {isOpen && t.detail && (
                             <pre className="claude-chat-timeline-detail claude-chat-timeline-diff">
-                              {t.detail.split('\n').map((ln, li) => {
+                              {(() => { const detailIsDiff = /^[+-] /m.test(t.detail || ''); return t.detail!.split('\n').map((ln, li) => {
                                 const add = ln.startsWith('+ ');
                                 const del = ln.startsWith('- ');
                                 return (
-                                  <span key={li} style={{ display: 'block', color: add ? '#5cd97a' : del ? '#ff7a7a' : undefined }}>{ln || ' '}</span>
+                                  <span key={li} style={{ display: 'block', color: add ? '#5cd97a' : del ? '#ff7a7a' : (detailIsDiff ? '#8a8a8a' : undefined) }}>{ln || ' '}</span>
                                 );
-                              })}
+                              }); })()}
                             </pre>
                           )}
                           {isOpen && t.resultPreview && (

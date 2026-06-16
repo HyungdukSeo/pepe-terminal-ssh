@@ -163,6 +163,36 @@ const TOOLS = [
       required: ['path', 'content'],
     },
   },
+  {
+    name: 'ssh_grep',
+    description: 'Search file CONTENTS on the remote SSH server (like grep -rn). Returns matching lines as "path:line: text". Use instead of a local Grep tool for remote files.' + sessionHint,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', description: 'Regular expression to search for (passed to grep -E).' },
+        path: { type: 'string', description: 'Directory or file to search under (remote absolute path). Default current dir.' },
+        glob: { type: 'string', description: 'Optional filename filter, e.g. "*.c" (grep --include).' },
+        ignore_case: { type: 'boolean', description: 'Case-insensitive search.' },
+        max_results: { type: 'number', description: 'Max matching lines to return (default 200).' },
+        ...sessionProp,
+      },
+      required: ['pattern'],
+    },
+  },
+  {
+    name: 'ssh_glob',
+    description: 'Find FILES by name pattern on the remote SSH server (like find -name). Returns matching file paths. Use instead of a local Glob tool for remote files.' + sessionHint,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', description: 'Filename glob, e.g. "*.c" or "**/*.java" (matched against the file name).' },
+        path: { type: 'string', description: 'Base directory to search under (remote absolute path). Default current dir.' },
+        max_results: { type: 'number', description: 'Max file paths to return (default 200).' },
+        ...sessionProp,
+      },
+      required: ['pattern'],
+    },
+  },
   ...(MULTI ? [{
     name: 'ssh_list_sessions',
     description: 'List the connected SSH sessions available for ssh_exec/ssh_read_file/ssh_write_file. Returns each session label and id; pass label/id as the "session" argument to target a specific host.',
@@ -234,8 +264,19 @@ function handleMessage(msg) {
             return;
           }
           let text;
-          try { text = Buffer.from(String(result.stdout || '').replace(/\s+/g, ''), 'base64').toString('utf-8'); }
-          catch { text = String(result.stdout || ''); }
+          try {
+            const buf = Buffer.from(String(result.stdout || '').replace(/\s+/g, ''), 'base64');
+            text = buf.toString('utf-8');
+            // utf-8 디코드 실패 문자(U+FFFD)가 있으면 EUC-KR(CP949) 로 재디코드해 더 적게 깨지는 쪽 채택
+            if (text.indexOf('�') >= 0) {
+              try {
+                const k = new TextDecoder('euc-kr').decode(buf);
+                const cU = (text.match(/�/g) || []).length;
+                const cK = (k.match(/�/g) || []).length;
+                if (cK < cU) text = k;
+              } catch (_) { /* TextDecoder euc-kr 미지원 → utf-8 유지 */ }
+            }
+          } catch { text = String(result.stdout || ''); }
           ok(text);
         })
         .catch(fail);
@@ -256,6 +297,41 @@ function handleMessage(msg) {
             return;
           }
           ok(`Wrote ${Buffer.byteLength(content, 'utf-8')} bytes to ${p}`);
+        })
+        .catch(fail);
+      return;
+    }
+
+    if (name === 'ssh_grep') {
+      const pattern = String(args.pattern || '');
+      if (!pattern.trim()) { sendMsg({ jsonrpc: '2.0', id, error: { code: -32602, message: 'pattern is required' } }); return; }
+      const base = String(args.path || '.');
+      const max = Math.max(1, Math.min(2000, Number(args.max_results) || 200));
+      const ic = args.ignore_case ? '-i ' : '';
+      const inc = args.glob ? `--include=${shq(String(args.glob))} ` : '';
+      // -rnI: 재귀+줄번호+바이너리 무시. 2>/dev/null 로 권한오류 잡음 제거. head 로 결과 캡.
+      const cmd = `grep -rnI ${ic}-E ${inc}-e ${shq(pattern)} ${shq(base)} 2>/dev/null | head -n ${max}`;
+      callExec(termId, cmd, 60000)
+        .then(result => {
+          const out = String(result.stdout || '').trimEnd();
+          ok(out ? out : `(no matches for /${pattern}/ under ${base})`);
+        })
+        .catch(fail);
+      return;
+    }
+
+    if (name === 'ssh_glob') {
+      const pattern = String(args.pattern || '');
+      if (!pattern.trim()) { sendMsg({ jsonrpc: '2.0', id, error: { code: -32602, message: 'pattern is required' } }); return; }
+      const base = String(args.path || '.');
+      const max = Math.max(1, Math.min(5000, Number(args.max_results) || 200));
+      // "**/" 같은 디렉토리 와일드카드는 find -name 의 basename 매칭으로 단순화.
+      const namePat = pattern.replace(/^.*\*\*\/+/, '').replace(/^.*\/+/, '') || pattern;
+      const cmd = `find ${shq(base)} -type f -name ${shq(namePat)} 2>/dev/null | head -n ${max}`;
+      callExec(termId, cmd, 60000)
+        .then(result => {
+          const out = String(result.stdout || '').trimEnd();
+          ok(out ? out : `(no files matching ${pattern} under ${base})`);
         })
         .catch(fail);
       return;
