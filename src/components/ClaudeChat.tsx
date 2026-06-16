@@ -2438,6 +2438,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     addStreamingAgent(currentAgentRef.current);
     // 스트리밍 플래그는 진입 즉시 켠다 — 이후 프롬프트 빌드 중 예외/지연이 있어도
     // '중단' 버튼이 요청 시작과 동시에 활성화되도록 보장 (공유 ON/OFF 모두 일관)
+    // watchdog 기준 시간을 현재로 초기화 — 초기값 0이면 Date.now()-0이 수십억ms라
+    // 첫 번째 watchdog 주기(2s)에서 즉시 해제되는 버그 방지.
+    lastStreamEventAtRef.current = Date.now();
     setStreaming(true);
     // 이번 send 의 대화 세대 기록 — 이후 도착하는 stream 이벤트가 이 세대에 속한 경우만 처리
     activeGenRef.current = conversationGenRef.current;
