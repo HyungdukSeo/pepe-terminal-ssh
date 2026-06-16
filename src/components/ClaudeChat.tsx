@@ -882,6 +882,7 @@ type Props = {
   pendingContext: FileContextItem[] | null;
   onContextConsumed: () => void;
   mountEntries?: MountEntry[];
+  onAddMountedEntry?: (entry: MountEntry) => void;
   onClearMounted?: () => void;
   onRemoveMountedEntry?: (remotePath: string, termId: string) => void;
   connectedSessions?: { termId: string; label: string }[];
@@ -894,7 +895,10 @@ type Props = {
 
 let sessionCounter = 0;
 
-export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContextConsumed, mountEntries = [], onClearMounted, onRemoveMountedEntry, connectedSessions = [], defaultSshSession, pinned = true, onTogglePin, aiAgent = 'claude', onAgentChange }) => {
+type MountPreset = { remotePath: string; isDir: boolean };
+type MountPresetMap = Record<string, MountPreset[]>;
+
+export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContextConsumed, mountEntries = [], onAddMountedEntry, onClearMounted, onRemoveMountedEntry, connectedSessions = [], defaultSshSession, pinned = true, onTogglePin, aiAgent = 'claude', onAgentChange }) => {
   // 채팅창 내에서 독립적으로 전환 가능한 에이전트 (전역 설정과 분리)
   const [currentAgent, setCurrentAgentState] = useState<AgentType>(aiAgent);
   const currentAgentRef = useRef<AgentType>(aiAgent);
@@ -1229,6 +1233,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const [activeMounts, setActiveMounts] = useState<{ termId: string; mountRoot: string; label: string }[]>([]);
   // 대표 마운트 (단일 참조 호환용)
   const activeMount = activeMounts[0] || null;
+  const [mountPresetsBySession, setMountPresetsBySession] = useState<MountPresetMap>({});
+  const mountPresetsLoadedRef = useRef(false);
   // Claude CLI 대화 세션 ID (이전 대화 컨텍스트 유지용 --resume)
   const claudeSessionIdRef = useRef<string | null>(null);
   // 대화 이력 목록 (UIPrefs 영속화)
@@ -1258,7 +1264,11 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         const prefs = await (window as any).api?.getUIPrefs?.();
         if (typeof prefs?.aiShareContext === 'boolean') setShareContext(prefs.aiShareContext);
         if (typeof prefs?.claudeChatMermaidEnabled === 'boolean') setMermaidEnabled(prefs.claudeChatMermaidEnabled);
+        if (prefs && typeof prefs.claudeWebdavMountPresetsV1 === 'object' && prefs.claudeWebdavMountPresetsV1) {
+          setMountPresetsBySession(prefs.claudeWebdavMountPresetsV1 as MountPresetMap);
+        }
       } catch {}
+      mountPresetsLoadedRef.current = true;
       shareContextLoadedRef.current = true;
     })();
   }, []);
@@ -1696,6 +1706,45 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       setActiveMounts(results);
     })();
   }, [selectedSshSessions.map(s => s.termId).join(',')]);
+
+  // 세션 선택이 바뀌면, 그 세션에 마지막으로 사용했던 WebDAV 첨부를 자동 복원.
+  useEffect(() => {
+    if (!mountPresetsLoadedRef.current) return;
+    if (selectedSshSessions.length === 0) return;
+    const currentKeys = new Set(mountEntries.map(m => `${m.termId}:${m.remotePath}`));
+    (async () => {
+      for (const sess of selectedSshSessions) {
+        const presets = mountPresetsBySession[sess.termId] || [];
+        for (const preset of presets) {
+          const key = `${sess.termId}:${preset.remotePath}`;
+          if (currentKeys.has(key)) continue;
+          try {
+            const reg: any = await (window as any).api?.claudeRegisterMount?.(sess.termId, sess.label);
+            if (!reg?.success) continue;
+            const pathRes: any = await (window as any).api?.claudeGetMountPath?.(sess.termId, preset.remotePath);
+            if (!pathRes?.success) continue;
+            onAddMountedEntry?.({ termId: sess.termId, remotePath: preset.remotePath, uncPath: pathRes.uncPath, isDir: preset.isDir });
+            currentKeys.add(key);
+          } catch (err) {
+            console.error('[ClaudeChat] restore mount failed:', sess.label, preset.remotePath, err);
+          }
+        }
+      }
+    })();
+  }, [selectedSshSessions.map(s => s.termId).join(','), mountEntries, mountPresetsBySession, onAddMountedEntry]);
+
+  // 현재 마운트된 WebDAV 항목을 세션별 프리셋으로 저장
+  useEffect(() => {
+    if (!mountPresetsLoadedRef.current) return;
+    const grouped: MountPresetMap = {};
+    for (const entry of mountEntries) {
+      if (!entry.termId || !entry.remotePath) continue;
+      const arr = grouped[entry.termId] || (grouped[entry.termId] = []);
+      if (!arr.find(x => x.remotePath === entry.remotePath)) arr.push({ remotePath: entry.remotePath, isDir: entry.isDir });
+    }
+    setMountPresetsBySession(grouped);
+    try { (window as any).api?.setUIPrefs?.({ claudeWebdavMountPresetsV1: grouped }); } catch {}
+  }, [mountEntries]);
 
   // 스트림 이벤트 도착 시각 — 안전망 타이머용
   const lastStreamEventAtRef = useRef<number>(0);

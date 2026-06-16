@@ -30,9 +30,11 @@ class SFTPFileSystem extends webdav.FileSystem {
   private locksMgr = new webdav.LocalLockManager();
   // stat 캐시 — Windows WebDAV 가 한 파일당 여러 메타 쿼리를 날려 SFTP 라운드트립이 폭증하는 문제 완화
   private statCache: Map<string, { stats: any; expiresAt: number }> = new Map();
+  private inflightStat: Map<string, Promise<any>> = new Map();
   private readonly STAT_TTL = 30 * 1000; // 30초
   // readdir 캐시 (디렉토리 리스팅도 반복되는 경향)
   private readdirCache: Map<string, { entries: string[]; expiresAt: number }> = new Map();
+  private inflightReadDir: Map<string, Promise<string[]>> = new Map();
   private readonly READDIR_TTL = 15 * 1000; // 15초
 
   constructor(sshBridge: SSHBridge, panelId: string) {
@@ -55,20 +57,28 @@ class SFTPFileSystem extends webdav.FileSystem {
     const now = Date.now();
     const cached = this.statCache.get(remotePath);
     if (cached && cached.expiresAt > now) return Promise.resolve(cached.stats);
-    return this.sftp().then(sftp => new Promise((resolve, reject) => {
+    const inflight = this.inflightStat.get(remotePath);
+    if (inflight) return inflight;
+    const pending = this.sftp().then(sftp => new Promise((resolve, reject) => {
       sftp.stat(remotePath, (err: any, stats: any) => {
         if (err) return reject(err);
         this.statCache.set(remotePath, { stats, expiresAt: Date.now() + this.STAT_TTL });
         resolve(stats);
       });
-    }));
+    })).finally(() => {
+      this.inflightStat.delete(remotePath);
+    });
+    this.inflightStat.set(remotePath, pending);
+    return pending;
   }
 
   private invalidateStat(remotePath: string) {
     this.statCache.delete(remotePath);
+    this.inflightStat.delete(remotePath);
     // 부모 디렉토리의 readdir 도 무효화
     const parent = remotePath.replace(/\/[^/]+\/?$/, '') || '/';
     this.readdirCache.delete(parent);
+    this.inflightReadDir.delete(parent);
   }
 
   // ── 기본 매니저 ──
@@ -118,9 +128,14 @@ class SFTPFileSystem extends webdav.FileSystem {
       cb(undefined, cached.entries.slice());
       return;
     }
-    this.sftp().then(sftp => {
+    const inflight = this.inflightReadDir.get(remote);
+    if (inflight) {
+      inflight.then(entries => cb(undefined, entries.slice())).catch(() => cb(webdav.Errors.ResourceNotFound));
+      return;
+    }
+    const pending = this.sftp().then(sftp => new Promise<string[]>((resolve, reject) => {
       sftp.readdir(remote, (err: any, list: any[]) => {
-        if (err) return cb(webdav.Errors.ResourceNotFound);
+        if (err) return reject(err);
         const names = list
           .map((e: any) => e.filename)
           .filter((n: string) => n !== '.' && n !== '..');
@@ -139,9 +154,13 @@ class SFTPFileSystem extends webdav.FileSystem {
           }
         }
         this.readdirCache.set(remote, { entries: names, expiresAt: Date.now() + this.READDIR_TTL });
-        cb(undefined, names);
+        resolve(names);
       });
-    }).catch(() => cb(webdav.Errors.ResourceNotFound));
+    })).finally(() => {
+      this.inflightReadDir.delete(remote);
+    });
+    this.inflightReadDir.set(remote, pending);
+    pending.then(entries => cb(undefined, entries.slice())).catch(() => cb(webdav.Errors.ResourceNotFound));
   }
 
   _displayName(path: webdav.Path, _info: webdav.DisplayNameInfo, cb: webdav.ReturnCallback<string>) {

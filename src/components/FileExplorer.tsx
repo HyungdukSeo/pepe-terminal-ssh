@@ -292,25 +292,25 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId, initial
         // SFTP 준비 보장 후 경로 적용 — feHomeDir 로 연결을 establish/대기한 뒤 initPath 로 이동.
         // (연결 직후 곧장 listDir 하면 SFTP 서브시스템 미준비로 에러나는 케이스 회피)
         (async () => {
-          for (let i = 0; i < 10; i++) {
+          for (let i = 0; i < 3; i++) {
             try { const h = await api?.feHomeDir?.('remote', first.termId); if (h) break; } catch {}
-            await new Promise(r => setTimeout(r, 500));
+            if (i < 2) await new Promise(r => setTimeout(r, 200));
           }
           setRightPath(initPath);
         })();
       } else {
-        // SSH 연결 완료 대기 후 홈 디렉토리 가져오기 (최대 10초)
+        // SSH 연결 완료 대기 후 홈 디렉토리 가져오기 (짧게만 대기)
         const tryGetHome = async (retries: number) => {
           for (let i = 0; i < retries; i++) {
             try {
               const home = await api?.feHomeDir?.('remote', first.termId);
               if (home && home !== '/') { setRightPath(home); return; }
             } catch {}
-            await new Promise(r => setTimeout(r, 1000));
+            if (i < retries - 1) await new Promise(r => setTimeout(r, 200));
           }
           setRightPath('/');
         };
-        tryGetHome(10);
+        tryGetHome(3);
       }
     }
   }, [sessKey, initDone, sessionFolderMap, allSessionsList]);
@@ -321,13 +321,13 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId, initial
   const sep = (source: PanelSource) => source.mode === 'local' && navigator.platform.startsWith('Win') ? '\\' : '/';
 
   const getHomeWithRetry = async (mode: string, termId?: string): Promise<string> => {
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 3; i++) {
       try {
         const home = await api?.feHomeDir?.(mode, termId);
         if (home && home !== '/') return home;
       } catch {}
       if (mode === 'local') break;
-      await new Promise(r => setTimeout(r, 1000));
+      if (i < 2) await new Promise(r => setTimeout(r, 200));
     }
     return mode === 'local' ? 'C:\\' : '/';
   };

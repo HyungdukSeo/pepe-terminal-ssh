@@ -162,14 +162,15 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
   const loadChildren = useCallback(async (path: string, retries = 3): Promise<TreeNode[]> => {
     try {
       let result: any = null;
-      // local 모드는 retry 불필요 (즉시 응답). remote 모드만 SFTP 준비 대기 retry.
+      // local 모드는 retry 불필요 (즉시 응답). remote 모드도 너무 오래 기다리지 않도록
+      // 짧게만 재시도하고, 준비가 늦으면 빠르게 빈 트리로 보여준다.
       const r = mode === 'local' ? 1 : retries;
       for (let i = 0; i < r; i++) {
         result = await (window as any).api?.feListDir?.(mode, path, termId);
         if (result?.files) break;
         // 명시적 에러면 retry 안 함 (SFTP 채널 누적 방지)
         if (result?.error) break;
-        if (i < r - 1) await new Promise(rs => setTimeout(rs, 500));
+        if (i < r - 1) await new Promise(rs => setTimeout(rs, 200));
       }
       if (!result || !result.files) {
         return [];
@@ -258,7 +259,7 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
     (async () => {
       try {
         let startPath = startTargetPath;
-        const retries = mode === 'local' ? 1 : 5;
+        const retries = mode === 'local' ? 1 : 3;
         if (!startPath) {
           let home: any = null;
           for (let i = 0; i < retries; i++) {
@@ -266,23 +267,23 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
             if (lastNavPathRef.current) return;
             home = await (window as any).api?.feHomeDir?.(mode, termId);
             if (home && typeof home === 'string' && home !== '/') break;
-            if (i < retries - 1) await new Promise(r => setTimeout(r, 500));
+            if (i < retries - 1) await new Promise(r => setTimeout(r, 200));
           }
           startPath = typeof home === 'string' ? home : (home?.path || '/');
         } else if (mode === 'remote') {
-          // SFTP 준비 대기 — local 은 즉시 가능
-          for (let i = 0; i < 5; i++) {
+          // SFTP 준비 대기 — 오래 기다리지 않고 빠르게 첫 화면을 띄운다.
+          for (let i = 0; i < 3; i++) {
             try {
               const probe: any = await (window as any).api?.feListDir?.('remote', startPath, termId);
               if (probe?.files) break;
             } catch {}
-            await new Promise(r => setTimeout(r, 500));
+            if (i < 2) await new Promise(r => setTimeout(r, 200));
           }
         }
         // 최종 반영 직전 재확인 — 구독이 이미 다른 경로로 navigate 했으면 홈 로드 결과로 덮어쓰지 않음
         if (lastNavPathRef.current && lastNavPathRef.current !== startPath) return;
         setPathInput(startPath);
-        const children = await loadChildren(startPath, 5);
+        const children = await loadChildren(startPath, 3);
         if (lastNavPathRef.current && lastNavPathRef.current !== startPath) return;
         setRoot({
           name: startPath,

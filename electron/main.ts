@@ -3240,11 +3240,7 @@ ipcMain.handle('fe:home-dir', async (_e, { mode, termId }: { mode: string; termI
     const bridge = getSSHBridge();
     if (mode === 'local') return require('os').homedir();
     const home = await bridge.handleSFTPRealPath(termId!, '.');
-    // 경로 접근 가능한지 확인
-    try { await bridge.handleSFTPListDir(termId!, home); return home; } catch {}
-    // 접근 불가하면 / 시도
-    try { await bridge.handleSFTPListDir(termId!, '/'); return '/'; } catch {}
-    return home;
+    return home || '/';
   } catch { return '/'; }
 });
 

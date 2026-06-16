@@ -4487,6 +4487,12 @@ function App() {
               pendingContext={claudeFileContext}
               onContextConsumed={() => setClaudeFileContext(null)}
               mountEntries={claudeMountEntries}
+              onAddMountedEntry={(entry) => setClaudeMountEntries(prev => {
+                const key = `${entry.termId}:${entry.remotePath}`;
+                const map = new Map(prev.map(e => [`${e.termId}:${e.remotePath}`, e]));
+                map.set(key, entry);
+                return Array.from(map.values());
+              })}
               onClearMounted={() => setClaudeMountEntries([])}
               onRemoveMountedEntry={(rp, termId) => setClaudeMountEntries(prev => prev.filter(e => !(e.remotePath === rp && e.termId === termId)))}
               connectedSessions={connectedSessions}
