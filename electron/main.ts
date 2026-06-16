@@ -4821,6 +4821,9 @@ const claudeProcesses: Map<string, any> = new Map();
 const geminiProcesses: Map<string, any> = new Map();
 
 function findGeminiBundlePath(): string | null {
+  // Mac/Linux: gemini CLI 를 shell 로 직접 실행 (bundle 경로 불필요 → null 반환)
+  if (process.platform !== 'win32') return null;
+  // Windows: gemini.cmd 래퍼의 실제 bundle JS 를 찾아 node 모드로 직접 실행
   try {
     const { execFileSync } = require('child_process');
     const fs = require('fs');
@@ -5585,14 +5588,20 @@ ipcMain.handle('gemini:check', async () => {
     const augmentedPath = buildAugmentedPath();
     const env = { ...process.env, PATH: augmentedPath, Path: augmentedPath };
     const bundlePath = findGeminiBundlePath();
-    if (!bundlePath) return { installed: false };
     return await new Promise<{ installed: boolean; version?: string }>(resolve => {
-      const proc = spawn(process.execPath, [bundlePath, '--version'], {
-        shell: false,
-        env: { ...env, ELECTRON_RUN_AS_NODE: '1' },
-        stdio: ['ignore', 'pipe', 'pipe'],
-        windowsHide: true,
-      });
+      // Windows: bundle JS 직접 실행 / Mac·Linux: gemini CLI shell 실행
+      const proc = bundlePath
+        ? spawn(process.execPath, [bundlePath, '--version'], {
+            shell: false,
+            env: { ...env, ELECTRON_RUN_AS_NODE: '1' },
+            stdio: ['ignore', 'pipe', 'pipe'],
+            windowsHide: true,
+          })
+        : spawn('gemini', ['--version'], {
+            shell: true,
+            env,
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
       let output = '';
       proc.stdout?.on('data', (d: Buffer) => { output += d.toString(); });
       proc.on('error', () => resolve({ installed: false }));
@@ -5738,18 +5747,23 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
     ];
     console.log('[gemini] args:', geminiArgs.join(' '));
     const bundlePath = findGeminiBundlePath();
-    if (!bundlePath) {
-      return { success: false, error: 'Gemini CLI bundle not found. Please reinstall Gemini CLI.' };
-    }
-    // Windows 에서 gemini.cmd 래퍼를 직접 spawn 하지 말고, 실제 bundle JS 를 node 모드로 실행한다.
-    // 이렇게 하면 `-p` 인자와 stdin 이 안정적으로 전달된다.
-    const proc = spawn(process.execPath, [bundlePath, ...geminiArgs], {
-      shell: false,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...spawnEnv, ELECTRON_RUN_AS_NODE: '1' },
-      cwd,
-      windowsHide: true,
-    });
+    // Windows: bundle JS 직접 실행 / Mac·Linux: gemini CLI shell 실행 (기존 방식)
+    const modelFlagStr = model ? ` -m ${model}` : '';
+    const includeFlagStr = localDirs.length > 0 ? ' ' + localDirs.map(d => `--include-directories "${d}"`).join(' ') : '';
+    const proc = bundlePath
+      ? spawn(process.execPath, [bundlePath, ...geminiArgs], {
+          shell: false,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: { ...spawnEnv, ELECTRON_RUN_AS_NODE: '1' },
+          cwd,
+          windowsHide: true,
+        })
+      : spawn(`cat "${tmpFile}" | gemini -o stream-json${modelFlagStr} --yolo --skip-trust${includeFlagStr}`, [], {
+          shell: true,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: spawnEnv,
+          cwd,
+        });
     geminiProcesses.set(procKey, proc);
 
     try {
