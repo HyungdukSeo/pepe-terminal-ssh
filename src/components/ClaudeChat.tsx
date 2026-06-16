@@ -1834,7 +1834,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                 const match = results.find((r: any) => r.tool_use_id === t.id);
                 if (!match) return t;
                 const content = typeof match.content === 'string' ? match.content : JSON.stringify(match.content);
-                const preview = content.slice(0, 1500).replace(/\n/g, ' ');
+                const preview = content.slice(0, 1500); // 줄바꿈 보존 — pre 에서 그대로 표시 (Read 등 멀티라인 출력 깨짐 방지)
                 return { ...t, status: match.is_error ? 'error' : 'done', resultPreview: preview };
               });
             }
@@ -1932,7 +1932,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             const match = results.find((r: any) => r.tool_use_id === t.id);
             if (!match) return t;
             const content = typeof match.content === 'string' ? match.content : JSON.stringify(match.content);
-            const preview = content.slice(0, 1500).replace(/\n/g, ' ');
+            const preview = content.slice(0, 1500); // 줄바꿈 보존 — pre 에서 그대로 표시 (Read 등 멀티라인 출력 깨짐 방지)
             return { ...t, status: match.is_error ? 'error' : 'done', resultPreview: preview };
           }));
           setActivity('');
