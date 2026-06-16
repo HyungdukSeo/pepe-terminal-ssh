@@ -45,8 +45,15 @@ function applyTermOpacity(termId: string, containerEl?: HTMLElement | null) {
   if (containerEl) {
     containerEl.style.background = opacity >= 1 ? themeBg : 'transparent';
   }
-  // 하나라도 투명한 터미널이 있으면 전체 투명 모드 CSS 클래스 토글
-  const anyTransparent = [...termOpacity.values()].some(v => v < 1);
+  // 숨겨진 탭/분리창의 opacity 는 전역 투명도 판정에 포함하지 않는다.
+  // 비활성 패널까지 포함하면, 화면에 보이지 않는 터미널의 투명도가
+  // 앱 전체 배경을 투명하게 만들어 "창이 사라진 것처럼" 보일 수 있다.
+  const anyTransparent = [...termStore.entries()].some(([termId, termEntry]) => {
+    const el = (termEntry.term as any).element as HTMLElement | undefined;
+    if (!el || el.offsetParent === null) return false;
+    const v = termOpacity.get(termId) ?? 1.0;
+    return v < 1;
+  });
   document.documentElement.classList.toggle('term-transparent-active', anyTransparent);
 }
 const DEFAULT_WORD_SEPARATORS = ' ./\\()"\'-:,.;<>~!@#$%^&*|+=[]{}`~?';
@@ -2744,6 +2751,9 @@ export function focusTerm(termId: string) {
         else (window as any).api?.resizeSSH?.(termId, c, r);
       }
     }
+    // 탭 전환 후 visible 상태를 기준으로 전역 투명도 클래스를 다시 계산
+    const containerEl = (entry.term as any).element?.closest?.('.xterm-container') || null;
+    applyTermOpacity(termId, containerEl);
   } catch {}
 }
 

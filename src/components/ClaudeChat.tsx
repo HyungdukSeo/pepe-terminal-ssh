@@ -2884,7 +2884,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           ].join('\n');
           codexPlanRequestsRef.current.add(requestId);
         }
-        await (window as any).api?.codexSend?.(sessionId, codexPrompt, requestId, model, codexApprovalPolicy, effort);
+        await (window as any).api?.codexSend?.(sessionId, codexPrompt, requestId, model, codexApprovalPolicy, effort, sshTermId);
       } else {
         const disallowBash = !!sshTermId;
         const resumeSessionId = claudeSessionIdRef.current;

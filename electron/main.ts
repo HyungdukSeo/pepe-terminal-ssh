@@ -30,7 +30,7 @@ import path from 'path';
 import os from 'os';
 import { execSync } from 'child_process';
 import * as pty from 'node-pty';
-import { fileURLToPath } from 'url';
+
 import { loadSessionsData, saveSessionsData, getSessionsPath, saveCustomPath, loadUIPrefs, saveUIPrefs, Session, Folder, SessionsData } from './sessionsStore';
 import { getSSHBridge } from './sshBridge';
 import { getTelnetBridge } from './telnetBridge';
@@ -51,8 +51,6 @@ import mcpSshServerScript from './mcpSshServer.cjs?raw';
 // @ts-ignore
 import claudeHookScript from './claudeHookScript.cjs?raw';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 (globalThis as any).__dirname = __dirname;
 
 // 멀티 인스턴스 캐시 충돌 방지 — 매 실행 unique sessionData 로 분리하던 코드.
@@ -125,6 +123,86 @@ function getStartupCwd(): string | null {
   return null;
 }
 let startupCwd: string | null = getStartupCwd();
+
+const codexWorktrees = new Map<string, string>();
+
+function sanitizeWorktreeName(s: string): string {
+  return (s || 'worktree').replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 80) || 'worktree';
+}
+
+function getCodexWorkspaceRoot(): string | null {
+  const { execFileSync } = require('child_process');
+  const candidates = [startupCwd, process.cwd()].filter(Boolean) as string[];
+  for (const base of candidates) {
+    try {
+      const root = execFileSync('git', ['-C', base, 'rev-parse', '--show-toplevel'], {
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        windowsHide: true,
+      }).trim();
+      if (root) return root;
+    } catch {}
+  }
+  return null;
+}
+
+function ensureCodexWorktree(sessionId: string): { cwd: string; repoRoot: string | null; created: boolean } {
+  const { execFileSync } = require('child_process');
+  const fs = require('fs');
+  const path = require('path');
+  const os = require('os');
+  const fallbackCwd = startupCwd || process.cwd() || os.homedir();
+  const cached = codexWorktrees.get(sessionId);
+  if (cached) {
+    try {
+      if (fs.existsSync(cached)) {
+        execFileSync('git', ['-C', cached, 'rev-parse', '--is-inside-work-tree'], {
+          encoding: 'utf-8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+          windowsHide: true,
+        });
+        return { cwd: cached, repoRoot: null, created: false };
+      }
+    } catch {}
+    codexWorktrees.delete(sessionId);
+  }
+
+  const repoRoot = getCodexWorkspaceRoot();
+  if (!repoRoot) return { cwd: fallbackCwd, repoRoot: null, created: false };
+
+  const baseDir = path.join(os.tmpdir(), 'pepe-codex-worktrees', sanitizeWorktreeName(path.basename(repoRoot)), sanitizeWorktreeName(sessionId));
+  let worktreePath = baseDir;
+  let created = false;
+
+  try {
+    if (fs.existsSync(worktreePath)) {
+      try {
+        execFileSync('git', ['-C', worktreePath, 'rev-parse', '--is-inside-work-tree'], {
+          encoding: 'utf-8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+          windowsHide: true,
+        });
+        codexWorktrees.set(sessionId, worktreePath);
+        return { cwd: worktreePath, repoRoot, created: false };
+      } catch {
+        worktreePath = `${baseDir}-${Date.now()}`;
+      }
+    }
+
+    fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
+    execFileSync('git', ['-C', repoRoot, 'worktree', 'add', '--detach', '--force', worktreePath, 'HEAD'], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    created = true;
+    codexWorktrees.set(sessionId, worktreePath);
+    return { cwd: worktreePath, repoRoot, created };
+  } catch (err) {
+    console.error('[codex] worktree setup failed:', err);
+    return { cwd: fallbackCwd, repoRoot: null, created: false };
+  }
+}
 
 // 외부 프로그램(HIWARE/자산관리툴 등)이 "터미널 프로그램"으로 PePe 를 호출하면서
 // 넘겨주는 접속 정보 파싱. 자산관리툴마다 터미널별 파라미터 형식이 제각각이라 모두 지원:
@@ -3934,6 +4012,7 @@ ipcMain.handle('window:focus', (e) => {
   const w = winOf(e);
   if (!w) return;
   console.log(`[ps-dbg main] window:focus IPC received hasFocus(before)=${w.isFocused()} minimized=${w.isMinimized()}`);
+  let toggledOnTop = false;
   try {
     if (w.isMinimized()) w.restore();
     // Windows 에서 백그라운드 process(PowerShell 등) 가 잠시 foreground 를 채간 경우,
@@ -3943,21 +4022,24 @@ ipcMain.handle('window:focus', (e) => {
     const wasOnTop = w.isAlwaysOnTop();
     if (!wasOnTop) {
       w.setAlwaysOnTop(true);
+      toggledOnTop = true;
     }
     w.moveTop();
     w.focus();
     // 명시적 webContents focus — 키보드 입력 capture 보장
     try { w.webContents.focus(); } catch {}
-    // 토글 복귀 — 다음 tick 에 alwaysOnTop 해제 (이때는 이미 foreground 됨)
-    if (!wasOnTop) {
+    // app.focus() 도 추가 — Electron 앱 자체를 foreground 로
+    try { app.focus({ steal: true }); } catch {}
+  } catch (err) { console.log('[ps-dbg main] window:focus IPC ERR', err); }
+  finally {
+    // 토글 복귀 — 예외가 나도 alwaysOnTop 이 남지 않도록 보장
+    if (toggledOnTop) {
       setTimeout(() => {
         try { if (!w.isDestroyed()) w.setAlwaysOnTop(false); } catch {}
       }, 50);
     }
-    // app.focus() 도 추가 — Electron 앱 자체를 foreground 로
-    try { app.focus({ steal: true }); } catch {}
     console.log(`[ps-dbg main] window:focus IPC DONE hasFocus(after)=${w.isFocused()}`);
-  } catch (err) { console.log('[ps-dbg main] window:focus IPC ERR', err); }
+  }
 });
 
 // ── 탭 분리(멀티 윈도우) ─────────────────────────────────────────────
@@ -3975,9 +4057,9 @@ function createDetachedWindow(payload: any, bounds?: { x?: number; y?: number; w
     minHeight: 400,
     icon: path.join(__dirname, '../public/icon.ico'),
     frame: false,
-    transparent: true,
-    backgroundColor: '#00000000',
-    hasShadow: false,
+    transparent: false,
+    backgroundColor: '#0d0f10',
+    hasShadow: true,
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -3986,7 +4068,9 @@ function createDetachedWindow(payload: any, bounds?: { x?: number; y?: number; w
   });
   detachedWindows.add(win);
   detachedInitPayloads.set(win.webContents.id, payload);
-  win.once('ready-to-show', () => { try { win.show(); win.focus(); } catch {} });
+  win.once('ready-to-show', () => {
+    try { win.show(); win.focus(); } catch {}
+  });
   win.on('closed', () => {
     detachedWindows.delete(win);
     detachedInitPayloads.delete(win.webContents.id);
@@ -5136,7 +5220,13 @@ ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowB
 
     // claude 프로세스 cwd — Electron 앱 폴더가 기본인데 그러면 Claude 가 이 앱을 분석 대상으로 오해.
     // 사용자 홈으로 시작 (사용자 의도 상 작업 대상은 --add-dir 또는 SSH mount 로 명시됨)
-    const claudeCwd = process.env.USERPROFILE || process.env.HOME || os.homedir();
+    // 원격 세션일 경우 로컬 홈 디렉토리 전체를 Grep/Glob 하는 것을 방지
+    let claudeCwd = process.env.USERPROFILE || process.env.HOME || os.homedir();
+    if (sshTermId) {
+      claudeCwd = path.join(os.tmpdir(), 'pepe-agent-workspace');
+      if (!fs.existsSync(claudeCwd)) fs.mkdirSync(claudeCwd, { recursive: true });
+    }
+
     const proc = spawn(shellCmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd: claudeCwd, windowsHide: true });
     claudeProcesses.set(procKey, proc);
 
@@ -5579,27 +5669,34 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
       }
     }
 
-    const modelFlag = model ? ` -m ${model}` : '';
+    const modelFlag = model ? ['-m', model] : [];
     // gemini 는 비대화형이라 항상 --yolo 필요 (없으면 도구가 막힘).
     // 승인 게이트는 렌더러의 "계획 승인" 흐름이 담당.
     void yolo;
-    const yoloFlag = ' --yolo';
     const localDirs = Array.isArray(addDirs) ? addDirs.filter(d => d && !d.startsWith('\\\\')) : [];
     const skippedUnc = Array.isArray(addDirs) ? addDirs.filter(d => d && d.startsWith('\\\\')) : [];
-    const includeFlag = localDirs.length > 0
-      ? ' ' + localDirs.map(d => `--include-directories "${d}"`).join(' ')
-      : '';
-    const trustFlag = ' --skip-trust';
-    const isWin = process.platform === 'win32';
     const cwd = process.env.USERPROFILE || process.env.HOME || os.homedir();
-    // -o stream-json: 도구 호출/응답을 JSONL 이벤트로 출력 → 도구 타임라인 표시
-    const shellCmd = isWin
-      ? `chcp 65001 >nul && type "${tmpFile}" | gemini -o stream-json${modelFlag}${yoloFlag}${trustFlag}${includeFlag}`
-      : `cat "${tmpFile}" | gemini -o stream-json${modelFlag}${yoloFlag}${trustFlag}${includeFlag}`;
+    const isWin = process.platform === 'win32';
     console.log('[gemini] include-dirs(local):', localDirs.length ? localDirs.join(', ') : '(none)');
     if (skippedUnc.length) console.log('[gemini] UNC dirs skipped (realpathSync hang 회피):', skippedUnc.join(', '));
-    const proc = spawn(shellCmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd, windowsHide: true });
+    const geminiArgs = [
+      '-p', '',
+      '-o', 'stream-json',
+      ...modelFlag,
+      '--yolo',
+      '--skip-trust',
+      ...localDirs.flatMap(d => ['--include-directories', d]),
+    ];
+    console.log('[gemini] args:', geminiArgs.join(' '));
+    const proc = spawn('gemini', geminiArgs, { shell: isWin, stdio: ['pipe', 'pipe', 'pipe'], env: spawnEnv, cwd, windowsHide: true });
     geminiProcesses.set(procKey, proc);
+
+    try {
+      proc.stdin.write(fs.readFileSync(tmpFile));
+      proc.stdin.end();
+    } catch (e) {
+      console.log('[gemini] stdin write error:', e);
+    }
 
     const cleanupTmp = () => {
       try { fs.unlinkSync(tmpFile); } catch {}
@@ -5875,7 +5972,7 @@ ipcMain.handle('codex:rateLimits', async () => {
   }
 });
 
-ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, approvalPolicy, effort }: { sessionId: string; prompt: string; requestId?: string; model?: string; approvalPolicy?: 'suggest' | 'auto-edit' | 'full-auto'; effort?: string }) => {
+ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, approvalPolicy, effort, sshTermId }: { sessionId: string; prompt: string; requestId?: string; model?: string; approvalPolicy?: 'suggest' | 'auto-edit' | 'full-auto'; effort?: string; sshTermId?: string }) => {
   try {
     // 같은 sessionId로 실행 중인 Gemini 프로세스 정리
     const prevGemini = geminiProcesses.get(sessionId);
@@ -5909,7 +6006,16 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
     // codex 는 항상 danger-full-access(샌드박스 OFF)로 실행 — claude 와 동일하게 OS 샌드박스 없음.
     // Windows 샌드박스(restricted token)는 UNC/WebDAV 네트워크 경로를 차단하므로 반드시 꺼야 함.
     void approvalPolicy;
-    const cwd = process.env.USERPROFILE || process.env.HOME || os.homedir();
+    
+    // Codex는 세션별 git worktree에서 실행 → 다른 Codex 세션의 변경이 현재 작업공간에 섞이지 않게 함
+    // SSH 세션이 붙은 경우에는 별도 임시 작업공간을 유지하되, 기본값은 현재 repo의 worktree 분리본.
+    const worktree = ensureCodexWorktree(sessionId);
+    let cwd = worktree.cwd;
+    if (sshTermId && !worktree.repoRoot) {
+      cwd = path.join(os.tmpdir(), 'pepe-agent-workspace');
+      if (!fs.existsSync(cwd)) fs.mkdirSync(cwd, { recursive: true });
+    }
+    console.log('[codex] cwd:', cwd, '| worktree created:', worktree.created, '| repoRoot:', worktree.repoRoot || '(none)');
 
     const modelFlag = model ? ` -m ${model}` : '';
     // effort: 값이 단순 영문(low/medium/high/xhigh)이므로 cmd.exe 에서 따옴표 불필요

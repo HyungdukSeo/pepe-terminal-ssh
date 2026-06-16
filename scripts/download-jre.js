@@ -93,11 +93,16 @@ function get(url, dest, redirects = 0) {
 }
 
 function extractZip(zipFile, destDir) {
-  // PowerShell Expand-Archive is available on every modern Windows host.
-  const r = spawnSync('powershell', ['-NoProfile', '-Command',
-    `Expand-Archive -LiteralPath '${zipFile.replace(/'/g, "''")}' -DestinationPath '${destDir.replace(/'/g, "''")}' -Force`,
+  // Prefer tar because it is present on modern Windows hosts and avoids
+  // PowerShell module-loading issues in constrained environments.
+  let r = spawnSync('tar', ['-xf', zipFile, '-C', destDir], { stdio: 'inherit' });
+  if (r.status === 0) return;
+  // Fallback for environments where tar cannot handle the archive.
+  r = spawnSync('powershell', ['-NoProfile', '-Command',
+    `[System.Reflection.Assembly]::LoadWithPartialName('System.IO.Compression.FileSystem') | Out-Null;` +
+    `[System.IO.Compression.ZipFile]::ExtractToDirectory('${zipFile.replace(/'/g, "''")}', '${destDir.replace(/'/g, "''")}')`,
   ], { stdio: 'inherit' });
-  if (r.status !== 0) throw new Error('Expand-Archive failed');
+  if (r.status !== 0) throw new Error('zip extraction failed');
 }
 
 function extractTarGz(tarFile, destDir) {
