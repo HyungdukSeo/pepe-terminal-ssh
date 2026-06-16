@@ -22,7 +22,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { RemoteFileTree } from './components/RemoteFileTree';
 import { QuickConnectBar, QuickConnectResult } from './components/QuickConnectDialog';
 import { StatusBar } from './components/StatusBar';
-import { resetTermConnectState, clearScrollbackInTerm, clearScreenInTerm, clearAllInTerm, applyThemeToAll, applyThemeToTerm, applyFontToTerm, applyFontToAll, getCurrentThemeName, registerTermSession, getTermSessionInfo, getWordSeparator, setWordSeparator, refitAllTerms, applyScrollbackToAll, applyScrollbackToTerm, cloneTermStyle, isTermConnected, isTermConnecting, isTermPty, subscribeConnectedChange, focusTerm, pasteToTerm, getSelectionFromTerm, selectAllInTerm, promptPasswordAndConnect, startInitialConnectWatchdog, getCurrentPwdForTerm, refitTerm, searchInTerm, searchNextInTerm, searchPrevInTerm, clearSearchInTerm, highlightAllMatches, clearHighlights, searchFromTop, getAllTermIds, applyCursorStyleToTerm, markQuickConnectPending, clearQuickConnectPending, writeToTerm, termStore, setTermFocusBlocked, setTermBackspaceMode, setTermDeleteMode, disposeTermFully } from './components/TerminalPanel';
+import { resetTermConnectState, clearScrollbackInTerm, clearScreenInTerm, clearAllInTerm, applyThemeToAll, applyThemeToTerm, applyFontToTerm, applyFontToAll, getCurrentThemeName, registerTermSession, getTermSessionInfo, getWordSeparator, setWordSeparator, refitAllTerms, applyScrollbackToAll, applyScrollbackToTerm, cloneTermStyle, isTermConnected, isTermConnecting, isTermPty, subscribeConnectedChange, focusTerm, pasteToTerm, getSelectionFromTerm, selectAllInTerm, promptPasswordAndConnect, startInitialConnectWatchdog, getCurrentPwdForTerm, refitTerm, searchInTerm, searchNextInTerm, searchPrevInTerm, clearSearchInTerm, highlightAllMatches, clearHighlights, searchFromTop, getAllTermIds, applyCursorStyleToTerm, markQuickConnectPending, clearQuickConnectPending, writeToTerm, termStore, setTermFocusBlocked, setTermBackspaceMode, setTermDeleteMode, disposeTermFully, markTermConnected, serializeTermBuffer, setPendingRestoreBuffer, getTermStyle, setPendingRestoreStyle } from './components/TerminalPanel';
 import { marked } from 'marked';
 // @ts-ignore — vite ?raw 로 docs/MANUAL.md 를 번들 문자열로 임베드
 import manualMd from '../docs/MANUAL.md?raw';
@@ -71,17 +71,24 @@ function addBroadcastHistory(text: string) {
   if (broadcastHistory.length > MAX_BROADCAST_HISTORY) broadcastHistory.pop();
 }
 
+// 분리된(탭 tear-off) 창 여부 — main 이 #detached 해시로 로드.
+const IS_DETACHED_WINDOW = typeof window !== 'undefined' && /detached/.test(window.location.hash);
+
 function App() {
   const { t: tOpt } = useTranslation('options');
   const { t: tMenu } = useTranslation('menu');
   const { t: tKb } = useTranslation('keybindings');
   const [tabs, setTabs] = useState<Tab[]>(() => {
+    // 분리 창은 빈 상태로 시작 — 마운트 후 main 에서 받은 탭 페이로드로 채운다(기본 워크스페이스/자동 셸 생성 방지).
+    if (IS_DETACHED_WINDOW) return [];
     return [{ id: 'tab-1', title: 'Workspace 1', layout: createInitialLayout('tab-1') }];
   });
   // 빈 deps useEffect 에서 최신 tabs 참조용 — state 변경 시마다 ref 동기화
   const tabsRef = useRef(tabs);
   useEffect(() => { tabsRef.current = tabs; }, [tabs]);
-  const [activeTabId, setActiveTabId] = useState<TabId>('tab-1');
+  const [activeTabId, setActiveTabId] = useState<TabId>(IS_DETACHED_WINDOW ? '' : 'tab-1');
+  const activeTabIdRef = useRef(activeTabId);
+  useEffect(() => { activeTabIdRef.current = activeTabId; }, [activeTabId]);
   // 탭별로 선택된 패널 ID 기억
   const [selectedPanelByTab, setSelectedPanelByTab] = useState<Record<string, string | null>>({});
   const selectedPanelId = selectedPanelByTab[activeTabId] ?? null;
@@ -1621,6 +1628,147 @@ function App() {
     setTabs(prev => prev.map(t => t.id === tabId ? { ...t, layout: fn(t.layout) } : t));
   };
 
+  // ── 탭 분리/재부착(멀티 윈도우) ──────────────────────────────────────
+  // 라이브 세션 재부착: 세션 매핑 등록 + 연결 상태 시딩 (이후 출력은 broadcast 로 수신, 재연결 방지)
+  const seedReattach = useCallback(async (tab: Tab) => {
+    let connected: string[] = [];
+    try { connected = (await (window as any).api?.getConnectedPanels?.()) || []; } catch {}
+    const connSet = new Set(connected);
+    try {
+      for (const s of collectAllSessions(tab.layout)) {
+        if (!s.termId) continue;
+        registerTermSession(s.termId, s.sessionId || '', s.sessionName, (s as any).host || '');
+        if (connSet.has(s.termId)) markTermConnected(s.termId);
+      }
+    } catch {}
+  }, []);
+
+  // 분리된 창: 마운트 직후 main 에서 받은 탭 페이로드로 채운다.
+  useEffect(() => {
+    if (!IS_DETACHED_WINDOW) return;
+    (async () => {
+      try {
+        const init: any = await (window as any).api?.getDetachedInit?.();
+        if (!init?.tab) return;
+        await seedReattach(init.tab);
+        try { for (const [tid, s] of Object.entries(init.styles || {})) setPendingRestoreStyle(tid, s); } catch {}
+        try { for (const [tid, b] of Object.entries(init.buffers || {})) setPendingRestoreBuffer(tid, b as string); } catch {}
+        setTabs([init.tab]);
+        setActiveTabId(init.tab.id);
+      } catch (err) { console.error('[detached] init fail', err); }
+    })();
+  }, [seedReattach]);
+
+  // 다른 창에서 끌어온 탭을 이 창이 받아들임 (re-dock).
+  //  - 미니탭(kind='session')이고 드롭 좌표 아래에 패널이 있으면 → 그 패널의 미니탭으로 병합.
+  //  - 그 외 → 새 워크스페이스 탭으로 추가.
+  useEffect(() => {
+    const off = (window as any).api?.onAdoptTab?.(async (payload: any) => {
+      if (!payload?.tab) return;
+      await seedReattach(payload.tab);
+      try { for (const [tid, s] of Object.entries(payload.styles || {})) setPendingRestoreStyle(tid, s); } catch {}
+      try { for (const [tid, b] of Object.entries(payload.buffers || {})) setPendingRestoreBuffer(tid, b as string); } catch {}
+      // 미니탭 → 드롭 지점 패널에 병합/분할 시도
+      if (payload.kind === 'session' && payload.point) {
+        try {
+          const b: any = await (window as any).api?.getWindowBounds?.();
+          if (b) {
+            const cx = payload.point.x - b.x, cy = payload.point.y - b.y;
+            const el = document.elementFromPoint(cx, cy) as HTMLElement | null;
+            const leafEl = el?.closest('[data-leaf-id]') as HTMLElement | null;
+            const leafId = leafEl?.getAttribute('data-leaf-id') || null;
+            const sess = collectAllSessions(payload.tab.layout)[0];
+            const curTabId = activeTabIdRef.current;
+            if (leafId && leafEl && sess && curTabId) {
+              // 패널 내 드롭 위치로 zone 판정 (가장자리=분할, 중앙=미니탭 병합)
+              const rect = leafEl.getBoundingClientRect();
+              const rx = (cx - rect.left) / rect.width;
+              const ry = (cy - rect.top) / rect.height;
+              const th = 0.25;
+              let zone: 'left' | 'right' | 'top' | 'bottom' | 'center' = 'center';
+              if (rx < th) zone = 'left'; else if (rx > 1 - th) zone = 'right';
+              else if (ry < th) zone = 'top'; else if (ry > 1 - th) zone = 'bottom';
+              updateLayout(curTabId, l => {
+                if (zone === 'center') return appendSessionsToPanel(l, leafId, [sess], true);
+                const direction: 'row' | 'column' = (zone === 'left' || zone === 'right') ? 'row' : 'column';
+                const insertBefore = zone === 'left' || zone === 'top';
+                return splitNodeWithSessions(l, leafId, direction, [sess], insertBefore);
+              });
+              setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
+              return; // 병합/분할 완료
+            }
+          }
+        } catch {}
+      }
+      // 폴백: 새 워크스페이스 탭
+      setTabs(prev => prev.find(t => t.id === payload.tab.id) ? prev : [...prev, payload.tab]);
+      setActiveTabId(payload.tab.id);
+    });
+    return () => { try { off?.(); } catch {} };
+  }, [seedReattach]);
+
+  // 탭의 모든 세션 화면 버퍼 + 스타일을 직렬화 (분리 시 화면/테마 이관용)
+  const collectTabBuffers = (tab: Tab): Record<string, string> => {
+    const buffers: Record<string, string> = {};
+    try {
+      for (const s of collectAllSessions(tab.layout)) {
+        if (!s.termId) continue;
+        const b = serializeTermBuffer(s.termId);
+        if (b) buffers[s.termId] = b;
+      }
+    } catch {}
+    return buffers;
+  };
+  const collectTabStyles = (tab: Tab): Record<string, any> => {
+    const styles: Record<string, any> = {};
+    try {
+      for (const s of collectAllSessions(tab.layout)) {
+        if (!s.termId) continue;
+        const st = getTermStyle(s.termId);
+        if (st) styles[s.termId] = st;
+      }
+    } catch {}
+    return styles;
+  };
+
+  const serializeTab = (tab: Tab) => ({
+    kind: 'workspace' as const,
+    buffers: collectTabBuffers(tab),
+    styles: collectTabStyles(tab),
+    tab: JSON.parse(JSON.stringify({
+      id: tab.id, title: tab.title, type: tab.type, layout: tab.layout,
+      sqlTool: tab.sqlTool, editor: tab.editor,
+      initialTermId: tab.initialTermId, initialRemotePath: tab.initialRemotePath,
+    })),
+  });
+
+  // 원본 창에서 분리된/이동한 탭 제거 — 백엔드 세션은 살리고 xterm 만 dispose.
+  const removeTabAfterMove = (tabId: TabId, layout: LayoutNode) => {
+    try { collectAllSessions(layout).forEach(s => { if (s.termId) disposeTermFully(s.termId); }); } catch {}
+    const remaining = tabsRef.current.filter(t => t.id !== tabId);
+    if (remaining.length === 0) {
+      // 분리 창이 비면 창을 닫고, 메인 창이면 빈 워크스페이스로 대체.
+      if (IS_DETACHED_WINDOW) { try { (window as any).api?.windowClose?.(); } catch {} return; }
+      const id = `tab-${Date.now()}`;
+      setTabs([{ id, title: 'Workspace 1', layout: createInitialLayout(id) }]);
+      setActiveTabId(id);
+      return;
+    }
+    setTabs(prev => prev.filter(t => t.id !== tabId));
+    setActiveTabId(prev => prev === tabId ? remaining[0].id : prev);
+  };
+
+  // 탭 드래그 분리/재부착 — 드롭 좌표가 다른 앱 창 위면 그 창으로 re-dock, 아니면 새 창.
+  // 좌표 미지정(컨텍스트 메뉴)이면 항상 새 창.
+  const detachTabToNewWindow = useCallback(async (tabId: TabId, screenX?: number, screenY?: number) => {
+    const tab = tabsRef.current.find(t => t.id === tabId);
+    if (!tab) return;
+    const point = (screenX != null && screenY != null) ? { x: screenX, y: screenY } : undefined;
+    const res = await (window as any).api?.dropTab?.(serializeTab(tab), point);
+    if (res === undefined) return; // IPC 실패
+    removeTabAfterMove(tabId, tab.layout);
+  }, []);
+
   // 현재 활성 세션의 folderId 기준으로 같은 폴더 세션들을 picker 로 띄운다.
   // 픽커에서 선택된 세션을 새 termId 로 연결해서 targetNodeId 패널을 분할해 배치.
   // 활성 세션이 없거나 folder 내 다른 세션이 없으면 그냥 빈 분할.
@@ -2024,6 +2172,38 @@ function App() {
     });
   };
 
+  // 미니탭(개별 세션)을 분리/재부착 — 단일 세션 워크스페이스로 넘긴다.
+  // 드롭 좌표가 다른 앱 창 위면 그 창으로 re-dock, 아니면 새 창. 좌표 미지정(메뉴)이면 새 창.
+  const detachSessionToNewWindow = useCallback(async (nodeId: string, termId: string, screenX?: number, screenY?: number) => {
+    const tab = tabsRef.current.find(t => t.id === activeTabId);
+    if (!tab) return;
+    const sess = collectAllSessions(tab.layout).find(s => s.termId === termId);
+    if (!sess) return;
+    const tabId = `tab-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const panelId = `panel-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const layout: LayoutNode = {
+      id: panelId, type: 'leaf',
+      panel: { id: panelId, activeIdx: 0, sessions: [{
+        termId: sess.termId, sessionId: sess.sessionId, sessionName: sess.sessionName,
+        shellPath: (sess as any).shellPath, shellCwd: (sess as any).shellCwd,
+      }] },
+    };
+    const buf = serializeTermBuffer(termId);
+    const st = getTermStyle(termId);
+    const payload = { kind: 'session' as const, buffers: buf ? { [termId]: buf } : {}, styles: st ? { [termId]: st } : {}, tab: JSON.parse(JSON.stringify({ id: tabId, title: sess.sessionName || 'Session', layout })) };
+    const point = (screenX != null && screenY != null) ? { x: screenX, y: screenY } : undefined;
+    const res = await (window as any).api?.dropTab?.(payload, point);
+    if (res === undefined) return;
+    // 원본: 세션 제거 + xterm 만 dispose (백엔드 유지 — 대상 창이 재부착)
+    try { disposeTermFully(termId); } catch {}
+    // 분리 창에서 이게 마지막 세션이었으면 창을 닫는다 (빈 워크스페이스로 남지 않게).
+    if (IS_DETACHED_WINDOW) {
+      const total = tabsRef.current.reduce((n, t) => n + collectAllSessions(t.layout).length, 0);
+      if (total <= 1) { try { (window as any).api?.windowClose?.(); } catch {} return; }
+    }
+    updateLayout(tab.id, l => cleanEmptyLeaf(removeSessionFromPanel(l, nodeId, termId), nodeId));
+  }, [activeTabId]);
+
   const movePanel = useCallback((fromPanelId: string, toPanelId: string | null, position: 'before' | 'after' | 'inside' = 'after') => {
     if (!activeTab) return;
     updateLayout(activeTab.id, layout => {
@@ -2251,14 +2431,22 @@ function App() {
     if (!activeTab) return;
     // SFTP 프로토콜이거나 파일 전송 워크스페이스가 활성이면 SFTP 직접 연결로 처리
     if (info.protocol === 'sftp' || activeTab.type === 'fileExplorer') {
-      // 새 파일 전송 탭 생성
-      const id = `tab-fe-${Date.now()}`;
-      const feTab = { id, title: '📁 파일 전송', layout: createInitialLayout(id), type: 'fileExplorer' as TabType, initialTermId: getActiveTermId() ?? undefined };
-      setTabs(prev => [...prev, feTab]);
-      setActiveTabId(feTab.id);
+      // 이미 열린 파일 전송 워크스페이스가 있으면 재사용(거기에 새 탭으로 연결) — 없으면 새로 생성.
+      const existingFe = tabs.find(t => t.type === 'fileExplorer');
+      let feTabId: string;
+      if (existingFe) {
+        feTabId = existingFe.id;
+        setActiveTabId(existingFe.id);
+      } else {
+        const id = `tab-fe-${Date.now()}`;
+        const feTab = { id, title: '📁 파일 전송', layout: createInitialLayout(id), type: 'fileExplorer' as TabType };
+        setTabs(prev => [...prev, feTab]);
+        setActiveTabId(id);
+        feTabId = id;
+      }
       // FileExplorer 마운트 후 이벤트가 처리되도록 약간 지연
       setTimeout(() => {
-        window.dispatchEvent(new CustomEvent('fe-quick-sftp-connect', { detail: info }));
+        window.dispatchEvent(new CustomEvent('fe-quick-sftp-connect', { detail: { ...info, feTabId } }));
       }, 100);
       return;
     }
@@ -2391,6 +2579,7 @@ function App() {
   const startupSshHandledRef = useRef(false);
   useEffect(() => {
     if (startupSshHandledRef.current) return;
+    if (IS_DETACHED_WINDOW) { startupSshHandledRef.current = true; return; } // 분리 창은 CLI 시작 SSH 무시
     if (!shellPrefsLoaded || !activeTab) return;
     startupSshHandledRef.current = true;
     (async () => {
@@ -2923,11 +3112,21 @@ function App() {
         onOpenSqlTool={(sessionId, sessionName) => openSqlToolTab(sessionId, sessionName)}
         targetPanelId={selectedPanelId}
         onFileTransfer={async (sessionId, sessionName) => {
-          // 항상 새 파일 전송 탭 생성
-          const id = `tab-fe-${Date.now()}`;
-          const feTab = { id, title: '📁 파일 전송', layout: createInitialLayout(id), type: 'fileExplorer' as TabType, initialTermId: getActiveTermId() ?? undefined };
-          setTabs(prev => [...prev, feTab]);
-          setActiveTabId(feTab.id);
+          // 이미 열린 파일 전송 워크스페이스가 있으면 재사용(거기에 새 연결 추가) — 없으면 새로 생성.
+          const existingFe = tabs.find(t => t.type === 'fileExplorer');
+          let feTabId: string;
+          if (existingFe) {
+            feTabId = existingFe.id;
+            setActiveTabId(existingFe.id);
+          } else {
+            // 연결 대상은 우클릭한 세션의 SFTP(아래 fe-sftp-connected 로 탭 생성)이므로
+            // initialTermId(활성 터미널 기준 auto-init)는 넘기지 않는다 — 무관한 세션 자동 오픈 방지.
+            const id = `tab-fe-${Date.now()}`;
+            const feTab = { id, title: '📁 파일 전송', layout: createInitialLayout(id), type: 'fileExplorer' as TabType };
+            setTabs(prev => [...prev, feTab]);
+            setActiveTabId(id);
+            feTabId = id;
+          }
           // SFTP 연결 — 점프 타겟 설정돼 있으면 ProxyJump 로 내부 서버까지 직결
           try {
             const data = await (window as any).api.listSessions();
@@ -2942,7 +3141,7 @@ function App() {
             const displayHost = jumpOpts ? jumpOpts.host : sess.host;
             const result = await (window as any).api.feSftpConnect?.(connId, sess.host, sess.port || 22, sess.username, sess.auth, jumpOpts);
             if (result?.success) {
-              window.dispatchEvent(new CustomEvent('fe-sftp-connected', { detail: { connId, sessionName, host: displayHost } }));
+              window.dispatchEvent(new CustomEvent('fe-sftp-connected', { detail: { connId, sessionName, host: displayHost, feTabId } }));
             } else {
               const msg = result?.error || '알 수 없는 오류';
               console.error('[fe-sftp-connect] failed:', msg);
@@ -2976,6 +3175,7 @@ function App() {
               return next;
             });
           }}
+          onDetachTab={detachTabToNewWindow}
           hasSession={tabs.reduce((acc, t) => { acc[t.id] = collectAllSessions(t.layout).length > 0; return acc; }, {} as Record<string, boolean>)}
           availableShells={availableShells}
         />
@@ -3237,6 +3437,7 @@ function App() {
               }
               initialTermId={t.initialTermId}
               initialRemotePath={t.initialRemotePath}
+              tabId={t.id}
             />
           </div>
         ))}
@@ -3653,6 +3854,7 @@ function App() {
                     onMovePanel={movePanel}
                     onSwitchSession={handleSwitchSession}
                     onCloseSession={handleCloseSession}
+                    onDetachSession={detachSessionToNewWindow}
                     onMoveSession={handleMoveSession}
                     onSplitMoveSession={handleSplitMoveSession}
                     onReorderSession={handleReorderSession}

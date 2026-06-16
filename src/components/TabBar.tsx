@@ -18,6 +18,7 @@ type Props = {
   onCloseTab: (id: string) => void;
   onRenameTab?: (id: string, name: string) => void;
   onReorderTabs?: (fromId: string, toId: string) => void;
+  onDetachTab?: (id: string, screenX?: number, screenY?: number) => void;
   hasSession?: Record<string, boolean>;
   themeName?: string;
   themeList?: string[];
@@ -25,7 +26,7 @@ type Props = {
   availableShells?: ShellInfo[];
 };
 
-export const TabBar: React.FC<Props> = ({ tabs, activeTabId, onChange, onAddTab, onAddBrowserTab, onAddCompareTab, onAddLogAnalyzerTab, onAddVpnTab, onAddI18nEditorTab, onCloseTab, onRenameTab, onReorderTabs, hasSession, themeName, themeList, onThemeChange, availableShells }) => {
+export const TabBar: React.FC<Props> = ({ tabs, activeTabId, onChange, onAddTab, onAddBrowserTab, onAddCompareTab, onAddLogAnalyzerTab, onAddVpnTab, onAddI18nEditorTab, onCloseTab, onRenameTab, onReorderTabs, onDetachTab, hasSession, themeName, themeList, onThemeChange, availableShells }) => {
   const { t } = useTranslation('tabBar');
   const { t: tc } = useTranslation('common');
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
@@ -79,7 +80,20 @@ export const TabBar: React.FC<Props> = ({ tabs, activeTabId, onChange, onAddTab,
             e.dataTransfer.effectAllowed = 'move';
             try { e.dataTransfer.setData('application/x-pepe-tab', tab.id); } catch {}
           }}
-          onDragEnd={() => { setDraggingId(null); setDragOverId(null); }}
+          onDragEnd={e => {
+            const sx = e.screenX, sy = e.screenY;
+            setDraggingId(null); setDragOverId(null);
+            // 창 밖에 드롭하면 새 창으로 분리
+            if (!onDetachTab) return;
+            (async () => {
+              try {
+                const b: any = await (window as any).api?.getWindowBounds?.();
+                if (b && (sx < b.x || sx > b.x + b.width || sy < b.y || sy > b.y + b.height)) {
+                  onDetachTab(tab.id, sx, sy);
+                }
+              } catch {}
+            })();
+          }}
           onDragOver={e => {
             if (!draggingId || draggingId === tab.id) return;
             e.preventDefault();
@@ -155,6 +169,7 @@ export const TabBar: React.FC<Props> = ({ tabs, activeTabId, onChange, onAddTab,
           onClose={() => setContextMenu(null)}
           items={[
             { label: tc('rename'), onClick: () => startRename(contextMenu.tabId) },
+            ...(onDetachTab ? [{ label: '새 창으로 열기', onClick: () => onDetachTab(contextMenu.tabId) }] : []),
             { label: tc('close'), onClick: () => onCloseTab(contextMenu.tabId) },
           ]}
         />

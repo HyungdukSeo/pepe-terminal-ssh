@@ -9,6 +9,7 @@ import { RemoteFileTree } from './RemoteFileTree';
 import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import { SearchAddon } from 'xterm-addon-search';
+import { SerializeAddon } from 'xterm-addon-serialize';
 import { Unicode11Addon } from 'xterm-addon-unicode11';
 import { getThemeByName, terminalThemes } from '../utils/terminalThemes';
 import { getTerminalSettings, type MouseButtonAction } from '../utils/terminalSettings';
@@ -445,6 +446,69 @@ export function isTermConnected(termId: string): boolean {
   return globalConnected.has(termId);
 }
 
+// 분리된(새) 창에서 라이브 세션 재부착 시 연결 상태를 시딩한다.
+// (ssh:connected 이벤트는 창 생성 전에 이미 지나갔으므로 메인에서 받은 목록으로 직접 표시)
+export function markTermConnected(termId: string) {
+  globalConnected.add(termId);
+  try { notifyConnectedChange(); } catch {}
+}
+
+// ── 탭 분리 시 화면 버퍼 이관 ──
+// 원본 터미널의 화면(스크롤백 포함)을 직렬화 → 새 창에서 동일 termId 생성 시 복원.
+const pendingRestoreBuffers = new Map<string, string>();
+export function setPendingRestoreBuffer(termId: string, data: string) {
+  if (data) pendingRestoreBuffers.set(termId, data);
+}
+// 현재 터미널 화면을 escape 시퀀스 문자열로 직렬화 (scrollback 일부 포함). 없으면 빈 문자열.
+export function serializeTermBuffer(termId: string, scrollback = 1500): string {
+  const entry = termStore.get(termId);
+  if (!entry) return '';
+  try {
+    const s = new SerializeAddon();
+    entry.term.loadAddon(s);
+    const out = s.serialize({ scrollback });
+    try { s.dispose(); } catch {}
+    return out || '';
+  } catch { return ''; }
+}
+
+// 터미널 스타일(테마/폰트/커서/스크롤백) 캡처 — 분리/재부착 시 동일 모양 유지.
+const pendingRestoreStyles = new Map<string, any>();
+export function setPendingRestoreStyle(termId: string, style: any) {
+  if (style) pendingRestoreStyles.set(termId, style);
+}
+export function getTermStyle(termId: string): any {
+  const entry = termStore.get(termId);
+  if (!entry) return null;
+  const o: any = entry.term.options || {};
+  return {
+    // 테마는 이름으로 이관 — 새 창에서 applyTermOpacity 가 termThemeCache(이름) 기준으로
+    // 재적용하므로, 객체만 넘기면 마운트 시 기본 테마로 덮어써짐.
+    themeName: termThemeCache.get(termId) || getCurrentThemeName(),
+    opacity: termOpacity.get(termId),
+    fontFamily: o.fontFamily,
+    fontSize: o.fontSize,
+    cursorStyle: o.cursorStyle ?? termCursorStyleCache.get(termId),
+    cursorBlink: o.cursorBlink,
+    scrollback: o.scrollback,
+  };
+}
+function applyPendingStyle(termId: string, term: any) {
+  const st = pendingRestoreStyles.get(termId);
+  if (!st) return;
+  pendingRestoreStyles.delete(termId);
+  try {
+    if (st.fontFamily) { term.options.fontFamily = st.fontFamily; }
+    if (st.fontSize) { term.options.fontSize = st.fontSize; termFontSizes.set(termId, st.fontSize); }
+    if (st.cursorStyle) { term.options.cursorStyle = st.cursorStyle; termCursorStyleCache.set(termId, st.cursorStyle); }
+    if (typeof st.cursorBlink === 'boolean') term.options.cursorBlink = st.cursorBlink;
+    if (st.scrollback) { term.options.scrollback = st.scrollback; termScrollbackOverride.set(termId, st.scrollback); }
+    if (st.opacity != null) termOpacity.set(termId, st.opacity);
+    // 테마 이름으로 캐시 시딩 + 적용 (applyThemeToTerm → applyTermOpacity 가 정확한 테마 사용)
+    if (st.themeName) { termThemeCache.set(termId, st.themeName); applyThemeToTerm(termId, st.themeName); }
+  } catch {}
+}
+
 export function subscribeConnectedChange(fn: () => void): () => void {
   connectedListeners.add(fn);
   return () => { connectedListeners.delete(fn); };
@@ -858,6 +922,13 @@ function getOrCreateTerm(termId: string): { term: Terminal; fit: FitAddon; searc
     });
     entry = { term, fit, search };
     termStore.set(termId, entry);
+    // 분리/재부착 시 원본 스타일(테마/폰트/커서) 먼저 적용 후 화면 버퍼 복원
+    applyPendingStyle(termId, term);
+    const restore = pendingRestoreBuffers.get(termId);
+    if (restore) {
+      pendingRestoreBuffers.delete(termId);
+      try { term.write(restore); } catch {}
+    }
     // 동기적으로 즉시 패치 — DA2 query 가 빨리 와도 가로챌 수 있도록
     patchSuppressFocusEvents(term, termId);
     // 추가 안전망 — _coreService 가 늦게 초기화되는 케이스 대응
@@ -2704,6 +2775,7 @@ type Props = {
   onSelect?: (nodeId: string) => void;
   onSwitchSession?: (nodeId: string, idx: number) => void;
   onCloseSession?: (nodeId: string, termId: string) => void;
+  onDetachSession?: (nodeId: string, termId: string, screenX?: number, screenY?: number) => void;
   onMoveSession?: (fromNodeId: string, termId: string, toNodeId: string) => void;
   workspaceList?: { id: string; title: string }[];
   currentWorkspaceId?: string;
@@ -2727,7 +2799,7 @@ type Props = {
 };
 
 export const TerminalPanel: React.FC<Props> = ({
-  nodeId, panel, onSplit, onClose, onSelect, onSwitchSession, onCloseSession, onMoveSession, onSplitMoveSession, onReorderSession, onAddSession, onRenameSession, onConnectDrop, onDuplicateSession, availableShells,
+  nodeId, panel, onSplit, onClose, onSelect, onSwitchSession, onCloseSession, onDetachSession, onMoveSession, onSplitMoveSession, onReorderSession, onAddSession, onRenameSession, onConnectDrop, onDuplicateSession, availableShells,
   treeWidth = 240, onTreeWidthChange, onOpenRemoteFile, onAttachToClaude,
   isFloating, onToggleFloat, isSelected: _isSelected, onSplitWithPicker,
   workspaceList, currentWorkspaceId, onMoveSessionToWorkspace,
@@ -3331,6 +3403,19 @@ export const TerminalPanel: React.FC<Props> = ({
                   }
                   setDropZone(null);
                 }}
+                onDragEnd={e => {
+                  // 미니탭을 창 밖에 드롭하면 새 창으로 분리
+                  if (!onDetachSession) return;
+                  const sx = e.screenX, sy = e.screenY;
+                  (async () => {
+                    try {
+                      const b: any = await (window as any).api?.getWindowBounds?.();
+                      if (b && (sx < b.x || sx > b.x + b.width || sy < b.y || sy > b.y + b.height)) {
+                        onDetachSession(nodeId, sess.termId, sx, sy);
+                      }
+                    } catch {}
+                  })();
+                }}
                 onClick={e => {
                   e.stopPropagation();
                   // 수동 더블클릭 — 같은 미니탭에서 500ms 내 2번째 클릭이면 복제 실행
@@ -3625,6 +3710,7 @@ export const TerminalPanel: React.FC<Props> = ({
               }
             } },
             { label: t('menu.duplicateSession'), onClick: () => { onDuplicateSession?.(nodeId, miniCtx.termId); } },
+            ...(onDetachSession ? [{ label: '새 창으로 열기', onClick: () => { onDetachSession(nodeId, miniCtx.termId); } }] : []),
             { label: t('menu.reconnectSession'), onClick: async () => {
               const tid = miniCtx.termId;
               const info = termSessionMap.get(tid);

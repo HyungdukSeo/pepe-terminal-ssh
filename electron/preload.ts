@@ -183,6 +183,18 @@ contextBridge.exposeInMainWorld('api', {
   windowClose: () => ipcRenderer.invoke('window:close'),
   windowFocus: () => ipcRenderer.invoke('window:focus'),
   windowIsMaximized: () => ipcRenderer.invoke('window:is-maximized'),
+  // 탭 분리(멀티 윈도우)
+  detachTab: (payload: any, bounds?: any) => ipcRenderer.invoke('window:detach-tab', { payload, bounds }),
+  dropTab: (payload: any, point?: any) => ipcRenderer.invoke('window:drop-tab', { payload, point }),
+  onAdoptTab: (cb: (payload: any) => void) => {
+    const listener = (_e: any, payload: any) => cb(payload);
+    ipcRenderer.on('window:adopt-tab', listener);
+    return () => ipcRenderer.removeListener('window:adopt-tab', listener);
+  },
+  getDetachedInit: () => ipcRenderer.invoke('window:get-detached-init'),
+  getConnectedPanels: () => ipcRenderer.invoke('ssh:connected-panels'),
+  getCursorPoint: () => ipcRenderer.invoke('window:cursor-point'),
+  getWindowBounds: () => ipcRenderer.invoke('window:get-bounds'),
   onWindowMaximized: (cb: (m: boolean) => void) => {
     const listener = (_e: any, m: boolean) => cb(m);
     ipcRenderer.on('window:maximized', listener);

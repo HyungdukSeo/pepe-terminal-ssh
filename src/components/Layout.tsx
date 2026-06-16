@@ -11,6 +11,7 @@ type CommonHandlers = {
   onMovePanel?: (fromPanelId: string, toPanelId: string | null, position?: 'before' | 'after' | 'inside') => void;
   onSwitchSession?: (nodeId: string, idx: number) => void;
   onCloseSession?: (nodeId: string, termId: string) => void;
+  onDetachSession?: (nodeId: string, termId: string) => void;
   onMoveSession?: (fromNodeId: string, termId: string, toNodeId: string) => void;
   onSplitMoveSession?: (fromNodeId: string, termId: string, toNodeId: string, zone: 'left' | 'right' | 'top' | 'bottom') => void;
   onReorderSession?: (nodeId: string, fromIdx: number, toIdx: number) => void;
@@ -57,7 +58,7 @@ const NodeView: React.FC<NodeProps> = ({ node, ...h }) => {
     // fullscreenTermId 가 이 패널의 어느 세션이든 포함되면 fs-visible (active 미니탭이 바뀌어도 패널 자체는 표시 유지)
     const isFsVisible = !!(h.fullscreenTermId && node.panel.sessions.some(s => s.termId === h.fullscreenTermId));
     return (
-      <div className={`layout-leaf ${isFloating ? 'floating' : ''} ${isFsVisible ? 'fs-visible' : ''}`} data-active-term={activeTermId}>
+      <div className={`layout-leaf ${isFloating ? 'floating' : ''} ${isFsVisible ? 'fs-visible' : ''}`} data-active-term={activeTermId} data-leaf-id={node.id}>
         <div className={`layout-leaf-inner ${h.selectedPanelId === node.id ? 'selected' : ''}`}
           onDragOver={e => e.preventDefault()} onDrop={handleDrop}
         >
@@ -65,6 +66,7 @@ const NodeView: React.FC<NodeProps> = ({ node, ...h }) => {
             nodeId={node.id} panel={node.panel}
             onSplit={h.onSplit} onClose={h.onClose} onSelect={h.onSelectPanel}
             onSwitchSession={h.onSwitchSession} onCloseSession={h.onCloseSession}
+            onDetachSession={h.onDetachSession}
             onMoveSession={h.onMoveSession} onSplitMoveSession={h.onSplitMoveSession}
             onReorderSession={h.onReorderSession} onAddSession={h.onAddSession}
             onRenameSession={h.onRenameSession} onConnectDrop={h.onConnectDrop}

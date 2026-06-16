@@ -14,9 +14,11 @@ type Props = {
   initialTermId?: string | null;
   // 파일 전송 탭을 열 때 활성 SSH 세션의 현재 pwd — 있으면 홈 대신 이 경로로 우측 패널을 연다.
   initialRemotePath?: string | null;
+  // 이 FileExplorer 가 속한 워크스페이스 탭 id — 세션→파일전송 연결 이벤트를 이 탭으로만 라우팅.
+  tabId?: string;
 };
 
-export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId, initialRemotePath }) => {
+export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId, initialRemotePath, tabId }) => {
   // 이 FileExplorer 인스턴스의 고유 ID — 전송 이벤트 필터링에 사용
   const workspaceIdRef = React.useRef(`fe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
   const { t } = useTranslation('fileExplorer');
@@ -36,6 +38,8 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId, initial
   const rightActiveRef = useRef(0);
   useEffect(() => { leftActiveRef.current = leftActive; }, [leftActive]);
   useEffect(() => { rightActiveRef.current = rightActive; }, [rightActive]);
+  const rightTabsRef = useRef<PanelTab[]>([]);
+  useEffect(() => { rightTabsRef.current = rightTabs; });
   // 활성 탭의 source/path/selected 를 derived 로 노출 — 기존 코드 호환
   const leftTab = leftTabs[leftActive] || leftTabs[0];
   const rightTab = rightTabs[rightActive] || rightTabs[0];
@@ -185,25 +189,29 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId, initial
   // 파일 전송 탭에서 세션 더블클릭으로 SFTP 연결된 이벤트 수신
   useEffect(() => {
     const handler = async (e: Event) => {
-      const { connId, sessionName, host } = (e as CustomEvent).detail;
+      const { connId, sessionName, host, feTabId } = (e as CustomEvent).detail;
+      // 특정 파일 전송 탭을 대상으로 한 이벤트면 그 탭의 인스턴스만 처리 (중복 추가 방지)
+      if (feTabId && tabId && feTabId !== tabId) return;
+      // 이미 추가된 연결이면 무시
+      if (rightTabsRef.current.some(t => t.source.termId === connId)) return;
+      const sameNameCount = sources.filter(s => s.label?.includes(sessionName)).length;
+      const num = sameNameCount + 1;
+      const label = `🌐 ${sessionName} #${num} (${host})`;
+      const newSrc: PanelSource = { mode: 'remote', termId: connId, label };
+      // 소스 드롭다운 목록에도 추가
       setSources(prev => {
-        // 같은 세션 이름 번호 매기기
-        const sameNameCount = prev.filter(s => s.label?.includes(sessionName)).length;
-        const num = sameNameCount + 1;
-        const label = `🌐 ${sessionName} #${num} (${host})`;
-        const newSrc: PanelSource = { mode: 'remote', termId: connId, label };
         if (prev.find(s => s.termId === connId)) return prev;
         const idx = prev.findIndex(s => (s.mode as any) === 'sftp-connect');
         const arr = [...prev];
-        if (idx >= 0) arr.splice(idx, 0, newSrc);
-        else arr.push(newSrc);
-        // 오른쪽 패널이 로컬이면 자동 전환
-        if (rightSource.mode === 'local') {
-          setRightSource(newSrc);
-          getHomeWithRetry('remote', connId).then(p => setRightPath(p));
-        }
+        if (idx >= 0) arr.splice(idx, 0, newSrc); else arr.push(newSrc);
         return arr;
       });
+      // 오른쪽 패널에 '신규 탭'으로 연다 — 홈 경로 확보 후 탭 생성/활성화
+      const home = await getHomeWithRetry('remote', connId);
+      const newIndex = rightTabsRef.current.length;
+      setRightTabs(prev => [...prev, makeTab(newSrc, home)]);
+      setRightActive(newIndex);
+      setSelectedSide('right');
     };
     window.addEventListener('fe-sftp-connected', handler);
     return () => window.removeEventListener('fe-sftp-connected', handler);
@@ -214,10 +222,13 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId, initial
     const handler = async (ev: any) => {
       const info = ev.detail || {};
       if (!info.host || !info.username) return;
+      // 특정 파일 전송 탭 대상이면 그 인스턴스만 처리
+      if (info.feTabId && tabId && info.feTabId !== tabId) return;
       const connId = `sftp-${Date.now()}`;
       try {
         const result = await api.feSftpConnect?.(connId, info.host, Number(info.port) || 22, info.username, { type: 'password', password: info.auth?.password ?? '' });
         if (!result?.success) { notifyError(t('connectFail', { err: result?.error || t('unknownError') })); return; }
+        if (rightTabsRef.current.some(t => t.source.termId === connId)) return;
         const newSrc: PanelSource = { mode: 'remote', termId: connId, label: `🔌 ${info.username}@${info.host}` };
         setSources(prev => {
           if (prev.find(s => s.termId === connId)) return prev;
@@ -226,14 +237,13 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId, initial
           if (idx >= 0) arr.splice(idx, 0, newSrc); else arr.push(newSrc);
           return arr;
         });
-        // 현재 선택된 패널에 SFTP 연결 배치
-        if (selectedSide === 'left') {
-          setLeftSource(newSrc);
-          try { const home = await api.feHomeDir('remote', connId); setLeftPath(home || '/'); } catch { setLeftPath('/'); }
-        } else {
-          setRightSource(newSrc);
-          try { const home = await api.feHomeDir('remote', connId); setRightPath(home || '/'); } catch { setRightPath('/'); }
-        }
+        // 오른쪽 패널에 '신규 탭'으로 연다
+        let home = '/';
+        try { home = (await api.feHomeDir('remote', connId)) || '/'; } catch {}
+        const newIndex = rightTabsRef.current.length;
+        setRightTabs(prev => [...prev, makeTab(newSrc, home)]);
+        setRightActive(newIndex);
+        setSelectedSide('right');
       } catch (err: any) { notifyError(t('connectFail', { err })); }
     };
     window.addEventListener('fe-quick-sftp-connect', handler);
@@ -259,9 +269,11 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId, initial
       const label = folder ? `⚪ ${s.name}  [${folder}] (${s.host})` : `⚪ ${s.name} (${s.host})`;
       newSources.push({ mode: 'lazy-remote', sessionId: s.id, label });
     }
-    // 3) 기존 수동 SFTP 연결(🔌) 유지
+    // 3) 기존 SFTP 직접 연결 유지 — 수동(🔌) + 세션 우클릭 파일전송(🌐, termId=sftp-fe-…)
+    //    (이들은 sessions/allSessionsList 로 재현되지 않으므로 재구성 시 명시적으로 보존해야 함)
     for (const s of sources) {
-      if (s.label?.startsWith('🔌') && s.mode === 'remote' && !newSources.find(n => n.termId === s.termId)) {
+      if (s.mode === 'remote' && typeof s.termId === 'string' && s.termId.startsWith('sftp')
+          && !newSources.find(n => n.termId === s.termId)) {
         newSources.push(s);
       }
     }

@@ -64,6 +64,14 @@ const __dirname = path.dirname(__filename);
 // app.setPath('sessionData', sessionDataPath);
 
 let mainWindow: BrowserWindow | null = null;
+// 분리된(탭 tear-off) 보조 앱 창들 — 터미널/파일전송 데이터 broadcast 대상
+const detachedWindows = new Set<BrowserWindow>();
+// 터미널/SFTP 데이터를 메인 + 모든 분리 창에 전달한다. 수신 측 렌더러는 자기 termId 만 처리하므로
+// (모르는 panelId 는 무시) 전체 broadcast 해도 안전하다. 창이 하나뿐이면 기존과 동일하게 동작.
+function termBroadcast(channel: string, payload: any) {
+  try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload); } catch {}
+  for (const w of detachedWindows) { try { if (!w.isDestroyed()) w.webContents.send(channel, payload); } catch {} }
+}
 let sessionsData: SessionsData = { folders: [], sessions: [] };
 const connectedPanels = new Set<string>();
 const connectingPanels = new Set<string>();
@@ -234,6 +242,12 @@ function createWindow() {
   // ※ dev 모드(http://localhost)에서는 http→file navigate 가 보안 차단되어 발화하지 않음 —
   //    드래그앤드롭은 패키지 설치본에서 테스트해야 함.
   mainWindow.webContents.on('will-navigate', (event, url) => {
+    // http(s) 외부 링크(예: AI 채팅 메시지 내 URL) → 앱 창을 덮지 않고 기본 브라우저로 연다.
+    if (/^https?:\/\//i.test(url)) {
+      event.preventDefault();
+      shell.openExternal(url).catch(() => {});
+      return;
+    }
     if (!url.startsWith('file://')) return;
     const cur = mainWindow?.webContents.getURL() || '';
     if (url === cur) return;
@@ -274,6 +288,11 @@ function createWindow() {
         console.log('[drag-drop] window-open file intercepted → renderer:', fp);
         mainWindow?.webContents.send('chat:external-file-dropped', { path: fp });
       }
+      return { action: 'deny' };
+    }
+    // http(s) 새 창 요청(target=_blank 등) → 기본 브라우저로 열고 앱 내 새 창은 막음
+    if (/^https?:\/\//i.test(url)) {
+      shell.openExternal(url).catch(() => {});
       return { action: 'deny' };
     }
     return { action: 'allow' };
@@ -387,7 +406,7 @@ app.whenReady().then(() => {
     sftpBatchScheduled = false;
     if (!sftpBatchBuf.length || !mainWindow) return;
     const batch = sftpBatchBuf.splice(0);
-    mainWindow.webContents.send('sftp:batch', batch);
+    termBroadcast('sftp:batch', batch);
   }
   function queueSftpEvent(channel: string, payload: any) {
     sftpBatchBuf.push({ channel, payload });
@@ -399,22 +418,22 @@ app.whenReady().then(() => {
     if (!mainWindow) return;
     switch (msg.type) {
       case 'data':
-        mainWindow.webContents.send('ssh:data', { panelId: msg.panelId, data: msg.data });
+        termBroadcast('ssh:data', { panelId: msg.panelId, data: msg.data });
         break;
       case 'connected':
         connectingPanels.delete(msg.panelId);
         connectedPanels.add(msg.panelId);
-        mainWindow.webContents.send('ssh:connected', { panelId: msg.panelId });
+        termBroadcast('ssh:connected', { panelId: msg.panelId });
         break;
       case 'closed':
         connectingPanels.delete(msg.panelId);
         connectedPanels.delete(msg.panelId);
         telnetPanels.delete(msg.panelId);
-        mainWindow.webContents.send('ssh:closed', { panelId: msg.panelId });
+        termBroadcast('ssh:closed', { panelId: msg.panelId });
         break;
       case 'error':
         connectingPanels.delete(msg.panelId);
-        mainWindow.webContents.send('ssh:error', { panelId: msg.panelId, error: msg.error });
+        termBroadcast('ssh:error', { panelId: msg.panelId, error: msg.error });
         break;
     }
   });
@@ -425,24 +444,24 @@ app.whenReady().then(() => {
 
     switch (msg.type) {
       case 'data':
-        mainWindow.webContents.send('ssh:data', { panelId: msg.panelId, data: msg.data });
+        termBroadcast('ssh:data', { panelId: msg.panelId, data: msg.data });
         break;
       case 'connected':
         connectingPanels.delete(msg.panelId);
         connectedPanels.add(msg.panelId);
-        mainWindow.webContents.send('ssh:connected', { panelId: msg.panelId });
+        termBroadcast('ssh:connected', { panelId: msg.panelId });
         break;
       case 'closed':
         connectingPanels.delete(msg.panelId);
         connectedPanels.delete(msg.panelId);
-        mainWindow.webContents.send('ssh:closed', { panelId: msg.panelId });
+        termBroadcast('ssh:closed', { panelId: msg.panelId });
         break;
       case 'error':
         connectingPanels.delete(msg.panelId);
-        mainWindow.webContents.send('ssh:error', { panelId: msg.panelId, error: msg.error });
+        termBroadcast('ssh:error', { panelId: msg.panelId, error: msg.error });
         break;
       case 'auth-prompt':
-        mainWindow.webContents.send('ssh:auth-prompt', { panelId: msg.panelId, prompts: msg.prompts });
+        termBroadcast('ssh:auth-prompt', { panelId: msg.panelId, prompts: msg.prompts });
         break;
       case 'sftp-progress':
         // progress 는 고빈도 — 배치로 묶어 전송
@@ -453,11 +472,11 @@ app.whenReady().then(() => {
         queueSftpEvent('sftp:complete', { panelId: msg.panelId, data: msg.data });
         break;
       case 'sftp-error':
-        mainWindow.webContents.send('sftp:error', { panelId: msg.panelId, error: msg.error, data: (msg as any).data });
+        termBroadcast('sftp:error', { panelId: msg.panelId, error: msg.error, data: (msg as any).data });
         break;
       case 'sftp-transfer-start':
         // 전송 시작은 즉시 — UI 에 즉각 표시
-        mainWindow.webContents.send('sftp:transfer-start', { panelId: msg.panelId, data: msg.data });
+        termBroadcast('sftp:transfer-start', { panelId: msg.panelId, data: msg.data });
         break;
       case 'sftp-file-start':
         // file-start 는 고빈도 — 배치로 묶어 전송
@@ -469,27 +488,27 @@ app.whenReady().then(() => {
         break;
       case 'sftp-conflict':
         // conflict 는 즉시 — 사용자 응답 대기
-        mainWindow.webContents.send('sftp:conflict', { panelId: msg.panelId, data: msg.data });
+        termBroadcast('sftp:conflict', { panelId: msg.panelId, data: msg.data });
         break;
       case 'auto-track':
-        mainWindow.webContents.send('ssh:auto-track', { panelId: msg.panelId, enabled: msg.enabled });
+        termBroadcast('ssh:auto-track', { panelId: msg.panelId, enabled: msg.enabled });
         break;
       case 'pwd':
-        mainWindow.webContents.send('ssh:pwd', { panelId: msg.panelId, pwd: (msg as any).data });
+        termBroadcast('ssh:pwd', { panelId: msg.panelId, pwd: (msg as any).data });
         break;
       case 'x11-log':
         // x11 관련 로그를 renderer 콘솔로 — DevTools 에서 확인
         mainWindow.webContents.executeJavaScript(`console.log('[X11]', ${JSON.stringify(msg.data)})`).catch(() => {});
         break;
       case 'sftp-delete-start':
-        mainWindow.webContents.send('sftp:delete-start', { panelId: msg.panelId, data: msg.data });
+        termBroadcast('sftp:delete-start', { panelId: msg.panelId, data: msg.data });
         break;
       case 'sftp-delete-progress':
         // delete-progress 고빈도 — 배치로 묶어 전송
         queueSftpEvent('sftp:delete-progress', { panelId: msg.panelId, data: msg.data });
         break;
       case 'sftp-delete-complete':
-        mainWindow.webContents.send('sftp:delete-complete', { panelId: msg.panelId, data: msg.data });
+        termBroadcast('sftp:delete-complete', { panelId: msg.panelId, data: msg.data });
         break;
     }
   });
@@ -3828,29 +3847,39 @@ function detectSnapZone(mouseX: number, mouseY: number): { zone: SnapZone; workA
   return { zone, workArea: wa };
 }
 
-ipcMain.on('window:start-drag', (_e, { mouseX, mouseY }: any) => {
-  if (!mainWindow) return;
-  const [wx, wy] = mainWindow.getPosition();
+// IPC 를 보낸 렌더러가 속한 BrowserWindow. (분리 창 지원 — 없으면 메인 창)
+function winOf(e: any): BrowserWindow | null {
+  try { return BrowserWindow.fromWebContents(e.sender) || mainWindow; } catch { return mainWindow; }
+}
+// 현재 타이틀바 드래그 중인 창 (분리 창도 드래그 가능하도록 추적)
+let draggingWin: BrowserWindow | null = null;
+
+ipcMain.on('window:start-drag', (e, { mouseX, mouseY }: any) => {
+  const w = winOf(e);
+  if (!w) return;
+  draggingWin = w;
+  const [wx, wy] = w.getPosition();
   dragStartPos = { x: mouseX - wx, y: mouseY - wy };
   pendingSnapZone = null;
 });
 
-ipcMain.on('window:drag-move', (_e, { mouseX, mouseY }: any) => {
-  if (!mainWindow || !dragStartPos) return;
+ipcMain.on('window:drag-move', (e, { mouseX, mouseY }: any) => {
+  const w = draggingWin || winOf(e);
+  if (!w || !dragStartPos) return;
   // 최대화 상태에서 드래그하면 자동 복원
-  if (mainWindow.isMaximized()) {
+  if (w.isMaximized()) {
     const restoreW = savedBounds.width;
     const restoreH = savedBounds.height;
     const offsetX = Math.min(dragStartPos.x, restoreW - 80);
     const newX = mouseX - offsetX;
     const newY = mouseY - Math.min(dragStartPos.y, 20);
-    mainWindow.unmaximize();
-    mainWindow.setBounds({ x: newX, y: newY, width: restoreW, height: restoreH });
+    w.unmaximize();
+    w.setBounds({ x: newX, y: newY, width: restoreW, height: restoreH });
     dragStartPos = { x: offsetX, y: Math.min(dragStartPos.y, 20) };
-    isMaximized = false;
+    if (w === mainWindow) isMaximized = false;
     return;
   }
-  mainWindow.setPosition(mouseX - dragStartPos.x, mouseY - dragStartPos.y);
+  w.setPosition(mouseX - dragStartPos.x, mouseY - dragStartPos.y);
   // Aero Snap 영역 검출 + 미리보기 토글
   const { zone, workArea } = detectSnapZone(mouseX, mouseY);
   if (zone !== pendingSnapZone) {
@@ -3862,17 +3891,19 @@ ipcMain.on('window:drag-move', (_e, { mouseX, mouseY }: any) => {
 
 ipcMain.on('window:end-drag', () => {
   dragStartPos = null;
+  const w = draggingWin;
+  draggingWin = null;
   // 스냅 영역에서 release → 스냅 실행
-  if (pendingSnapZone && mainWindow) {
+  if (pendingSnapZone && w) {
     const cursor = screen.getCursorScreenPoint();
     const display = screen.getDisplayNearestPoint(cursor);
     const bounds = computeSnapBounds(pendingSnapZone, display.workArea);
     if (bounds) {
       if (pendingSnapZone === 'top') {
         // 최대화는 OS native maximize 호출 — 작업표시줄 회피 + 모니터 변경 자동 대응
-        mainWindow.maximize();
+        w.maximize();
       } else {
-        mainWindow.setBounds(bounds);
+        w.setBounds(bounds);
       }
     }
   }
@@ -3880,50 +3911,140 @@ ipcMain.on('window:end-drag', () => {
   hideSnapPreview();
 });
 
-ipcMain.handle('window:minimize', () => mainWindow?.minimize());
-ipcMain.handle('window:toggle-maximize', () => {
-  if (!mainWindow) return;
+ipcMain.handle('window:minimize', (e) => winOf(e)?.minimize());
+ipcMain.handle('window:toggle-maximize', (e) => {
+  const w = winOf(e);
+  if (!w) return;
   dragStartPos = null;
-  if (mainWindow.isMaximized()) {
-    mainWindow.unmaximize();
-    isMaximized = false;
+  let max: boolean;
+  if (w.isMaximized()) {
+    w.unmaximize();
+    max = false;
   } else {
-    savedBounds = mainWindow.getBounds();
-    mainWindow.maximize();
-    isMaximized = true;
+    if (w === mainWindow) savedBounds = w.getBounds();
+    w.maximize();
+    max = true;
   }
-  mainWindow.webContents.send('window:maximized', isMaximized);
+  if (w === mainWindow) isMaximized = max;
+  w.webContents.send('window:maximized', max);
 });
-ipcMain.handle('window:is-maximized', () => !!mainWindow?.isMaximized());
-ipcMain.handle('window:close', () => mainWindow?.close());
-ipcMain.handle('window:focus', () => {
-  if (!mainWindow) return;
-  console.log(`[ps-dbg main] window:focus IPC received mainHasFocus(before)=${mainWindow.isFocused()} minimized=${mainWindow.isMinimized()}`);
+ipcMain.handle('window:is-maximized', (e) => !!winOf(e)?.isMaximized());
+ipcMain.handle('window:close', (e) => winOf(e)?.close());
+ipcMain.handle('window:focus', (e) => {
+  const w = winOf(e);
+  if (!w) return;
+  console.log(`[ps-dbg main] window:focus IPC received hasFocus(before)=${w.isFocused()} minimized=${w.isMinimized()}`);
   try {
-    if (mainWindow.isMinimized()) mainWindow.restore();
+    if (w.isMinimized()) w.restore();
     // Windows 에서 백그라운드 process(PowerShell 등) 가 잠시 foreground 를 채간 경우,
     // 단순한 focus() 는 무시될 수 있음 → alwaysOnTop 토글 트릭으로 강제 foreground
-    mainWindow.show();
+    w.show();
     // alwaysOnTop 토글: 잠시 최상위로 올렸다 내림. Windows 에서 foreground 강제 효과적.
-    const wasOnTop = mainWindow.isAlwaysOnTop();
+    const wasOnTop = w.isAlwaysOnTop();
     if (!wasOnTop) {
-      mainWindow.setAlwaysOnTop(true);
+      w.setAlwaysOnTop(true);
     }
-    mainWindow.moveTop();
-    mainWindow.focus();
+    w.moveTop();
+    w.focus();
     // 명시적 webContents focus — 키보드 입력 capture 보장
-    try { mainWindow.webContents.focus(); } catch {}
+    try { w.webContents.focus(); } catch {}
     // 토글 복귀 — 다음 tick 에 alwaysOnTop 해제 (이때는 이미 foreground 됨)
     if (!wasOnTop) {
       setTimeout(() => {
-        try { mainWindow?.setAlwaysOnTop(false); } catch {}
+        try { if (!w.isDestroyed()) w.setAlwaysOnTop(false); } catch {}
       }, 50);
     }
     // app.focus() 도 추가 — Electron 앱 자체를 foreground 로
     try { app.focus({ steal: true }); } catch {}
-    console.log(`[ps-dbg main] window:focus IPC DONE mainHasFocus(after)=${mainWindow.isFocused()}`);
+    console.log(`[ps-dbg main] window:focus IPC DONE hasFocus(after)=${w.isFocused()}`);
   } catch (err) { console.log('[ps-dbg main] window:focus IPC ERR', err); }
 });
+
+// ── 탭 분리(멀티 윈도우) ─────────────────────────────────────────────
+// 분리된 창에 전달할 탭 페이로드 — webContents.id 로 키잉, 새 렌더러가 로드 후 가져감.
+const detachedInitPayloads = new Map<number, any>();
+
+function createDetachedWindow(payload: any, bounds?: { x?: number; y?: number; width?: number; height?: number }) {
+  if (app.isPackaged) Menu.setApplicationMenu(null);
+  const win = new BrowserWindow({
+    width: bounds?.width || 1100,
+    height: bounds?.height || 740,
+    x: bounds?.x,
+    y: bounds?.y,
+    minWidth: 600,
+    minHeight: 400,
+    icon: path.join(__dirname, '../public/icon.ico'),
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    hasShadow: false,
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      webviewTag: true,
+    },
+  });
+  detachedWindows.add(win);
+  detachedInitPayloads.set(win.webContents.id, payload);
+  win.once('ready-to-show', () => { try { win.show(); win.focus(); } catch {} });
+  win.on('closed', () => {
+    detachedWindows.delete(win);
+    detachedInitPayloads.delete(win.webContents.id);
+  });
+  // http(s) 외부 링크는 기본 브라우저로 (메인 창과 동일 정책)
+  win.webContents.on('will-navigate', (event, url) => {
+    if (/^https?:\/\//i.test(url)) { event.preventDefault(); shell.openExternal(url).catch(() => {}); }
+  });
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) { shell.openExternal(url).catch(() => {}); return { action: 'deny' }; }
+    return { action: 'allow' };
+  });
+  const devServerUrl = process.env['ELECTRON_RENDERER_URL'] || process.env['VITE_DEV_SERVER_URL'];
+  if (!app.isPackaged && devServerUrl) {
+    win.loadURL(devServerUrl + '#detached');
+  } else {
+    win.loadFile(path.join(__dirname, '../dist/index.html'), { hash: 'detached' });
+  }
+  return win;
+}
+
+ipcMain.handle('window:detach-tab', (_e, { payload, bounds }: { payload: any; bounds?: any }) => {
+  try { createDetachedWindow(payload, bounds); return true; } catch (err) { console.error('[detach] fail', err); return false; }
+});
+// 탭 드롭 — 드롭 지점(point, 화면좌표)이 다른 앱 창 위면 그 창으로 re-dock, 아니면 새 창 생성.
+ipcMain.handle('window:drop-tab', (e, { payload, point }: { payload: any; point?: { x: number; y: number } }) => {
+  try {
+    const sourceWin = winOf(e);
+    const appWins = [mainWindow, ...detachedWindows].filter(w => w && !w.isDestroyed()) as BrowserWindow[];
+    let target: BrowserWindow | null = null;
+    if (point) {
+      for (const w of appWins) {
+        if (w === sourceWin) continue;
+        const b = w.getBounds();
+        if (point.x >= b.x && point.x <= b.x + b.width && point.y >= b.y && point.y <= b.y + b.height) { target = w; break; }
+      }
+    }
+    if (target) {
+      target.webContents.send('window:adopt-tab', { ...payload, point });
+      try { target.show(); target.focus(); } catch {}
+      return { docked: true };
+    }
+    createDetachedWindow(payload, point ? { x: Math.max(0, point.x - 250), y: Math.max(0, point.y - 16) } : undefined);
+    return { docked: false };
+  } catch (err) { console.error('[drop-tab] fail', err); return { docked: false, error: String(err) }; }
+});
+// 분리 창 렌더러가 로드 직후 자기 페이로드를 가져감 (1회성)
+ipcMain.handle('window:get-detached-init', (e) => {
+  const p = detachedInitPayloads.get(e.sender.id);
+  detachedInitPayloads.delete(e.sender.id);
+  return p || null;
+});
+// 새 창에서 라이브 세션 연결 상태 시딩용 — 현재 연결된 panelId 목록
+ipcMain.handle('ssh:connected-panels', () => Array.from(connectedPanels));
+// 현재 마우스의 화면 좌표 (탭 드래그 분리 판정용)
+ipcMain.handle('window:cursor-point', () => { try { return screen.getCursorScreenPoint(); } catch { return null; } });
+// 호출 창이 화면 어디에 있는지 (드롭 좌표가 창 밖인지 판정용)
+ipcMain.handle('window:get-bounds', (e) => { try { return winOf(e)?.getBounds() || null; } catch { return null; } });
 
 ipcMain.handle('ssh:auth-response', (_e, { panelId, responses }: { panelId: string; responses: string[] }) => {
   const bridge = getSSHBridge();
@@ -4290,16 +4411,16 @@ ipcMain.handle('pty:spawn', (_e, { panelId, shell: shellPath, cols, rows, cwd }:
   }
   if (proc instanceof Error) {
     console.error('[pty:spawn] all attempts failed:', proc.message);
-    mainWindow?.webContents.send('pty:data', { panelId, data: `\r\n[shell spawn 실패] ${proc.message}\r\n` });
+    termBroadcast('pty:data', { panelId, data: `\r\n[shell spawn 실패] ${proc.message}\r\n` });
     return 'error';
   }
   ptyProcesses.set(panelId, proc);
   proc.onData((data: string) => {
-    mainWindow?.webContents.send('pty:data', { panelId, data });
+    termBroadcast('pty:data', { panelId, data });
   });
   proc.onExit(({ exitCode }: { exitCode: number }) => {
     ptyProcesses.delete(panelId);
-    mainWindow?.webContents.send('pty:exit', { panelId, exitCode });
+    termBroadcast('pty:exit', { panelId, exitCode });
   });
   // wsl.exe 등 인자 주입 불가 셸: 첫 프롬프트 후 stdin 으로 hook 주입
   if (launch.postSpawnInject) {
