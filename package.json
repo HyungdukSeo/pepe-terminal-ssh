@@ -33,7 +33,7 @@
     "react-dom": "^18.2.0",
     "react-i18next": "^17.0.7",
     "react-window": "^1.8.11",
-    "sql-formatter": "^15.8.0",
+    "sql-formatter": "^15.8.1",
     "ssh2": "^1.11.0",
     "sudo-prompt": "^9.2.1",
     "webdav-server": "^2.6.2",
@@ -72,7 +72,7 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "nyaong902",
+        "owner": "HyungdukSeo",
         "repo": "pepe-terminal-ssh"
       }
     ],
