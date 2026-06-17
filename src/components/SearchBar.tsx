@@ -12,6 +12,8 @@ import {
   highlightAllMatches,
   clearHighlights,
   searchFromTop,
+  markSearchAnchor,
+  clearSearchAnchor,
 } from './TerminalPanel';
 
 type Props = {
@@ -49,6 +51,10 @@ export const SearchBar: React.FC<Props> = ({ tabs, activeTab, selectedPanelId, o
   useEffect(() => {
     inputRef.current?.focus();
     inputRef.current?.select();
+    // 검색 시작 — 모든 터미널의 현재 스크롤 위치를 anchor 로 저장.
+    // 매치가 없을 때 이 위치로 되돌려, 스크롤이 맨 위로 튀는 문제 방지.
+    for (const tid of getAllTermIds()) markSearchAnchor(tid);
+    return () => { for (const tid of getAllTermIds()) clearSearchAnchor(tid); };
   }, []);
 
   // 모드 변경 시에만 자동 검색
