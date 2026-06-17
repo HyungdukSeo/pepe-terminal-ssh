@@ -69,13 +69,11 @@ export const SearchBar: React.FC<Props> = ({ tabs, activeTab, selectedPanelId, o
     } catch {}
   }, [mode]);
 
-  // query/regex/caseSensitive 변경 시 모든 매치 하이라이트 + 맨 위부터 검색 시작
+  // query/regex/caseSensitive/mode 변경 시: 모든 매치 하이라이트 + 맨 위부터 검색 시작 (새 검색).
   useEffect(() => {
-    // 모든 터미널 기존 하이라이트 정리 — 모드 전환 시 잔재 제거
     for (const tid of getAllTermIds()) clearHighlights(tid);
     if (!query) return;
     if (mode === 'current') {
-      // 현재탭 모드 — 선택된 패널의 활성 터미널 하나만 하이라이트
       const termId = getActiveTermId();
       if (termId) {
         highlightAllMatches(termId, query, useRegex, caseSensitive);
@@ -89,7 +87,35 @@ export const SearchBar: React.FC<Props> = ({ tabs, activeTab, selectedPanelId, o
         }
       }
     }
-  }, [query, useRegex, caseSensitive, mode, selectedPanelId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, useRegex, caseSensitive, mode]);
+
+  // 패널/미니탭 전환만 일어났을 때(query 동일): 새 타겟 터미널에 하이라이트만 다시 칠하고,
+  // 검색은 맨 위부터가 아니라 현재 위치 기준으로 한 번 시도 — 매치 없으면 anchor 로 복귀.
+  // "다른 미니탭에서 활성화 전환했더니 처음부터 찾는다" 문제 해결.
+  // activeTermId 를 dep 으로 추적 — selectedPanelId / activeTab / panel.activeIdx 변경을 모두 포착.
+  const activeTermId = mode === 'current' ? (() => {
+    if (!selectedPanelId) return null;
+    const findInLayout = (node: any): string | null => {
+      if (node.type === 'leaf' && node.id === selectedPanelId) {
+        const sess = node.panel.sessions[node.panel.activeIdx];
+        return sess?.termId ?? null;
+      }
+      if (node.children) for (const c of node.children) { const r = findInLayout(c); if (r) return r; }
+      return null;
+    };
+    return findInLayout(activeTab.layout);
+  })() : null;
+  useEffect(() => {
+    if (!query || mode !== 'current' || !activeTermId) return;
+    // 하이라이트만 다시 칠한다 — viewport/선택 영역은 건드리지 않음.
+    // 사용자가 그 미니탭에서 보고 있던 위치를 그대로 유지. 매치 탐색은 Next/Prev 버튼으로.
+    clearHighlights(activeTermId);
+    highlightAllMatches(activeTermId, query, useRegex, caseSensitive);
+    // 새 anchor 도 이 미니탭의 현재 위치로 갱신 — 이후 Next/Prev 실패 시 여기로 복귀.
+    try { markSearchAnchor(activeTermId); } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTermId]);
 
   const getActiveTermId = (): string | null => {
     if (!selectedPanelId) return null;
