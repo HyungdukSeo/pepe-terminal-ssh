@@ -3911,7 +3911,7 @@ function App() {
         {tabs.filter(t => t.type === 'i18nEditor').map(t => (
           <div key={t.id} style={{ flex: 1, minHeight: 0, display: activeTab?.id === t.id ? 'flex' : 'none' }}>
             <ErrorBoundary label="다국어 편집">
-              <TranslationEditor />
+              <TranslationEditor aiAgent={aiAgent} />
             </ErrorBoundary>
           </div>
         ))}
