@@ -18,6 +18,10 @@ const env = {
 
 const cliPath = require.resolve('electron-builder/out/cli/cli.js');
 const args = ['--config.directories.output=' + tempOutputDir, ...process.argv.slice(2)];
+if (process.env.SKIP_SIGN && process.env.SKIP_SIGN !== '0') {
+  console.log('[run-electron-builder] SKIP_SIGN enabled: disabling Windows code signing');
+  args.push('--config.win.sign=false');
+}
 const result = spawnSync(process.execPath, [cliPath, ...args], {
   stdio: 'inherit',
   env,

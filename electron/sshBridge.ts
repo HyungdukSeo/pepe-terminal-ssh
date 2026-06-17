@@ -2410,8 +2410,28 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
           clearTimeout(to);
           const outBuf = Buffer.concat(stdoutChunks);
           const errBuf = Buffer.concat(stderrChunks);
-          const stdout = useIconv ? iconv.decode(outBuf, enc) : outBuf.toString('utf-8');
-          const stderr = useIconv ? iconv.decode(errBuf, enc) : errBuf.toString('utf-8');
+          // 세션 인코딩이 utf-8 이어도 일부 파일/주석이 EUC-KR(CP949) 이면 mojibake(U+FFFD) 발생
+          // → utf-8 디코드에 깨짐 문자가 있으면 cp949 로 재디코드해 더 적게 깨지는 쪽 채택.
+          const smartDecode = (buf: Buffer): string => {
+            if (useIconv) return iconv.decode(buf, enc);
+            const u = buf.toString('utf-8');
+            if (u.indexOf('�') < 0) return u;
+            try {
+              const k = iconv.decode(buf, 'cp949');
+              const cU = (u.match(/�/g) || []).length;
+              const cK = (k.match(/�/g) || []).length;
+              if (cK < cU) return k;
+            } catch { /* iconv 미지원 → utf-8 유지 */ }
+            return u;
+          };
+          // 원격 셸 rc(.cshrc/.bashrc 등)가 비-TTY exec 에서 뱉는 무의미 노이즈 라인 제거.
+          const cleanNoise = (s: string): string => s
+            .split('\n')
+            .filter(l => !/^\s*(stty|tcsh|csh|bash|sh):?\s*(standard input|['"]?standard input['"]?)?:?\s*(Invalid argument|Inappropriate ioctl for device|no job control in this shell|cannot set terminal process group)\s*$/i.test(l)
+                      && !/^\s*stty:\s/i.test(l))
+            .join('\n');
+          const stdout = cleanNoise(smartDecode(outBuf));
+          const stderr = cleanNoise(smartDecode(errBuf));
           resolve({ stdout, stderr, exitCode });
         });
       });

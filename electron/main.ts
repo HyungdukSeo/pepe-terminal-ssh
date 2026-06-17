@@ -427,6 +427,16 @@ function createWindow() {
       }
     } catch {}
     app.quit();
+    // 강제 종료 보장 — before-quit 의 process.exit 가 어떤 이유로든 안 되면,
+    // 자기 프로세스 트리(에이전트/MCP/JDBC/git 등 모든 자식 포함)를 detached taskkill 로 확실히 정리.
+    // detached 라 main 종료와 무관하게 살아남아 트리를 정리한다.
+    if (process.platform === 'win32') {
+      setTimeout(() => {
+        try {
+          require('child_process').spawn('taskkill', ['/pid', String(process.pid), '/T', '/F'], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+        } catch {}
+      }, 1200);
+    }
   });
 }
 
@@ -1577,9 +1587,10 @@ ipcMain.handle('sessions:import', async () => {
       }
     }
     let addedCount = 0;
-    for (const s of imported.sessions) {
-      const dup = sessionsData.sessions.some(x => x.host === s.host && x.port === s.port && x.username === s.username && x.name === s.name);
-      if (!dup) { sessionsData.sessions.push(s); addedCount++; }
+    for (const rawSession of imported.sessions) {
+      const { icon: _ignoredIcon, ...session } = rawSession as Session & { icon?: string };
+      const dup = sessionsData.sessions.some(x => x.host === session.host && x.port === session.port && x.username === session.username && x.name === session.name);
+      if (!dup) { sessionsData.sessions.push(session as Session); addedCount++; }
     }
     saveSessionsData(sessionsData);
     return { data: sessionsData, addedCount, totalParsed: imported.sessions.length };
@@ -4860,6 +4871,18 @@ function findGeminiBundlePath(): string | null {
 // ── Codex CLI 연동 ──
 const codexProcesses: Map<string, any> = new Map();
 
+// AI 에이전트(claude/gemini/codex) 프로세스가 아직 살아있는지 — 렌더러 streaming 안전망용.
+// procKey = requestId || sessionId 로 저장되므로 둘 다로 조회.
+ipcMain.handle('agent:is-running', (_e, { sessionId, requestId }: { sessionId?: string; requestId?: string }) => {
+  const maps = [claudeProcesses, geminiProcesses, codexProcesses];
+  const alive = (proc: any) => !!proc && proc.killed !== true && (proc.exitCode === null || proc.exitCode === undefined);
+  for (const m of maps) {
+    if (requestId && m.has(requestId) && alive(m.get(requestId))) return true;
+    if (sessionId && m.has(sessionId) && alive(m.get(sessionId))) return true;
+  }
+  return false;
+});
+
 // stop() 후에도 stdout 버퍼에 남아있던 데이터/지연 close 이벤트가
 // 렌더러로 흘러가 "응답이 계속 오는" 문제를 막기 위한 procKey 차단 집합.
 // stop 핸들러에서 즉시 add → stdout/stderr/close 핸들러는 송신 전 has() 확인.
@@ -4984,7 +5007,9 @@ ipcMain.handle('git:status', async (_e, { mode, termId, cwd }: { mode: 'local' |
     } else {
       // local
       const { execFileSync } = require('child_process');
-      const opts: any = { cwd: cwd || process.cwd(), encoding: 'utf-8', windowsHide: true, timeout: 3000 };
+      // stdio: stderr 를 'ignore' 로 — git 이 비-저장소에서 내는 'fatal: not a git repository'
+      // 메시지가 부모(앱) 콘솔로 그대로 흘러나오는 것 차단.
+      const opts: any = { cwd: cwd || process.cwd(), encoding: 'utf-8', windowsHide: true, timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] };
       try {
         execFileSync('git', ['rev-parse', '--is-inside-work-tree'], opts);
       } catch { return { ok: false, notRepo: true }; }
@@ -5221,9 +5246,10 @@ ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowB
     }
 
     // SSH 컨텍스트: 로컬 Bash 금지 (Unix 경로 접근 불가) — Read/Edit/Grep/Glob/LS + MCP ssh_exec 허용
-    // 파일 편집은 WebDAV UNC 경로로 Edit/Write → SFTP 프록시로 원격 반영
-    // 원격 명령 실행은 mcp__pepe_ssh__ssh_exec (MCP 서버 경유)
-    const mcpToolAllow = sshTermId ? `"mcp__pepe_ssh__ssh_exec"` : '';
+    // 원격 파일/명령은 pepe_ssh MCP 도구로 (WebDAV 제거). read/write/exec/grep/glob/list 모두 허용.
+    const mcpToolAllow = sshTermId
+      ? `"mcp__pepe_ssh__ssh_exec" "mcp__pepe_ssh__ssh_read_file" "mcp__pepe_ssh__ssh_write_file" "mcp__pepe_ssh__ssh_grep" "mcp__pepe_ssh__ssh_glob" "mcp__pepe_ssh__ssh_list_sessions"`
+      : '';
     const allowedFlag = disallowBash
       ? `--allowedTools "Read" "Edit" "Write" "Glob" "Grep" "LS" ${mcpToolAllow} "WebFetch" "WebSearch"`
       : '';
@@ -6065,7 +6091,7 @@ ipcMain.handle('codex:rateLimits', async () => {
   }
 });
 
-ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, approvalPolicy, effort, sshTermId }: { sessionId: string; prompt: string; requestId?: string; model?: string; approvalPolicy?: 'suggest' | 'auto-edit' | 'full-auto'; effort?: string; sshTermId?: string }) => {
+ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, approvalPolicy, effort, sshTermId, sshSessions }: { sessionId: string; prompt: string; requestId?: string; model?: string; approvalPolicy?: 'suggest' | 'auto-edit' | 'full-auto'; effort?: string; sshTermId?: string; sshSessions?: Array<{ id: string; label: string }> }) => {
   try {
     // 같은 sessionId로 실행 중인 Gemini 프로세스 정리
     const prevGemini = geminiProcesses.get(sessionId);
@@ -6086,7 +6112,7 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
     fs.writeFileSync(tmpFile, prompt, 'utf-8');
 
     const augmentedPath = buildAugmentedPath();
-    const spawnEnv = {
+    const spawnEnv: any = {
       ...process.env,
       PATH: augmentedPath,
       Path: augmentedPath,
@@ -6095,6 +6121,66 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
       LC_ALL: process.env.LC_ALL || 'en_US.UTF-8',
     };
 
+    // ── SSH MCP 서버 연결 — sshTermId 가 있으면 codex 에 pepe_ssh MCP(ssh_exec/read/write/grep/glob) 제공 ──
+    // codex 는 WebDAV UNC 워크스페이스를 못 쓰므로 원격 파일/명령은 MCP 로 처리.
+    // -c override 는 값에 공백/#/따옴표가 있으면 깨지므로, 임시 CODEX_HOME 에 config.toml 을
+    // 직접 쓰고 auth.json·기존 config.toml 을 복사 → 로그인 유지 + 사용자 ~/.codex 오염 없음.
+    const realCodexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+    let effectiveCodexHome = realCodexHome;
+    let tmpCodexHome = '';
+    if (sshTermId) {
+      try {
+        await startMcpControl();
+        const mcpScriptPath = path.join(os.tmpdir(), 'pepe-mcp-ssh-server.cjs');
+        try {
+          const existing = fs.existsSync(mcpScriptPath) ? fs.readFileSync(mcpScriptPath, 'utf-8') : '';
+          if (existing !== mcpSshServerScript) fs.writeFileSync(mcpScriptPath, mcpSshServerScript, 'utf-8');
+        } catch (e) { console.error('[codex] MCP script extract failed:', e); }
+
+        tmpCodexHome = path.join(os.tmpdir(), `pepe-codex-home-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+        fs.mkdirSync(tmpCodexHome, { recursive: true });
+        // 로그인(auth.json) 유지를 위해 실제 홈에서 복사
+        for (const f of ['auth.json']) {
+          try {
+            const src = path.join(realCodexHome, f);
+            if (fs.existsSync(src)) fs.copyFileSync(src, path.join(tmpCodexHome, f));
+          } catch {}
+        }
+        // 기존 config.toml(모델/설정) 보존 — mcp_servers 블록만 덧붙임
+        let baseToml = '';
+        try {
+          const srcCfg = path.join(realCodexHome, 'config.toml');
+          if (fs.existsSync(srcCfg)) baseToml = fs.readFileSync(srcCfg, 'utf-8');
+        } catch {}
+
+        const tomlStr = (s: string) => '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+        const termIdsJson = JSON.stringify(Array.isArray(sshSessions) && sshSessions.length > 0 ? sshSessions : [{ id: sshTermId, label: sshTermId }]);
+        const mcpBlock = [
+          '',
+          '# pepe_ssh — PePe Terminal SSH MCP (auto-generated, do not edit)',
+          '[mcp_servers.pepe_ssh]',
+          `command = ${tomlStr(process.execPath)}`,
+          `args = [${tomlStr(mcpScriptPath)}]`,
+          '',
+          '[mcp_servers.pepe_ssh.env]',
+          `PEPE_CTRL_PORT = ${tomlStr(String(mcpControlPort))}`,
+          `PEPE_CTRL_TOKEN = ${tomlStr(mcpControlToken)}`,
+          `PEPE_TERM_ID = ${tomlStr(sshTermId)}`,
+          `PEPE_TERM_IDS = ${tomlStr(termIdsJson)}`,
+          `ELECTRON_RUN_AS_NODE = ${tomlStr('1')}`,
+          '',
+        ].join('\n');
+        fs.writeFileSync(path.join(tmpCodexHome, 'config.toml'), baseToml + '\n' + mcpBlock, 'utf-8');
+        effectiveCodexHome = tmpCodexHome;
+        console.log('[codex] MCP(pepe_ssh) configured via CODEX_HOME:', tmpCodexHome, '| termId:', sshTermId);
+      } catch (e) {
+        console.error('[codex] MCP setup failed:', e);
+        effectiveCodexHome = realCodexHome;
+        tmpCodexHome = '';
+      }
+    }
+    if (effectiveCodexHome) { spawnEnv.CODEX_HOME = effectiveCodexHome; }
+
     const codexEffort = effort === 'max' ? 'xhigh' : effort;
     // codex 는 항상 danger-full-access(샌드박스 OFF)로 실행 — claude 와 동일하게 OS 샌드박스 없음.
     // Windows 샌드박스(restricted token)는 UNC/WebDAV 네트워크 경로를 차단하므로 반드시 꺼야 함.
@@ -6102,9 +6188,10 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
     
     // Codex는 세션별 git worktree에서 실행 → 다른 Codex 세션의 변경이 현재 작업공간에 섞이지 않게 함
     // SSH 세션이 붙은 경우에는 별도 임시 작업공간을 유지하되, 기본값은 현재 repo의 worktree 분리본.
+    // tmpCodexHome 이 있으면 그 경로를 cwd 로 써서 .codex/config.toml 을 project-local 로 오인하는 경고를 피함.
     const worktree = ensureCodexWorktree(sessionId);
-    let cwd = worktree.cwd;
-    if (sshTermId && !worktree.repoRoot) {
+    let cwd = tmpCodexHome || worktree.cwd;
+    if (sshTermId && !worktree.repoRoot && !tmpCodexHome) {
       cwd = path.join(os.tmpdir(), 'pepe-agent-workspace');
       if (!fs.existsSync(cwd)) fs.mkdirSync(cwd, { recursive: true });
     }
@@ -6147,6 +6234,7 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
       args.push('--skip-git-repo-check');
       // 샌드박스 OFF — UNC/WebDAV 네트워크 경로 접근 허용
       args.push('--sandbox', 'danger-full-access');
+      // SSH MCP(pepe_ssh)는 CODEX_HOME/config.toml 로 주입됨 (spawnEnv.CODEX_HOME)
       return args;
     };
 
@@ -6187,7 +6275,10 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
       }
     }
 
-    const cleanupTmp = () => { try { fs.unlinkSync(tmpFile); } catch {} };
+    const cleanupTmp = () => {
+      try { fs.unlinkSync(tmpFile); } catch {}
+      if (tmpCodexHome) { try { fs.rmSync(tmpCodexHome, { recursive: true, force: true }); } catch {} }
+    };
 
     let stdoutBuf = '';
     let stdoutHadContent = false;
@@ -6208,7 +6299,7 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
     // exec --json stdout 에는 rate_limits 가 안 나오지만 ~/.codex/sessions/.../rollout-*.jsonl 에 기록됨.
     const readCodexSessionInfo = (threadId: string): any => {
       try {
-        const sessionsDir = path.join(os.homedir(), '.codex', 'sessions');
+        const sessionsDir = path.join(effectiveCodexHome, 'sessions');
         if (!fs.existsSync(sessionsDir)) return null;
         let target: string | null = null;
         const walk = (dir: string, depth: number) => {
@@ -6277,9 +6368,29 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
         default: { const { id, type, status, aggregated_output, ...rest } = it || {}; return rest; }
       }
     };
+    // MCP 도구 결과({content:[{type:'text',text}]} 형태)에서 text 만 추출 → JSON/이스케이프 노출 방지
+    const extractMcpText = (res: any): string => {
+      if (res == null) return '';
+      if (typeof res === 'string') {
+        // 문자열이 JSON content 객체를 직렬화한 것이면 파싱해 text 추출
+        const s = res.trimStart();
+        if (s.startsWith('{') || s.startsWith('[')) {
+          try { return extractMcpText(JSON.parse(res)); } catch { return res; }
+        }
+        return res;
+      }
+      const content = Array.isArray(res) ? res : (Array.isArray(res.content) ? res.content : null);
+      if (content) {
+        const txt = content
+          .map((c: any) => (typeof c === 'string' ? c : (c?.type === 'text' ? c.text : (c?.text ?? ''))))
+          .filter(Boolean).join('\n');
+        if (txt) return txt;
+      }
+      try { return JSON.stringify(res, null, 2); } catch { return String(res); }
+    };
     const codexToolResult = (it: any): string => {
       if (it?.type === 'command_execution') return it.aggregated_output || '';
-      if (it?.type === 'mcp_tool_call') return typeof it.result === 'string' ? it.result : JSON.stringify(it.result ?? '');
+      if (it?.type === 'mcp_tool_call') return extractMcpText(it.result);
       if (it?.type === 'file_change') return (it.changes || []).map((c: any) => `${c.kind || ''} ${c.path || ''}`.trim()).join('\n') || 'applied';
       if (it?.type === 'web_search') return it.query || '';
       if (it?.type === 'todo_list') return (it.items || []).map((t: any) => `${t.completed ? '✓' : '○'} ${t.text ?? t}`).join('\n');

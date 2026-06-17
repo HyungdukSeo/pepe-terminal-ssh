@@ -2,7 +2,7 @@
   "name": "pepe-terminal-ssh",
   "productName": "PePe Terminal(SSH)",
   "private": true,
-  "version": "2.1.8",
+  "version": "2.1.9",
   "description": "SSH Terminal Client",
   "author": "Claude (feat. ghjeong[prompt])",
   "type": "commonjs",
@@ -15,9 +15,11 @@
     "download:jdbc": "node scripts/download-jdbc-drivers.js",
     "download:rg": "node scripts/download-ripgrep.js",
     "check:rg": "node scripts/download-ripgrep.js --check",
-    "build": "node scripts/verify-openvpn-bundle.js && node scripts/build-sidecar.js && node scripts/download-jre.js && node scripts/download-jdbc-drivers.js && node scripts/download-ripgrep.js && tsc && vite build && node -e \"require('fs').copyFileSync('electron/mcpSshServer.cjs','dist-electron/mcpSshServer.cjs');require('fs').copyFileSync('electron/sftpTransferWorker.cjs','dist-electron/sftpTransferWorker.cjs')\" && node scripts/patch-nsis-template.js && node scripts/build-mac-sequential.js",
-    "build:skip-vpn": "node scripts/verify-openvpn-bundle.js --skip && node scripts/build-sidecar.js && node scripts/download-jre.js && node scripts/download-jdbc-drivers.js && node scripts/download-ripgrep.js && tsc && vite build && node -e \"require('fs').copyFileSync('electron/mcpSshServer.cjs','dist-electron/mcpSshServer.cjs');require('fs').copyFileSync('electron/sftpTransferWorker.cjs','dist-electron/sftpTransferWorker.cjs')\" && node scripts/patch-nsis-template.js && node scripts/build-mac-sequential.js",
-    "build:dev": "node scripts/build-sidecar.js && node scripts/download-jre.js && node scripts/download-jdbc-drivers.js && node scripts/download-ripgrep.js && tsc && vite build && node -e \"require('fs').copyFileSync('electron/mcpSshServer.cjs','dist-electron/mcpSshServer.cjs');require('fs').copyFileSync('electron/sftpTransferWorker.cjs','dist-electron/sftpTransferWorker.cjs')\" && electron-builder --dir",
+    "build": "node scripts/verify-openvpn-bundle.js && node scripts/build-sidecar.js && node scripts/download-jre.js && node scripts/download-jdbc-drivers.js && node scripts/download-ripgrep.js && tsc && vite build && node -e \"require('fs').copyFileSync('electron/mcpSshServer.cjs','dist-electron/mcpSshServer.cjs');require('fs').copyFileSync('electron/sftpTransferWorker.cjs','dist-electron/sftpTransferWorker.cjs')\" && node scripts/patch-nsis-template.js && node scripts/run-electron-builder.js --win",
+    "build:skip-vpn": "node scripts/verify-openvpn-bundle.js --skip && node scripts/build-sidecar.js && node scripts/download-jre.js && node scripts/download-jdbc-drivers.js && node scripts/download-ripgrep.js && tsc && vite build && node -e \"require('fs').copyFileSync('electron/mcpSshServer.cjs','dist-electron/mcpSshServer.cjs');require('fs').copyFileSync('electron/sftpTransferWorker.cjs','dist-electron/sftpTransferWorker.cjs')\" && node scripts/patch-nsis-template.js && node scripts/run-electron-builder.js --win",
+    "build:win:skip-sign": "node scripts/verify-openvpn-bundle.js && node scripts/build-sidecar.js && node scripts/download-jre.js && node scripts/download-jdbc-drivers.js && node scripts/download-ripgrep.js && tsc && vite build && node -e \"require('fs').copyFileSync('electron/mcpSshServer.cjs','dist-electron/mcpSshServer.cjs');require('fs').copyFileSync('electron/sftpTransferWorker.cjs','dist-electron/sftpTransferWorker.cjs')\" && node scripts/patch-nsis-template.js && node scripts/run-electron-builder.js --win --config.win.sign=false",
+    "build:skip-sign": "node scripts/verify-openvpn-bundle.js && node scripts/build-sidecar.js && node scripts/download-jre.js && node scripts/download-jdbc-drivers.js && node scripts/download-ripgrep.js && tsc && vite build && node -e \"require('fs').copyFileSync('electron/mcpSshServer.cjs','dist-electron/mcpSshServer.cjs');require('fs').copyFileSync('electron/sftpTransferWorker.cjs','dist-electron/sftpTransferWorker.cjs')\" && node scripts/patch-nsis-template.js && node scripts/run-electron-builder.js --win --config.win.sign=false",
+    "build:dev": "node scripts/build-sidecar.js && node scripts/download-jre.js && node scripts/download-jdbc-drivers.js && node scripts/download-ripgrep.js && tsc && vite build && node -e \"require('fs').copyFileSync('electron/mcpSshServer.cjs','dist-electron/mcpSshServer.cjs');require('fs').copyFileSync('electron/sftpTransferWorker.cjs','dist-electron/sftpTransferWorker.cjs')\" && node scripts/run-electron-builder.js --dir",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview"
   },
@@ -77,7 +79,7 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "HyungdukSeo",
+        "owner": "nyaong902",
         "repo": "pepe-terminal-ssh"
       }
     ],
