@@ -175,12 +175,16 @@ function sanitizeMermaidLabels(src: string): string {
   const quote = (label: string): string | null => {
     const t = label.trim();
     if (!t || t.startsWith('"')) return null; // 이미 따옴표 / 빈 값 → 그대로
-    // 특수문자 없으면 굳이 감싸지 않음 (단순 라벨은 원형 유지)
-    if (!/[()#:;<>&]/.test(t)) return null;
+    // 순수 영숫자/언더스코어 단일 토큰만 그대로 두고, 그 외(공백·한글·?·,·. 등
+    // 특수문자 포함)는 모두 따옴표로 감싼다 — codex/한글 라벨이 unquoted 일 때
+    // mermaid v11 파서가 깨지는 문제(예: {D_PABX_GRP_NO 존재?})를 근본 차단.
+    if (/^[A-Za-z0-9_]+$/.test(t)) return null;
     return `"${t.replace(/"/g, '&quot;')}"`;
   };
   // id[label]  ([[ / [( 같은 더블/복합 모양은 제외 — 안쪽에 [] 없을 때만)
   out = out.replace(/([A-Za-z0-9_]+)\[([^\[\]\n]+)\]/g, (m, id, label) => {
+    // 평행사변형/사다리꼴 등 shape 구분자(/ \)로 시작·끝나는 라벨은 보존 (따옴표 시 모양 깨짐)
+    if (/^[/\\]|[/\\]$/.test(label.trim())) return m;
     const q = quote(label);
     return q ? `${id}[${q}]` : m;
   });
@@ -269,6 +273,28 @@ function sanitizeMermaidLabels(src: string): string {
       if (!trimmed) return _m;
       return `${open}"${trimmed}"${close}`;
     });
+    // 엣지 인라인 라벨을 파이프 형식(-->|"..."|)으로 정규화 — 특수문자/공백/한글 라벨이
+    // -. 라벨 .-> / -- 라벨 --> 형태일 때 파서가 자주 깨지는 문제 회피.
+    out = out.split('\n').map(line => {
+      if (line.includes('|')) return line; // 이미 파이프 라벨이면 그대로
+      const esc = (t: string) => t.trim().replace(/"/g, '&quot;');
+      // 점선: X -. 라벨 .-> Y  →  X -.->|"라벨"| Y  (공백 유무 무관)
+      line = line.replace(/-\.\s*([^>\n][^>\n]*?)\s*\.-*->/g, (m, txt) => {
+        const t = esc(txt); if (!t || /^[-.\s]+$/.test(t)) return m;
+        return `-.->|"${t}"|`;
+      });
+      // 실선: X -- 라벨 --> Y  →  X -->|"라벨"| Y
+      line = line.replace(/(^|[^-])--\s*([^>\-\s][^>\n]*?)\s*--+>/g, (m, pre, txt) => {
+        const t = esc(txt); if (!t || /^[-\s]+$/.test(t)) return m;
+        return `${pre}-->|"${t}"|`;
+      });
+      // 굵은선: X == 라벨 ==> Y  →  X ==>|"라벨"| Y
+      line = line.replace(/(^|[^=])==\s*([^>=\s][^>\n]*?)\s*==+>/g, (m, pre, txt) => {
+        const t = esc(txt); if (!t || /^[=\s]+$/.test(t)) return m;
+        return `${pre}==>|"${t}"|`;
+      });
+      return line;
+    }).join('\n');
     // 빈 줄(공백만 있는 줄 포함) 을 단일 newline 으로 축약.
     while (/\n[ \t]*\n/.test(out)) out = out.replace(/\n[ \t]*\n/g, '\n');
   }
@@ -760,6 +786,17 @@ function summarizeToolInput(name: string, input: any): string {
   if (!input || typeof input !== 'object') return JSON.stringify(input ?? '').slice(0, 80);
   const truncate = (s: string, n: number) => s.length > n ? s.slice(0, n) + '…' : s;
   const fp = input.file_path || input.path || input.filePath;
+  // pepe_ssh MCP 도구 — claude(mcp__pepe_ssh__*) / codex(pepe_ssh.*) 이름 모두 정규화해 경로/패턴만 표시
+  const bn = bareToolName(name);
+  if (bn === 'ssh_read_file' || bn === 'ssh_write_file' || bn === 'ssh_read' || bn === 'ssh_write') {
+    if (input.path) return truncate(String(input.path), 120);
+  } else if (bn === 'ssh_grep') {
+    return truncate([input.pattern, input.path ? `in ${input.path}` : '', input.glob ? `(${input.glob})` : ''].filter(Boolean).join(' '), 120);
+  } else if (bn === 'ssh_glob') {
+    return truncate([input.pattern, input.path ? `in ${input.path}` : ''].filter(Boolean).join(' '), 120);
+  } else if (bn === 'ssh_exec') {
+    return truncate([input.session ? `[${input.session}]` : '', String(input.command || '')].filter(Boolean).join(' '), 120);
+  }
   switch (name) {
     case 'Read':
     case 'Write':
@@ -812,6 +849,167 @@ function buildToolLabel(name: string, input: any): string {
   return `🔧 ${name}(${summarizeToolInput(name, input)})`;
 }
 
+// tool_result content → 표시용 텍스트. content 는 문자열이거나 MCP content 블록
+// 배열([{type:'text',text}])일 수 있음 → text 만 추출해 JSON/이스케이프 노출·줄바꿈 깨짐 방지.
+function extractToolResultText(content: any): string {
+  if (content == null) return '';
+  if (typeof content === 'string') {
+    const s = content.trimStart();
+    // 문자열이 content 배열/객체를 직렬화한 것이면 파싱해 재추출
+    if (s.startsWith('[') || s.startsWith('{')) {
+      try { return extractToolResultText(JSON.parse(content)); } catch { return content; }
+    }
+    return content;
+  }
+  if (Array.isArray(content)) {
+    const txt = content
+      .map((c: any) => (typeof c === 'string' ? c : (c?.type === 'text' ? c.text : (c?.text ?? ''))))
+      .filter(Boolean).join('\n');
+    if (txt) return txt;
+  } else if (typeof content === 'object') {
+    if (Array.isArray(content.content)) return extractToolResultText(content.content);
+    if (typeof content.text === 'string') return content.text;
+  }
+  try { return JSON.stringify(content, null, 2); } catch { return String(content); }
+}
+
+// MCP/네임스페이스 prefix 제거 → 순수 도구명. (mcp__pepe_ssh__ssh_read_file → ssh_read_file, pepe_ssh.ssh_exec → ssh_exec)
+function bareToolName(name: string): string {
+  let n = String(name || '');
+  if (n.startsWith('mcp__')) { const i = n.lastIndexOf('__'); if (i >= 0) n = n.slice(i + 2); }
+  else if (n.includes('.')) n = n.slice(n.lastIndexOf('.') + 1);
+  return n;
+}
+// 경로의 마지막 세그먼트(파일명)만 — 디렉토리 경로 제거.
+function baseName(p: any): string {
+  const s = shortenWebdavPath(String(p ?? ''));
+  const parts = s.split(/[\\/]/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : s;
+}
+// 도구별 동작 동사(아이콘 포함) — 접힌 라벨/그룹 요약에 공통 사용.
+const TOOL_VERB: Record<string, string> = {
+  Read: '📖 읽기', ssh_read_file: '📖 읽기', ssh_read: '📖 읽기',
+  Write: '📝 쓰기', ssh_write_file: '📝 쓰기', ssh_write: '📝 쓰기',
+  Edit: '✏️ 수정', MultiEdit: '✏️ 수정', NotebookEdit: '✏️ 수정',
+  LS: '📂 목록',
+  Glob: '🔍 찾기', ssh_glob: '🔍 찾기',
+  Grep: '🔍 검색', ssh_grep: '🔍 검색', WebSearch: '🔍 검색',
+  Bash: '▶ 실행', PowerShell: '▶ 실행', ssh_exec: '▶ 실행', mcp__pepe_ssh__ssh_exec: '▶ 실행',
+  WebFetch: '🌐 가져오기',
+  TodoWrite: '📋 할일', ExitPlanMode: '📋 계획',
+  Agent: '🤖 에이전트', Task: '🤖 에이전트',
+};
+// 접힌 상태 라벨 — 동작 + 대상 파일명(경로 제외). 펼치면 buildToolLabel(전체 경로) 표시.
+function buildToolLabelShort(name: string, input: any): string {
+  const n = bareToolName(name);
+  const verb = TOOL_VERB[n] || `🔧 ${n}`;
+  const fp = input?.file_path || input?.path || input?.filePath;
+  const firstTok = (s: any) => String(s || '').trim().split(/\s+/)[0] || '';
+  switch (n) {
+    case 'Read': case 'ssh_read_file': case 'ssh_read':
+    case 'Write': case 'ssh_write_file': case 'ssh_write':
+    case 'Edit': case 'MultiEdit': case 'NotebookEdit':
+    case 'LS':
+      return `${verb} ${fp ? baseName(fp) : ''}`.trim();
+    case 'Glob': case 'ssh_glob':
+      return `${verb} ${input?.pattern || ''}`.trim();
+    case 'Grep': case 'ssh_grep':
+      return `${verb} ${input?.pattern ? `"${input.pattern}"` : ''}`.trim();
+    case 'WebSearch':
+      return `${verb} ${input?.query || ''}`.trim();
+    case 'Bash': case 'PowerShell': case 'ssh_exec': case 'mcp__pepe_ssh__ssh_exec':
+      return `${verb} ${firstTok(input?.command)}`.trim();
+    case 'WebFetch':
+      try { return `${verb} ${new URL(String(input.url)).hostname}`; } catch { return verb; }
+    case 'TodoWrite':
+      return `${verb} ${Array.isArray(input?.todos) ? input.todos.length : 0}개`;
+    case 'ExitPlanMode':
+      return '📋 계획 승인 요청';
+    case 'Agent': case 'Task':
+      return `${verb} ${input?.description || input?.subagent_type || ''}`.trim();
+    default:
+      return verb;
+  }
+}
+
+// 도구 입력의 '핵심'을 보여주는 상세 — 편집은 diff(+/-), 명령은 커맨드, 계획/할일은 본문.
+// 너무 길면 잘라서(라인/문자 캡) 핵심만. 결과 출력(resultPreview)과 별개로 '무엇을 했는지' 표시용.
+function buildToolDetail(name: string, input: any): string {
+  if (!input || typeof input !== 'object') return '';
+  const cap = (s: string, lines = 40, chars = 2000): string => {
+    let arr = String(s).split('\n');
+    let cut = false;
+    if (arr.length > lines) { arr = arr.slice(0, lines); cut = true; }
+    let out = arr.join('\n');
+    if (out.length > chars) out = out.slice(0, chars) + ' …';
+    else if (cut) out += '\n…';
+    return out;
+  };
+  // 라인 단위 LCS diff — 공통 줄은 컨텍스트('  '), 바뀐 줄만 '- '/'+ '.
+  // 긴 공통 구간은 변경 주변 컨텍스트(±3줄)만 남기고 '  …' 로 접는다.
+  const diffOf = (oldS: string, newS: string): string => {
+    const a = oldS ? oldS.split('\n') : [];
+    const b = newS ? newS.split('\n') : [];
+    if (a.length === 0) return b.map(l => '+ ' + l).join('\n');
+    if (b.length === 0) return a.map(l => '- ' + l).join('\n');
+    const n = a.length, m = b.length;
+    // LCS 길이표 (역방향) — 입력이 큰 경우 cap 으로 보호되므로 충분.
+    const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+    for (let i = n - 1; i >= 0; i--)
+      for (let j = m - 1; j >= 0; j--)
+        dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    const raw: string[] = [];
+    let i = 0, j = 0;
+    while (i < n && j < m) {
+      if (a[i] === b[j]) { raw.push('  ' + a[i]); i++; j++; }
+      else if (dp[i + 1][j] >= dp[i][j + 1]) { raw.push('- ' + a[i]); i++; }
+      else { raw.push('+ ' + b[j]); j++; }
+    }
+    while (i < n) { raw.push('- ' + a[i]); i++; }
+    while (j < m) { raw.push('+ ' + b[j]); j++; }
+    // 변경 주변 컨텍스트만 남기고 긴 공통 구간 접기
+    const CTX = 3;
+    const isCtx = (l: string) => l.startsWith('  ');
+    const keep = new Array(raw.length).fill(false);
+    for (let k = 0; k < raw.length; k++) {
+      if (!isCtx(raw[k])) for (let d = -CTX; d <= CTX; d++) { const idx = k + d; if (idx >= 0 && idx < raw.length) keep[idx] = true; }
+    }
+    const out: string[] = [];
+    let skipping = false;
+    for (let k = 0; k < raw.length; k++) {
+      if (keep[k]) { out.push(raw[k]); skipping = false; }
+      else if (!skipping) { out.push('  …'); skipping = true; }
+    }
+    return out.join('\n');
+  };
+  switch (name) {
+    case 'Edit':
+    case 'NotebookEdit':
+      return cap(diffOf(String(input.old_string ?? input.old_source ?? ''), String(input.new_string ?? input.new_source ?? '')));
+    case 'MultiEdit':
+      if (Array.isArray(input.edits)) {
+        return cap(input.edits.map((e: any, i: number) =>
+          `@@ edit ${i + 1} @@\n${diffOf(String(e.old_string ?? ''), String(e.new_string ?? ''))}`).join('\n'));
+      }
+      return '';
+    case 'Write':
+      return input.content ? cap(String(input.content).split('\n').map((l: string) => '+ ' + l).join('\n')) : '';
+    case 'Bash':
+    case 'PowerShell':
+      return cap(String(input.command || ''), 25, 1500);
+    case 'mcp__pepe_ssh__ssh_exec':
+      return cap([input.session ? `[${input.session}]` : '', String(input.command || '')].filter(Boolean).join(' '), 25, 1500);
+    case 'mcp__pepe_ssh__ssh_write':
+      return input.content ? cap(String(input.content).split('\n').map((l: string) => '+ ' + l).join('\n')) : '';
+    case 'TodoWrite':
+      return Array.isArray(input.todos) ? cap(input.todos.map((td: any) => `• ${td.content || td.activeForm || ''}`).join('\n')) : '';
+    case 'ExitPlanMode':
+      return input.plan ? cap(String(input.plan), 60, 3000) : '';
+    default:
+      return '';
+  }
+}
+
 // 메시지 마크다운 캐시 — 같은 (id, content) 는 한 번만 파싱.
 // 대화가 길어지면 marked.parse + mermaid 전처리가 매 렌더마다 모든 메시지에 대해 호출되어 누적 비용 폭발.
 const _mdCache = new Map<string, { content: string; html: string }>();
@@ -844,7 +1042,7 @@ type Message = {
   seq?: number; // 발생 순서 (타임라인 인터리브용)
   agent?: AgentType; // 응답한 에이전트 (assistant 메시지에만)
 };
-type ToolTimelineItem = { id: string; label: string; status: 'running' | 'done' | 'error'; resultPreview?: string; seq?: number };
+type ToolTimelineItem = { id: string; name?: string; label: string; labelShort?: string; status: 'running' | 'done' | 'error'; resultPreview?: string; detail?: string; seq?: number };
 type ChatHistoryEntry = {
   id: string; // 로컬 고유 id
   claudeSessionId?: string | null; // Claude CLI session_id (resume 용)
@@ -885,8 +1083,8 @@ type Props = {
   onAddMountedEntry?: (entry: MountEntry) => void;
   onClearMounted?: () => void;
   onRemoveMountedEntry?: (remotePath: string, termId: string) => void;
-  connectedSessions?: { termId: string; label: string }[];
-  defaultSshSession?: { termId: string; label: string } | null;
+  connectedSessions?: { termId: string; label: string; sessionId?: string }[];
+  defaultSshSession?: { termId: string; label: string; sessionId?: string } | null;
   pinned?: boolean;
   onTogglePin?: () => void;
   aiAgent?: 'claude' | 'gemini' | 'codex';
@@ -926,10 +1124,14 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   );
   const sshInitRef = useRef(false);
   useEffect(() => {
-    // defaultSshSession 최초 1회 반영 (선택이 비어있을 때만)
-    if (defaultSshSession && !sshInitRef.current && selectedSshTermIds.size === 0) {
-      sshInitRef.current = true;
-      setSelectedSshTermIds(new Set([defaultSshSession.termId]));
+    // defaultSshSession 변경 시마다 선택에 반영 (명시적 선택 유지)
+    if (defaultSshSession) {
+      if (!sshInitRef.current) {
+        sshInitRef.current = true;
+        setSelectedSshTermIds(new Set([defaultSshSession.termId]));
+      } else {
+        setSelectedSshTermIds(prev => new Set([...prev, defaultSshSession.termId]));
+      }
     }
   }, [defaultSshSession?.termId]);
   // 연결 종료된 세션은 선택에서 제거
@@ -958,8 +1160,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   }, [sshPickerOpen]);
   // 선택된 세션 목록 (connectedSessions 순서 유지)
   const selectedSshSessions = connectedSessions.filter(s => selectedSshTermIds.has(s.termId));
-  // 대표 세션 (git bar 등 단일 참조용) — 첫 번째 선택
-  const activeSshSession = selectedSshSessions[0] || null;
+  // 대표 세션 (git bar 등 단일 참조용) — 첫 번째 선택 또는 defaultSshSession
+  const activeSshSession = selectedSshSessions[0] || defaultSshSession || null;
   const [installed, setInstalled] = useState<boolean | null>(null);
   // 에이전트별 버전 캐시 — 탭 hover 시 플로팅 툴팁에 표시
   const [agentVersions, setAgentVersions] = useState<{ claude?: string; gemini?: string; codex?: string }>({});
@@ -1020,29 +1222,46 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [streaming, setStreaming] = useState(false);
+  // 요청 시작 시각 + 첫 이벤트 수신 여부 — 안전망이 콜드스타트를 조기 종료하지 않도록.
+  const reqStartedAtRef = useRef<number>(0);
+  const hadStreamEventRef = useRef<boolean>(false);
   // 안전망 — 메인 프로세스 close 이벤트 누락 등으로 result/done 이 도달하지 못해
-  // streaming 플래그가 영원히 true 로 남는 케이스 방지. 10초간 stream 이벤트가 없으면
-  // 진행 중 상태를 강제 해제 → 메시지가 마크다운으로 정상 렌더되도록.
+  // streaming 플래그가 영원히 true 로 남는 케이스 방지.
+  //  - 이벤트가 한 번이라도 왔으면: 10초 idle 시 강제 해제
+  //  - 아직 한 번도 안 왔으면(에이전트 콜드스타트): 60초까지 대기 후 해제
   useEffect(() => {
     if (!streaming) return;
-    const id = window.setInterval(() => {
+    let busy = false;
+    const id = window.setInterval(async () => {
+      if (busy) return;
       const idle = Date.now() - (lastStreamEventAtRef.current || 0);
-      if (idle > 10_000) {
-        console.warn('[ClaudeChat] stream stuck — auto-finalize after 10s idle');
-        setStreaming(false);
-        setActivity('');
-        currentAsstIdRef.current = null;
-        activeRequestIdRef.current = null;
-        const aid = activeHistoryIdRef.current;
-        if (aid) setChatHistory(hList => hList.map(h => h.id === aid ? { ...h, streaming: false, pendingRequestId: null } : h));
-      }
-    }, 2000);
+      const sinceStart = Date.now() - (reqStartedAtRef.current || 0);
+      // 이벤트 공백이 길어도(긴 툴 실행/딥 reasoning) 곧바로 끊지 않는다.
+      const overTime = hadStreamEventRef.current ? (idle > 12_000) : (sinceStart > 90_000);
+      if (!overTime) return;
+      // 진짜 끊긴 건지 확인 — 에이전트 프로세스가 아직 살아있으면 계속 대기.
+      busy = true;
+      let running = false;
+      try { running = await (window as any).api?.agentIsRunning?.({ requestId: activeRequestIdRef.current || undefined }); } catch {}
+      busy = false;
+      if (running) { lastStreamEventAtRef.current = Date.now(); return; } // 살아있음 → idle 리셋 후 계속
+      console.warn('[ClaudeChat] stream finalize — agent process not running', { idle, sinceStart });
+      setStreaming(false);
+      setRequestBusy(false);
+      setActivity('');
+      currentAsstIdRef.current = null;
+      activeRequestIdRef.current = null;
+      const aid = activeHistoryIdRef.current;
+      if (aid) setChatHistory(hList => hList.map(h => h.id === aid ? { ...h, streaming: false, pendingRequestId: null } : h));
+    }, 3000);
     return () => window.clearInterval(id);
   }, [streaming]);
   // 현재 진행 중 활동(툴 이름 등) — 스트리밍 인디케이터 옆에 표시
   const [activity, setActivity] = useState<string>('');
   // 툴 호출 타임라인 (각 호출을 별도 항목으로)
   const [toolTimeline, setToolTimeline] = useState<ToolTimelineItem[]>([]);
+  // 현재 요청이 진행 중인지 UI 전용 플래그
+  const [requestBusy, setRequestBusy] = useState(false);
   // 승인 대기 중인 계획 (ExitPlanMode 수신 시)
   const [pendingPlan, setPendingPlan] = useState<string | null>(null);
   // 계획 편집 모드 — 사용자가 markdown 원본을 수정한 뒤 그 내용으로 진행 가능
@@ -1235,6 +1454,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const activeMount = activeMounts[0] || null;
   const [mountPresetsBySession, setMountPresetsBySession] = useState<MountPresetMap>({});
   const mountPresetsLoadedRef = useRef(false);
+  const [mountPresetsReady, setMountPresetsReady] = useState(false);
+  const restoringMountKeysRef = useRef<Set<string>>(new Set());
   // Claude CLI 대화 세션 ID (이전 대화 컨텍스트 유지용 --resume)
   const claudeSessionIdRef = useRef<string | null>(null);
   // 대화 이력 목록 (UIPrefs 영속화)
@@ -1269,6 +1490,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         }
       } catch {}
       mountPresetsLoadedRef.current = true;
+      setMountPresetsReady(true);
       shareContextLoadedRef.current = true;
     })();
   }, []);
@@ -1687,64 +1909,239 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     return () => { if (dispose) dispose(); };
   }, []);
 
-  // 선택된 SSH 세션들이 바뀌면 각각 WebDAV 마운트 등록 + 루트 경로 저장 (멀티)
+  // 선택된 SSH 세션 목록을 AI 대상으로 등록 (WebDAV 마운트 없이 — 파일 접근은 pepe_ssh MCP 도구로).
+  // WebDAV 가 느리고 불안정해서 제거: 이제 ssh_read_file/ssh_write_file/ssh_exec/ssh_grep/ssh_glob 로만 접근.
   useEffect(() => {
-    (async () => {
-      if (selectedSshSessions.length === 0) { setActiveMounts([]); return; }
-      const results: { termId: string; mountRoot: string; label: string }[] = [];
-      for (const sess of selectedSshSessions) {
+    const sessionsForMount = selectedSshSessions.length > 0 ? selectedSshSessions : (defaultSshSession ? [defaultSshSession] : []);
+    console.log('[ClaudeChat][WebDAV] sync active mounts', {
+      defaultTermId: defaultSshSession?.termId || null,
+      defaultSessionId: defaultSshSession?.sessionId || null,
+      selectedTermIds: selectedSshSessions.map(s => s.termId),
+      selectedSessionIds: selectedSshSessions.map(s => s.sessionId || null),
+      sessionsForMount: sessionsForMount.map(s => ({ termId: s.termId, sessionId: s.sessionId || null, label: s.label })),
+    });
+    if (sessionsForMount.length === 0) { setActiveMounts([]); return; }
+    setActiveMounts(sessionsForMount.map(s => ({ termId: s.termId, mountRoot: '', label: s.label })));
+  }, [selectedSshSessions.map(s => s.termId).join(','), defaultSshSession?.termId]);
+  const restoreWebdavMounts = useCallback(async (sessionsToRestore: { termId: string; label: string; sessionId?: string }[], source: 'selection' | 'event') => {
+    if (!mountPresetsLoadedRef.current || !mountPresetsReady) {
+      console.log('[ClaudeChat][WebDAV] restore skipped - presets not ready', {
+        source,
+        loaded: mountPresetsLoadedRef.current,
+        ready: mountPresetsReady,
+      });
+      return;
+    }
+    console.log('[ClaudeChat][WebDAV] restore start', {
+      source,
+      mountEntryCount: mountEntries.length,
+      presetSessionKeys: Object.keys(mountPresetsBySession || {}),
+      sessionsToRestore: sessionsToRestore.map(s => ({ termId: s.termId, sessionId: s.sessionId || null, label: s.label })),
+    });
+    if (sessionsToRestore.length === 0) {
+      console.log('[ClaudeChat][WebDAV] restore skipped - no sessions to restore', { source });
+      return;
+    }
+    const termIdToSessionId = new Map(connectedSessions.map(s => [s.termId, s.sessionId || '']));
+    const currentKeys = new Set<string>();
+    for (const entry of mountEntries) {
+      if (!entry.termId || !entry.remotePath) continue;
+      currentKeys.add(`${entry.termId}:${entry.remotePath}`);
+      const sessKey = termIdToSessionId.get(entry.termId);
+      if (sessKey) currentKeys.add(`${sessKey}:${entry.remotePath}`);
+    }
+    for (const sess of sessionsToRestore) {
+      const sessionKey = sess.sessionId || sess.termId;
+      const presets = mountPresetsBySession[sessionKey] || mountPresetsBySession[sess.termId] || [];
+      console.log('[ClaudeChat][WebDAV] restore session presets', {
+        source,
+        termId: sess.termId,
+        sessionId: sess.sessionId || null,
+        sessionKey,
+        presetCount: presets.length,
+      });
+      for (const preset of presets) {
+        const key = `${sessionKey}:${preset.remotePath}`;
+        if (currentKeys.has(key)) {
+          console.log('[ClaudeChat][WebDAV] restore skip existing', { source, termId: sess.termId, remotePath: preset.remotePath, key });
+          continue;
+        }
+        if (restoringMountKeysRef.current.has(key)) {
+          console.log('[ClaudeChat][WebDAV] restore skip inflight', { source, termId: sess.termId, remotePath: preset.remotePath, key });
+          continue;
+        }
         try {
+          restoringMountKeysRef.current.add(key);
+          console.log('[ClaudeChat][WebDAV] restore register attempt', {
+            source,
+            termId: sess.termId,
+            sessionId: sess.sessionId || null,
+            remotePath: preset.remotePath,
+            isDir: preset.isDir,
+          });
           const reg: any = await (window as any).api?.claudeRegisterMount?.(sess.termId, sess.label);
+          console.log('[ClaudeChat][WebDAV] restore register result', {
+            source,
+            termId: sess.termId,
+            remotePath: preset.remotePath,
+            success: !!reg?.success,
+            error: reg?.error || null,
+          });
           if (!reg?.success) continue;
-          const pathRes: any = await (window as any).api?.claudeGetMountPath?.(sess.termId, '/');
+          const pathRes: any = await (window as any).api?.claudeGetMountPath?.(sess.termId, preset.remotePath);
+          console.log('[ClaudeChat][WebDAV] restore mount path result', {
+            source,
+            termId: sess.termId,
+            remotePath: preset.remotePath,
+            success: !!pathRes?.success,
+            uncPath: pathRes?.uncPath || null,
+            error: pathRes?.error || null,
+          });
           if (!pathRes?.success) continue;
-          results.push({ termId: sess.termId, mountRoot: pathRes.uncPath.replace(/\\$/, ''), label: sess.label });
+          onAddMountedEntry?.({ termId: sess.termId, remotePath: preset.remotePath, uncPath: pathRes.uncPath, isDir: preset.isDir });
+          currentKeys.add(key);
+          console.log('[ClaudeChat][WebDAV] restore mounted', {
+            source,
+            termId: sess.termId,
+            remotePath: preset.remotePath,
+            uncPath: pathRes.uncPath,
+            key,
+          });
         } catch (err) {
-          console.error('[ClaudeChat] auto-mount failed:', sess.label, err);
+          console.error('[ClaudeChat] restore mount failed:', sess.label, preset.remotePath, err);
+        } finally {
+          restoringMountKeysRef.current.delete(key);
         }
       }
-      setActiveMounts(results);
-    })();
-  }, [selectedSshSessions.map(s => s.termId).join(',')]);
+    }
+  }, [connectedSessions, mountEntries, mountPresetsBySession, mountPresetsReady, onAddMountedEntry]);
 
-  // 세션 선택이 바뀌면, 그 세션에 마지막으로 사용했던 WebDAV 첨부를 자동 복원.
-  useEffect(() => {
-    if (!mountPresetsLoadedRef.current) return;
-    if (selectedSshSessions.length === 0) return;
-    const currentKeys = new Set(mountEntries.map(m => `${m.termId}:${m.remotePath}`));
-    (async () => {
-      for (const sess of selectedSshSessions) {
-        const presets = mountPresetsBySession[sess.termId] || [];
-        for (const preset of presets) {
-          const key = `${sess.termId}:${preset.remotePath}`;
-          if (currentKeys.has(key)) continue;
-          try {
-            const reg: any = await (window as any).api?.claudeRegisterMount?.(sess.termId, sess.label);
-            if (!reg?.success) continue;
-            const pathRes: any = await (window as any).api?.claudeGetMountPath?.(sess.termId, preset.remotePath);
-            if (!pathRes?.success) continue;
-            onAddMountedEntry?.({ termId: sess.termId, remotePath: preset.remotePath, uncPath: pathRes.uncPath, isDir: preset.isDir });
-            currentKeys.add(key);
-          } catch (err) {
-            console.error('[ClaudeChat] restore mount failed:', sess.label, preset.remotePath, err);
-          }
-        }
+  const removeWebdavPreset = useCallback((termId: string, remotePath: string) => {
+    const sessionId = connectedSessions.find(s => s.termId === termId)?.sessionId || '';
+    const keysToRemove = [termId, sessionId].filter(Boolean);
+    console.log('[ClaudeChat][WebDAV] remove preset request', {
+      termId,
+      sessionId: sessionId || null,
+      remotePath,
+      keysToRemove,
+    });
+    setMountPresetsBySession(prev => {
+      const next: MountPresetMap = {};
+      for (const [sessionKey, presets] of Object.entries(prev || {})) {
+        const filtered = presets.filter(p => p.remotePath !== remotePath || !(keysToRemove.includes(sessionKey)));
+        if (filtered.length > 0) next[sessionKey] = filtered;
       }
-    })();
-  }, [selectedSshSessions.map(s => s.termId).join(','), mountEntries, mountPresetsBySession, onAddMountedEntry]);
+      console.log('[ClaudeChat][WebDAV] remove preset applied', {
+        termId,
+        sessionId: sessionId || null,
+        remotePath,
+        beforeKeys: Object.keys(prev || {}),
+        afterKeys: Object.keys(next),
+      });
+      try { (window as any).api?.setUIPrefs?.({ claudeWebdavMountPresetsV1: next }); } catch {}
+      return next;
+    });
+  }, [connectedSessions]);
+
+  const clearWebdavPresetsForCurrentEntries = useCallback(() => {
+    const activeKeys = new Set(mountEntries.map(m => `${m.termId}:${m.remotePath}`));
+    if (activeKeys.size === 0) return;
+    console.log('[ClaudeChat][WebDAV] clear presets request', {
+      activeCount: activeKeys.size,
+      keys: [...activeKeys],
+    });
+    setMountPresetsBySession(prev => {
+      const next: MountPresetMap = {};
+      for (const [sessionKey, presets] of Object.entries(prev || {})) {
+        const filtered = presets.filter(p => ![...activeKeys].some(k => k.endsWith(`:${p.remotePath}`)));
+        if (filtered.length > 0) next[sessionKey] = filtered;
+      }
+      console.log('[ClaudeChat][WebDAV] clear presets applied', {
+        beforeKeys: Object.keys(prev || {}),
+        afterKeys: Object.keys(next),
+      });
+      try { (window as any).api?.setUIPrefs?.({ claudeWebdavMountPresetsV1: next }); } catch {}
+      return next;
+    });
+  }, [mountEntries]);
+
+  // 세션 선택 또는 외부 세션 연결 이벤트에 따라 WebDAV 첨부 자동 복원
+  useEffect(() => {
+    const sessionsToRestore = selectedSshSessions.length > 0 ? selectedSshSessions : (defaultSshSession ? [defaultSshSession] : []);
+    void restoreWebdavMounts(sessionsToRestore, 'selection');
+  }, [selectedSshSessions.map(s => `${s.termId}:${s.sessionId || ''}`).join(','), defaultSshSession?.termId, restoreWebdavMounts]);
+  useEffect(() => {
+    const onAutoRestore = (e: any) => {
+      const sessions = Array.isArray(e?.detail?.sessions) ? e.detail.sessions : [];
+      if (sessions.length === 0) return;
+      console.log('[ClaudeChat][WebDAV] auto restore event received', {
+        sessions: sessions.map((s: any) => ({ termId: s.termId, sessionId: s.sessionId || null, label: s.label })),
+      });
+      void restoreWebdavMounts(sessions, 'event');
+    };
+    window.addEventListener('claude-webdav-auto-restore', onAutoRestore as any);
+    return () => window.removeEventListener('claude-webdav-auto-restore', onAutoRestore as any);
+  }, [restoreWebdavMounts]);
 
   // 현재 마운트된 WebDAV 항목을 세션별 프리셋으로 저장
   useEffect(() => {
-    if (!mountPresetsLoadedRef.current) return;
+    if (!mountPresetsLoadedRef.current || !mountPresetsReady) {
+      console.log('[ClaudeChat][WebDAV] save skipped - presets not ready', {
+        loaded: mountPresetsLoadedRef.current,
+        ready: mountPresetsReady,
+      });
+      return;
+    }
+    const termIdToSessionId = new Map(connectedSessions.map(s => [s.termId, s.sessionId]));
     const grouped: MountPresetMap = {};
     for (const entry of mountEntries) {
       if (!entry.termId || !entry.remotePath) continue;
-      const arr = grouped[entry.termId] || (grouped[entry.termId] = []);
+      const sessionKey = termIdToSessionId.get(entry.termId) || entry.termId;
+      const arr = grouped[sessionKey] || (grouped[sessionKey] = []);
       if (!arr.find(x => x.remotePath === entry.remotePath)) arr.push({ remotePath: entry.remotePath, isDir: entry.isDir });
     }
-    setMountPresetsBySession(grouped);
-    try { (window as any).api?.setUIPrefs?.({ claudeWebdavMountPresetsV1: grouped }); } catch {}
-  }, [mountEntries]);
+    if (Object.keys(grouped).length === 0) {
+      console.log('[ClaudeChat][WebDAV] save skipped - no active mounts to persist', {
+        existingKeys: Object.keys(mountPresetsBySession || {}),
+      });
+      return;
+    }
+    const merged: MountPresetMap = { ...(mountPresetsBySession || {}) };
+    for (const [sessionKey, presets] of Object.entries(grouped)) {
+      merged[sessionKey] = presets;
+    }
+    const sameMap = (a: MountPresetMap, b: MountPresetMap) => {
+      const ak = Object.keys(a || {});
+      const bk = Object.keys(b || {});
+      if (ak.length !== bk.length) return false;
+      for (const k of ak) {
+        const av = a[k] || [];
+        const bv = b[k] || [];
+        if (av.length !== bv.length) return false;
+        for (let i = 0; i < av.length; i++) {
+          const x = av[i], y = bv[i];
+          if (x.remotePath !== y.remotePath || x.isDir !== y.isDir) return false;
+        }
+      }
+      return true;
+    };
+    if (sameMap(mountPresetsBySession, merged)) {
+      console.log('[ClaudeChat][WebDAV] save skipped - presets unchanged', {
+        keys: Object.keys(merged),
+      });
+      return;
+    }
+    console.log('[ClaudeChat][WebDAV] save mount presets', {
+      entryCount: mountEntries.length,
+      sessionIds: Array.from(new Set(mountEntries.map(e => e.termId))).filter(Boolean),
+      groupedKeys: Object.keys(grouped),
+      mergedKeys: Object.keys(merged),
+      grouped,
+      merged,
+    });
+    setMountPresetsBySession(merged);
+    try { (window as any).api?.setUIPrefs?.({ claudeWebdavMountPresetsV1: merged }); } catch {}
+  }, [mountEntries, connectedSessions, mountPresetsReady, mountPresetsBySession]);
 
   // 스트림 이벤트 도착 시각 — 안전망 타이머용
   const lastStreamEventAtRef = useRef<number>(0);
@@ -1753,6 +2150,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     const dispose = (window as any).api?.onClaudeStream?.((p: any) => {
       if (p.sessionId !== sessionId) return;
       lastStreamEventAtRef.current = Date.now();
+      hadStreamEventRef.current = true; // 에이전트가 출력 시작 — 콜드스타트 유예 해제
       const reqId: string | undefined = p.requestId;
       // requestId → historyId 매핑으로 어느 대화에 속하는 이벤트인지 판별
       const targetHistoryId = reqId ? requestToHistoryRef.current.get(reqId) : null;
@@ -1781,8 +2179,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             }
             for (const t of toolUses) {
               if (newTimeline.find(x => x.id === t.id)) continue;
-              const args = JSON.stringify(t.input).slice(0, 120);
-              newTimeline.push({ id: t.id, label: `🔧 ${t.name}(${args}${args.length >= 120 ? '…' : ''})`, status: 'running', seq: nextSeq() });
+              newTimeline.push({ id: t.id, name: t.name, label: buildToolLabel(t.name, t.input), labelShort: buildToolLabelShort(t.name, t.input), detail: buildToolDetail(t.name, t.input), status: 'running', seq: nextSeq() });
             }
             const u = (msg.message as any).usage;
             if (u) {
@@ -1806,8 +2203,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               newTimeline = newTimeline.map(t => {
                 const match = results.find((r: any) => r.tool_use_id === t.id);
                 if (!match) return t;
-                const content = typeof match.content === 'string' ? match.content : JSON.stringify(match.content);
-                const preview = content.slice(0, 1500).replace(/\n/g, ' ');
+                const content = extractToolResultText(match.content);
+                const preview = content.slice(0, 1500); // 줄바꿈 보존 — pre 에서 그대로 표시 (Read 등 멀티라인 출력 깨짐 방지)
                 return { ...t, status: match.is_error ? 'error' : 'done', resultPreview: preview };
               });
             }
@@ -1871,7 +2268,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             const next = [...prev];
             for (const t of toolUses) {
               if (next.find(x => x.id === t.id)) continue;
-              next.push({ id: t.id, label: buildToolLabel(t.name, t.input), status: 'running', seq: nextSeq() });
+              next.push({ id: t.id, name: t.name, label: buildToolLabel(t.name, t.input), labelShort: buildToolLabelShort(t.name, t.input), detail: buildToolDetail(t.name, t.input), status: 'running', seq: nextSeq() });
             }
             return next;
           });
@@ -1904,8 +2301,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           setToolTimeline(prev => prev.map(t => {
             const match = results.find((r: any) => r.tool_use_id === t.id);
             if (!match) return t;
-            const content = typeof match.content === 'string' ? match.content : JSON.stringify(match.content);
-            const preview = content.slice(0, 80).replace(/\n/g, ' ');
+            const content = extractToolResultText(match.content);
+            const preview = content.slice(0, 1500); // 줄바꿈 보존 — pre 에서 그대로 표시 (Read 등 멀티라인 출력 깨짐 방지)
             return { ...t, status: match.is_error ? 'error' : 'done', resultPreview: preview };
           }));
           setActivity('');
@@ -1922,6 +2319,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           }));
         } catch {}
         setStreaming(false);
+        setRequestBusy(false);
         removeStreamingAgent(streamAgent);
         setActivity('');
         currentAsstIdRef.current = null;
@@ -1957,6 +2355,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       } else if (msg.type === 'error') {
         setMessages(prev => [...prev, { role: 'assistant', content: `❌ ${msg.text}`, id: `err-${Date.now()}`, seq: nextSeq(), agent: streamAgent }]);
         setStreaming(false);
+        setRequestBusy(false);
         removeStreamingAgent(streamAgent);
         activeRequestIdRef.current = null;
         if (reqId) {
@@ -2150,6 +2549,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     (async () => {
       for (let i = 0; i < codeBlocks.length; i++) {
         const codeEl = codeBlocks[i];
+        // React 가 innerHTML 을 다시 그려 노드가 분리됐으면 skip — 다음 effect 실행에서
+        // 갱신된 DOM 으로 재처리됨 (분리된 노드에 작업하다 raw 코드블록이 남는 race 방지).
+        if (!codeEl.isConnected) continue;
         const pre = codeEl.parentElement; // <pre>
         const source = (codeEl.textContent || '').trim();
         const id = `mermaid-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 6)}`;
@@ -2440,19 +2842,28 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             requestAnimationFrame(() => adjustMermaidNodeLabelContrast(wrap));
           }
         } catch (err) {
-          codeEl.setAttribute('data-mermaid-rendered', 'error');
-          const err1 = document.createElement('div');
-          err1.className = 'claude-chat-mermaid-error';
-          err1.textContent = tt('mermaid.renderFailed', { msg: String(err).slice(0, 200) });
-          if (pre && pre.parentElement) pre.parentElement.insertBefore(err1, pre);
           // mermaid 가 body 에 남긴 에러 SVG/임시 element 정리 (id 기반)
           try {
             const stale = document.getElementById(id);
             stale?.parentElement?.removeChild(stale);
-            // 추가 안전장치: 'd' + id 형태의 임시 element 도 mermaid 가 사용
             const stale2 = document.getElementById('d' + id);
             stale2?.parentElement?.removeChild(stale2);
           } catch {}
+          // 렌더 실패 시 빨간 에러 대신 ASCII 다이어그램으로 자동 폴백 — 항상 읽을 수 있게.
+          codeEl.setAttribute('data-mermaid-rendered', 'ascii');
+          try {
+            const ascii = mermaidToAscii(source);
+            const wrap2 = document.createElement('pre');
+            wrap2.className = 'claude-chat-mermaid-ascii';
+            wrap2.setAttribute('data-mermaid-rendered', 'ascii');
+            wrap2.setAttribute('data-mermaid-src', source);
+            wrap2.style.cssText = 'font-family: ui-monospace,Consolas,monospace; font-size: 12px; line-height: 1.5; padding: 10px 12px; background: #1e1e1e; border: 1px solid #3a3a3a; border-radius: 4px; overflow-x: auto; color: #d4d4d4; white-space: pre;';
+            wrap2.textContent = ascii;
+            if (pre && pre.parentElement) pre.parentElement.replaceChild(wrap2, pre);
+          } catch {
+            // ASCII 변환도 실패하면 원본 소스를 그대로 (코드블록 유지)
+            codeEl.setAttribute('data-mermaid-rendered', 'error');
+          }
         }
       }
     })();
@@ -2483,20 +2894,24 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   // state batching / view 전환 사이에 "처리 중" 표시가 잠깐 사라지는 현상을 막는다.
   const activeReqAgent = activeRequestIdRef.current ? requestToAgentRef.current.get(activeRequestIdRef.current) || null : null;
   const currentAgentStreaming = shareContext
-    ? (streaming || activeReqAgent === currentAgent)
-    : (streamingAgents.has(currentAgent) || activeReqAgent === currentAgent);
+    ? (requestBusy || streaming || activeReqAgent === currentAgent)
+    : (requestBusy || streamingAgents.has(currentAgent) || activeReqAgent === currentAgent);
   const send = useCallback(async (text: string, contextItems: FileContextItem[]) => {
-    if (!text.trim()) return;
+    // 첨부만 있고 텍스트가 없어도 전송 허용 (이미지/문서만 보내는 경우)
+    if (!text.trim() && binaryAttachments.length === 0 && localFileAttachments.length === 0 && (contextItems?.length || 0) === 0) return;
     // 공유 OFF: 현재 에이전트만 busy 이면 차단, 다른 에이전트 stream 은 신경 안 씀
     const guardBusy = shareContextRef.current ? streaming : streamingAgents.has(currentAgentRef.current);
     if (guardBusy) return;
     addStreamingAgent(currentAgentRef.current);
     // 스트리밍 플래그는 진입 즉시 켠다 — 이후 프롬프트 빌드 중 예외/지연이 있어도
     // '중단' 버튼이 요청 시작과 동시에 활성화되도록 보장 (공유 ON/OFF 모두 일관)
-    // watchdog 기준 시간을 현재로 초기화 — 초기값 0이면 Date.now()-0이 수십억ms라
-    // 첫 번째 watchdog 주기(2s)에서 즉시 해제되는 버그 방지.
+    // ⚠ 세이프티넷이 직전 요청의 stale 타임스탬프로 즉시 발동하지 않도록 now 로 리셋.
+    //    첫 이벤트 수신 전(콜드스타트)에는 60초까지 대기하도록 플래그도 초기화.
     lastStreamEventAtRef.current = Date.now();
+    reqStartedAtRef.current = Date.now();
+    hadStreamEventRef.current = false;
     setStreaming(true);
+    setRequestBusy(true);
     // 이번 send 의 대화 세대 기록 — 이후 도착하는 stream 이벤트가 이 세대에 속한 경우만 처리
     activeGenRef.current = conversationGenRef.current;
     // 이번 send 의 고유 requestId
@@ -2553,66 +2968,30 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       }
     }
 
-    // 0) 활성 SSH 세션: 전체 파일시스템이 WebDAV 에 마운트됨 — 자동 context 주입
+    // 0) 활성 SSH 세션: 원격 파일/명령은 pepe_ssh MCP 도구로 접근 (WebDAV 제거 — 빠르고 안정적)
     if (activeMount) {
-      addDirsSet.add(activeMount.mountRoot);
-
-      // 사용자 메시지에서 Unix 절대 경로 추출 → UNC 번역 매핑 생성
-      const unixPathRegex = /\/[A-Za-z0-9_\-./]+/g;
-      const matches = Array.from(new Set(text.match(unixPathRegex) || []));
-      const pathMappings = matches
-        .filter(p => p.length > 2 && !p.startsWith('//'))
-        .map(p => {
-          const uncRel = p.replace(/^\/+/, '').replace(/\//g, '\\');
-          return { unix: p, unc: `${activeMount.mountRoot}\\${uncRel}` };
-        });
-
-      if (currentAgentRef.current === 'gemini') {
-        // Gemini 는 WebDAV UNC 워크스페이스를 못 씀 → pepe_ssh MCP 도구로만 원격 접근
+      const multi = activeMounts.length > 1;
+      contextLines.push(
+        `# 중요: 원격 SSH 접근 규칙 (필수)`,
+        ``,
+        `현재 SSH 세션: **${activeMount.label}** — 원격 Linux 호스트입니다. 원격 파일은 이 PC 에 없습니다.`,
+        `원격 파일/명령은 **반드시 pepe_ssh MCP 도구**로 접근하세요.`,
+        `❌ 로컬 Read / Write / Edit / Glob / Grep / LS / Bash 를 원격 경로(\`/view/...\` 등)에 쓰지 마세요 — 동작하지 않습니다.`,
+        ``,
+        `## 도구 (모든 경로는 원격 Unix 절대경로 그대로 — UNC/Windows 변환 불필요)`,
+        `✅ 파일 읽기: \`ssh_read_file(path="/원격/절대경로")\``,
+        `✅ 파일 쓰기/수정: \`ssh_write_file(path="...", content="...")\` — 수정 시 먼저 ssh_read_file 로 읽고 수정된 전체 내용을 다시 씀`,
+        `✅ 내용 검색(grep): \`ssh_grep(pattern="정규식", path="/dir", glob="*.c")\``,
+        `✅ 파일 찾기(glob): \`ssh_glob(pattern="*.c", path="/dir")\``,
+        `✅ 명령 실행: \`ssh_exec(command="...")\` — cleartool, ctco, git, make, ls, sed 등`,
+      );
+      if (multi) {
         contextLines.push(
-          `# 중요: 원격 SSH 접근 규칙 (필수)`,
           ``,
-          `현재 SSH 세션: **${activeMount.label}** — 원격 Linux 호스트입니다.`,
-          `원격 파일/명령은 반드시 **pepe_ssh MCP 도구**로 접근하세요.`,
-          ``,
-          `## 도구 사용 규칙 (반드시 준수)`,
-          `❌ Read / Write / Edit / Glob / LS / Bash 등 로컬 파일·셸 도구를 원격 경로에 쓰지 마세요 — 원격 파일은 이 PC 에 없습니다.`,
-          `✅ **원격 파일 읽기**: \`ssh_read_file(path="/원격/유닉스/절대경로")\``,
-          `✅ **원격 파일 쓰기/수정**: \`ssh_write_file(path="...", content="...")\` — 수정 시 먼저 ssh_read_file 로 읽고 수정된 전체 내용을 다시 씁니다`,
-          `✅ **원격 명령 실행**: \`ssh_exec(command="...")\` — cleartool, ctco, git, make, grep, find, ls 등`,
-          `✅ 모든 경로는 **원격 Unix 절대경로 그대로** 사용 (예: \`/view/ghj_view/vobs/...\`). Windows/UNC 경로 변환 불필요.`,
-          ``,
-        );
-      } else {
-        contextLines.push(
-          `# 중요: 원격 SSH 파일 접근 규칙`,
-          ``,
-          `현재 SSH 세션: **${activeMount.label}**`,
-          `이 세션의 원격 Linux 파일시스템 전체가 로컬 WebDAV 에 마운트되어 있습니다.`,
-          ``,
-          `## 경로 매핑 규칙`,
-          `- 원격 Unix 루트 \`/\` ↔ 로컬 UNC \`${activeMount.mountRoot}\\\``,
-          `- 원격 \`/a/b/c.txt\` ↔ 로컬 \`${activeMount.mountRoot}\\a\\b\\c.txt\``,
-          ``,
-          `## 도구 사용 규칙 (반드시 준수)`,
-          `❌ **로컬 Bash 툴을 쓰지 마세요** — 이 시스템은 Windows 이며 Unix 경로 \`/view/...\` 를 Bash 로 접근할 수 없습니다.`,
-          `✅ **파일 읽기/탐색**: Read / Glob / Grep / LS 툴을 UNC 경로로 호출`,
-          `✅ **파일 편집/작성**: Edit / Write 툴을 UNC 경로로 호출 (실제 원격 SSH 서버에 실시간 반영됨)`,
-          `✅ **원격 명령 실행 (cleartool, ctco, make, git 등)**: \`mcp__pepe_ssh__ssh_exec\` 툴 사용 — command 만 원격 Unix 경로로 전달 (UNC 변환 NO). 예: \`ssh_exec(command="ctco /view/.../file.c")\``,
-          `✅ 파일 경로가 언급되면: 파일 I/O 는 UNC 변환, 쉘 명령 argument 는 Unix 경로 그대로`,
-          ``,
+          `여러 SSH 세션 연결됨 (${activeMounts.map(m => m.label).join(', ')}) — 각 도구의 **session 인자(라벨)**로 대상 호스트 지정. 생략 시 첫 세션.`,
         );
       }
-
-      if (pathMappings.length > 0) {
-        contextLines.push(`## 이번 질문에서 감지된 경로 (미리 번역됨)`);
-        for (const m of pathMappings) {
-          contextLines.push(`- 원격: \`${m.unix}\` → 로컬 UNC: \`${m.unc}\``);
-        }
-        contextLines.push('');
-      }
-
-      contextLines.push(`분석 결과를 말할 때는 **원격 Unix 경로 기준**으로 설명해주세요 (사용자가 이해하기 쉽게).`);
+      contextLines.push(``, `분석 결과는 **원격 Unix 경로 기준**으로 설명해주세요.`);
     }
 
     // 0.5) 사용자 메시지에서 Windows 로컬 절대 경로 자동 감지 → --add-dir 추가
@@ -2692,11 +3071,10 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       contextLines.push('', '[명시적으로 첨부된 파일/폴더]', pathMap);
       attachBadge = `📂 첨부 ${mountEntries.length}개:\n${mountEntries.slice(0, 5).map(m => `• ${m.remotePath}${m.isDir ? '/' : ''}`).join('\n')}${mountEntries.length > 5 ? `\n외 ${mountEntries.length - 5}개` : ''}\n\n`;
     } else if (activeMounts.length > 0) {
-      // 멀티 SSH 컨텍스트 — 각 세션의 WebDAV 루트를 addDirs 에 추가 + 매핑 안내
-      for (const m of activeMounts) addDirsSet.add(m.mountRoot);
+      // 멀티 SSH 컨텍스트 — 파일 접근은 pepe_ssh MCP 도구로 (WebDAV 마운트 없음)
       if (activeMounts.length > 1) {
-        const mapLines = activeMounts.map(m => `- ${m.label}: \`${m.mountRoot}\` (이 세션 원격 루트 \`/\`)`).join('\n');
-        contextLines.push('', '[연결된 여러 SSH 세션 — 각 루트로 파일 접근 가능]', mapLines);
+        const mapLines = activeMounts.map(m => `- ${m.label}`).join('\n');
+        contextLines.push('', '[연결된 여러 SSH 세션 — pepe_ssh 도구의 session 인자로 대상 지정]', mapLines);
         attachBadge = `🔗 활성 SSH ${activeMounts.length}개: ${activeMounts.map(m => m.label).join(', ')}\n\n`;
       } else {
         attachBadge = `🔗 활성 SSH: ${activeMounts[0].label}\n\n`;
@@ -2759,9 +3137,13 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       // 오래된 transcript 안의 UNC mountRoot 는 현재 세션과 다를 수 있음 (포트/termId 매 세션 변경).
       // 현재 active mountRoot 가 있으면 모든 옛 \\127.0.0.1@PORT\DavWWWRoot\term-XXX 패턴을 현재 것으로 치환.
       const sanitizeUNC = (s: string): string => {
-        if (!activeMount) return s;
+        // WebDAV 제거 후 mountRoot 가 없으므로, 옛 transcript 의 UNC 경로를 원격 Unix 경로로 되돌린다.
         const oldUncRe = /\\\\127\.0\.0\.1@\d+\\DavWWWRoot\\term-[^\\\s"')]+/g;
-        return s.replace(oldUncRe, activeMount.mountRoot);
+        return s.replace(oldUncRe, (m) => {
+          // ...\term-xxx\a\b\c → /a/b/c
+          const rel = m.replace(/^\\\\127\.0\.0\.1@\d+\\DavWWWRoot\\term-[^\\]+/, '').replace(/\\/g, '/');
+          return rel.startsWith('/') ? rel : '/' + rel;
+        });
       };
       const transcriptLines: string[] = [];
       for (const it of items) {
@@ -2946,7 +3328,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           ].join('\n');
           codexPlanRequestsRef.current.add(requestId);
         }
-        await (window as any).api?.codexSend?.(sessionId, codexPrompt, requestId, model, codexApprovalPolicy, effort, sshTermId);
+        // sshTermId 전달 → codex 에 SSH MCP(pepe_ssh) 제공 (원격 파일/명령/검색)
+        await (window as any).api?.codexSend?.(sessionId, codexPrompt, requestId, model, codexApprovalPolicy, effort, sshTermId, sshSessions);
       } else {
         const disallowBash = !!sshTermId;
         const resumeSessionId = claudeSessionIdRef.current;
@@ -2976,7 +3359,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       setStreaming(false);
       removeStreamingAgent(currentAgentRef.current);
     }
-  }, [sessionId, streaming, streamingAgents, mountEntries, activeMount, localFileAttachments, permissionMode, model, perToolApproval, messages, toolTimeline, geminiTier, geminiYolo, codexApprovalPolicy]);
+  }, [sessionId, streaming, streamingAgents, mountEntries, activeMount, localFileAttachments, binaryAttachments, permissionMode, model, perToolApproval, messages, toolTimeline, geminiTier, geminiYolo, codexApprovalPolicy]);
 
   // 외부에서 컨텍스트 전달되면 추가 (기존 첨부에 append, 중복 제거)
   useEffect(() => {
@@ -3020,6 +3403,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     }
     activeRequestIdRef.current = null;
     setStreaming(false);
+    setRequestBusy(false);
     removeStreamingAgent(reqAgent);
     setActivity('');
     currentAsstIdRef.current = null;
@@ -3034,10 +3418,11 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     setMessages([]);
     setToolTimeline([]);
     setActivity('');
-    setPendingPlan(null);
-    setPendingPlanAgent(null);
-    setStreaming(false);
-    claudeSessionIdRef.current = null;
+      setPendingPlan(null);
+      setPendingPlanAgent(null);
+      setStreaming(false);
+      setRequestBusy(false);
+      claudeSessionIdRef.current = null;
     recentLocalPathsRef.current.clear();
     currentAsstIdRef.current = null;
     setActiveHist(null);
@@ -3186,6 +3571,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       setPendingPlan(null);
       setPendingPlanAgent(null);
       setStreaming(false);
+      setRequestBusy(false);
       claudeSessionIdRef.current = null;
       recentLocalPathsRef.current.clear();
       currentAsstIdRef.current = null;
@@ -3272,7 +3658,11 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   };
 
   // 로컬 PC 파일/폴더 업로드 → 인라인 첨부
-  const BINARY_LOCAL_EXT = new Set(['png','jpg','jpeg','gif','bmp','ico','webp','zip','gz','tar','bz2','7z','rar','exe','dll','so','dylib','bin','pdf','mp3','mp4','avi','mkv','wav','flac','ogg','class','o','a','obj','lib','pyc','woff','woff2','ttf','otf','eot']);
+  const BINARY_LOCAL_EXT = new Set(['png','jpg','jpeg','gif','bmp','ico','webp','tiff','heic','zip','gz','tar','bz2','7z','rar','exe','dll','so','dylib','bin','pdf','mp3','mp4','avi','mkv','mov','wav','flac','ogg','class','o','a','obj','lib','pyc','woff','woff2','ttf','otf','eot',
+    // Office/문서 — 텍스트로 읽으면 깨지므로 path-copy 첨부
+    'pptx','ppt','docx','doc','xlsx','xls','hwp','hwpx','odt','ods','odp']);
+  // 텍스트로 인라인 첨부할 확장자 — 이 외엔(특히 drop 시 mime 비어도) 바이너리로 안전 처리.
+  const TEXT_LOCAL_EXT = new Set(['txt','md','markdown','log','json','xml','yaml','yml','csv','tsv','ini','conf','cfg','toml','env','sh','bash','zsh','ps1','bat','cmd','js','jsx','ts','tsx','mjs','cjs','py','rb','go','rs','java','kt','c','h','cpp','hpp','cc','cs','php','pl','lua','sql','html','htm','css','scss','less','vue','svelte','gradle','properties','dockerfile','makefile','gitignore','tf','tfvars']);
   const EXCLUDE_FOLDER_DIR = new Set(['node_modules','.git','.svn','dist','build','__pycache__','.venv','venv','.next','target','coverage','.cache','.idea','.vscode']);
 
   const onFilePicked = async (files: FileList | null, opts: { fromFolder?: boolean; maxFiles?: number; maxPerFileKB?: number; maxTotalMB?: number } = {}) => {
@@ -3421,10 +3811,12 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     const binaryFiles: File[] = [];
     for (const f of Array.from(files)) {
       const ext = f.name.split('.').pop()?.toLowerCase() || '';
-      const isBinaryByExt = BINARY_LOCAL_EXT.has(ext);
-      const isBinaryByMime = !!f.type && !f.type.startsWith('text/') && !/json|xml|yaml|javascript|typescript/i.test(f.type);
-      if (isBinaryByExt || isBinaryByMime) binaryFiles.push(f);
-      else textFiles.push(f);
+      // 텍스트로 인라인 첨부할지 판정 — 확실히 텍스트인 경우만. 그 외(Office/이미지/미지/빈 mime)는 바이너리 path-copy.
+      const isTextByExt = TEXT_LOCAL_EXT.has(ext);
+      const isTextByMime = !!f.type && (f.type.startsWith('text/') || /json|xml|yaml|javascript|typescript/i.test(f.type));
+      const isText = !BINARY_LOCAL_EXT.has(ext) && (isTextByExt || isTextByMime);
+      if (isText) textFiles.push(f);
+      else binaryFiles.push(f);
     }
     if (textFiles.length > 0) {
       // 텍스트도 외부 드래그면 onFilePicked 의 f.text() 가 실패할 수 있어 path 기반으로 복사
@@ -3462,24 +3854,21 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         target.closest('.claude-chat-container')
       ));
     const onWinDragOver = (e: DragEvent) => {
+      // 파일 드래그는 창 어디서든 허용(preventDefault) — 안 하면 OS 가 '금지' 커서로 드롭을 막음.
+      // (투명/프레임리스 창에서 타깃 영역 판정이 빗나가도 첨부가 되도록 전역 허용)
       if (!hasFilesType(e.dataTransfer)) return;
-      const target = e.target as HTMLElement | null;
-      if (!inChatArea(target)) {
-        if (isDragOverRef.current) { isDragOverRef.current = false; setIsDragOver(false); }
-        return;
-      }
-      // 드롭존 안에서만 preventDefault → drop 이벤트가 JS 로 들어오게 함 (+ navigate 차단)
       e.preventDefault();
       try { if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; } catch {}
-      if (!isDragOverRef.current) { isDragOverRef.current = true; setIsDragOver(true); }
+      const overChat = inChatArea(e.target as HTMLElement | null);
+      if (overChat !== isDragOverRef.current) { isDragOverRef.current = !!overChat; setIsDragOver(!!overChat); }
     };
     const onWinDrop = async (e: DragEvent) => {
       if (!hasFilesType(e.dataTransfer)) return;
-      const target = e.target as HTMLElement | null;
-      if (!inChatArea(target)) return;  // 채팅 영역 밖 → main 의 will-navigate 백스톱에 맡김
-      e.preventDefault();
       isDragOverRef.current = false;
       setIsDragOver(false);
+      // 채팅 영역 위 드롭만 첨부로 가로챈다. 그 외(파일 전송 패널 등)는 통과시켜 각자 처리.
+      if (!inChatArea(e.target as HTMLElement | null)) return;
+      e.preventDefault();
       const files = e.dataTransfer?.files;
       console.log('[drag-drop] chat drop —', files?.length ?? 0, 'file(s)');
       if (files && files.length > 0) await routeDroppedFiles(files);
@@ -4460,9 +4849,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               // 툴 이름별 카운트로 요약 — "검색함 Read 2개, Bash 1개" 식
               const counts: Record<string, number> = {};
               for (const t of g.tools) {
-                const m = (t.label || '').match(/^([A-Za-z_][A-Za-z0-9_]*)/);
-                const name = m ? m[1] : tt('tool');
-                counts[name] = (counts[name] || 0) + 1;
+                const verb = t.name ? (TOOL_VERB[bareToolName(t.name)] || `🔧 ${bareToolName(t.name)}`) : tt('tool');
+                counts[verb] = (counts[verb] || 0) + 1;
               }
               return Object.entries(counts).map(([k, v]) => `${k} ${tt('toolCount', { count: v })}`).join(', ');
             })();
@@ -4480,7 +4868,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                     {g.tools.map(t => {
                       // 실행 중인 도구는 자동 펼침 (진행 상황 보이도록)
                       const isOpen = expandedToolItems.has(t.id) || t.status === 'running';
-                      const labelShort = t.label.length > 80 ? t.label.slice(0, 80) + '…' : t.label;
+                      // 접힘: 동작+파일명(경로 X) / 펼침: 전체 경로 라벨 + 상세/내용
+                      const collapsedLabel = t.labelShort || (t.label.length > 80 ? t.label.slice(0, 80) + '…' : t.label);
                       return (
                         <div key={`t-${t.id}`} className={`claude-chat-timeline-item ${t.status} ${isOpen ? 'open' : 'closed'}`}>
                           <button className="claude-chat-timeline-row" onClick={() => toggleToolItem(t.id)} title={isOpen ? tt('collapse') : tt('expand')}>
@@ -4488,8 +4877,19 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                             <span className="claude-chat-timeline-status">
                               {t.status === 'running' ? '⏳' : t.status === 'done' ? '✓' : '✕'}
                             </span>
-                            <span className="claude-chat-timeline-label">{isOpen ? t.label : labelShort}</span>
+                            <span className="claude-chat-timeline-label">{isOpen ? t.label : collapsedLabel}</span>
                           </button>
+                          {isOpen && t.detail && (
+                            <pre className="claude-chat-timeline-detail claude-chat-timeline-diff">
+                              {(() => { const detailIsDiff = /^[+-] /m.test(t.detail || ''); return t.detail!.split('\n').map((ln, li) => {
+                                const add = ln.startsWith('+ ');
+                                const del = ln.startsWith('- ');
+                                return (
+                                  <span key={li} style={{ display: 'block', color: add ? '#5cd97a' : del ? '#ff7a7a' : (detailIsDiff ? '#8a8a8a' : undefined) }}>{ln || ' '}</span>
+                                );
+                              }); })()}
+                            </pre>
+                          )}
                           {isOpen && t.resultPreview && (
                             <pre className="claude-chat-timeline-detail">{t.resultPreview}</pre>
                           )}
@@ -4575,7 +4975,10 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           <div className="claude-chat-attachments staged">
             <div className="claude-chat-attachments-header">
               <span>{tt('attachWebdavTitle', { count: mountEntries.length })}</span>
-              {onClearMounted && <button className="claude-chat-attachments-clear" onClick={onClearMounted} title={tt('removeAttachment')}>{tt('removeAll')}</button>}
+              {onClearMounted && <button className="claude-chat-attachments-clear" onClick={() => {
+                clearWebdavPresetsForCurrentEntries();
+                onClearMounted();
+              }} title={tt('removeAttachment')}>{tt('removeAll')}</button>}
             </div>
             <div className="claude-chat-attachments-list">
               {mountEntries.map(m => (
@@ -4600,7 +5003,10 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                     }}
                     style={{ cursor: m.isDir ? 'default' : 'pointer', textDecoration: m.isDir ? 'none' : 'underline dotted', textUnderlineOffset: 2 }}
                   >{m.remotePath}</span>
-                  {onRemoveMountedEntry && <button className="claude-chat-attachment-remove" onClick={() => onRemoveMountedEntry(m.remotePath, m.termId)} title={tt('remove')}>×</button>}
+                  {onRemoveMountedEntry && <button className="claude-chat-attachment-remove" onClick={() => {
+                    removeWebdavPreset(m.termId, m.remotePath);
+                    onRemoveMountedEntry(m.remotePath, m.termId);
+                  }} title={tt('remove')}>×</button>}
                 </div>
               ))}
             </div>
@@ -5025,7 +5431,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           {currentAgentStreaming ? (
             <button className="claude-chat-btn stop" onClick={stop}>{tt('stopShort')}</button>
           ) : (
-            <button className="claude-chat-btn send" onClick={handleSend} disabled={!input.trim()}>{tt('send')}</button>
+            <button className="claude-chat-btn send" onClick={handleSend} disabled={!input.trim() && binaryAttachments.length === 0 && localFileAttachments.length === 0}>{tt('send')}</button>
           )}
         </div>
       </div>

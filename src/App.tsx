@@ -783,9 +783,37 @@ function App() {
   // WebDAV 마운트 첨부 엔트리
   const [claudeMountEntries, setClaudeMountEntries] = useState<{ termId: string; remotePath: string; uncPath: string; isDir: boolean }[]>([]);
   const [claudeAttaching, setClaudeAttaching] = useState<{ message: string; progress: number; total: number } | null>(null);
-  const [, setConnectedTick] = useState(0);
+  const [connectedTick, setConnectedTick] = useState(0);
   // 글로벌 연결 상태 변경시 일괄전송 카운트 등 재계산을 위해 강제 리렌더
   useEffect(() => subscribeConnectedChange(() => setConnectedTick(n => n + 1)), []);
+  const connectedWebdavRestoreInitRef = useRef(false);
+  const prevConnectedWebdavTermIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const current = new Map<string, { termId: string; sessionId?: string; label: string }>();
+    for (const t of tabs) {
+      for (const s of collectAllSessions(t.layout)) {
+        if (!s.termId || !isTermConnected(s.termId)) continue;
+        const info = getTermSessionInfo(s.termId);
+        const label = info?.sessionName || s.sessionName || info?.host || s.termId;
+        current.set(s.termId, { termId: s.termId, sessionId: info?.sessionId, label });
+      }
+    }
+    const currentIds = new Set(current.keys());
+    if (!connectedWebdavRestoreInitRef.current) {
+      connectedWebdavRestoreInitRef.current = true;
+      prevConnectedWebdavTermIdsRef.current = currentIds;
+      return;
+    }
+    const added = [...currentIds].filter(termId => !prevConnectedWebdavTermIdsRef.current.has(termId)).map(termId => current.get(termId)!);
+    prevConnectedWebdavTermIdsRef.current = currentIds;
+    if (added.length === 0) return;
+    console.log('[App][ClaudeWebDAV] connected session(s) added', {
+      added,
+    });
+    window.dispatchEvent(new CustomEvent('claude-webdav-auto-restore', {
+      detail: { sessions: added },
+    }));
+  }, [tabs, connectedTick]);
   // 세션 설정 변경 (X11 forwarding 등) 이벤트 — 활성 연결을 즉시 재접속해서 새 설정 반영
   useEffect(() => {
     const onSettingChanged = (e: any) => {
@@ -1743,9 +1771,21 @@ function App() {
         const sess = findTermSession(termId);
         if (sess) sessionLabel = sess.sessionName || sess.host || termId;
       } catch {}
+      console.log('[App][ClaudeWebDAV] attach request', {
+        termId,
+        remotePath,
+        sessionLabel,
+        isDir,
+      });
 
       // 세션 등록 (한 번만 실제 등록됨 - 내부에서 중복 체크)
       const reg: any = await (window as any).api?.claudeRegisterMount?.(termId, sessionLabel);
+      console.log('[App][ClaudeWebDAV] register mount result', {
+        termId,
+        remotePath,
+        success: !!reg?.success,
+        error: reg?.error || null,
+      });
       if (!reg?.success) {
         setClaudeAttaching({ message: `마운트 실패: ${reg?.error || '알 수 없음'}`, progress: 0, total: 0 });
         setTimeout(() => setClaudeAttaching(null), 3500);
@@ -1754,6 +1794,13 @@ function App() {
 
       // UNC 경로 생성
       const pathRes: any = await (window as any).api?.claudeGetMountPath?.(termId, remotePath);
+      console.log('[App][ClaudeWebDAV] get mount path result', {
+        termId,
+        remotePath,
+        success: !!pathRes?.success,
+        uncPath: pathRes?.uncPath || null,
+        error: pathRes?.error || null,
+      });
       if (!pathRes?.success) {
         setClaudeAttaching({ message: `경로 변환 실패: ${pathRes?.error || '알 수 없음'}`, progress: 0, total: 0 });
         setTimeout(() => setClaudeAttaching(null), 3500);
@@ -1765,9 +1812,16 @@ function App() {
         map.set(`${termId}:${remotePath}`, { termId, remotePath, uncPath: pathRes.uncPath, isDir });
         return Array.from(map.values());
       });
+      console.log('[App][ClaudeWebDAV] mounted entry stored', {
+        termId,
+        remotePath,
+        uncPath: pathRes.uncPath,
+        isDir,
+      });
       setClaudeAttaching({ message: `첨부 완료 (WebDAV 실시간 접근)`, progress: 1, total: 1 });
       setTimeout(() => setClaudeAttaching(null), 2000);
     } catch (err: any) {
+      console.error('[App][ClaudeWebDAV] attach failed', { termId, remotePath, error: err });
       setClaudeAttaching({ message: `첨부 실패: ${err}`, progress: 0, total: 0 });
       setTimeout(() => setClaudeAttaching(null), 3500);
     }
@@ -2451,6 +2505,13 @@ function App() {
 
   const handleConnectSession = (sessionId: string, sessionName: string, _targetPanelId?: string | null, sessionTheme?: string, sessionFontFamily?: string, sessionFontSize?: number, sessionScrollback?: number) => {
     if (!activeTab) return;
+    console.log('[App][SessionConnect] request', {
+      sessionId,
+      sessionName,
+      activeTabId: activeTab.id,
+      activeTabType: activeTab.type || 'terminal',
+      selectedPanelId,
+    });
     // 터미널이 아닌 워크스페이스(브라우저/파일비교/로그분석/VPN/다국어/SQL Tool)에서 더블클릭한 경우
     // → 기존 터미널 워크스페이스 탭을 찾아 활성화하고 거기서 세션 연결 (없으면 새로 생성).
     // fileExplorer / fileEditor 는 아래에서 별도 처리(SFTP/편집기 흐름).
@@ -2546,8 +2607,19 @@ function App() {
         const data = await (window as any).api.listSessions();
         const sessions = data?.sessions ?? data ?? [];
         const sess = sessions.find((s: any) => s.id === sessionId);
+        console.log('[App][SessionConnect] register term', {
+          termId,
+          sessionId,
+          sessionName: name,
+          host: sess?.host || '',
+        });
         registerTermSession(termId, sessionId, name, sess?.host ?? '');
       } catch {
+        console.log('[App][SessionConnect] register term fallback', {
+          termId,
+          sessionId,
+          sessionName: name,
+        });
         registerTermSession(termId, sessionId, name, '');
       }
     };
@@ -4578,7 +4650,7 @@ function App() {
       <NotifyHost />
       {showClaudeChat && (() => {
         // 모든 연결된 SSH 세션 수집 (panel.sessions 내의 termId 들)
-        const connectedSessions: { termId: string; label: string }[] = [];
+        const connectedSessions: { termId: string; label: string; sessionId?: string }[] = [];
         const seen = new Set<string>();
         const walk = (n: any) => {
           if (n.type === 'leaf') {
@@ -4587,7 +4659,7 @@ function App() {
               if (s.termId && !seen.has(s.termId) && isTermConnected(s.termId)) {
                 const info = getTermSessionInfo(s.termId);
                 const label = info?.sessionName || s.sessionName || info?.host || s.termId;
-                connectedSessions.push({ termId: s.termId, label });
+                connectedSessions.push({ termId: s.termId, sessionId: info?.sessionId, label });
                 seen.add(s.termId);
               }
             }
@@ -4598,7 +4670,7 @@ function App() {
         for (const t of tabs) walk(t.layout);
 
         // 현재 선택된 패널의 activeTermId 가 연결된 SSH 세션이면 기본 우선
-        let defaultSsh: { termId: string; label: string } | null = connectedSessions[0] || null;
+        let defaultSsh: { termId: string; label: string; sessionId?: string } | null = connectedSessions[0] || null;
         if (selectedPanelId && activeTab) {
           const findLeaf = (n: any, id: string): any => {
             if (n.type === 'leaf') return n.id === id ? n : null;
@@ -4611,7 +4683,7 @@ function App() {
             if (activeTerm && isTermConnected(activeTerm)) {
               const info = getTermSessionInfo(activeTerm);
               const s = leaf.panel.sessions.find((x: any) => x.termId === activeTerm);
-              defaultSsh = { termId: activeTerm, label: info?.sessionName || s?.sessionName || info?.host || activeTerm };
+              defaultSsh = { termId: activeTerm, sessionId: info?.sessionId, label: info?.sessionName || s?.sessionName || info?.host || activeTerm };
             }
           }
         }
@@ -4947,7 +5019,8 @@ function App() {
         </div>
       )}
 
-      {showManual && (        <div className="session-editor-backdrop" onClick={() => setShowManual(false)}>
+      {showManual && (
+        <div className="session-editor-backdrop" onClick={() => setShowManual(false)}>
           <div className="session-editor manual-modal" onClick={e => e.stopPropagation()}
             style={{ width: '80vw', maxWidth: 1000, height: '85vh', display: 'flex', flexDirection: 'column' }}
           >
