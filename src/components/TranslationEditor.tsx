@@ -299,7 +299,7 @@ export const TranslationEditor: React.FC<{ aiAgent?: AgentType }> = ({ aiAgent =
             {languages.map(l => <option key={l} value={l}>{l}</option>)}
           </select>
           <span style={{ width: 16 }} />
-          <span style={{ fontSize: 12, color: '#bbb' }}>{t('currentAiService', { agent: agentLabel })}</span>
+          <span style={{ fontSize: 12, color: '#bbb' }}>{t('currentAiService', { agent: agentLabel, defaultValue: `Current AI service: ${agentLabel}` })}</span>
           <span style={{ width: 24 }} />
           <span style={{ fontSize: 12, color: '#bbb' }}>{t('addNewLang')}</span>
           <input type="text" value={newLangCode} onChange={e => setNewLangCode(e.target.value)}
@@ -350,14 +350,14 @@ export const TranslationEditor: React.FC<{ aiAgent?: AgentType }> = ({ aiAgent =
                           disabled={translatingLang === lang || noEmpty}
                           title={noEmpty ? t('noEmptyCells') : t('aiEmptyTitle', { base: baseLang })}
                           style={{ fontSize: 10, padding: '1px 5px', flex: 1, background: noEmpty ? '#2a2a2a' : '#2a4a6a', color: noEmpty ? '#666' : '#cde', border: `1px solid ${noEmpty ? '#333' : '#3a5a7a'}` }}>
-                          {translatingLang === lang ? '...' : `${t('aiEmptyBtnWithAgent', { base: baseLang, target: lang, agent: agentLabel })}${noEmpty ? '' : ` (${emptyCount})`}`}
+                          {translatingLang === lang ? '...' : `${t('aiEmptyBtnWithAgent', { base: baseLang, target: lang, agent: agentLabel, defaultValue: `✨ ${agentLabel} · AI (${baseLang}→${lang}) empty` })}${noEmpty ? '' : ` (${emptyCount})`}`}
                         </button>
                         <button
                           onClick={() => autoTranslate(lang, 'all')}
                           disabled={translatingLang === lang}
                           title={t('aiAllTitle', { base: baseLang })}
                           style={{ fontSize: 10, padding: '1px 5px', background: '#3a3a5a', color: '#cde', border: '1px solid #4a4a6a' }}>
-                          {t('aiAllBtnWithAgent', { agent: agentLabel })}
+                          {t('aiAllBtnWithAgent', { agent: agentLabel, defaultValue: `All · ${agentLabel}` })}
                         </button>
                       </div>
                       );
