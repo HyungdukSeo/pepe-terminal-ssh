@@ -1622,6 +1622,28 @@ export function highlightAllMatches(termId: string, query: string, regex: boolea
   });
 }
 
+// 검색바를 열 때 사용자가 보던 위치(viewportY) 를 termId 별로 기억해 둠.
+// 매치가 없을 때 이 위치로 복원해 "스크롤이 맨 위로 튀는" 문제를 막는다.
+// 검색이 진행 중인 동안에는 매 키입력마다 갱신하지 않고 anchor 그대로 유지.
+const searchAnchors = new Map<string, number>();
+
+export function markSearchAnchor(termId: string) {
+  try {
+    const entry = termStore.get(termId);
+    if (!entry) return;
+    searchAnchors.set(termId, entry.term.buffer.active.viewportY);
+  } catch {}
+}
+export function clearSearchAnchor(termId: string) { searchAnchors.delete(termId); }
+function restoreToAnchor(termId: string) {
+  try {
+    const entry = termStore.get(termId);
+    if (!entry) return;
+    const y = searchAnchors.has(termId) ? searchAnchors.get(termId)! : entry.term.buffer.active.viewportY;
+    entry.term.scrollToLine(y);
+  } catch {}
+}
+
 export function searchFromTop(termId: string, query: string, regex = false, caseSensitive = false): boolean {
   try {
     const entry = termStore.get(termId);
@@ -1630,7 +1652,9 @@ export function searchFromTop(termId: string, query: string, regex = false, case
     // 선택 해제 → findNext가 버퍼 맨 위부터 검색
     entry.term.clearSelection();
     entry.term.scrollToTop();
-    return entry.search.findNext(query, { regex, caseSensitive });
+    const found = entry.search.findNext(query, { regex, caseSensitive });
+    if (!found) restoreToAnchor(termId); // 못 찾음 → 검색 시작 전 보던 위치로 복원
+    return found;
   } catch { return false; }
 }
 
@@ -1639,7 +1663,9 @@ export function searchInTerm(termId: string, query: string, regex = false, caseS
     const entry = termStore.get(termId);
     if (!entry || !query) return false;
     entry.search.clearDecorations();
-    return entry.search.findNext(query, { regex, caseSensitive });
+    const found = entry.search.findNext(query, { regex, caseSensitive });
+    if (!found) restoreToAnchor(termId);
+    return found;
   } catch { return false; }
 }
 
@@ -1647,7 +1673,9 @@ export function searchNextInTerm(termId: string, query: string, regex = false, c
   try {
     const entry = termStore.get(termId);
     if (!entry || !query) return false;
-    return entry.search.findNext(query, { regex, caseSensitive });
+    const found = entry.search.findNext(query, { regex, caseSensitive });
+    if (!found) restoreToAnchor(termId);
+    return found;
   } catch { return false; }
 }
 
@@ -1655,7 +1683,9 @@ export function searchPrevInTerm(termId: string, query: string, regex = false, c
   try {
     const entry = termStore.get(termId);
     if (!entry || !query) return false;
-    return entry.search.findPrevious(query, { regex, caseSensitive });
+    const found = entry.search.findPrevious(query, { regex, caseSensitive });
+    if (!found) restoreToAnchor(termId);
+    return found;
   } catch { return false; }
 }
 

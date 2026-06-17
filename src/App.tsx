@@ -782,8 +782,100 @@ function App() {
   const [aiAgent, setAiAgent] = useState<'claude' | 'gemini' | 'codex'>('claude');
   // WebDAV 마운트 첨부 엔트리
   const [claudeMountEntries, setClaudeMountEntries] = useState<{ termId: string; remotePath: string; uncPath: string; isDir: boolean }[]>([]);
-  const [claudeAttaching, setClaudeAttaching] = useState<{ message: string; progress: number; total: number } | null>(null);
+  // 연결 상태 변경 tick — 아래 영속화 effect 가 새 SSH 연결을 감지하도록 미리 선언.
   const [connectedTick, setConnectedTick] = useState(0);
+  // 세션별 첨부 프리셋(영속화) — key = 저장된 sessionId, value = remotePath/isDir 목록.
+  // 세션 재선택 시 자동 복원. termId/uncPath 는 매 연결마다 바뀌므로 저장하지 않음.
+  type MountPreset = { remotePath: string; isDir: boolean };
+  const [mountPresetsBySession, setMountPresetsBySession] = useState<Record<string, MountPreset[]>>({});
+  const mountPresetsLoadedRef = useRef(false);
+  // prefs 에서 1회 로드
+  useEffect(() => {
+    (async () => {
+      try {
+        const prefs = await (window as any).api?.getUIPrefs?.();
+        const m = prefs?.claudeMountPresetsBySession;
+        if (m && typeof m === 'object') setMountPresetsBySession(m);
+      } catch {}
+      mountPresetsLoadedRef.current = true;
+    })();
+  }, []);
+  // 현재 claudeMountEntries 가 변할 때마다 prefs 에 저장 (sessionId 가 있는 세션만 — quick connect 제외)
+  useEffect(() => {
+    if (!mountPresetsLoadedRef.current) return;
+    const next: Record<string, MountPreset[]> = { ...mountPresetsBySession };
+    // 현재 entries 를 sessionId 단위로 그룹화
+    const grouped = new Map<string, MountPreset[]>();
+    for (const e of claudeMountEntries) {
+      const info = getTermSessionInfo(e.termId);
+      const sid = info?.sessionId;
+      if (!sid) continue; // 저장된 세션이 아니면 영속화 안 함
+      const arr = grouped.get(sid) || [];
+      arr.push({ remotePath: e.remotePath, isDir: e.isDir });
+      grouped.set(sid, arr);
+    }
+    // 현재 화면에서 보인 sessionId 들의 preset 만 갱신 (다른 세션 preset 은 보존)
+    let changed = false;
+    for (const [sid, arr] of grouped) {
+      const prev = next[sid];
+      const same = prev && prev.length === arr.length && prev.every((p, i) => p.remotePath === arr[i].remotePath && p.isDir === arr[i].isDir);
+      if (!same) { next[sid] = arr; changed = true; }
+    }
+    // 현재 연결된 세션이지만 entry 가 비었으면 preset 도 제거 — 사용자가 모두 지운 경우
+    const liveSessionIds = new Set<string>();
+    for (const e of claudeMountEntries) {
+      const info = getTermSessionInfo(e.termId);
+      if (info?.sessionId) liveSessionIds.add(info.sessionId);
+    }
+    // (claudeMountEntries 에 등장하지 않더라도 연결된 세션의 preset 은 그대로 둠 — 화면에 안 보이는 다른 세션 보존)
+    void liveSessionIds;
+    if (changed) {
+      setMountPresetsBySession(next);
+      try { (window as any).api?.setUIPrefs?.({ claudeMountPresetsBySession: next }); } catch {}
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [claudeMountEntries]);
+  // 연결된 세션 termId 가 등장하면 그 sessionId 의 preset 으로 entries 복원
+  // (이미 같은 sessionId 의 entry 가 화면에 있으면 skip)
+  useEffect(() => {
+    if (!mountPresetsLoadedRef.current) return;
+    if (Object.keys(mountPresetsBySession).length === 0) return;
+    // 현재 화면에 연결된 모든 termId 수집
+    const connectedTermIds: string[] = [];
+    const walk = (n: any) => {
+      if (n.type === 'leaf') {
+        for (const s of (n.panel?.sessions || [])) {
+          if (s.termId && isTermConnected(s.termId)) connectedTermIds.push(s.termId);
+        }
+      } else if (n.children) for (const c of n.children) walk(c);
+    };
+    for (const t of tabs) walk(t.layout);
+    if (connectedTermIds.length === 0) return;
+    // 각 termId 의 sessionId 가 preset 을 가지면 자동 복원 (이미 화면에 있는 entry 는 dedup)
+    setClaudeMountEntries(prev => {
+      const exists = new Set(prev.map(e => `${e.termId}|${e.remotePath}`));
+      const additions: typeof prev = [];
+      for (const termId of connectedTermIds) {
+        const info = getTermSessionInfo(termId);
+        const sid = info?.sessionId;
+        if (!sid) continue;
+        // 이 termId 의 prev entries 가 이미 있으면 복원 skip (사용자가 직접 지운 상태일 수 있음)
+        if (prev.some(e => e.termId === termId)) continue;
+        const presets = mountPresetsBySession[sid];
+        if (!presets || presets.length === 0) continue;
+        for (const p of presets) {
+          const key = `${termId}|${p.remotePath}`;
+          if (exists.has(key)) continue;
+          // uncPath 는 더 이상 사용하지 않으므로 빈 값. ClaudeChat 은 remotePath 기준으로 동작.
+          additions.push({ termId, remotePath: p.remotePath, uncPath: '', isDir: p.isDir });
+          exists.add(key);
+        }
+      }
+      return additions.length > 0 ? [...prev, ...additions] : prev;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mountPresetsBySession, tabs, connectedTick]);
+  const [claudeAttaching, setClaudeAttaching] = useState<{ message: string; progress: number; total: number } | null>(null);
   // 글로벌 연결 상태 변경시 일괄전송 카운트 등 재계산을 위해 강제 리렌더
   useEffect(() => subscribeConnectedChange(() => setConnectedTick(n => n + 1)), []);
   const connectedWebdavRestoreInitRef = useRef(false);
@@ -1257,11 +1349,11 @@ function App() {
     if (sessionOrganizeBusy) return;
     const agent = await checkAiAvailability();
     if (!agent) {
-      notifyError(tMenu('file.autoOrganizeNeedAiTitle'), tMenu('file.autoOrganizeNeedAiBody'));
+      notifyError('AI 서비스 필요', '세션 리스트 자동 정리는 AI 서비스가 하나라도 연결되어 있을 때만 사용할 수 있습니다. 먼저 Claude, Gemini, 또는 Codex를 연결해 주세요.');
       return;
     }
     setSessionOrganizeBusy(true);
-    showToast(tMenu('file.autoOrganizeRunning'), 3500);
+    showToast(`AI(${agent})로 세션 리스트를 정리하는 중...`, 3500);
     try {
       const data = await (window as any).api?.listSessions?.();
       const sessionsRaw: any[] = Array.isArray(data?.sessions) ? data.sessions : [];
@@ -1415,16 +1507,9 @@ function App() {
         throw new Error(replaceResult?.error || '세션 리스트 저장 실패');
       }
       window.dispatchEvent(new Event('sessions-reload'));
-      notifyOk(
-        tMenu('file.autoOrganizeDoneTitle'),
-        tMenu('file.autoOrganizeDoneBody', {
-          agent,
-          sessionCount: resolvedSessions.length,
-          folderCount: resolvedFolders.length,
-        }),
-      );
+      notifyOk('세션 리스트 정리 완료', `AI(${agent})가 세션 ${resolvedSessions.length}개와 폴더 ${resolvedFolders.length}개를 정리했습니다.`);
     } catch (err: any) {
-      notifyError(tMenu('file.autoOrganizeFailTitle'), String(err?.message || err));
+      notifyError('세션 자동 정리 실패', String(err?.message || err));
     } finally {
       setSessionOrganizeBusy(false);
     }
@@ -1435,18 +1520,15 @@ function App() {
       if (mode === 'backup') {
         const exportResult = await (window as any).api?.exportSessions?.();
         if (!exportResult) return;
-        showToast(tMenu('file.clearSessionsNeedBackup'));
+        showToast('세션 백업을 저장했습니다. 이제 전체 목록을 삭제합니다.');
       }
       const result = await (window as any).api?.sessionsClear?.();
       if (!result?.success) throw new Error(result?.error || '세션 삭제 실패');
       window.dispatchEvent(new Event('sessions-reload'));
       setSessionWipeDialog(false);
-      notifyOk(
-        tMenu('file.clearSessionsDialogTitle'),
-        mode === 'backup' ? tMenu('file.clearSessionsBackupDone') : tMenu('file.clearSessionsDeleteDone'),
-      );
+      notifyOk('세션 리스트 비움', mode === 'backup' ? '백업 후 세션 리스트를 삭제했습니다.' : '세션 리스트를 삭제했습니다.');
     } catch (err: any) {
-      notifyError(tMenu('file.clearSessionsFailTitle'), String(err?.message || err));
+      notifyError('세션 리스트 비우기 실패', String(err?.message || err));
     }
   };
 
@@ -2931,8 +3013,8 @@ function App() {
         { separator: true, label: '' },
         { label: tMenu('file.exportSessions'), action: () => (window as any).api.exportSessions() },
         { label: tMenu('file.importSessions'), action: async () => { const r = await (window as any).api.importSessions(); if (r) { window.dispatchEvent(new Event('sessions-reload')); showToast(r.addedCount != null ? tMenu('file.importedToast', { added: r.addedCount, total: r.totalParsed }) : tMenu('file.importedToastSimple')); } } },
-        { label: <>🧹 {tMenu('file.clearSessions')}</>, action: () => setSessionWipeDialog(true) },
-        { label: <>🤖 {tMenu('file.autoOrganizeSessions')}</>, action: () => { void runAiSessionOrganize(); }, disabled: sessionOrganizeBusy },
+        { label: '세션 비우기', action: () => setSessionWipeDialog(true) },
+        { label: '세션 리스트 자동 정리', action: () => { void runAiSessionOrganize(); }, disabled: sessionOrganizeBusy },
         { separator: true, label: '' },
         { label: tMenu('file.quit'), action: () => window.close() },
       ],
@@ -5008,22 +5090,22 @@ function App() {
             tabIndex={-1}
           >
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 4px 8px', borderBottom: '1px solid #333' }}>
-              <h3 style={{ margin: 0 }}>{tMenu('file.clearSessionsDialogTitle')}</h3>
-              <button onClick={() => setSessionWipeDialog(false)} title={tMenu('file.clearSessionsCancel')}>✕</button>
+              <h3 style={{ margin: 0 }}>세션 리스트 비우기</h3>
+              <button onClick={() => setSessionWipeDialog(false)} title="닫기">✕</button>
             </div>
             <div style={{ padding: '14px 16px', color: '#ddd', fontSize: 13, lineHeight: 1.65 }}>
-              {tMenu('file.clearSessionsDialogBody')}
+              전체 세션 리스트를 삭제합니다. 먼저 백업할지 선택해 주세요.
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, padding: '8px 12px', borderTop: '1px solid #333', flexWrap: 'wrap' }}>
-              <button onClick={() => setSessionWipeDialog(false)}>{tMenu('file.clearSessionsCancel')}</button>
+              <button onClick={() => setSessionWipeDialog(false)}>취소하기</button>
               <button style={{ background: '#735f16', color: '#fff' }} onClick={async () => {
                 setSessionWipeDialog(false);
                 await handleClearSessions('backup');
-              }}>{tMenu('file.clearSessionsBackup')}</button>
+              }}>백업하기</button>
               <button style={{ background: '#a53030', color: '#fff' }} onClick={async () => {
                 setSessionWipeDialog(false);
                 await handleClearSessions('delete');
-              }}>{tMenu('file.clearSessionsDelete')}</button>
+              }}>삭제하기</button>
             </div>
           </div>
         </div>
