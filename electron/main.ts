@@ -5994,7 +5994,10 @@ ipcMain.handle('codex:send', async (_e, { sessionId, prompt, requestId, model, a
     // codex 는 항상 danger-full-access(샌드박스 OFF)로 실행 — claude 와 동일하게 OS 샌드박스 없음.
     // Windows 샌드박스(restricted token)는 UNC/WebDAV 네트워크 경로를 차단하므로 반드시 꺼야 함.
     void approvalPolicy;
-    const cwd = process.env.USERPROFILE || process.env.HOME || os.homedir();
+    // cwd 를 USERPROFILE 로 두면 codex 가 <cwd>/.codex/config.toml(사용자 실제 config)을
+    // project-local config 로 인식해 'notify' 등 전역 전용 키 경고를 띄움. 임시 CODEX_HOME 이
+    // 있으면 그 dir(.codex 하위 없음)을 cwd 로 써서 경고 제거. (SSH 컨텍스트는 MCP 절대경로라 cwd 무관)
+    const cwd = tmpCodexHome || process.env.USERPROFILE || process.env.HOME || os.homedir();
 
     const modelFlag = model ? ` -m ${model}` : '';
     // effort: 값이 단순 영문(low/medium/high/xhigh)이므로 cmd.exe 에서 따옴표 불필요
