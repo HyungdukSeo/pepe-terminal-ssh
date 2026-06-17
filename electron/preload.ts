@@ -26,6 +26,8 @@ contextBridge.exposeInMainWorld('api', {
   // Export/Import
   exportSessions: () => ipcRenderer.invoke('sessions:export'),
   importSessions: () => ipcRenderer.invoke('sessions:import'),
+  sessionsClear: () => ipcRenderer.invoke('sessions:clear'),
+  sessionsReplaceAll: (data: any) => ipcRenderer.invoke('sessions:replace-all', data),
 
   // File Explorer
   feListDir: (mode: string, dirPath: string, termId?: string, encoding?: string) => ipcRenderer.invoke('fe:list-dir', { mode, termId, dirPath, encoding }),

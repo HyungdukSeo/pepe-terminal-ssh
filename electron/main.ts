@@ -1512,6 +1512,28 @@ ipcMain.handle('sessions:import', async () => {
   } catch (err: any) { console.error('Import error:', err); return null; }
 });
 
+ipcMain.handle('sessions:clear', () => {
+  sessionsData = { folders: [], sessions: [], keySeqDefaultsV1: true };
+  saveSessionsData(sessionsData);
+  return { success: true, data: sessionsData };
+});
+
+ipcMain.handle('sessions:replace-all', (_e, data: SessionsData) => {
+  try {
+    sessionsData = {
+      folders: Array.isArray(data?.folders) ? data.folders : [],
+      sessions: Array.isArray(data?.sessions) ? data.sessions : [],
+      childOrder: data?.childOrder && typeof data.childOrder === 'object' ? data.childOrder : undefined,
+      keySeqDefaultsV1: data?.keySeqDefaultsV1 === true,
+    };
+    saveSessionsData(sessionsData);
+    return { success: true, data: sessionsData };
+  } catch (err: any) {
+    console.error('sessions:replace-all error:', err);
+    return { success: false, error: String(err?.message || err) };
+  }
+});
+
 // ── SecureCRT XML 파서 ──
 function parseSecureCRTXml(filePath: string): SessionsData {
   const xml = fs.readFileSync(filePath, 'utf8');
@@ -5162,53 +5184,81 @@ ipcMain.handle('claude:send', async (_e, { sessionId, prompt, addDirs, disallowB
     // claude 프로세스 cwd — Electron 앱 폴더가 기본인데 그러면 Claude 가 이 앱을 분석 대상으로 오해.
     // 사용자 홈으로 시작 (사용자 의도 상 작업 대상은 --add-dir 또는 SSH mount 로 명시됨)
     const claudeCwd = process.env.USERPROFILE || process.env.HOME || os.homedir();
-    const proc = spawn(shellCmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd: claudeCwd, windowsHide: true });
-    claudeProcesses.set(procKey, proc);
 
-    // 임시 파일 정리 (프로세스 종료 후)
+    // 임시 파일 정리 (모든 재시도 종료 후 1회)
     const cleanupTmp = () => {
       try { fs.unlinkSync(tmpFile); } catch {}
       if (mcpCfgTmp) { try { fs.unlinkSync(mcpCfgTmp); } catch {} }
       if (settingsTmp) { try { fs.unlinkSync(settingsTmp); } catch {} }
     };
 
-    let stdoutBuf = '';
-    proc.stdout.setEncoding('utf-8');
-    proc.stdout.on('data', (data: string) => {
-      if (stoppedAgentProcs.has(procKey)) return; // stop 후 잔여 stdout 차단
-      stdoutBuf += data;
-      const lines = stdoutBuf.split('\n');
-      stdoutBuf = lines.pop() || ''; // 마지막 불완전 라인은 보류
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        console.log('[claude] stdout line:', trimmed.slice(0, 200));
-        try {
-          const msg = JSON.parse(trimmed);
-          mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: msg });
-        } catch {
-          mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'text', text: trimmed } });
+    // 529(Overloaded) 등 서버 과부하 = 일시적 → 콘텐츠 없이 끝났으면 자동 재시도(백오프).
+    const isOverloadText = (s: string) => /overloaded|\b529\b/i.test(s);
+    const MAX_ATTEMPTS = 4; // 최초 1 + 재시도 3
+    let attempt = 0;
+
+    const launch = () => {
+      attempt++;
+      const proc = spawn(shellCmd, { shell: true, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd: claudeCwd, windowsHide: true });
+      claudeProcesses.set(procKey, proc);
+      let stdoutBuf = '';
+      let sawContent = false;  // 실제 응답(텍스트/툴) 출력 여부 — 있으면 재시도 안 함
+      let sawOverload = false; // 과부하 에러 감지
+      proc.stdout.setEncoding('utf-8');
+      proc.stdout.on('data', (data: string) => {
+        if (stoppedAgentProcs.has(procKey)) return; // stop 후 잔여 stdout 차단
+        stdoutBuf += data;
+        const lines = stdoutBuf.split('\n');
+        stdoutBuf = lines.pop() || ''; // 마지막 불완전 라인은 보류
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          console.log('[claude] stdout line:', trimmed.slice(0, 200));
+          let msg: any = null;
+          try { msg = JSON.parse(trimmed); } catch {}
+          if (msg) {
+            if (msg.type === 'assistant' && Array.isArray(msg.message?.content)
+                && msg.message.content.some((c: any) => (c.type === 'text' && c.text) || c.type === 'tool_use')) {
+              sawContent = true;
+            }
+            const isErr = (msg.type === 'result' && msg.is_error) || msg.type === 'error';
+            if (isErr && isOverloadText(trimmed) && !sawContent && attempt < MAX_ATTEMPTS) {
+              sawOverload = true; // 과부하 → 마지막 시도 전까지는 에러 숨기고 재시도
+              continue;
+            }
+            mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: msg });
+          } else {
+            mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'text', text: trimmed } });
+          }
         }
-      }
-    });
-    proc.stderr.on('data', (data: Buffer) => {
-      if (stoppedAgentProcs.has(procKey)) return;
-      const err = data.toString();
-      console.log('[claude] stderr:', err);
-      mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: err } });
-    });
-    proc.on('error', (err: any) => {
-      if (stoppedAgentProcs.has(procKey)) return;
-      console.log('[claude] spawn error:', err);
-      mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: String(err) } });
-    });
-    proc.on('close', (code: number) => {
-      console.log('[claude] close, code:', code);
-      cleanupTmp();
-      claudeProcesses.delete(procKey);
-      if (stoppedAgentProcs.has(procKey)) { stoppedAgentProcs.delete(procKey); return; }
-      mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'done', code } });
-    });
+      });
+      proc.stderr.on('data', (data: Buffer) => {
+        if (stoppedAgentProcs.has(procKey)) return;
+        const err = data.toString();
+        console.log('[claude] stderr:', err);
+        if (isOverloadText(err) && !sawContent && attempt < MAX_ATTEMPTS) { sawOverload = true; return; }
+        mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: err } });
+      });
+      proc.on('error', (err: any) => {
+        if (stoppedAgentProcs.has(procKey)) return;
+        console.log('[claude] spawn error:', err);
+        mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: String(err) } });
+      });
+      proc.on('close', (code: number) => {
+        console.log('[claude] close, code:', code, 'attempt:', attempt, 'overload:', sawOverload);
+        claudeProcesses.delete(procKey);
+        if (stoppedAgentProcs.has(procKey)) { stoppedAgentProcs.delete(procKey); cleanupTmp(); return; }
+        if (sawOverload && !sawContent && attempt < MAX_ATTEMPTS) {
+          const delay = 1500 * attempt; // 1.5s, 3s, 4.5s 백오프
+          mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'text', text: `⏳ 서버 과부하(529) — ${Math.round(delay / 1000)}초 후 재시도 (${attempt}/${MAX_ATTEMPTS - 1})...\n` } });
+          setTimeout(() => { if (stoppedAgentProcs.has(procKey)) { stoppedAgentProcs.delete(procKey); cleanupTmp(); } else launch(); }, delay);
+          return;
+        }
+        cleanupTmp();
+        mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'done', code } });
+      });
+    };
+    launch();
     return { success: true };
   } catch (err: any) {
     console.log('[claude] exception:', err);

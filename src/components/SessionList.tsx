@@ -25,14 +25,25 @@ type Session = {
   fontSize?: number;
   scrollback?: number;
   icon?: string;
+  initialPath?: string;
+  fileTreeEnabled?: boolean;
+  autoTrackPwd?: boolean;
+  backspaceKeyMode?: 'vt220' | 'ascii127' | 'backspace';
+  deleteKeyMode?: 'vt220' | 'ascii127' | 'backspace';
+  logPath?: string;
+  codePath?: string;
+  x11Forward?: boolean;
+  x11Display?: number;
+  jumpTargetHost?: string;
+  jumpTargetUser?: string;
+  jumpTargetPort?: number;
+  jumpTargetPassword?: string;
   dbms?: {
     type: 'altibase' | 'mysql' | 'postgres' | 'oracle' | 'mssql' | 'sqlite';
     port: number; user: string; password: string; host?: string;
     driverId?: string; database?: string; useSshTunnel?: boolean; urlOverride?: string;
     props?: Record<string, string>;
   };
-  x11Forward?: boolean;
-  x11Display?: number;
 };
 
 type Folder = {
@@ -40,6 +51,8 @@ type Folder = {
   name: string;
   parentId?: string;
 };
+
+type SearchScope = 'name' | 'basic' | 'all';
 
 type Props = {
   onConnect: (sessionId: string, sessionName: string, targetPanelId?: string | null, sessionTheme?: string, fontFamily?: string, fontSize?: number, scrollback?: number) => void;
@@ -81,6 +94,8 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
   const [multiTargetWs, setMultiTargetWs] = useState<string>('current');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [folderPicker, setFolderPicker] = useState<{ sessionIds: string[] } | null>(null);
+  const [searchValue, setSearchValue] = useState('');
+  const [searchScope, setSearchScope] = useState<SearchScope>('name');
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const dragging = useRef<{ startX: number; startWidth: number } | null>(null);
@@ -138,6 +153,29 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
   }, [contextMenu]);
 
   const [childOrder, setChildOrder] = useState<Record<string, string[]>>({});
+  const searchQuery = searchValue.trim().toLowerCase();
+  const folderById = useMemo(() => new Map(folders.map(f => [f.id, f])), [folders]);
+  const searchScopeLabel: Record<SearchScope, string> = {
+    name: '이름',
+    basic: '연결정보',
+    all: '설정정보',
+  };
+
+  const folderPathById = useMemo(() => {
+    const cache = new Map<string, string>();
+    const buildPath = (folderId: string): string => {
+      const cached = cache.get(folderId);
+      if (cached) return cached;
+      const folder = folderById.get(folderId);
+      if (!folder) return '';
+      const parentPath = folder.parentId ? buildPath(folder.parentId) : '';
+      const next = parentPath ? `${parentPath}/${folder.name}` : folder.name;
+      cache.set(folderId, next);
+      return next;
+    };
+    for (const folder of folders) buildPath(folder.id);
+    return cache;
+  }, [folders, folderById]);
 
   const reload = async () => {
     const data = await window.api?.listSessions?.();
@@ -150,6 +188,98 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
       setFolders([]);
     }
   };
+
+  const sessionSearchText = useCallback((session: Session, scope: SearchScope): string => {
+    const folderPath = session.folderId ? folderPathById.get(session.folderId) || '' : '';
+    const parts: string[] = [];
+    const add = (value: unknown) => {
+      if (value === null || value === undefined || value === '') return;
+      parts.push(String(value));
+    };
+    add(session.name);
+    if (scope !== 'name') {
+      add(session.host);
+      add(session.username);
+      add(session.port);
+      add(folderPath);
+    }
+    if (scope === 'all') {
+      add(session.encoding);
+      add(session.theme);
+      add(session.fontFamily);
+      add(session.fontSize);
+      add(session.scrollback);
+      add(session.icon);
+      add(session.initialPath);
+      add(session.fileTreeEnabled);
+      add(session.autoTrackPwd);
+      add(session.logPath);
+      add(session.codePath);
+      add(session.x11Forward);
+      add(session.x11Display);
+      add(session.jumpTargetHost);
+      add(session.jumpTargetUser);
+      add(session.jumpTargetPort);
+      add(session.jumpTargetPassword);
+      add(session.auth?.type);
+      add(session.auth?.password);
+      add(session.auth?.keyPath);
+      add(session.dbms?.type);
+      add(session.dbms?.driverId);
+      add(session.dbms?.database);
+      add(session.dbms?.useSshTunnel);
+      add(session.dbms?.urlOverride);
+      add(session.dbms?.port);
+      add(session.dbms?.user);
+      add(session.dbms?.password);
+      add(session.dbms?.host);
+      for (const rule of session.loginScript || []) {
+        add(rule.expect);
+        add(rule.send);
+        add(rule.isRegex);
+      }
+      for (const value of Object.values(session.dbms?.props || {})) add(value);
+    }
+    return parts.join(' ').toLowerCase();
+  }, [folderPathById]);
+
+  const sessionMatchesSearch = useCallback((session: Session) => {
+    if (!searchQuery) return true;
+    return sessionSearchText(session, searchScope).includes(searchQuery);
+  }, [searchQuery, searchScope, sessionSearchText]);
+
+  const folderMatchesSearch = useCallback((folder: Folder) => {
+    if (!searchQuery) return true;
+    const folderPath = folderPathById.get(folder.id) || folder.name;
+    return [folder.name, folderPath].some(value => value.toLowerCase().includes(searchQuery));
+  }, [searchQuery, folderPathById]);
+
+  const hasVisibleDescendant = useCallback((folderId: string): boolean => {
+    if (!searchQuery) return true;
+    const childFolders = folders.filter(f => (f.parentId ?? undefined) === folderId);
+    const childSessions = sessions.filter(s => (s.folderId ?? undefined) === folderId);
+    if (childSessions.some(sessionMatchesSearch)) return true;
+    if (childFolders.some(folderMatchesSearch)) return true;
+    return childFolders.some(f => hasVisibleDescendant(f.id));
+  }, [searchQuery, folders, sessions, sessionMatchesSearch, folderMatchesSearch]);
+
+  const isFolderVisible = useCallback((folder: Folder) => {
+    if (!searchQuery) return true;
+    return folderMatchesSearch(folder) || hasVisibleDescendant(folder.id);
+  }, [searchQuery, folderMatchesSearch, hasVisibleDescendant]);
+
+  const isSessionVisible = useCallback((session: Session) => {
+    if (!searchQuery) return true;
+    if (sessionMatchesSearch(session)) return true;
+    let parentId = session.folderId;
+    while (parentId) {
+      const parent = folderById.get(parentId);
+      if (!parent) break;
+      if (folderMatchesSearch(parent)) return true;
+      parentId = parent.parentId;
+    }
+    return false;
+  }, [searchQuery, sessionMatchesSearch, folderMatchesSearch, folderById]);
 
   // popout 세션 편집기에서 저장 완료 시 자동 reload + 설정 변경 감지
   useEffect(() => {
@@ -416,8 +546,8 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
   const renderTree = (parentId?: string, depth = 0) => {
     const key = parentId || '__root__';
     const order = childOrder[key];
-    const childFolders = folders.filter(f => (f.parentId ?? undefined) === parentId);
-    const childSessions = sessions.filter(s => (s.folderId ?? undefined) === parentId);
+    const childFolders = folders.filter(f => (f.parentId ?? undefined) === parentId && isFolderVisible(f));
+    const childSessions = sessions.filter(s => (s.folderId ?? undefined) === parentId && isSessionVisible(s));
 
     // childOrder가 있으면 그 순서로, 없으면 폴더 먼저 세션 나중
     const allIds = order
@@ -431,7 +561,7 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
         {allIds.map(itemId => {
           const f = childFolders.find(x => x.id === itemId);
           if (f) {
-            const isCollapsed = collapsed.has(f.id);
+            const isCollapsed = !searchQuery && collapsed.has(f.id);
             const isSelected = selectedId === f.id && selectedType === 'folder';
             return (
               <React.Fragment key={f.id}>
@@ -510,7 +640,7 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
                   <input className="folder-rename-input" value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={handleRenameSubmit} onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') handleRenameSubmit(); if (e.key === 'Escape') setRenamingId(null); }} autoFocus onClick={e => e.stopPropagation()} />
                 ) : (
                   <div className="session-item-name" title={`${s.host}:${s.port}${s.username ? ' ('+s.username+')' : ''}`}>
-                    <span className="session-icon">{s.icon || '📡'}</span>{s.name}
+                    <span className="session-icon">{s.icon || '💻'}</span>{s.name}
                     <span className="session-item-host-tooltip">{s.host}:{s.port}</span>
                   </div>
                 )}
@@ -608,6 +738,36 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
           <button className="btn-add" onClick={handleAdd}>{t('add')}</button>
           <button className="btn-edit" onClick={handleEdit} disabled={!selectedId}>{t('edit')}</button>
           <button className="btn-delete" onClick={handleDelete} disabled={!selectedId}>{t('delete')}</button>
+        </div>
+
+        <div className="session-search-bar">
+          <select
+            className="session-search-select"
+            value={searchScope}
+            onChange={e => setSearchScope(e.target.value as SearchScope)}
+            title="검색 기준"
+          >
+            <option value="name">이름</option>
+            <option value="basic">연결정보</option>
+            <option value="all">설정정보</option>
+          </select>
+          <input
+            className="session-search-input"
+            value={searchValue}
+            onChange={e => setSearchValue(e.target.value)}
+            placeholder={`${searchScopeLabel[searchScope]} 검색`}
+            spellCheck={false}
+          />
+          {searchValue && (
+            <button
+              className="session-search-clear"
+              type="button"
+              onClick={() => setSearchValue('')}
+              title="검색 지우기"
+            >
+              ×
+            </button>
+          )}
         </div>
 
         <div
