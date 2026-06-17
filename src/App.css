@@ -6382,6 +6382,10 @@ mark.claude-search-hit.current {
   resize: vertical;
   min-height: 60px;
 }
+.claude-chat-input.steering-mode {
+  border-color: #5c8f48;
+  box-shadow: 0 0 0 1px rgba(92, 143, 72, 0.15) inset;
+}
 .claude-chat-input:focus {
   border-color: #58a6ff;
 }
@@ -6407,8 +6411,62 @@ mark.claude-search-hit.current {
   color: #777;
   cursor: default;
 }
+.claude-chat-btn.steer {
+  background: #4f7f39;
+}
+.claude-chat-btn.steer:hover {
+  background: #5a9241;
+}
+.claude-chat-btn.steer:disabled {
+  background: #333;
+  color: #777;
+  cursor: default;
+}
 .claude-chat-btn.stop {
   background: #c53030;
+}
+.claude-chat-steering-banner {
+  margin: 0 0 6px;
+  padding: 6px 8px;
+  border: 1px solid #49633c;
+  border-radius: 4px;
+  background: linear-gradient(180deg, rgba(31, 47, 28, 0.95) 0%, rgba(22, 34, 20, 0.95) 100%);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.claude-chat-steering-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.claude-chat-steering-title {
+  color: #d9f4cb;
+  font-size: 12px;
+  font-weight: 600;
+}
+.claude-chat-steering-hint {
+  color: #9ebf8d;
+  font-size: 11px;
+}
+.claude-chat-steering-clear {
+  background: transparent;
+  border: 1px solid #56724a;
+  color: #cfe6c4;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.claude-chat-steering-clear:hover {
+  background: rgba(87, 119, 77, 0.28);
+}
+.claude-chat-steering-clear:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 .file-editor-claude {
   background: #5a3a8e;
