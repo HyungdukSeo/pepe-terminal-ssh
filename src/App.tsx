@@ -1257,11 +1257,11 @@ function App() {
     if (sessionOrganizeBusy) return;
     const agent = await checkAiAvailability();
     if (!agent) {
-      notifyError('AI 서비스 필요', '세션 리스트 자동 정리는 AI 서비스가 하나라도 연결되어 있을 때만 사용할 수 있습니다. 먼저 Claude, Gemini, 또는 Codex를 연결해 주세요.');
+      notifyError(tMenu('file.autoOrganizeNeedAiTitle'), tMenu('file.autoOrganizeNeedAiBody'));
       return;
     }
     setSessionOrganizeBusy(true);
-    showToast(`AI(${agent})로 세션 리스트를 정리하는 중...`, 3500);
+    showToast(tMenu('file.autoOrganizeRunning'), 3500);
     try {
       const data = await (window as any).api?.listSessions?.();
       const sessionsRaw: any[] = Array.isArray(data?.sessions) ? data.sessions : [];
@@ -1415,9 +1415,16 @@ function App() {
         throw new Error(replaceResult?.error || '세션 리스트 저장 실패');
       }
       window.dispatchEvent(new Event('sessions-reload'));
-      notifyOk('세션 리스트 정리 완료', `AI(${agent})가 세션 ${resolvedSessions.length}개와 폴더 ${resolvedFolders.length}개를 정리했습니다.`);
+      notifyOk(
+        tMenu('file.autoOrganizeDoneTitle'),
+        tMenu('file.autoOrganizeDoneBody', {
+          agent,
+          sessionCount: resolvedSessions.length,
+          folderCount: resolvedFolders.length,
+        }),
+      );
     } catch (err: any) {
-      notifyError('세션 자동 정리 실패', String(err?.message || err));
+      notifyError(tMenu('file.autoOrganizeFailTitle'), String(err?.message || err));
     } finally {
       setSessionOrganizeBusy(false);
     }
@@ -1428,15 +1435,18 @@ function App() {
       if (mode === 'backup') {
         const exportResult = await (window as any).api?.exportSessions?.();
         if (!exportResult) return;
-        showToast('세션 백업을 저장했습니다. 이제 전체 목록을 삭제합니다.');
+        showToast(tMenu('file.clearSessionsNeedBackup'));
       }
       const result = await (window as any).api?.sessionsClear?.();
       if (!result?.success) throw new Error(result?.error || '세션 삭제 실패');
       window.dispatchEvent(new Event('sessions-reload'));
       setSessionWipeDialog(false);
-      notifyOk('세션 리스트 비움', mode === 'backup' ? '백업 후 세션 리스트를 삭제했습니다.' : '세션 리스트를 삭제했습니다.');
+      notifyOk(
+        tMenu('file.clearSessionsDialogTitle'),
+        mode === 'backup' ? tMenu('file.clearSessionsBackupDone') : tMenu('file.clearSessionsDeleteDone'),
+      );
     } catch (err: any) {
-      notifyError('세션 리스트 비우기 실패', String(err?.message || err));
+      notifyError(tMenu('file.clearSessionsFailTitle'), String(err?.message || err));
     }
   };
 
@@ -2921,8 +2931,8 @@ function App() {
         { separator: true, label: '' },
         { label: tMenu('file.exportSessions'), action: () => (window as any).api.exportSessions() },
         { label: tMenu('file.importSessions'), action: async () => { const r = await (window as any).api.importSessions(); if (r) { window.dispatchEvent(new Event('sessions-reload')); showToast(r.addedCount != null ? tMenu('file.importedToast', { added: r.addedCount, total: r.totalParsed }) : tMenu('file.importedToastSimple')); } } },
-        { label: '세션 비우기', action: () => setSessionWipeDialog(true) },
-        { label: '세션 리스트 자동 정리', action: () => { void runAiSessionOrganize(); }, disabled: sessionOrganizeBusy },
+        { label: <>🧹 {tMenu('file.clearSessions')}</>, action: () => setSessionWipeDialog(true) },
+        { label: <>🤖 {tMenu('file.autoOrganizeSessions')}</>, action: () => { void runAiSessionOrganize(); }, disabled: sessionOrganizeBusy },
         { separator: true, label: '' },
         { label: tMenu('file.quit'), action: () => window.close() },
       ],
@@ -4998,22 +5008,22 @@ function App() {
             tabIndex={-1}
           >
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 4px 8px', borderBottom: '1px solid #333' }}>
-              <h3 style={{ margin: 0 }}>세션 리스트 비우기</h3>
-              <button onClick={() => setSessionWipeDialog(false)} title="닫기">✕</button>
+              <h3 style={{ margin: 0 }}>{tMenu('file.clearSessionsDialogTitle')}</h3>
+              <button onClick={() => setSessionWipeDialog(false)} title={tMenu('file.clearSessionsCancel')}>✕</button>
             </div>
             <div style={{ padding: '14px 16px', color: '#ddd', fontSize: 13, lineHeight: 1.65 }}>
-              전체 세션 리스트를 삭제합니다. 먼저 백업할지 선택해 주세요.
+              {tMenu('file.clearSessionsDialogBody')}
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, padding: '8px 12px', borderTop: '1px solid #333', flexWrap: 'wrap' }}>
-              <button onClick={() => setSessionWipeDialog(false)}>취소하기</button>
+              <button onClick={() => setSessionWipeDialog(false)}>{tMenu('file.clearSessionsCancel')}</button>
               <button style={{ background: '#735f16', color: '#fff' }} onClick={async () => {
                 setSessionWipeDialog(false);
                 await handleClearSessions('backup');
-              }}>백업하기</button>
+              }}>{tMenu('file.clearSessionsBackup')}</button>
               <button style={{ background: '#a53030', color: '#fff' }} onClick={async () => {
                 setSessionWipeDialog(false);
                 await handleClearSessions('delete');
-              }}>삭제하기</button>
+              }}>{tMenu('file.clearSessionsDelete')}</button>
             </div>
           </div>
         </div>
