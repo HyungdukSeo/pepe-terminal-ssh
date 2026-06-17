@@ -1022,6 +1022,72 @@ body.popout-options .session-editor h3:first-child {
   background: #0d0f10;
 }
 
+.session-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 0 6px;
+  border-bottom: 1px solid #1f1f1f;
+  margin-bottom: 6px;
+  flex-shrink: 0;
+}
+
+.session-search-select {
+  width: 108px;
+  min-width: 108px;
+  background: #11161f;
+  color: #dfe8f2;
+  border: 1px solid #2b3a4d;
+  border-radius: 6px;
+  padding: 7px 8px;
+  font-size: 11px;
+  outline: none;
+}
+
+.session-search-select:focus {
+  border-color: #58a6ff;
+  box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.12);
+}
+
+.session-search-input {
+  flex: 1;
+  min-width: 0;
+  background: #11161f;
+  color: #eef3f8;
+  border: 1px solid #2b3a4d;
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 12px;
+  outline: none;
+}
+
+.session-search-input::placeholder {
+  color: #778399;
+}
+
+.session-search-input:focus {
+  border-color: #58a6ff;
+  box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.12);
+}
+
+.session-search-clear {
+  width: 28px;
+  height: 28px;
+  border: 1px solid #394150;
+  border-radius: 6px;
+  background: #1a1f2a;
+  color: #b8c4d4;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  padding: 0;
+}
+
+.session-search-clear:hover {
+  background: #273040;
+  color: #fff;
+}
+
 .session-toolbar-title {
   font-weight: 700;
   color: #eee;

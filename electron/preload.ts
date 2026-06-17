@@ -26,6 +26,8 @@ contextBridge.exposeInMainWorld('api', {
   // Export/Import
   exportSessions: () => ipcRenderer.invoke('sessions:export'),
   importSessions: () => ipcRenderer.invoke('sessions:import'),
+  sessionsClear: () => ipcRenderer.invoke('sessions:clear'),
+  sessionsReplaceAll: (data: any) => ipcRenderer.invoke('sessions:replace-all', data),
 
   // File Explorer
   feListDir: (mode: string, dirPath: string, termId?: string, encoding?: string) => ipcRenderer.invoke('fe:list-dir', { mode, termId, dirPath, encoding }),
@@ -193,6 +195,7 @@ contextBridge.exposeInMainWorld('api', {
   },
   getDetachedInit: () => ipcRenderer.invoke('window:get-detached-init'),
   getConnectedPanels: () => ipcRenderer.invoke('ssh:connected-panels'),
+  agentIsRunning: (args: { sessionId?: string; requestId?: string }) => ipcRenderer.invoke('agent:is-running', args),
   getCursorPoint: () => ipcRenderer.invoke('window:cursor-point'),
   getWindowBounds: () => ipcRenderer.invoke('window:get-bounds'),
   onWindowMaximized: (cb: (m: boolean) => void) => {
@@ -371,8 +374,8 @@ contextBridge.exposeInMainWorld('api', {
   geminiStop: (sessionId: string, requestId?: string) => ipcRenderer.invoke('gemini:stop', { sessionId, requestId }),
   codexCheck: () => ipcRenderer.invoke('codex:check'),
   codexRateLimits: () => ipcRenderer.invoke('codex:rateLimits'),
-  codexSend: (sessionId: string, prompt: string, requestId?: string, model?: string, approvalPolicy?: string, effort?: string, sshTermId?: string) =>
-    ipcRenderer.invoke('codex:send', { sessionId, prompt, requestId, model, approvalPolicy, effort, sshTermId }),
+  codexSend: (sessionId: string, prompt: string, requestId?: string, model?: string, approvalPolicy?: string, effort?: string, sshTermId?: string, sshSessions?: Array<{ id: string; label: string }>) =>
+    ipcRenderer.invoke('codex:send', { sessionId, prompt, requestId, model, approvalPolicy, effort, sshTermId, sshSessions }),
   codexStop: (sessionId: string, requestId?: string) => ipcRenderer.invoke('codex:stop', { sessionId, requestId }),
   claudeProbeUsage: () => ipcRenderer.invoke('claude:probe-usage'),
   claudeProbeUsageTui: () => ipcRenderer.invoke('claude:probe-usage-tui'),

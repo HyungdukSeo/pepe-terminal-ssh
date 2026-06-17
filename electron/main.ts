@@ -1586,6 +1586,28 @@ ipcMain.handle('sessions:import', async () => {
   } catch (err: any) { console.error('Import error:', err); return null; }
 });
 
+ipcMain.handle('sessions:clear', () => {
+  sessionsData = { folders: [], sessions: [], keySeqDefaultsV1: true };
+  saveSessionsData(sessionsData);
+  return { success: true, data: sessionsData };
+});
+
+ipcMain.handle('sessions:replace-all', (_e, data: SessionsData) => {
+  try {
+    sessionsData = {
+      folders: Array.isArray(data?.folders) ? data.folders : [],
+      sessions: Array.isArray(data?.sessions) ? data.sessions : [],
+      childOrder: data?.childOrder && typeof data.childOrder === 'object' ? data.childOrder : undefined,
+      keySeqDefaultsV1: data?.keySeqDefaultsV1 === true,
+    };
+    saveSessionsData(sessionsData);
+    return { success: true, data: sessionsData };
+  } catch (err: any) {
+    console.error('sessions:replace-all error:', err);
+    return { success: false, error: String(err?.message || err) };
+  }
+});
+
 // ── SecureCRT XML 파서 ──
 function parseSecureCRTXml(filePath: string): SessionsData {
   const xml = fs.readFileSync(filePath, 'utf8');

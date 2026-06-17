@@ -9,7 +9,7 @@ import { Layout } from './components/Layout';
 import { SearchBar } from './components/SearchBar';
 import { FileExplorer } from './components/FileExplorer';
 import { ConflictDialogQueue } from './components/ConflictDialog';
-import { NotifyHost, notifyError } from './components/Notify';
+import { NotifyHost, notifyError, notifyOk } from './components/Notify';
 import { FileEditor } from './components/FileEditor';
 import { ClaudeChat } from './components/ClaudeChat';
 import { BrowserPane } from './components/BrowserPane';
@@ -439,6 +439,8 @@ function App() {
   const [showManual, setShowManual] = useState(false);
   // 도움말/정보 등 단순 텍스트 모달 (alert 대체 — 스크롤 가능 + 닫을 때 터미널 포커스 복원)
   const [infoModal, setInfoModal] = useState<{ title: string; text: string } | null>(null);
+  const [sessionWipeDialog, setSessionWipeDialog] = useState(false);
+  const [sessionOrganizeBusy, setSessionOrganizeBusy] = useState(false);
   // 자동 업데이트 상태 모달 (electron-updater)
   const [updateStatus, setUpdateStatus] = useState<any | null>(null);
   // 활성 터미널로 포커스 복원 (모달 닫기 / 빠른연결 닫기 / 외부 영역 클릭 후 등)
@@ -1191,6 +1193,223 @@ function App() {
     const tid = getActiveTermId();
     if (tid) applyThemeToTerm(tid, name);
     else applyThemeToAll(name);
+  };
+
+  type SessionOrganizeFolder = { path: string; name: string; parentPath?: string | null };
+  type SessionOrganizeSession = { id: string; name: string; folderPath?: string | null };
+  type SessionOrganizePlan = { folders: SessionOrganizeFolder[]; sessions: SessionOrganizeSession[] };
+
+  const stripAiJson = (text: string) => {
+    const trimmed = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/```$/i, '').trim();
+    const first = trimmed.indexOf('{');
+    const last = trimmed.lastIndexOf('}');
+    if (first >= 0 && last > first) return trimmed.slice(first, last + 1);
+    return trimmed;
+  };
+
+  const checkAiAvailability = useCallback(async (): Promise<'claude' | 'gemini' | 'codex' | null> => {
+    const order: ('claude' | 'gemini' | 'codex')[] = [];
+    for (const agent of [aiAgent as 'claude' | 'gemini' | 'codex', 'claude', 'gemini', 'codex'] as const) {
+      if (!order.includes(agent)) order.push(agent);
+    }
+    for (const agent of order) {
+      try {
+        const ok = agent === 'claude'
+          ? await (window as any).api?.claudeCheck?.()
+          : agent === 'gemini'
+            ? await (window as any).api?.geminiCheck?.()
+            : await (window as any).api?.codexCheck?.();
+        if (ok && (ok.success !== false)) return agent;
+      } catch {}
+    }
+    return null;
+  }, [aiAgent]);
+
+  const runAiSessionOrganize = useCallback(async () => {
+    if (sessionOrganizeBusy) return;
+    const agent = await checkAiAvailability();
+    if (!agent) {
+      notifyError('AI 서비스 필요', '세션 리스트 자동 정리는 AI 서비스가 하나라도 연결되어 있을 때만 사용할 수 있습니다. 먼저 Claude, Gemini, 또는 Codex를 연결해 주세요.');
+      return;
+    }
+    setSessionOrganizeBusy(true);
+    showToast(`AI(${agent})로 세션 리스트를 정리하는 중...`, 3500);
+    try {
+      const data = await (window as any).api?.listSessions?.();
+      const sessionsRaw: any[] = Array.isArray(data?.sessions) ? data.sessions : [];
+      const foldersRaw: any[] = Array.isArray(data?.folders) ? data.folders : [];
+      const prompt = [
+        'You are organizing an SSH session list for a terminal app.',
+        'Return ONLY valid JSON. No markdown, no code fences, no explanation.',
+        'Schema:',
+        '{',
+        '  "folders": [',
+        '    { "path": "root/child", "name": "Display Name", "parentPath": null | "root" }',
+        '  ],',
+        '  "sessions": [',
+        '    { "id": "existing-session-id", "name": "New Session Name", "folderPath": null | "root/child" }',
+        '  ]',
+        '}',
+        'Rules:',
+        '- Keep every existing session id exactly once.',
+        '- Do not change host, port, username, auth, encoding, dbms, or other technical fields.',
+        '- You may rename sessions and create/rename folders freely.',
+        '- folder paths must be unique and use "/" as separator.',
+        '- Prefer short, readable folder names grouped by site/project/network segment.',
+        '- Put sessions with similar hosts or purpose into shared folders when helpful.',
+        '- If a session should stay at the root, use folderPath null.',
+        '- Preserve all sessions; do not drop any.',
+        '',
+        'Current folders:',
+        JSON.stringify(foldersRaw.map(f => ({ id: f.id, name: f.name, parentId: f.parentId ?? null })), null, 2),
+        '',
+        'Current sessions:',
+        JSON.stringify(sessionsRaw.map(s => ({ id: s.id, name: s.name, host: s.host, port: s.port, username: s.username, folderId: s.folderId ?? null })), null, 2),
+      ].join('\n');
+      const requestId = `session-organize-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const sessionId = `session-organize-${Date.now()}`;
+      const collected: string[] = [];
+      const resultText = await new Promise<string>(async (resolve, reject) => {
+        const off = (window as any).api?.onClaudeStream?.((p: any) => {
+          if (p.sessionId !== sessionId || p.requestId !== requestId) return;
+          const msg = p.message || {};
+          if (msg.type === 'assistant' && msg.message?.content) {
+            const texts = msg.message.content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('');
+            if (texts) collected.push(texts);
+          } else if (msg.type === 'text' && typeof msg.text === 'string') {
+            collected.push(msg.text);
+          } else if (msg.type === 'error') {
+            try { off?.(); } catch {}
+            reject(new Error(msg.text || 'AI response error'));
+          } else if (msg.type === 'done' || msg.type === 'result') {
+            try { off?.(); } catch {}
+            resolve(collected.join(''));
+          }
+        });
+        try {
+          if (agent === 'claude') {
+            await (window as any).api?.claudeSend?.(sessionId, prompt, undefined, true, undefined, null, 'bypassPermissions', undefined, false, requestId);
+          } else if (agent === 'gemini') {
+            await (window as any).api?.geminiSend?.(sessionId, prompt, requestId, undefined, true);
+          } else {
+            await (window as any).api?.codexSend?.(sessionId, prompt, requestId, undefined, 'full-auto');
+          }
+        } catch (err) {
+          try { off?.(); } catch {}
+          reject(err);
+        }
+      });
+
+      const jsonText = stripAiJson(resultText);
+      let parsed: SessionOrganizePlan;
+      try {
+        parsed = JSON.parse(jsonText);
+      } catch (err) {
+        throw new Error(`AI 응답을 JSON으로 해석하지 못했습니다: ${String(err)}`);
+      }
+      if (!parsed || !Array.isArray(parsed.folders) || !Array.isArray(parsed.sessions)) {
+        throw new Error('AI 응답 형식이 올바르지 않습니다.');
+      }
+
+      const existingSessionsById = new Map(sessionsRaw.map(s => [s.id, s]));
+      const normalizedFolders = parsed.folders
+        .filter(f => f && typeof f.path === 'string' && typeof f.name === 'string')
+        .map(f => ({
+          path: String(f.path).trim().replace(/^\/+|\/+$/g, ''),
+          name: String(f.name).trim() || String(f.path).trim().split('/').pop() || 'Folder',
+          parentPath: f.parentPath == null ? null : String(f.parentPath).trim().replace(/^\/+|\/+$/g, ''),
+        }))
+        .filter(f => f.path.length > 0);
+      const normalizedSessions = parsed.sessions
+        .filter(s => s && typeof s.id === 'string' && existingSessionsById.has(s.id))
+        .map(s => ({
+          id: s.id,
+          name: String(s.name || existingSessionsById.get(s.id)?.name || '').trim(),
+          folderPath: s.folderPath == null ? null : String(s.folderPath).trim().replace(/^\/+|\/+$/g, ''),
+        }));
+      if (normalizedSessions.length === 0) {
+        throw new Error('AI 응답에 적용 가능한 세션이 없습니다.');
+      }
+
+      const folderInputByPath = new Map<string, SessionOrganizeFolder>();
+      for (const folder of normalizedFolders) folderInputByPath.set(folder.path, folder);
+      const ensureFolderInput = (path: string): SessionOrganizeFolder | null => {
+        const clean = path.trim().replace(/^\/+|\/+$/g, '');
+        if (!clean) return null;
+        const existing = folderInputByPath.get(clean);
+        if (existing) return existing;
+        const parentPath = clean.includes('/') ? clean.split('/').slice(0, -1).join('/') || null : null;
+        const autoFolder: SessionOrganizeFolder = { path: clean, name: clean.split('/').pop() || clean, parentPath };
+        folderInputByPath.set(clean, autoFolder);
+        return autoFolder;
+      };
+      const createdFolderIds = new Map<string, string>();
+      const resolvedFolders: any[] = [];
+      const resolveFolder = (path: string): string => {
+        const clean = path.trim().replace(/^\/+|\/+$/g, '');
+        const cached = createdFolderIds.get(clean);
+        if (cached) return cached;
+        const folder = ensureFolderInput(clean);
+        if (!folder) return '';
+        const parentPath = folder.parentPath && folder.parentPath.length > 0
+          ? folder.parentPath
+          : (folder.path.includes('/') ? folder.path.split('/').slice(0, -1).join('/') || null : null);
+        const parentId = parentPath ? resolveFolder(parentPath) : undefined;
+        const id = `folder-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        createdFolderIds.set(clean, id);
+        resolvedFolders.push({
+          id,
+          name: folder.name,
+          parentId: parentId || undefined,
+        });
+        return id;
+      };
+      for (const folder of [...normalizedFolders].sort((a, b) => a.path.split('/').length - b.path.split('/').length)) {
+        resolveFolder(folder.path);
+      }
+
+      const resolvedSessions = sessionsRaw.map(orig => {
+        const plan = normalizedSessions.find(s => s.id === orig.id);
+        const folderId = plan?.folderPath ? (resolveFolder(plan.folderPath) || undefined) : undefined;
+        return {
+          ...orig,
+          name: plan?.name || orig.name,
+          folderId,
+        };
+      });
+
+      const replaceResult = await (window as any).api?.sessionsReplaceAll?.({
+        folders: resolvedFolders,
+        sessions: resolvedSessions,
+        keySeqDefaultsV1: true,
+      });
+      if (!replaceResult?.success) {
+        throw new Error(replaceResult?.error || '세션 리스트 저장 실패');
+      }
+      window.dispatchEvent(new Event('sessions-reload'));
+      notifyOk('세션 리스트 정리 완료', `AI(${agent})가 세션 ${resolvedSessions.length}개와 폴더 ${resolvedFolders.length}개를 정리했습니다.`);
+    } catch (err: any) {
+      notifyError('세션 자동 정리 실패', String(err?.message || err));
+    } finally {
+      setSessionOrganizeBusy(false);
+    }
+  }, [aiAgent, checkAiAvailability, sessionOrganizeBusy, showToast]);
+
+  const handleClearSessions = async (mode: 'backup' | 'delete') => {
+    try {
+      if (mode === 'backup') {
+        const exportResult = await (window as any).api?.exportSessions?.();
+        if (!exportResult) return;
+        showToast('세션 백업을 저장했습니다. 이제 전체 목록을 삭제합니다.');
+      }
+      const result = await (window as any).api?.sessionsClear?.();
+      if (!result?.success) throw new Error(result?.error || '세션 삭제 실패');
+      window.dispatchEvent(new Event('sessions-reload'));
+      setSessionWipeDialog(false);
+      notifyOk('세션 리스트 비움', mode === 'backup' ? '백업 후 세션 리스트를 삭제했습니다.' : '세션 리스트를 삭제했습니다.');
+    } catch (err: any) {
+      notifyError('세션 리스트 비우기 실패', String(err?.message || err));
+    }
   };
 
   const activeTab = tabs.find(t => t.id === activeTabId) ?? tabs[0];
@@ -2630,6 +2849,8 @@ function App() {
         { separator: true, label: '' },
         { label: tMenu('file.exportSessions'), action: () => (window as any).api.exportSessions() },
         { label: tMenu('file.importSessions'), action: async () => { const r = await (window as any).api.importSessions(); if (r) { window.dispatchEvent(new Event('sessions-reload')); showToast(r.addedCount != null ? tMenu('file.importedToast', { added: r.addedCount, total: r.totalParsed }) : tMenu('file.importedToastSimple')); } } },
+        { label: '세션 비우기', action: () => setSessionWipeDialog(true) },
+        { label: '세션 리스트 자동 정리', action: () => { void runAiSessionOrganize(); }, disabled: sessionOrganizeBusy },
         { separator: true, label: '' },
         { label: tMenu('file.quit'), action: () => window.close() },
       ],
@@ -4693,8 +4914,40 @@ function App() {
         );
       })()}
 
-      {showManual && (
-        <div className="session-editor-backdrop" onClick={() => setShowManual(false)}>
+      {sessionWipeDialog && (
+        <div
+          className="session-editor-backdrop"
+          onClick={() => setSessionWipeDialog(false)}
+        >
+          <div
+            className="session-editor"
+            onClick={e => e.stopPropagation()}
+            style={{ minWidth: 380, maxWidth: 560, display: 'flex', flexDirection: 'column' }}
+            tabIndex={-1}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 4px 8px', borderBottom: '1px solid #333' }}>
+              <h3 style={{ margin: 0 }}>세션 리스트 비우기</h3>
+              <button onClick={() => setSessionWipeDialog(false)} title="닫기">✕</button>
+            </div>
+            <div style={{ padding: '14px 16px', color: '#ddd', fontSize: 13, lineHeight: 1.65 }}>
+              전체 세션 리스트를 삭제합니다. 먼저 백업할지 선택해 주세요.
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, padding: '8px 12px', borderTop: '1px solid #333', flexWrap: 'wrap' }}>
+              <button onClick={() => setSessionWipeDialog(false)}>취소하기</button>
+              <button style={{ background: '#735f16', color: '#fff' }} onClick={async () => {
+                setSessionWipeDialog(false);
+                await handleClearSessions('backup');
+              }}>백업하기</button>
+              <button style={{ background: '#a53030', color: '#fff' }} onClick={async () => {
+                setSessionWipeDialog(false);
+                await handleClearSessions('delete');
+              }}>삭제하기</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showManual && (        <div className="session-editor-backdrop" onClick={() => setShowManual(false)}>
           <div className="session-editor manual-modal" onClick={e => e.stopPropagation()}
             style={{ width: '80vw', maxWidth: 1000, height: '85vh', display: 'flex', flexDirection: 'column' }}
           >
