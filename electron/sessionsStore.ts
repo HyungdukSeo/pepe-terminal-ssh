@@ -9,6 +9,14 @@ export type LoginScriptRule = {
   isRegex?: boolean;
 };
 
+// 다단계 점프 체인의 한 홉. host 만 필수, 나머지는 생략 시 기본값/직전 홉 인증 재사용.
+export type JumpHop = {
+  host: string;
+  user?: string;     // 생략 시 'root'
+  port?: number;     // 생략 시 22
+  password?: string; // 있으면 비밀번호 인증, 비어 있으면 직전 홉의 ~/.ssh/ 키 자동 사용
+};
+
 export type Session = {
   id: string;
   name: string;
@@ -34,13 +42,10 @@ export type Session = {
   codePath?: string; // CompareWorkspace 가 이 세션 선택 시 자동으로 채울 base 디렉토리
   x11Forward?: boolean; // X11 forwarding 활성화 (원격 GUI 앱 → 로컬 X 서버)
   x11Display?: number;  // 로컬 X 서버 display 번호 (기본 0 → localhost:6000)
-  // 점프 호스트 설정 (ProxyJump). 채우면 primary 호스트를 경유해서 점프 타겟으로 SSH+SFTP 직결.
-  // primary 호스트의 ~/.ssh/ 에 등록된 키를 자동으로 읽어서 점프 타겟 인증에 재사용.
-  // 비우면 기존처럼 primary 직접 연결.
-  jumpTargetHost?: string;  // 예: "I-MPM01"
-  jumpTargetUser?: string;  // 예: "root"
-  jumpTargetPort?: number;  // 기본 22
-  jumpTargetPassword?: string; // 있으면 비밀번호 인증, 비어 있으면 primary 의 ~/.ssh/id_rsa 등 자동 사용
+  // 다단계 점프 (ProxyJump 체인). primary → jumps[0] → jumps[1] → ... → 최종 호스트.
+  // 비어 있으면 primary 직접 연결. 각 홉의 password 가 비어 있으면 직전 홉의 ~/.ssh/ 키를 자동 재사용.
+  // (이전 단일/2단 필드 jumpTargetHost·jump2TargetHost 는 이 배열로 대체됨.)
+  jumps?: JumpHop[];
   // DBMS (Altibase) 연결 정보 — 채우면 우클릭 메뉴에 "SQL Tool" 노출됨.
   // 동일 SSH 연결의 exec 채널로 isql 을 실행해서 DB 쿼리.
   dbms?: {

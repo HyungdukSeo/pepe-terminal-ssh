@@ -51,6 +51,11 @@
     "jumpTargetUser": "점프 타겟 사용자",
     "jumpTargetPort": "점프 타겟 포트",
     "jumpTargetPassword": "점프 타겟 비밀번호",
+    "jumpChainHint": "점프 호스트를 순서대로 추가합니다. 연결 경로: primary → 1단계 → 2단계 → … → 최종 호스트. 각 단계 비밀번호가 비어 있으면 직전 호스트의 ~/.ssh/ 키를 자동 사용합니다.",
+    "jumpChainEmpty": "점프 없음 — primary 호스트로 직접 연결합니다.",
+    "jumpHopTitle": "{{n}}단계 점프",
+    "jumpHopRemove": "삭제",
+    "jumpHopAdd": "+ 점프 단계 추가",
     "cursorStyle": "커서 모양",
     "cursorBlink": "커서 깜박임",
     "initialPath": "초기 경로",
@@ -76,9 +81,9 @@
   },
   "placeholders": {
     "hostExample": "IPv4 / IPv6 / 도메인",
-    "jumpTargetHost": "예: I-MPM01 (비우면 직접 연결)",
+    "jumpTargetHost": "예: I-MPM01",
     "jumpTargetUser": "예: root",
-    "jumpTargetPassword": "비우면 primary ~/.ssh/id_rsa 자동 사용",
+    "jumpTargetPassword": "비우면 직전 호스트의 ~/.ssh/id_rsa 자동 사용",
     "initialPath": "예: /home/user/project (비우면 홈 디렉토리)"
   },
   "tooltips": {

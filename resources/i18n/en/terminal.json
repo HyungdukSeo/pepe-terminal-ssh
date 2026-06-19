@@ -71,7 +71,7 @@
     "connectFailedFinal": "Connection failed (gave up after {{attempts}} retries) — {{reason}}",
     "connectRetry": "{{reason}} — auto retry {{attempt}}/{{max}} (waiting {{sec}}s)",
     "remoteDisconnected": "Remote host disconnected ({{sessionName}} {{host}}) {{time}}",
-    "reconnectIn30s": "Reconnecting in 30s. Press any key to cancel.",
+    "reconnectPrompt": "Press Enter to reconnect now. The session tab closes in 10s. (Any other key: keep tab open)",
     "reconnecting": "Reconnecting...",
     "reconnectCancelled": "Reconnect cancelled.",
     "tryingSSH": "▶ Attempting SSH connection...",

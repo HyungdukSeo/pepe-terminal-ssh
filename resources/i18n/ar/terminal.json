@@ -70,7 +70,7 @@
     "connectFailedFinal": "فشل الاتصال (تم التوقف بعد {{attempts}} محاولات) — {{reason}}",
     "connectRetry": "{{reason}} — إعادة المحاولة تلقائياً {{attempt}}/{{max}} (الانتظار {{sec}} ثانية)",
     "remoteDisconnected": "تم قطع اتصال المضيف البعيد ({{sessionName}} {{host}}) {{time}}",
-    "reconnectIn30s": "إعادة الاتصال خلال 30 ثانية. اضغط أي مفتاح للإلغاء.",
+    "reconnectPrompt": "اضغط Enter لإعادة الاتصال الآن. سيُغلق تبويب الجلسة خلال 10 ثوانٍ. (أي مفتاح آخر: إبقاء التبويب)",
     "reconnecting": "جارٍ إعادة الاتصال...",
     "reconnectCancelled": "تم إلغاء إعادة الاتصال.",
     "tryingSSH": "▶ جارٍ محاولة اتصال SSH...",

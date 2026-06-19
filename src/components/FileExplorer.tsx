@@ -9,6 +9,18 @@ import type { PanelSession } from '../utils/layoutUtils';
 
 const api = (window as any).api || {};
 
+// 세션의 점프 체인을 SFTP 연결용 배열로 정규화. host 있는 항목만, 첫 빈 host 에서 종료.
+function buildJumpChain(sess: any): { host: string; user?: string; port?: number; password?: string }[] {
+  const arr = Array.isArray(sess?.jumps) ? sess.jumps : [];
+  const out: { host: string; user?: string; port?: number; password?: string }[] = [];
+  for (const j of arr) {
+    const host = (j && typeof j.host === 'string') ? j.host.trim() : '';
+    if (!host) break;
+    out.push({ host, user: j.user || 'root', port: Number(j.port) || 22, password: j.password || undefined });
+  }
+  return out;
+}
+
 type Props = {
   sessions: PanelSession[];
   initialTermId?: string | null;
@@ -87,7 +99,7 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId, initial
   // lazy 연결로 생성된 SFTP 임시 connId — FileExplorer unmount 시 정리
   const [lazyConns, setLazyConns] = useState<string[]>([]);
   // 자격증명 입력 프롬프트 — 비밀번호 미저장 세션 연결 실패 시 표시
-  const [credPrompt, setCredPrompt] = useState<{ sess: any; side: 'left' | 'right'; jumpOpts: any } | null>(null);
+  const [credPrompt, setCredPrompt] = useState<{ sess: any; side: 'left' | 'right'; jumps: any[] } | null>(null);
   const [credUser, setCredUser] = useState('');
   const [credPass, setCredPass] = useState('');
   const [credShowPass, setCredShowPass] = useState(false);
@@ -340,14 +352,12 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId, initial
     const sess = allSessionsList.find(s => s.id === src.sessionId);
     if (!sess) { notifyError(t('remoteSessionMissing')); return null; }
     const connId = `fe-lazy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const jumpOpts = sess.jumpTargetHost?.trim()
-      ? { host: sess.jumpTargetHost.trim(), user: sess.jumpTargetUser || 'root', port: Number(sess.jumpTargetPort) || 22, password: sess.jumpTargetPassword || undefined }
-      : undefined;
+    const jumps = buildJumpChain(sess);
     // 비밀번호가 없는 세션은 바로 자격증명 다이얼로그 표시
     const hasCredential = sess.auth?.type === 'key' || (sess.auth?.type === 'password' && sess.auth?.password);
     const openCred = () => {
       setTermFocusBlocked(true); // 렌더 전에 동기 차단 — useEffect 보다 먼저 실행됨
-      setCredPrompt({ sess, side, jumpOpts });
+      setCredPrompt({ sess, side, jumps });
       setCredUser(sess.username || '');
       setCredPass('');
       setCredShowPass(false);
@@ -357,7 +367,7 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId, initial
       return null;
     }
     try {
-      const r: any = await api?.feSftpConnect?.(connId, sess.host, sess.port || 22, sess.username, sess.auth, jumpOpts);
+      const r: any = await api?.feSftpConnect?.(connId, sess.host, sess.port || 22, sess.username, sess.auth, undefined, jumps.length ? jumps : undefined);
       if (!r?.success) {
         openCred();
         return null;
@@ -385,11 +395,11 @@ export const FileExplorer: React.FC<Props> = ({ sessions, initialTermId, initial
   // 자격증명 다이얼로그 확인 — 입력된 id/비밀번호로 연결 재시도
   const handleCredSubmit = async () => {
     if (!credPrompt) return;
-    const { sess, side, jumpOpts } = credPrompt;
+    const { sess, side, jumps } = credPrompt;
     setCredConnecting(true);
     const newConnId = `fe-lazy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     try {
-      const r: any = await api?.feSftpConnect?.(newConnId, sess.host, sess.port || 22, credUser, { type: 'password', password: credPass }, jumpOpts);
+      const r: any = await api?.feSftpConnect?.(newConnId, sess.host, sess.port || 22, credUser, { type: 'password', password: credPass }, undefined, (jumps && jumps.length) ? jumps : undefined);
       if (!r?.success) {
         notifyError(t('connectFailNamed', { name: sess.name, err: r?.error || t('unknownError') }));
         setCredConnecting(false);

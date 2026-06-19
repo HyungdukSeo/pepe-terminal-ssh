@@ -1252,6 +1252,12 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       setActivity('');
       currentAsstIdRef.current = null;
       activeRequestIdRef.current = null;
+      // 프로세스가 죽었는데 plan 승인 모달이 떠 있으면 닫는다 (승인해도 갈 곳이 없음).
+      if (pendingPlanToolIdRef.current) {
+        pendingPlanToolIdRef.current = null;
+        setPendingPlan(null);
+        setPendingPlanAgent(null);
+      }
       const aid = activeHistoryIdRef.current;
       if (aid) setChatHistory(hList => hList.map(h => h.id === aid ? { ...h, streaming: false, pendingRequestId: null } : h));
     }, 3000);
@@ -1275,6 +1281,10 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   // pending/rejected plan 의 소속 에이전트 — 공유 OFF 시 다른 에이전트 view 에서 숨김
   const [pendingPlanAgent, setPendingPlanAgent] = useState<string | null>(null);
   const [lastRejectedPlanAgent, setLastRejectedPlanAgent] = useState<string | null>(null);
+  // 현재 승인 대기 중인 ExitPlanMode tool_use id — 그 tool_result 가 is_error 로 오면
+  // (SDK 가 이미 plan 을 거절/자동처리) 모달을 자동으로 닫는다. 안 닫으면 result 후에도
+  // 오버레이가 남아 "응답이 안 끝난 것처럼" 보임 (진행바·중지버튼은 사라졌는데 화면이 안 바뀜).
+  const pendingPlanToolIdRef = useRef<string | null>(null);
   // 사용량 추적 — stream-json result 이벤트에서 누적
   type UsageStat = {
     inputTokens: number;
@@ -1444,7 +1454,10 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   });
   useEffect(() => { try { localStorage.setItem('claudePerToolApproval', perToolApproval ? '1' : '0'); } catch {} }, [perToolApproval]);
   // 현재 대기 중인 툴 승인 요청 (hook 에서 전달)
-  const [pendingToolApproval, setPendingToolApproval] = useState<{ approvalId: string; toolName: string; toolInput: any } | null>(null);
+  const [pendingToolApproval, setPendingToolApproval] = useState<{ approvalId: string; toolName: string; toolInput: any; sessionId?: string } | null>(null);
+  const [autoAllowToolSessions, setAutoAllowToolSessions] = useState<Set<string>>(() => new Set());
+  const autoAllowToolSessionsRef = useRef<Set<string>>(autoAllowToolSessions);
+  useEffect(() => { autoAllowToolSessionsRef.current = autoAllowToolSessions; }, [autoAllowToolSessions]);
   const [sessionId] = useState(() => `claude-${Date.now()}-${sessionCounter++}`);
   // 사용자가 전송 버튼을 누를 때까지 파일 컨텍스트를 로컬에서 보관 (다중 첨부)
   const [attachments, setAttachments] = useState<FileContextItem[]>([]);
@@ -1905,7 +1918,12 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   // Hook 승인 요청 리스너
   useEffect(() => {
     const dispose = (window as any).api?.onClaudeHookApprovalRequest?.((p: any) => {
-      setPendingToolApproval({ approvalId: p.approvalId, toolName: p.toolName, toolInput: p.toolInput });
+      const sessionKey = p.sessionId || '';
+      if (sessionKey && autoAllowToolSessionsRef.current.has(sessionKey)) {
+        (window as any).api?.claudeHookRespond?.(p.approvalId, 'allow');
+        return;
+      }
+      setPendingToolApproval({ approvalId: p.approvalId, toolName: p.toolName, toolInput: p.toolInput, sessionId: sessionKey });
     });
     return () => { if (dispose) dispose(); };
   }, []);
@@ -2279,6 +2297,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           if (exitPlan && exitPlan.input?.plan) {
             setPendingPlan(String(exitPlan.input.plan));
             setPendingPlanAgent(streamAgent);
+            pendingPlanToolIdRef.current = exitPlan.id;
           }
         }
 
@@ -2299,6 +2318,16 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         // tool_result 수신 → 타임라인 업데이트
         const results = Array.isArray(msg.message.content) ? msg.message.content.filter((c: any) => c.type === 'tool_result') : [];
         if (results.length > 0) {
+          // ExitPlanMode 가 SDK 단에서 거절(is_error)됐으면 — 승인 모달을 닫는다.
+          // (안 닫으면 turn 종료 후에도 오버레이가 남아 결과가 안 보임)
+          if (pendingPlanToolIdRef.current) {
+            const planResult = results.find((r: any) => r.tool_use_id === pendingPlanToolIdRef.current);
+            if (planResult && planResult.is_error) {
+              pendingPlanToolIdRef.current = null;
+              setPendingPlan(null);
+              setPendingPlanAgent(null);
+            }
+          }
           setToolTimeline(prev => prev.map(t => {
             const match = results.find((r: any) => r.tool_use_id === t.id);
             if (!match) return t;
@@ -2325,6 +2354,11 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         setActivity('');
         currentAsstIdRef.current = null;
         activeRequestIdRef.current = null;
+        // turn 종료 시 plan tool id 추적만 해제 — 다음 turn 으로 stale id 가 새지 않도록.
+        // (모달 자체는 닫지 않는다: 정상 Plan 승인 흐름은 ExitPlanMode 호출 후 turn 이 끝나고
+        //  사용자가 모달에서 승인하기를 기다리는 상태이므로 여기서 닫으면 승인 UI 가 사라짐.
+        //  SDK 가 거절한 케이스는 위 tool_result(is_error) 핸들러에서 이미 닫았다.)
+        pendingPlanToolIdRef.current = null;
         // codex/gemini 계획 단계 응답 — [CODEX_PLAN]/[GEMINI_PLAN] 마커가 있으면 계획 승인 모달 표시
         if (reqId && (codexPlanRequestsRef.current.has(reqId) || geminiPlanRequestsRef.current.has(reqId))) {
           codexPlanRequestsRef.current.delete(reqId);
@@ -2359,6 +2393,12 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         setRequestBusy(false);
         removeStreamingAgent(streamAgent);
         activeRequestIdRef.current = null;
+        // 에러로 turn 이 죽으면 떠 있던 plan 승인 모달은 무효 — 닫는다.
+        if (pendingPlanToolIdRef.current) {
+          pendingPlanToolIdRef.current = null;
+          setPendingPlan(null);
+          setPendingPlanAgent(null);
+        }
         if (reqId) {
           codexPlanRequestsRef.current.delete(reqId);
           geminiPlanRequestsRef.current.delete(reqId);
@@ -3416,6 +3456,12 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     removeStreamingAgent(reqAgent);
     setActivity('');
     currentAsstIdRef.current = null;
+    // 중단했으면 떠 있던 plan 승인 모달도 닫는다 (프로세스가 죽어 승인해도 의미 없음).
+    if (pendingPlanToolIdRef.current) {
+      pendingPlanToolIdRef.current = null;
+      setPendingPlan(null);
+      setPendingPlanAgent(null);
+    }
     if (activeHistoryId) {
       setChatHistory(h => h.map(x => x.id === activeHistoryId ? { ...x, streaming: false, pendingRequestId: null } : x));
     }
@@ -3427,6 +3473,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     setMessages([]);
     setToolTimeline([]);
     setActivity('');
+    pendingPlanToolIdRef.current = null;
     setPendingPlan(null);
     setPendingPlanAgent(null);
     setPendingCodexSteeringQueue([]);
@@ -3612,6 +3659,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     const edited = planEditing ? planEditedText.trim() : '';
     const original = (pendingPlan || '').trim();
     const extra = planExtraNote.trim();
+    pendingPlanToolIdRef.current = null;
     setPendingPlan(null);
     setPlanEditing(false);
     setPlanEditedText('');
@@ -3663,6 +3711,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     }
   }, [streaming, send, currentAgent, pendingCodexSteeringQueue]);
   const rejectPlan = () => {
+    pendingPlanToolIdRef.current = null;
     setPlanEditing(false);
     setPlanEditedText('');
     setPlanExtraNote('');
@@ -3678,8 +3727,11 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   };
 
   // 툴 단위 승인/거부
-  const approveTool = () => {
+  const approveTool = (always?: boolean) => {
     if (!pendingToolApproval) return;
+    if (always && pendingToolApproval.sessionId) {
+      setAutoAllowToolSessions(prev => new Set(prev).add(pendingToolApproval.sessionId!));
+    }
     (window as any).api?.claudeHookRespond?.(pendingToolApproval.approvalId, 'allow');
     setPendingToolApproval(null);
   };
@@ -4684,7 +4736,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
               </div>
               <div className="claude-chat-plan-actions">
                 <button className="claude-chat-plan-btn reject" onClick={denyTool}>{tt('deny')}</button>
-                <button className="claude-chat-plan-btn approve" onClick={approveTool} autoFocus>{tt('approveOnce')}</button>
+                <button className="claude-chat-plan-btn approve" onClick={() => approveTool(false)}>{tt('approveOnce')}</button>
+                <button className="claude-chat-plan-btn approve" onClick={() => approveTool(true)}>{tt('approveAlways')}</button>
               </div>
             </div>
           </div>

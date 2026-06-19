@@ -34,10 +34,7 @@ type Session = {
   codePath?: string;
   x11Forward?: boolean;
   x11Display?: number;
-  jumpTargetHost?: string;
-  jumpTargetUser?: string;
-  jumpTargetPort?: number;
-  jumpTargetPassword?: string;
+  jumps?: { host: string; user?: string; port?: number; password?: string }[];
   dbms?: {
     type: 'altibase' | 'mysql' | 'postgres' | 'oracle' | 'mssql' | 'sqlite';
     port: number; user: string; password: string; host?: string;
@@ -217,10 +214,7 @@ export const SessionList: React.FC<Props> = ({ onConnect, onMultiConnect, onDisc
       add(session.codePath);
       add(session.x11Forward);
       add(session.x11Display);
-      add(session.jumpTargetHost);
-      add(session.jumpTargetUser);
-      add(session.jumpTargetPort);
-      add(session.jumpTargetPassword);
+      for (const j of (session.jumps || [])) { add(j.host); add(j.user); add(j.port); }
       add(session.auth?.type);
       add(session.auth?.password);
       add(session.auth?.keyPath);

@@ -71,7 +71,7 @@
     "connectFailedFinal": "연결 실패 ({{attempts}}회 재시도 후 포기) — {{reason}}",
     "connectRetry": "{{reason}} — 자동 재시도 {{attempt}}/{{max}} ({{sec}}초 대기)",
     "remoteDisconnected": "원격 호스트 연결 끊김 ({{sessionName}} {{host}}) {{time}}",
-    "reconnectIn30s": "30초 후 재연결합니다. 아무 키나 누르면 취소됩니다.",
+    "reconnectPrompt": "Enter 를 누르면 즉시 재연결합니다. 10초 후 세션 탭이 닫힙니다. (다른 키: 닫기 취소)",
     "reconnecting": "재연결 중...",
     "reconnectCancelled": "재연결이 취소되었습니다.",
     "tryingSSH": "▶ SSH 연결을 시도하는 중...",

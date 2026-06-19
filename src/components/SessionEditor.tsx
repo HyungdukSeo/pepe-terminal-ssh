@@ -11,6 +11,13 @@ type LoginScriptRule = {
   isRegex?: boolean;
 };
 
+export type JumpHop = {
+  host: string;
+  user?: string;
+  port?: number;
+  password?: string;
+};
+
 export type Session = {
   id: string;
   name: string;
@@ -36,10 +43,7 @@ export type Session = {
   codePath?: string;     // CompareWorkspace 가 이 세션 선택 시 기본 base 디렉토리
   x11Forward?: boolean;
   x11Display?: number;
-  jumpTargetHost?: string;
-  jumpTargetUser?: string;
-  jumpTargetPort?: number;
-  jumpTargetPassword?: string;
+  jumps?: JumpHop[];
   dbms?: {
     type: 'altibase' | 'mysql' | 'postgres' | 'oracle' | 'mssql' | 'sqlite';
     driverId?: string;
@@ -98,11 +102,13 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
   const [codePath, setCodePath] = useState(session?.codePath ?? '');
   const [x11Forward, setX11Forward] = useState<boolean>(!!session?.x11Forward);
   const [x11Display, setX11Display] = useState<number>(session?.x11Display ?? 0);
-  const [jumpTargetHost, setJumpTargetHost] = useState(session?.jumpTargetHost ?? '');
-  const [jumpTargetUser, setJumpTargetUser] = useState(session?.jumpTargetUser ?? '');
-  const [jumpTargetPort, setJumpTargetPort] = useState<number | ''>(session?.jumpTargetPort ?? '');
-  const [jumpTargetPassword, setJumpTargetPassword] = useState(session?.jumpTargetPassword ?? '');
-  const [showJumpPassword, setShowJumpPassword] = useState(false);
+  // 다단계 점프 — 편집용 행 배열. host/user/password 는 문자열, port 는 number|'' 로 보관.
+  type JumpRow = { host: string; user: string; port: number | ''; password: string };
+  const toJumpRows = (sess?: Session | null): JumpRow[] => (sess?.jumps ?? []).map(j => ({
+    host: j.host ?? '', user: j.user ?? '', port: (typeof j.port === 'number' ? j.port : ''), password: j.password ?? '',
+  }));
+  const [jumps, setJumps] = useState<JumpRow[]>(() => toJumpRows(session));
+  const [showJumpPw, setShowJumpPw] = useState<Set<number>>(new Set());
   const [dbmsEnabled, setDbmsEnabled] = useState<boolean>(!!session?.dbms);
   const [dbmsPort, setDbmsPort] = useState<number>(session?.dbms?.port ?? 20300);
   const [dbmsUser, setDbmsUser] = useState<string>(session?.dbms?.user ?? '');
@@ -158,10 +164,8 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
     setCodePath(session?.codePath ?? '');
     setX11Forward(!!session?.x11Forward);
     setX11Display(session?.x11Display ?? 0);
-    setJumpTargetHost(session?.jumpTargetHost ?? '');
-    setJumpTargetUser(session?.jumpTargetUser ?? '');
-    setJumpTargetPort(session?.jumpTargetPort ?? '');
-    setJumpTargetPassword(session?.jumpTargetPassword ?? '');
+    setJumps(toJumpRows(session));
+    setShowJumpPw(new Set());
     setDbmsEnabled(!!session?.dbms);
     setDbmsPort(session?.dbms?.port ?? 20300);
     setDbmsUser(session?.dbms?.user ?? '');
@@ -228,8 +232,36 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
           urlOverride: dbmsUrlEditMode && dbmsUrlOverride.trim() ? dbmsUrlOverride.trim() : undefined,
         }
       : undefined;
-    return { id, name, host: normalizeHost(host), port, username, auth, encoding, folderId: folderId || undefined, loginScript: script.length > 0 ? script : undefined, theme: theme || undefined, fontFamily: fontFamily || undefined, fontSize: fontSize || undefined, scrollback: scrollback || undefined, icon: icon || undefined, initialPath: initialPath.trim() || undefined, fileTreeEnabled: fileTreeEnabled || undefined, autoTrackPwd: (fileTreeEnabled && autoTrackPwd) ? true : undefined, backspaceKeyMode, deleteKeyMode, logPath: logPath.trim() || undefined, codePath: codePath.trim() || undefined, x11Forward: x11Forward || undefined, x11Display: x11Forward ? x11Display : undefined, jumpTargetHost: jumpTargetHost.trim() || undefined, jumpTargetUser: jumpTargetUser.trim() || undefined, jumpTargetPort: typeof jumpTargetPort === 'number' && jumpTargetPort > 0 ? jumpTargetPort : undefined, jumpTargetPassword: jumpTargetPassword || undefined, cursorStyle: cursorStyle !== 'block' ? cursorStyle : undefined, cursorBlink: !!cursorBlink, dbms } as Session;
+    // 점프 체인 정리 — host 가 있는 행만, 첫 빈 host 에서 체인 종료 (중간 빈 행이 끊지 않도록).
+    const cleanedJumps: JumpHop[] = [];
+    for (const row of jumps) {
+      const h = (row.host || '').trim();
+      if (!h) break;
+      cleanedJumps.push({
+        host: h,
+        user: (row.user || '').trim() || undefined,
+        port: (typeof row.port === 'number' && row.port > 0) ? row.port : undefined,
+        password: row.password || undefined,
+      });
+    }
+    return { id, name, host: normalizeHost(host), port, username, auth, encoding, folderId: folderId || undefined, loginScript: script.length > 0 ? script : undefined, theme: theme || undefined, fontFamily: fontFamily || undefined, fontSize: fontSize || undefined, scrollback: scrollback || undefined, icon: icon || undefined, initialPath: initialPath.trim() || undefined, fileTreeEnabled: fileTreeEnabled || undefined, autoTrackPwd: (fileTreeEnabled && autoTrackPwd) ? true : undefined, backspaceKeyMode, deleteKeyMode, logPath: logPath.trim() || undefined, codePath: codePath.trim() || undefined, x11Forward: x11Forward || undefined, x11Display: x11Forward ? x11Display : undefined, jumps: cleanedJumps.length > 0 ? cleanedJumps : undefined, cursorStyle: cursorStyle !== 'block' ? cursorStyle : undefined, cursorBlink: !!cursorBlink, dbms } as Session;
   };
+  // ── 점프 행 조작 ──
+  const addJump = () => setJumps(prev => [...prev, { host: '', user: '', port: '', password: '' }]);
+  const removeJump = (idx: number) => {
+    setJumps(prev => prev.filter((_, i) => i !== idx));
+    setShowJumpPw(prev => {
+      // 제거된 인덱스 이후의 표시 상태를 한 칸씩 당김
+      const next = new Set<number>();
+      for (const i of prev) { if (i < idx) next.add(i); else if (i > idx) next.add(i - 1); }
+      return next;
+    });
+  };
+  const updateJump = (idx: number, patch: Partial<JumpRow>) =>
+    setJumps(prev => prev.map((r, i) => i === idx ? { ...r, ...patch } : r));
+  const toggleJumpPw = (idx: number) =>
+    setShowJumpPw(prev => { const n = new Set(prev); n.has(idx) ? n.delete(idx) : n.add(idx); return n; });
+
   const save = () => {
     const s = buildSession();
     if (s) onSave(s);
@@ -349,18 +381,33 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
               </div>
             )}
             {category === 'jump' && (
-              <div className="session-editor-grid">
-                <label>{t('fields.jumpTargetHost')}</label>
-                <input type="text" value={jumpTargetHost} onChange={e => setJumpTargetHost(e.target.value)} placeholder={t('placeholders.jumpTargetHost')} />
-                <label>{t('fields.jumpTargetUser')}</label>
-                <input type="text" value={jumpTargetUser} onChange={e => setJumpTargetUser(e.target.value)} placeholder={t('placeholders.jumpTargetUser')} disabled={!jumpTargetHost.trim()} />
-                <label>{t('fields.jumpTargetPort')}</label>
-                <input type="number" value={jumpTargetPort} onChange={e => setJumpTargetPort(Number(e.target.value) || '')} placeholder="22" disabled={!jumpTargetHost.trim()} min={1} max={65535} />
-                <label>{t('fields.jumpTargetPassword')}</label>
-                <div style={{ display: 'flex', gap: 4 }}>
-                  <input type={showJumpPassword ? 'text' : 'password'} value={jumpTargetPassword} onChange={e => setJumpTargetPassword(e.target.value)} placeholder={t('placeholders.jumpTargetPassword')} disabled={!jumpTargetHost.trim()} style={{ flex: 1 }} autoComplete="off" />
-                  <button type="button" onClick={() => setShowJumpPassword(v => !v)} disabled={!jumpTargetHost.trim()}>{showJumpPassword ? '🙈' : '👁'}</button>
-                </div>
+              <div className="session-jump-section">
+                <div style={{ fontSize: 12, color: '#8aa', marginBottom: 10, lineHeight: 1.5 }}>{t('fields.jumpChainHint')}</div>
+                {jumps.length === 0 && (
+                  <div style={{ fontSize: 12, color: '#778', fontStyle: 'italic', padding: '8px 0' }}>{t('fields.jumpChainEmpty')}</div>
+                )}
+                {jumps.map((row, idx) => (
+                  <div key={idx} style={{ border: '1px solid #2a3a50', borderRadius: 6, padding: '10px 12px', marginBottom: 10, background: '#10161f' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: '#9cf' }}>{t('fields.jumpHopTitle', { n: idx + 1 })}</span>
+                      <button type="button" onClick={() => removeJump(idx)} style={{ background: 'transparent', border: '1px solid #5a3a3a', color: '#e88', borderRadius: 4, padding: '2px 8px', cursor: 'pointer', fontSize: 11 }}>{t('fields.jumpHopRemove')}</button>
+                    </div>
+                    <div className="session-editor-grid">
+                      <label>{t('fields.jumpTargetHost')}</label>
+                      <input type="text" value={row.host} onChange={e => updateJump(idx, { host: e.target.value })} placeholder={t('placeholders.jumpTargetHost')} />
+                      <label>{t('fields.jumpTargetUser')}</label>
+                      <input type="text" value={row.user} onChange={e => updateJump(idx, { user: e.target.value })} placeholder={t('placeholders.jumpTargetUser')} disabled={!row.host.trim()} />
+                      <label>{t('fields.jumpTargetPort')}</label>
+                      <input type="number" value={row.port} onChange={e => updateJump(idx, { port: Number(e.target.value) || '' })} placeholder="22" disabled={!row.host.trim()} min={1} max={65535} />
+                      <label>{t('fields.jumpTargetPassword')}</label>
+                      <div style={{ display: 'flex', gap: 4 }}>
+                        <input type={showJumpPw.has(idx) ? 'text' : 'password'} value={row.password} onChange={e => updateJump(idx, { password: e.target.value })} placeholder={t('placeholders.jumpTargetPassword')} disabled={!row.host.trim()} style={{ flex: 1 }} autoComplete="off" />
+                        <button type="button" onClick={() => toggleJumpPw(idx)} disabled={!row.host.trim()}>{showJumpPw.has(idx) ? '🙈' : '👁'}</button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                <button type="button" onClick={addJump} style={{ background: '#1a2a3a', border: '1px solid #3a5075', color: '#9cf', borderRadius: 6, padding: '6px 14px', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>{t('fields.jumpHopAdd')}</button>
               </div>
             )}
             {category === 'login-script' && (

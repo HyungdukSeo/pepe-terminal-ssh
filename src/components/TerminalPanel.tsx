@@ -2418,6 +2418,15 @@ export function isTermConnecting(termId: string): boolean {
 // 사용자가 재연결을 명시적으로 취소한 termId (자동 재연결 방지)
 const reconnectUserCancelled = new Set<string>();
 
+// termId → 세션 탭 닫기 콜백 (컴포넌트가 등록). 연결 끊김 후 무입력 시 자동으로 탭을 닫는다.
+const sessionCloseRequesters = new Map<string, () => void>();
+export function registerSessionCloseRequester(termId: string, fn: () => void) {
+  sessionCloseRequesters.set(termId, fn);
+}
+export function unregisterSessionCloseRequester(termId: string) {
+  sessionCloseRequesters.delete(termId);
+}
+
 const reconnectState: Map<string, { timer: ReturnType<typeof setInterval> | null; fireTimer?: ReturnType<typeof setTimeout> | null; cancelled: boolean; disp?: any }> = new Map();
 // termId → 세션 정보 매핑 (재연결 + 표시용)
 const termSessionMap: Map<string, { sessionId: string; sessionName: string; host: string; quickSession?: any }> = new Map();
@@ -2553,41 +2562,27 @@ function startReconnectCountdown(termId: string) {
   const now = new Date();
   const timeStr = now.toTimeString().split(' ')[0]; // HH:MM:SS
 
-  const TOTAL_MS = 30000;
+  // Enter → 즉시 재연결 / 무입력 10초 → 세션 탭 닫기 / 그 외 키 → 자동 닫기만 취소(탭 유지)
+  const CLOSE_MS = 10000;
   const startAt = Date.now();
-  const deadline = startAt + TOTAL_MS;
-  let lastSecond = 30;
+  const deadline = startAt + CLOSE_MS;
+  let lastSecond = 10;
   const state: any = { timer: null, fireTimer: null, cancelled: false, disp: null };
   reconnectState.set(termId, state);
 
   term.write(`\r\n\x1b[91m${tt('output.remoteDisconnected', { sessionName, host, time: timeStr })}\x1b[0m\r\n`);
-  term.write(`\r\n\x1b[33m${tt('output.reconnectIn30s')}\x1b[0m\r\n`);
+  term.write(`\r\n\x1b[33m${tt('output.reconnectPrompt')}\x1b[0m\r\n`);
 
-  // 시각적 카운트다운(점)만 setInterval 로 갱신. 실제 재연결 발사는 단일 setTimeout 으로 처리해
-  // 패널 전환/쓰로틀 등에 영향 없이 정확히 30초 후에만 1회 발동.
-  state.timer = setInterval(() => {
-    if (state.cancelled) { clearInterval(state.timer); return; }
-    const remainingMs = deadline - Date.now();
-    const remainSec = Math.max(0, Math.ceil(remainingMs / 1000));
-    while (lastSecond > remainSec && lastSecond > 0) {
-      term.write('.');
-      lastSecond--;
-    }
-    if (remainingMs <= 0) {
-      clearInterval(state.timer);
-      state.timer = null;
-    }
-  }, 250);
-
-  state.fireTimer = setTimeout(async () => {
-    // 발사 시점에 취소되었거나 이미 다시 연결된 경우 실행하지 않음
+  // 실제 재연결/재연결 트리거 — Enter 입력 또는 (필요 시) 재사용.
+  const doReconnect = async () => {
     if (state.cancelled) return;
-    const cur = reconnectState.get(termId);
-    if (cur !== state) return; // 다른 countdown 으로 대체된 경우
-    if (globalConnected.has(termId)) { reconnectState.delete(termId); return; }
-    if (state.disp) { state.disp.dispose(); state.disp = null; }
+    state.cancelled = true;
     if (state.timer) { clearInterval(state.timer); state.timer = null; }
-    reconnectState.delete(termId);
+    if (state.fireTimer) { clearTimeout(state.fireTimer); state.fireTimer = null; }
+    if (state.disp) { state.disp.dispose(); state.disp = null; }
+    const cur = reconnectState.get(termId);
+    if (cur === state) reconnectState.delete(termId);
+    if (globalConnected.has(termId)) return; // 이미 연결됨
     term.write(`\r\n\x1b[33m${tt('output.reconnecting')}\x1b[0m\r\n`);
     sshConnecting.delete(termId);
     globalConnected.delete(termId);
@@ -2611,17 +2606,55 @@ function startReconnectCountdown(termId: string) {
         }
       }
     } catch {}
-  }, TOTAL_MS);
+  };
 
-  const disp = term.onData(() => {
-    if (!state.cancelled) {
-      state.cancelled = true;
-      if (state.timer) { clearInterval(state.timer); state.timer = null; }
-      if (state.fireTimer) { clearTimeout(state.fireTimer); state.fireTimer = null; }
-      reconnectState.delete(termId);
-      reconnectUserCancelled.add(termId);
-      term.write(`\r\n\x1b[90m${tt('output.reconnectCancelled')}\x1b[0m\r\n`);
+  // 시각적 카운트다운(점) — 10초.
+  state.timer = setInterval(() => {
+    if (state.cancelled) { clearInterval(state.timer); return; }
+    const remainingMs = deadline - Date.now();
+    const remainSec = Math.max(0, Math.ceil(remainingMs / 1000));
+    while (lastSecond > remainSec && lastSecond > 0) {
+      term.write('.');
+      lastSecond--;
     }
+    if (remainingMs <= 0) {
+      clearInterval(state.timer);
+      state.timer = null;
+    }
+  }, 250);
+
+  // 10초 무입력 → 세션 탭 닫기.
+  state.fireTimer = setTimeout(() => {
+    if (state.cancelled) return;
+    const cur = reconnectState.get(termId);
+    if (cur !== state) return; // 다른 countdown 으로 대체됨
+    if (globalConnected.has(termId)) { reconnectState.delete(termId); return; } // 이미 재연결됨
+    state.cancelled = true;
+    if (state.timer) { clearInterval(state.timer); state.timer = null; }
+    if (state.disp) { state.disp.dispose(); state.disp = null; }
+    reconnectState.delete(termId);
+    // 자동 재연결 방지 플래그 — 닫는 도중 다른 로직이 재연결 시도하지 않도록
+    reconnectUserCancelled.add(termId);
+    try { (window as any).api?.disconnectSSH?.(termId); } catch {}
+    const closeFn = sessionCloseRequesters.get(termId);
+    if (closeFn) { try { closeFn(); } catch {} }
+  }, CLOSE_MS);
+
+  const disp = term.onData((data: string) => {
+    if (state.cancelled) { disp.dispose(); state.disp = null; return; }
+    // Enter(CR/LF) → 즉시 재연결
+    if (data === '\r' || data === '\n' || data === '\r\n') {
+      disp.dispose(); state.disp = null;
+      doReconnect();
+      return;
+    }
+    // 그 외 키 → 자동 닫기만 취소하고 탭은 유지 (재연결도 안 함)
+    state.cancelled = true;
+    if (state.timer) { clearInterval(state.timer); state.timer = null; }
+    if (state.fireTimer) { clearTimeout(state.fireTimer); state.fireTimer = null; }
+    reconnectState.delete(termId);
+    reconnectUserCancelled.add(termId);
+    term.write(`\r\n\x1b[90m${tt('output.reconnectCancelled')}\x1b[0m\r\n`);
     disp.dispose();
     state.disp = null;
   });
@@ -2881,6 +2914,15 @@ export const TerminalPanel: React.FC<Props> = ({
       ensureSSHSetup(sess.termId);
     }
   }, [panel.sessions.map(s => s.termId).join(',')]);
+
+  // 연결 끊김 후 무입력 시 자동으로 세션 탭을 닫을 수 있도록 close 콜백 등록.
+  useEffect(() => {
+    const termIds = panel.sessions.map(s => s.termId);
+    for (const tid of termIds) {
+      registerSessionCloseRequester(tid, () => onCloseSession?.(nodeId, tid));
+    }
+    return () => { for (const tid of termIds) unregisterSessionCloseRequester(tid); };
+  }, [panel.sessions.map(s => s.termId).join(','), nodeId, onCloseSession]);
 
   // 패널이 비어 있으면 자동으로 새 세션(미니탭) 생성 (중복 호출 방지)
   const autoAddedRef = useRef(false);

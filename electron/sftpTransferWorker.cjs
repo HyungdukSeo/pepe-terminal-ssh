@@ -37,7 +37,8 @@ const FAST_ALGORITHMS = (() => {
 
 function buildAuth(s) {
   const cfg = {
-    username: s.username, tryKeyboard: true, readyTimeout: 15000, keepaliveInterval: 10000,
+    // 다단계 점프 + 레거시 KEX(Solaris 등) 핸드셰이크는 15초로 부족 — 셸 경로와 동일하게 30초.
+    username: s.username, tryKeyboard: true, readyTimeout: 30000, keepaliveInterval: 10000,
     algorithms: FAST_ALGORITHMS,
     // 압축 비활성 — LAN/고대역 환경에서 압축은 CPU 병목만 유발 (이미 압축된 파일도 많음)
     compress: false,
@@ -76,11 +77,97 @@ function connectDirect() {
   });
 }
 
+// 주어진 conn(이전 홉) 의 ~/.ssh/ 에서 개인키를 SFTP 로 읽어온다. passwordless ProxyJump 용.
+// (메인 프로세스 _readSshKeyFromConn 과 동일 동작 — 각 홉 키는 직전 홉에 있으므로 여기서 읽어야 함)
+function readSshKeyFromConn(conn) {
+  return new Promise((resolve) => {
+    conn.sftp((err, s) => {
+      if (err || !s) return resolve(null);
+      const candidates = ['.ssh/id_rsa', '.ssh/id_ed25519', '.ssh/id_ecdsa'];
+      let pending = candidates.length;
+      let found = null;
+      let foundIdx = candidates.length;
+      const done = () => { try { s.end(); } catch (_e) {} resolve(found); };
+      candidates.forEach((rel, idx) => {
+        s.readFile(rel, (e, d) => {
+          if (!e && d && d.length > 0 && idx < foundIdx) { found = d; foundIdx = idx; }
+          if (--pending === 0) done();
+        });
+      });
+    });
+  });
+}
+
+// 이미 ready 된 transport 연결 위에서 한 홉(터널 + SSH 핸드셰이크)을 수행하고
+// 최종 target Client 를 ready 상태로 콜백한다. 다단계 점프에 공통 사용.
+//   hop: { host, port, user, password }
+//   password 비면: 직전 홉(transportConn) 의 ~/.ssh/ 키를 우선 사용, 없으면 baseAuthCfg fallback.
+//   (셸 경로 _openJumpConnOverTransport 와 동일 — 2단계 이상에서 hopN 인증이 hop(N-1) 키에 의존)
+function openHopOver(transportConn, hop, baseAuthCfg, onReady, onErr) {
+  const proceed = (keyFromPrev) => {
+    transportConn.forwardOut('127.0.0.1', 0, hop.host, hop.port, (err, stream) => {
+      if (err) return onErr(err);
+      const jumpCfg = { sock: stream, username: hop.user, tryKeyboard: true, readyTimeout: 30000, algorithms: FAST_ALGORITHMS, compress: false };
+      if (hop.password) {
+        jumpCfg.password = hop.password;
+      } else if (keyFromPrev) {
+        jumpCfg.privateKey = keyFromPrev;
+      } else {
+        if (baseAuthCfg.password)   jumpCfg.password   = baseAuthCfg.password;
+        if (baseAuthCfg.privateKey) jumpCfg.privateKey = baseAuthCfg.privateKey;
+      }
+      const target = new Client();
+      target.on('error', onErr);
+      target.on('keyboard-interactive', (_n, _i, _l, _ps, finish) => {
+        finish(jumpCfg.password ? [jumpCfg.password] : []);
+      });
+      target.once('ready', () => onReady(target));
+      target.connect(jumpCfg);
+    });
+  };
+  // 비밀번호 없는 홉 → 직전 홉의 키를 읽어서 사용 (없으면 baseAuthCfg fallback)
+  if (!hop.password) {
+    readSshKeyFromConn(transportConn).then(proceed).catch(() => proceed(null));
+  } else {
+    proceed(null);
+  }
+}
+
+// 세션의 점프 체인을 정규화. host 있는 항목만, 첫 빈 host 에서 종료.
+function normalizeJumps(s) {
+  const out = [];
+  const arr = Array.isArray(s && s.jumps) ? s.jumps : [];
+  for (const j of arr) {
+    const host = (j && typeof j.host === 'string') ? j.host.trim() : '';
+    if (!host) break;
+    out.push({
+      host,
+      user: (j.user && String(j.user).trim()) || s.username,
+      port: Number(j.port) || 22,
+      password: (j.password && String(j.password)) || '',
+    });
+  }
+  return out;
+}
+
+// transport 위에서 hops[] 를 순서대로 체이닝 → 최종 conn 콜백.
+// password 없는 홉은 openHopOver 가 직전 홉 키를 읽어 인증(baseAuthCfg 는 최후 fallback).
+function chainHops(transport, hops, baseAuthCfg, onFinal, onErr) {
+  let idx = 0;
+  const next = (cur) => {
+    if (idx >= hops.length) return onFinal(cur);
+    const hop = hops[idx++];
+    openHopOver(cur, {
+      host: hop.host, port: hop.port, user: hop.user, password: hop.password || '',
+    }, baseAuthCfg, (conn) => next(conn), onErr);
+  };
+  next(transport);
+}
+
 function connectViaJump() {
   return new Promise((resolve, reject) => {
     const authCfg = buildAuth(session);
-    const jumpHost = session.jumpTargetHost.trim();
-    const jumpPort = session.jumpTargetPort || 22;
+    const hops = normalizeJumps(session);
 
     // 1) primary 연결
     const primary = new Client();
@@ -89,29 +176,11 @@ function connectViaJump() {
       finish(authCfg.password ? [authCfg.password] : []);
     });
     primary.once('ready', () => {
-      // 2) 터널
-      primary.forwardOut('127.0.0.1', 0, jumpHost, jumpPort, (err, stream) => {
-        if (err) return reject(err);
-        const jumpUser = session.jumpTargetUser || session.username;
-        const jumpCfg = { sock: stream, username: jumpUser, tryKeyboard: true, readyTimeout: 15000, algorithms: FAST_ALGORITHMS, compress: false };
-        if (session.jumpAuth && session.jumpAuth.type === 'password' && session.jumpAuth.password) {
-          jumpCfg.password = session.jumpAuth.password;
-        } else if (session.jumpAuth && session.jumpAuth.type === 'key' && session.jumpAuth.keyPath) {
-          try { jumpCfg.privateKey = fs.readFileSync(session.jumpAuth.keyPath); } catch (_e) {}
-        } else {
-          if (authCfg.password)    jumpCfg.password    = authCfg.password;
-          if (authCfg.privateKey)  jumpCfg.privateKey  = authCfg.privateKey;
-        }
-        // 3) jump 타겟 연결
-        const target = new Client();
-        sftpConn = target;
-        target.on('error', reject);
-        target.on('keyboard-interactive', (_n, _i, _l, _ps, finish) => {
-          finish(jumpCfg.password ? [jumpCfg.password] : []);
-        });
-        target.once('ready', () => openSftpOn(target).then(resolve).catch(reject));
-        target.connect(jumpCfg);
-      });
+      // 2) 점프 체인 — 각 홉 비밀번호 없으면 primary 인증(키/비번) 재사용
+      chainHops(primary, hops, authCfg, (finalConn) => {
+        sftpConn = finalConn;
+        openSftpOn(finalConn).then(resolve).catch(reject);
+      }, reject);
     });
     primary.connect({ host: session.host, port: session.port || 22, ...authCfg });
   });
@@ -119,9 +188,10 @@ function connectViaJump() {
 
 // 원격→원격용 목적지 SSH 연결 + SFTP 세션 (캐시)
 function getOrCreateDstSftp(dstSession) {
-  // 캐시 키: host:port:username (jump 포함)
+  const dstHops = normalizeJumps(dstSession);
+  // 캐시 키: host:port:username + 점프 체인 전체
   const key = `${dstSession.host}:${dstSession.port || 22}:${dstSession.username}` +
-              (dstSession.jumpTargetHost ? `:jump:${dstSession.jumpTargetHost}:${dstSession.jumpTargetPort || 22}:${dstSession.jumpTargetUser || dstSession.username}` : '');
+              dstHops.map(h => `:jump:${h.host}:${h.port}:${h.user}`).join('');
   const cached = dstConnections.get(key);
   if (cached && cached.sftp) return Promise.resolve(cached.sftp);
 
@@ -139,37 +209,15 @@ function getOrCreateDstSftp(dstSession) {
       });
     };
 
-    const jumpHost = dstSession.jumpTargetHost && dstSession.jumpTargetHost.trim();
-    if (jumpHost) {
-      // 점프 호스트를 통한 연결 — 기존 src sftpConn 을 사용할 수 없으므로 새 primary 연결
+    if (dstHops.length > 0) {
+      // 점프 체인을 통한 연결 — 기존 src sftpConn 을 사용할 수 없으므로 새 primary 연결
       const primary = new Client();
       primary.on('error', reject);
       primary.on('keyboard-interactive', (_n, _i, _l, _ps, finish) => {
         finish(authCfg.password ? [authCfg.password] : []);
       });
       primary.once('ready', () => {
-        const jHost = jumpHost;
-        const jPort = dstSession.jumpTargetPort || 22;
-        primary.forwardOut('127.0.0.1', 0, jHost, jPort, (err, stream) => {
-          if (err) return reject(err);
-          const jumpUser = dstSession.jumpTargetUser || dstSession.username;
-          const jumpCfg = { sock: stream, username: jumpUser, tryKeyboard: true, readyTimeout: 15000 };
-          if (dstSession.jumpAuth && dstSession.jumpAuth.type === 'password' && dstSession.jumpAuth.password) {
-            jumpCfg.password = dstSession.jumpAuth.password;
-          } else if (dstSession.jumpAuth && dstSession.jumpAuth.type === 'key' && dstSession.jumpAuth.keyPath) {
-            try { jumpCfg.privateKey = fs.readFileSync(dstSession.jumpAuth.keyPath); } catch (_e) {}
-          } else {
-            if (authCfg.password)   jumpCfg.password   = authCfg.password;
-            if (authCfg.privateKey) jumpCfg.privateKey = authCfg.privateKey;
-          }
-          const target = new Client();
-          target.on('error', reject);
-          target.on('keyboard-interactive', (_n, _i, _l, _ps, finish) => {
-            finish(jumpCfg.password ? [jumpCfg.password] : []);
-          });
-          target.once('ready', () => openDstSftp(target));
-          target.connect(jumpCfg);
-        });
+        chainHops(primary, dstHops, authCfg, (finalConn) => openDstSftp(finalConn), reject);
       });
       primary.connect({ host: dstSession.host, port: dstSession.port || 22, ...authCfg });
     } else {
@@ -243,7 +291,7 @@ function processTransfer(msg) {
 }
 
 // 초기화
-const connectFn = (session.jumpTargetHost && session.jumpTargetHost.trim()) ? connectViaJump : connectDirect;
+const connectFn = (normalizeJumps(session).length > 0) ? connectViaJump : connectDirect;
 connectFn().then(() => {
   parentPort.postMessage({ type: 'ready' });
   parentPort.on('message', (msg) => {

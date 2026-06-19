@@ -51,6 +51,11 @@
     "jumpTargetUser": "Utilisateur cible du saut",
     "jumpTargetPort": "Port cible du saut",
     "jumpTargetPassword": "Mot de passe cible du saut",
+    "jumpChainHint": "Ajoutez les hôtes de saut dans l'ordre. Chemin : principal → saut 1 → saut 2 → … → hôte final. Si le mot de passe d'un saut est vide, la clé ~/.ssh/ de l'hôte précédent est utilisée automatiquement.",
+    "jumpChainEmpty": "Aucun saut — connexion directe à l'hôte principal.",
+    "jumpHopTitle": "Saut {{n}}",
+    "jumpHopRemove": "Supprimer",
+    "jumpHopAdd": "+ Ajouter un saut",
     "cursorStyle": "Style du curseur",
     "cursorBlink": "Clignotement",
     "initialPath": "Chemin initial",
@@ -78,7 +83,7 @@
     "hostExample": "IPv4 / IPv6 / domaine",
     "jumpTargetHost": "ex. I-MPM01 (vide = connexion directe)",
     "jumpTargetUser": "ex. root",
-    "jumpTargetPassword": "Vide = utiliser ~/.ssh/id_rsa principal",
+    "jumpTargetPassword": "Vide = utiliser ~/.ssh/id_rsa de l'hôte précédent",
     "initialPath": "ex. /home/user/project (vide = dossier home)"
   },
   "tooltips": {

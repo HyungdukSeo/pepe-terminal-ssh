@@ -72,7 +72,8 @@ function ensureCtrl() {
   });
 }
 
-function callExec(termId, command, timeoutMs) {
+// 제어 서버로 임의 op 요청 — 응답은 id 로 매칭. exec/sftp-read/sftp-write 공용.
+function callOp(payload) {
   return new Promise(async (resolve, reject) => {
     try {
       const sock = await ensureCtrl();
@@ -81,10 +82,38 @@ function callExec(termId, command, timeoutMs) {
         if (msg.error) return reject(new Error(msg.error));
         resolve(msg.result);
       });
-      sock.write(JSON.stringify({ id, token: CTRL_TOKEN, op: 'exec', termId, command, timeoutMs }) + '\n');
+      sock.write(JSON.stringify({ id, token: CTRL_TOKEN, ...payload }) + '\n');
     } catch (err) { reject(err); }
   });
 }
+
+function callExec(termId, command, timeoutMs) {
+  return callOp({ op: 'exec', termId, command, timeoutMs });
+}
+
+// ── 단기 read 캐시 ── 같은 파일을 짧은 시간 안에 여러 번 읽는 경우(에이전트가
+// 컨텍스트 재확인 등으로 흔히 반복) 원격 왕복을 줄인다. TTL 이 짧아(기본 4s)
+// 외부 변경을 오래 가리지 않으며, ssh_write_file 은 즉시 무효화한다.
+// ⚠ ssh_exec 로 sed -i 등 우회 수정 시엔 TTL 만료까지 stale 가능 — 짧게 유지.
+const READ_CACHE_TTL_MS = 4000;
+const READ_CACHE_MAX = 64;
+const readCache = new Map(); // key → { text, expires }
+function readCacheGet(key) {
+  const e = readCache.get(key);
+  if (!e) return null;
+  if (Date.now() > e.expires) { readCache.delete(key); return null; }
+  return e.text;
+}
+function readCacheSet(key, text) {
+  // 너무 큰 파일은 캐시하지 않음 (메모리 보호)
+  if (text == null || text.length > 256 * 1024) return;
+  if (readCache.size >= READ_CACHE_MAX) {
+    const oldest = readCache.keys().next().value;
+    if (oldest !== undefined) readCache.delete(oldest);
+  }
+  readCache.set(key, { text, expires: Date.now() + READ_CACHE_TTL_MS });
+}
+function readCacheInvalidate(key) { readCache.delete(key); }
 
 // ── MCP stdio JSON-RPC protocol ──
 // Claude Code 가 컨텍스트 전환/재연결 시 MCP 서버의 stdout 파이프를 닫으면
@@ -256,16 +285,15 @@ function handleMessage(msg) {
     if (name === 'ssh_read_file') {
       const p = String(args.path || '');
       if (!p.trim()) { sendMsg({ jsonrpc: '2.0', id, error: { code: -32602, message: 'path is required' } }); return; }
-      // base64 로 전송 → 인코딩/바이너리 안전
-      callExec(termId, `base64 ${shq(p)}`, 60000)
+      const cacheKey = `${termId}:${p}`;
+      const cached = readCacheGet(cacheKey);
+      if (cached != null) { ok(cached); return; }
+      // SFTP 직접 읽기 — 셸 rc·base64 인플레이션 없이 바이너리 안전 전송
+      callOp({ op: 'sftp-read', termId, path: p })
         .then(result => {
-          if (result.exitCode !== 0 && result.exitCode !== null) {
-            ok(`Failed to read ${p}:\n${result.stderr || '(no stderr)'}`, true);
-            return;
-          }
           let text;
+          const buf = Buffer.from(String(result.base64 || ''), 'base64');
           try {
-            const buf = Buffer.from(String(result.stdout || '').replace(/\s+/g, ''), 'base64');
             text = buf.toString('utf-8');
             // utf-8 디코드 실패 문자(U+FFFD)가 있으면 EUC-KR(CP949) 로 재디코드해 더 적게 깨지는 쪽 채택
             if (text.indexOf('�') >= 0) {
@@ -276,10 +304,12 @@ function handleMessage(msg) {
                 if (cK < cU) text = k;
               } catch (_) { /* TextDecoder euc-kr 미지원 → utf-8 유지 */ }
             }
-          } catch { text = String(result.stdout || ''); }
+          } catch { text = buf.toString('utf-8'); }
+          readCacheSet(cacheKey, text);
           ok(text);
         })
-        .catch(fail);
+        // 읽기 실패(없는 파일/권한 등)는 프로토콜 에러 대신 content 에러로 — 에이전트가 더 잘 처리
+        .catch(err => ok(`Failed to read ${p}: ${err && err.message ? err.message : String(err)}`, true));
       return;
     }
 
@@ -288,17 +318,13 @@ function handleMessage(msg) {
       if (!p.trim()) { sendMsg({ jsonrpc: '2.0', id, error: { code: -32602, message: 'path is required' } }); return; }
       const content = String(args.content != null ? args.content : '');
       const b64 = Buffer.from(content, 'utf-8').toString('base64');
-      // heredoc 으로 base64 전달 → base64 -d 로 디코드해 파일에 기록 (셸 escape 안전)
-      const cmd = `base64 -d > ${shq(p)} <<'PEPE_B64_EOF'\n${b64}\nPEPE_B64_EOF`;
-      callExec(termId, cmd, 60000)
+      // SFTP writeFile — heredoc exec 대신 직접 기록
+      callOp({ op: 'sftp-write', termId, path: p, base64: b64 })
         .then(result => {
-          if (result.exitCode !== 0 && result.exitCode !== null) {
-            ok(`Failed to write ${p}:\n${result.stderr || '(no stderr)'}`, true);
-            return;
-          }
-          ok(`Wrote ${Buffer.byteLength(content, 'utf-8')} bytes to ${p}`);
+          readCacheInvalidate(`${termId}:${p}`); // 쓰기 후 캐시 무효화
+          ok(`Wrote ${result.bytes != null ? result.bytes : Buffer.byteLength(content, 'utf-8')} bytes to ${p}`);
         })
-        .catch(fail);
+        .catch(err => ok(`Failed to write ${p}: ${err && err.message ? err.message : String(err)}`, true));
       return;
     }
 
@@ -327,11 +353,16 @@ function handleMessage(msg) {
       const max = Math.max(1, Math.min(5000, Number(args.max_results) || 200));
       // "**/" 같은 디렉토리 와일드카드는 find -name 의 basename 매칭으로 단순화.
       const namePat = pattern.replace(/^.*\*\*\/+/, '').replace(/^.*\/+/, '') || pattern;
+      const globKey = `glob:${termId}:${base}:${namePat}:${max}`;
+      const globCached = readCacheGet(globKey);
+      if (globCached != null) { ok(globCached); return; }
       const cmd = `find ${shq(base)} -type f -name ${shq(namePat)} 2>/dev/null | head -n ${max}`;
       callExec(termId, cmd, 60000)
         .then(result => {
           const out = String(result.stdout || '').trimEnd();
-          ok(out ? out : `(no files matching ${pattern} under ${base})`);
+          const text = out ? out : `(no files matching ${pattern} under ${base})`;
+          readCacheSet(globKey, text);
+          ok(text);
         })
         .catch(fail);
       return;

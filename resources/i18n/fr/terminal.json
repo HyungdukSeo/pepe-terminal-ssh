@@ -70,7 +70,7 @@
     "connectFailedFinal": "Échec de la connexion (abandon après {{attempts}} tentatives) — {{reason}}",
     "connectRetry": "{{reason}} — nouvelle tentative automatique {{attempt}}/{{max}} (attente {{sec}}s)",
     "remoteDisconnected": "Hôte distant déconnecté ({{sessionName}} {{host}}) {{time}}",
-    "reconnectIn30s": "Reconnexion dans 30 s. Appuyez sur une touche pour annuler.",
+    "reconnectPrompt": "Appuyez sur Entrée pour vous reconnecter maintenant. L'onglet se ferme dans 10 s. (Autre touche : garder l'onglet)",
     "reconnecting": "Reconnexion...",
     "reconnectCancelled": "Reconnexion annulée.",
     "tryingSSH": "▶ Tentative de connexion SSH...",

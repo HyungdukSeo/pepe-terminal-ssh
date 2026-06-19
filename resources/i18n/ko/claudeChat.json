@@ -16,6 +16,7 @@
   "approveToolPrompt": "Claude가 {{toolName}} 하도록 허용하시겠습니까?",
   "deny": "❌ 거부",
   "approveOnce": "✅ 한 번만 허용",
+  "approveAlways": "✅ 이 세션에서 계속 허용",
   "planApprovalTitle": "🗺 작업 계획 승인",
   "planDeny": "❌ 거부",
   "planProceed": "✅ 진행",

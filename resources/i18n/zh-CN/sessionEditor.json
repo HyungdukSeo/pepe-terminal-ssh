@@ -51,6 +51,11 @@
     "jumpTargetUser": "跳板目标用户",
     "jumpTargetPort": "跳板目标端口",
     "jumpTargetPassword": "跳板目标密码",
+    "jumpChainHint": "按顺序添加跳板主机。路径：主机 → 第1跳 → 第2跳 → … → 最终主机。若某跳密码为空，则自动使用上一台主机的 ~/.ssh/ 密钥。",
+    "jumpChainEmpty": "无跳板 — 直接连接主机。",
+    "jumpHopTitle": "第 {{n}} 跳",
+    "jumpHopRemove": "删除",
+    "jumpHopAdd": "+ 添加跳板",
     "cursorStyle": "光标样式",
     "cursorBlink": "光标闪烁",
     "initialPath": "初始路径",
@@ -78,7 +83,7 @@
     "hostExample": "IPv4 / IPv6 / 域名",
     "jumpTargetHost": "例如 I-MPM01 (留空 = 直连)",
     "jumpTargetUser": "例如 root",
-    "jumpTargetPassword": "留空 = 使用主 ~/.ssh/id_rsa",
+    "jumpTargetPassword": "留空 = 使用上一台主机的 ~/.ssh/id_rsa",
     "initialPath": "例如 /home/user/project (留空 = 主目录)"
   },
   "tooltips": {

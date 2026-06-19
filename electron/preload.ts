@@ -72,7 +72,7 @@ contextBridge.exposeInMainWorld('api', {
   feDelete: (mode: string, filePath: string, termId?: string, workspaceId?: string) => ipcRenderer.invoke('fe:delete', { mode, termId, filePath, workspaceId }),
   feRename: (mode: string, oldPath: string, newPath: string, termId?: string) => ipcRenderer.invoke('fe:rename', { mode, termId, oldPath, newPath }),
   feHomeDir: (mode: string, termId?: string) => ipcRenderer.invoke('fe:home-dir', { mode, termId }),
-  feSftpConnect: (connId: string, host: string, port: number, username: string, auth?: any, jumpOpts?: { host: string; user?: string; port?: number; password?: string }) => ipcRenderer.invoke('fe:sftp-connect', { connId, host, port, username, auth, jumpOpts }),
+  feSftpConnect: (connId: string, host: string, port: number, username: string, auth?: any, jumpOpts?: { host: string; user?: string; port?: number; password?: string }, jumps?: { host: string; user?: string; port?: number; password?: string }[]) => ipcRenderer.invoke('fe:sftp-connect', { connId, host, port, username, auth, jumpOpts, jumps }),
   pickFiles: (multi?: boolean) => ipcRenderer.invoke('dialog:pick-files', { multi }),
   pickFolder: () => ipcRenderer.invoke('dialog:pick-folder'),
   feSftpDisconnect: (connId: string) => ipcRenderer.invoke('fe:sftp-disconnect', { connId }),

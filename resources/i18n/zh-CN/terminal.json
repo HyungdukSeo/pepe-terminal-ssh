@@ -70,7 +70,7 @@
     "connectFailedFinal": "连接失败(重试 {{attempts}} 次后放弃)— {{reason}}",
     "connectRetry": "{{reason}} — 自动重试 {{attempt}}/{{max}}(等待 {{sec}} 秒)",
     "remoteDisconnected": "远程主机已断开 ({{sessionName}} {{host}}) {{time}}",
-    "reconnectIn30s": "30 秒后重新连接。按任意键取消。",
+    "reconnectPrompt": "按 Enter 立即重新连接。10 秒后关闭会话标签。(其他键：保留标签)",
     "reconnecting": "正在重新连接...",
     "reconnectCancelled": "已取消重新连接。",
     "tryingSSH": "▶ 正在尝试 SSH 连接...",

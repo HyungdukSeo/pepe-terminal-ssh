@@ -16,6 +16,7 @@
   "approveToolPrompt": "Autoriser Claude à utiliser {{toolName}} ?",
   "deny": "❌ Refuser",
   "approveOnce": "✅ Autoriser une fois",
+  "approveAlways": "✅ Toujours autoriser pour cette session",
   "planApprovalTitle": "🗺 Approuver le plan",
   "planDeny": "❌ Refuser",
   "planProceed": "✅ Continuer",

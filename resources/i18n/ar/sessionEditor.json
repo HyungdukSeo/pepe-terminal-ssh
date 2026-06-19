@@ -51,6 +51,11 @@
     "jumpTargetUser": "مستخدم هدف القفز",
     "jumpTargetPort": "منفذ هدف القفز",
     "jumpTargetPassword": "كلمة مرور هدف القفز",
+    "jumpChainHint": "أضف مضيفات القفز بالترتيب. المسار: الأساسي ← القفزة 1 ← القفزة 2 ← … ← المضيف النهائي. إذا كانت كلمة مرور قفزة فارغة، يُستخدم مفتاح ~/.ssh/ للمضيف السابق تلقائياً.",
+    "jumpChainEmpty": "لا قفزات — الاتصال مباشرة بالمضيف الأساسي.",
+    "jumpHopTitle": "القفزة {{n}}",
+    "jumpHopRemove": "حذف",
+    "jumpHopAdd": "+ إضافة قفزة",
     "cursorStyle": "نمط المؤشر",
     "cursorBlink": "وميض المؤشر",
     "initialPath": "المسار الأولي",
@@ -78,7 +83,7 @@
     "hostExample": "IPv4 / IPv6 / نطاق",
     "jumpTargetHost": "مثال: I-MPM01 (فارغ = اتصال مباشر)",
     "jumpTargetUser": "مثال: root",
-    "jumpTargetPassword": "فارغ = استخدم ~/.ssh/id_rsa الأساسي",
+    "jumpTargetPassword": "فارغ = استخدم ~/.ssh/id_rsa للمضيف السابق",
     "initialPath": "مثال: /home/user/project (فارغ = المجلد الرئيسي)"
   },
   "tooltips": {

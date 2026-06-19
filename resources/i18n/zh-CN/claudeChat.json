@@ -16,6 +16,7 @@
   "approveToolPrompt": "允许 Claude 使用 {{toolName}}?",
   "deny": "❌ 拒绝",
   "approveOnce": "✅ 允许一次",
+  "approveAlways": "✅ 在此会话中始终允许",
   "planApprovalTitle": "🗺 批准计划",
   "planDeny": "❌ 拒绝",
   "planProceed": "✅ 继续",

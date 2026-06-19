@@ -51,6 +51,11 @@
     "jumpTargetUser": "Jump target user",
     "jumpTargetPort": "Jump target port",
     "jumpTargetPassword": "Jump target password",
+    "jumpChainHint": "Add jump hosts in order. Path: primary → hop 1 → hop 2 → … → final host. If a hop's password is empty, the previous host's ~/.ssh/ key is used automatically.",
+    "jumpChainEmpty": "No jumps — connect directly to the primary host.",
+    "jumpHopTitle": "Jump hop {{n}}",
+    "jumpHopRemove": "Remove",
+    "jumpHopAdd": "+ Add jump hop",
     "cursorStyle": "Cursor style",
     "cursorBlink": "Cursor blink",
     "initialPath": "Initial path",
@@ -76,9 +81,9 @@
   },
   "placeholders": {
     "hostExample": "IPv4 / IPv6 / domain",
-    "jumpTargetHost": "e.g. I-MPM01 (empty = direct connect)",
+    "jumpTargetHost": "e.g. I-MPM01",
     "jumpTargetUser": "e.g. root",
-    "jumpTargetPassword": "Empty = use primary ~/.ssh/id_rsa",
+    "jumpTargetPassword": "Empty = use previous host's ~/.ssh/id_rsa",
     "initialPath": "e.g. /home/user/project (empty = home dir)"
   },
   "tooltips": {

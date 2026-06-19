@@ -3283,10 +3283,10 @@ ipcMain.handle('fe:home-dir', async (_e, { mode, termId }: { mode: string; termI
   } catch { return '/'; }
 });
 
-ipcMain.handle('fe:sftp-connect', async (_e, { connId, host, port, username, auth, jumpOpts }: any) => {
+ipcMain.handle('fe:sftp-connect', async (_e, { connId, host, port, username, auth, jumpOpts, jumps }: any) => {
   try {
     const bridge = getSSHBridge();
-    await bridge.handleSFTPConnect(connId, host, port || 22, username, auth, jumpOpts);
+    await bridge.handleSFTPConnect(connId, host, port || 22, username, auth, jumpOpts, jumps);
     return { success: true };
   } catch (err: any) { return { success: false, error: String(err) }; }
 });
@@ -5079,6 +5079,17 @@ const startMcpControl = async (): Promise<void> => {
                 const bridge = getSSHBridge();
                 const result = await bridge.handleExec(req.termId, req.command, req.timeoutMs || 60000);
                 sock.write(JSON.stringify({ id: req.id, result }) + '\n');
+              } else if (req.op === 'sftp-read') {
+                // AI 파일 읽기 — base64+셸 exec 대신 SFTP 로 직접 (셸 rc 비용·33% 인플레이션 제거)
+                const bridge = getSSHBridge();
+                const buf = await bridge.handleSFTPReadFile(req.termId, req.path);
+                sock.write(JSON.stringify({ id: req.id, result: { base64: buf.toString('base64'), size: buf.length } }) + '\n');
+              } else if (req.op === 'sftp-write') {
+                // AI 파일 쓰기 — heredoc base64 exec 대신 SFTP writeFile
+                const bridge = getSSHBridge();
+                const buf = Buffer.from(String(req.base64 || ''), 'base64');
+                await bridge.handleSFTPWriteFile(req.termId, req.path, buf);
+                sock.write(JSON.stringify({ id: req.id, result: { bytes: buf.length } }) + '\n');
               } else if (req.op === 'hook-approve') {
                 // 승인 요청을 렌더러로 전달. 응답은 ipcMain.handle('claude:hook-respond') 에서 처리
                 const approvalId = `app-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;

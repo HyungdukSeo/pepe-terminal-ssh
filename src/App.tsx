@@ -60,6 +60,18 @@ export type TabId = string;
 export type TabType = 'terminal' | 'fileExplorer' | 'fileEditor' | 'browser' | 'compare' | 'logAnalyzer' | 'vpn' | 'i18nEditor' | 'sqlTool';
 export type Tab = { id: TabId; title: string; layout: LayoutNode; type?: TabType; customTitle?: boolean; editor?: { termId: string; remotePath: string; fileName: string }; sqlTool?: { sessionId: string; sessionName: string }; initialTermId?: string; initialRemotePath?: string };
 
+// 세션의 점프 체인을 SFTP 연결용 배열로 정규화. host 있는 항목만, 첫 빈 host 에서 종료.
+function buildJumpChain(sess: any): { host: string; user?: string; port?: number; password?: string }[] {
+  const arr = Array.isArray(sess?.jumps) ? sess.jumps : [];
+  const out: { host: string; user?: string; port?: number; password?: string }[] = [];
+  for (const j of arr) {
+    const host = (j && typeof j.host === 'string') ? j.host.trim() : '';
+    if (!host) break;
+    out.push({ host, user: j.user || 'root', port: Number(j.port) || 22, password: j.password || undefined });
+  }
+  return out;
+}
+
 // 일괄전송 히스토리 (앱 실행 중 유지, 최대 50개)
 const broadcastHistory: string[] = [];
 const MAX_BROADCAST_HISTORY = 50;
@@ -457,7 +469,7 @@ function App() {
   // picker 가 새로 만든 임시 SFTP 연결 connId 들 — 모달 닫힐 때 일괄 해제
   const [remotePickerTempConns, setRemotePickerTempConns] = useState<string[]>([]);
   // 자격증명 입력 다이얼로그 — 비밀번호 미저장 세션 연결 실패 시 표시
-  const [remotePickerCredPrompt, setRemotePickerCredPrompt] = useState<{ sess: any; jumpOpts: any } | null>(null);
+  const [remotePickerCredPrompt, setRemotePickerCredPrompt] = useState<{ sess: any; jumps: any[] } | null>(null);
   const [remotePickerCredUser, setRemotePickerCredUser] = useState('');
   const [remotePickerCredPass, setRemotePickerCredPass] = useState('');
   const [remotePickerCredShowPass, setRemotePickerCredShowPass] = useState(false);
@@ -530,14 +542,12 @@ function App() {
       // 2) 아니면 백그라운드 SFTP 연결 시도
       const sess = remotePickerSessions.find(s => s.id === remotePickerSessionId);
       if (!sess) return;
-      const jumpOpts = sess.jumpTargetHost?.trim()
-        ? { host: sess.jumpTargetHost.trim(), user: sess.jumpTargetUser || 'root', port: Number(sess.jumpTargetPort) || 22, password: sess.jumpTargetPassword || undefined }
-        : undefined;
+      const jumps = buildJumpChain(sess);
       // 비밀번호 미저장 세션 → 자격증명 다이얼로그 먼저 표시
       const hasCredential = sess.auth?.type === 'key' || (sess.auth?.type === 'password' && sess.auth?.password);
       const openRemoteCred = () => {
         setTermFocusBlocked(true); // 렌더 전에 동기 차단
-        setRemotePickerCredPrompt({ sess, jumpOpts });
+        setRemotePickerCredPrompt({ sess, jumps });
         setRemotePickerCredUser(sess.username || '');
         setRemotePickerCredPass('');
         setRemotePickerCredShowPass(false);
@@ -549,7 +559,7 @@ function App() {
       setRemotePickerConnecting(true);
       try {
         const connId = `bcast-pick-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const r: any = await (window as any).api?.feSftpConnect?.(connId, sess.host, sess.port || 22, sess.username, sess.auth, jumpOpts);
+        const r: any = await (window as any).api?.feSftpConnect?.(connId, sess.host, sess.port || 22, sess.username, sess.auth, undefined, jumps.length ? jumps : undefined);
         if (cancelled) return;
         if (!r?.success) {
           if (!cancelled) { openRemoteCred(); setRemotePickerConnecting(false); }
@@ -600,11 +610,11 @@ function App() {
   // 자격증명 다이얼로그 확인 — 입력된 id/비밀번호로 SFTP 연결 재시도
   const handleRemotePickerCredSubmit = async () => {
     if (!remotePickerCredPrompt) return;
-    const { sess, jumpOpts } = remotePickerCredPrompt;
+    const { sess, jumps } = remotePickerCredPrompt;
     setRemotePickerCredConnecting(true);
     const connId = `bcast-pick-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     try {
-      const r: any = await (window as any).api?.feSftpConnect?.(connId, sess.host, sess.port || 22, remotePickerCredUser, { type: 'password', password: remotePickerCredPass }, jumpOpts);
+      const r: any = await (window as any).api?.feSftpConnect?.(connId, sess.host, sess.port || 22, remotePickerCredUser, { type: 'password', password: remotePickerCredPass }, undefined, (jumps && jumps.length) ? jumps : undefined);
       if (!r?.success) {
         notifyError('연결 실패', `${sess.name}: ${r?.error || '알 수 없는 오류'}`);
         setRemotePickerCredConnecting(false);
@@ -2638,13 +2648,11 @@ function App() {
           const allSessions = data?.sessions ?? data ?? [];
           const sess = allSessions.find((s: any) => s.id === sessionId);
           if (!sess) return;
-          console.log('[fe-transfer dblclick] session:', { name: sess.name, host: sess.host, jumpTargetHost: sess.jumpTargetHost });
+          console.log('[fe-transfer dblclick] session:', { name: sess.name, host: sess.host, jumps: sess.jumps?.length || 0 });
           const connId = `sftp-fe-${Date.now()}`;
-          const jumpOpts = sess.jumpTargetHost?.trim()
-            ? { host: sess.jumpTargetHost.trim(), user: sess.jumpTargetUser || 'root', port: Number(sess.jumpTargetPort) || 22, password: sess.jumpTargetPassword || undefined }
-            : undefined;
-          const displayHost = jumpOpts ? jumpOpts.host : sess.host;
-          const result = await (window as any).api.feSftpConnect?.(connId, sess.host, sess.port || 22, sess.username, sess.auth, jumpOpts);
+          const jumps = buildJumpChain(sess);
+          const displayHost = jumps.length ? jumps[jumps.length - 1].host : sess.host;
+          const result = await (window as any).api.feSftpConnect?.(connId, sess.host, sess.port || 22, sess.username, sess.auth, undefined, jumps.length ? jumps : undefined);
           if (result?.success) {
             window.dispatchEvent(new CustomEvent('fe-sftp-connected', { detail: { connId, sessionName, host: displayHost } }));
           } else {
@@ -3518,13 +3526,11 @@ function App() {
             const allSessions = data?.sessions ?? data ?? [];
             const sess = allSessions.find((s: any) => s.id === sessionId);
             if (!sess) return;
-            console.log('[fe-transfer] selected session:', { name: sess.name, host: sess.host, jumpTargetHost: sess.jumpTargetHost, jumpTargetUser: sess.jumpTargetUser });
+            console.log('[fe-transfer] selected session:', { name: sess.name, host: sess.host, jumps: sess.jumps?.length || 0 });
             const connId = `sftp-fe-${Date.now()}`;
-            const jumpOpts = sess.jumpTargetHost?.trim()
-              ? { host: sess.jumpTargetHost.trim(), user: sess.jumpTargetUser || 'root', port: Number(sess.jumpTargetPort) || 22, password: sess.jumpTargetPassword || undefined }
-              : undefined;
-            const displayHost = jumpOpts ? jumpOpts.host : sess.host;
-            const result = await (window as any).api.feSftpConnect?.(connId, sess.host, sess.port || 22, sess.username, sess.auth, jumpOpts);
+            const jumps = buildJumpChain(sess);
+            const displayHost = jumps.length ? jumps[jumps.length - 1].host : sess.host;
+            const result = await (window as any).api.feSftpConnect?.(connId, sess.host, sess.port || 22, sess.username, sess.auth, undefined, jumps.length ? jumps : undefined);
             if (result?.success) {
               window.dispatchEvent(new CustomEvent('fe-sftp-connected', { detail: { connId, sessionName, host: displayHost, feTabId } }));
             } else {
@@ -5418,6 +5424,9 @@ function App() {
                   setBcastXferInProgress(true);
                   setBcastXferLog([`▶ ${targets.length}개 세션 × ${bcastXferFiles.length}개 항목 전송 시작`]);
                   const override = bcastXferPath.trim();
+                  // 이 일괄전송 1회 전체에 같은 workspaceId 부여 → 충돌 "전체 적용" 결정이 모든 파일·세션에 재사용됨.
+                  // (이게 없으면 매 feTransfer 가 새 transferId 라 "전체 적용" 이 기억 안 되고 매번 다시 물음)
+                  const bcastWid = `bcast-xfer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
                   let okCount = 0;
                   let errCount = 0;
                   for (const tid of targets) {
@@ -5436,11 +5445,22 @@ function App() {
                         ? { mode: 'remote', termId: f.sourceTermId, path: f.path }
                         : { mode: 'local', path: f.path };
                       try {
-                        const r: any = await (window as any).api?.feTransfer?.(
-                          src,
-                          { mode: 'remote', termId: tid, path: remotePath },
-                          filename,
-                        );
+                        // feTransfer 는 즉시 { seq } 만 반환하므로 fe:transfer-done 이벤트로 실제 완료를 await.
+                        const r: any = await new Promise(resolve => {
+                          (window as any).api?.feTransfer?.(
+                            src,
+                            { mode: 'remote', termId: tid, path: remotePath },
+                            filename,
+                            bcastWid,
+                          ).then((res: any) => {
+                            const seq: number = res?.seq;
+                            if (seq == null) { resolve({ success: res?.success ?? true }); return; }
+                            const unsub = (window as any).api?.onFeTransferDone?.((p: any) => {
+                              if (p.seq === seq) { unsub?.(); resolve(p); }
+                            });
+                            if (!unsub) resolve({ success: true });
+                          }).catch((e: any) => resolve({ success: false, error: String(e) }));
+                        });
                         if (r?.success) {
                           okCount++;
                           setBcastXferLog(prev => [...prev, `✓ ${label}: ${filename} → ${basePath}`]);

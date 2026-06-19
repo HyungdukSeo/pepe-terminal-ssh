@@ -48,10 +48,11 @@ function setupX11Forwarding(conn: any, displayNum = 0, emit?: (msg: string) => v
 }
 
 interface ClientRecord {
-  conn: any;           // 활성 SSH 연결 (점프 미사용 시 primary, 사용 시 jumpConn)
+  conn: any;           // 활성 SSH 연결 (점프 미사용 시 primary, 사용 시 최종 점프 conn)
   stream?: any;
   encoding?: string;
   primaryConn?: any;   // 점프 사용 시 transport 로 쓰이는 primary 연결 (세션 종료 시 함께 해제)
+  transportConns?: any[]; // 다단계 점프 시 거쳐가는 모든 중간 transport 연결 (primary 포함) — 종료 시 전부 해제
 }
 
 interface BridgeMessage {
@@ -82,6 +83,9 @@ class SSHBridge extends EventEmitter {
   private sftpWorkerPromises: Map<string, Promise<Worker>> = new Map();
   private scriptRunners: Map<string, ExpectSendRunner> = new Map();
   private pendingAuth: Map<string, (responses: string[]) => void> = new Map();
+  // panelId → AI 에이전트(handleExec/SFTP) 진행 중 카운트 + 마지막 활동 시각.
+  // cwd 폴러가 에이전트 작업 중에는 양보(스킵)하도록 — 공유 SSH 연결 경합·채널 고갈 방지.
+  private agentBusy: Map<string, { count: number; lastAt: number }> = new Map();
   // 파일 충돌(이미 존재) 시 사용자 응답 대기
   private conflictResolvers: Map<string, (decision: any) => void> = new Map();
   // 전송별 "모두 적용" 기본 결정 — { [transferId]: { file?: 'overwrite'|'skip'|'resume', dir?: 'overwrite'|'skip' } }
@@ -213,9 +217,9 @@ class SSHBridge extends EventEmitter {
       this.pendingConnects.delete(panelId);
       logInline('92', '[SSH 연결 완료]\r\n');
       this.emit('message', { type: 'connected', panelId });
-      const jumpHost = session.jumpTargetHost?.trim();
-      if (jumpHost) {
-        logLine('96', `▶ 점프 호스트 ${jumpHost}:${session.jumpTargetPort || 22} (${session.jumpTargetUser || 'root'}) 연결 중...`);
+      const jumps = this._normalizeJumps(session);
+      if (jumps.length > 0) {
+        logLine('96', `▶ 점프 체인 (${jumps.length}단계): ${jumps.map(j => `${j.host}:${j.port}`).join(' → ')} 연결 중...`);
         try {
           await this._setupJumpedSession(panelId, session, conn, cols, rows);
         } catch (err: any) {
@@ -287,52 +291,40 @@ class SSHBridge extends EventEmitter {
     conn.connect(cfg);
   }
 
-  // 점프 호스트 설정: primary 연결 위에 TCP 터널 생성 + 두번째 SSH 핸드셰이크 + 셸 오픈.
-  // primary 의 ~/.ssh/ 에 있는 키 파일(id_rsa/id_ed25519/id_ecdsa)을 SFTP 로 읽어
-  // 점프 타겟 인증에 재사용 (EMS→MPM01 passwordless 설정 그대로 활용).
-  private async _setupJumpedSession(panelId: string, session: any, primaryConn: any, cols?: number, rows?: number): Promise<void> {
-    const jumpHost = session.jumpTargetHost.trim();
-    const jumpUser = (session.jumpTargetUser || 'root').trim();
-    const jumpPort = Number(session.jumpTargetPort) || 22;
-    const jumpPassword = typeof session.jumpTargetPassword === 'string' ? session.jumpTargetPassword : '';
-    const t0 = Date.now();
-    const stage = (name: string) => {
-      const msg = `[jump-${panelId.slice(-6)}] ${name} +${Date.now() - t0}ms`;
-      console.log(msg);
-      try { require('electron').BrowserWindow.getAllWindows()[0]?.webContents.send('debug:log', msg); } catch {}
-    };
-    stage('start');
-
-    // 1. 인증 방법 결정: 비밀번호 우선, 없으면 primary 의 ~/.ssh/ 키 자동 사용
+  // transport 연결 위에 TCP 터널 + 새 SSH 핸드셰이크를 1회 수행해서 점프 conn 을 만든다.
+  // 비밀번호 비어 있으면 transport(이전 홉) 의 ~/.ssh/ 키를 SFTP 로 읽어 인증에 재사용.
+  // 다단계 점프를 위해 1차/2차 홉이 이 함수를 공통으로 사용.
+  private async _openJumpConnOverTransport(
+    panelId: string, session: any, transportConn: any,
+    hop: { host: string; user: string; port: number; password: string; keySourceLabel: string },
+    stage: (n: string) => void, label: string,
+  ): Promise<any> {
+    // 1. 인증: 비밀번호 우선, 없으면 transport(이전 홉) 의 ~/.ssh/ 키 자동 사용
     const authCfg: any = {};
-    if (jumpPassword) {
-      authCfg.password = jumpPassword;
+    if (hop.password) {
+      authCfg.password = hop.password;
     } else {
-      const keyBuf = await this._readSshKeyFromConn(primaryConn);
+      const keyBuf = await this._readSshKeyFromConn(transportConn);
       if (!keyBuf) {
-        throw new Error(`${session.host} 의 ~/.ssh/ 에서 사용 가능한 SSH 키(id_rsa/id_ed25519/id_ecdsa) 미발견. 점프 타겟 비밀번호를 입력하거나 키 파일을 등록하세요.`);
+        throw new Error(`${hop.keySourceLabel} 의 ~/.ssh/ 에서 사용 가능한 SSH 키(id_rsa/id_ed25519/id_ecdsa) 미발견. ${label} 비밀번호를 입력하거나 키 파일을 등록하세요.`);
       }
       authCfg.privateKey = keyBuf;
     }
+    stage(`${label} key-read done`);
 
-    stage('key-read done');
-    // 2. primary 위에 TCP 포워딩 — 점프 타겟:port 로
+    // 2. transport 위에 TCP 포워딩 — 점프 타겟:port 로
     const sock: any = await new Promise((resolve, reject) => {
-      primaryConn.forwardOut('127.0.0.1', 0, jumpHost, jumpPort, (err: any, s: any) => {
+      transportConn.forwardOut('127.0.0.1', 0, hop.host, hop.port, (err: any, s: any) => {
         if (err) return reject(err);
         resolve(s);
       });
     });
-    stage('forwardOut done');
-    // sock 스트림에도 error 핸들러 — 미처리 시 main 프로세스 크래시
+    stage(`${label} forwardOut done`);
     sock.on('error', (e: any) => {
-      console.log(`[jump-${panelId.slice(-6)}] tunnel sock error:`, e?.message || e);
+      console.log(`[jump-${panelId.slice(-6)}] ${label} tunnel sock error:`, e?.message || e);
     });
 
-    // 3. 그 소켓 위에 두번째 SSH Client 연결
-    //    점프 타겟이 Solaris/레거시 OpenSSH 등 구버전일 수 있어서 기본 알고리즘 외
-    //    레거시까지 허용. SUPPORTED_* 는 ssh2 가 현재 시스템 crypto 기준으로 이미
-    //    필터한 목록이라, unsupported algorithm 에러 없이 안전하게 넓혀 쓸 수 있음.
+    // 3. 그 소켓 위에 새 SSH Client 연결 (레거시 알고리즘 허용)
     const ssh2Constants = require('ssh2/lib/protocol/constants');
     const LEGACY_ALGORITHMS = {
       kex: ssh2Constants.SUPPORTED_KEX,
@@ -341,17 +333,13 @@ class SSHBridge extends EventEmitter {
       hmac: ssh2Constants.SUPPORTED_MAC,
     };
     const jumpConn = new Client();
-    // 영구 에러 핸들러 — handshake 이후 tunnel 이 끊겨도 uncaught exception 안 나게.
-    // 에러 발생 시 해당 panel 로 error 메시지 전달.
     jumpConn.on('error', (e: any) => {
-      console.log(`[jump-${panelId.slice(-6)}] jumpConn error:`, e?.message || e);
-      try { this.emit('message', { type: 'error', panelId, error: `점프 연결 오류: ${e?.message || String(e)}` }); } catch {}
+      console.log(`[jump-${panelId.slice(-6)}] ${label} conn error:`, e?.message || e);
+      try { this.emit('message', { type: 'error', panelId, error: `${label} 연결 오류: ${e?.message || String(e)}` }); } catch {}
     });
     await new Promise<void>((resolve, reject) => {
       const onReady = () => { cleanup(); resolve(); };
-      const onErr = (e: any) => { cleanup(); reject(e); };
-      // 영구 error 핸들러는 위에서 이미 걸었으니 여기선 한번만 reject 용으로 래핑
-      const wrappedErr = (e: any) => onErr(e);
+      const wrappedErr = (e: any) => { cleanup(); reject(e); };
       const cleanup = () => { jumpConn.removeListener('ready', onReady); jumpConn.removeListener('error', wrappedErr); };
       jumpConn.once('ready', onReady);
       jumpConn.once('error', wrappedErr);
@@ -363,21 +351,76 @@ class SSHBridge extends EventEmitter {
       } : undefined;
       jumpConn.connect({
         sock,
-        username: jumpUser,
+        username: hop.user,
         ...authCfg,
         algorithms: LEGACY_ALGORITHMS,
-        tryKeyboard: !!jumpPassword, // 비밀번호 모드면 keyboard-interactive 도 허용
-        // Solaris 레거시 KEX 는 CPU 집약적이라 동시 접속 시 15초로 부족. 30초로 늘림.
+        tryKeyboard: !!hop.password,
         readyTimeout: 30000,
         keepaliveInterval: 10000,
         keepaliveCountMax: 3,
         debug: x11Debug,
       } as any);
     });
+    stage(`${label} ready`);
+    return jumpConn;
+  }
 
-    stage('jumpConn ready');
-    // 4. 점프 타겟에서 shell + SFTP. primary 는 transport 로 유지.
-    this._openShellOnConn(panelId, session, jumpConn, cols, rows, primaryConn);
+  // 세션의 점프 체인을 정규화된 배열로 반환. host 있는 항목만, 첫 빈 host 에서 종료.
+  private _normalizeJumps(session: any): { host: string; user: string; port: number; password: string }[] {
+    const out: { host: string; user: string; port: number; password: string }[] = [];
+    const arr = Array.isArray(session?.jumps) ? session.jumps : [];
+    for (const j of arr) {
+      const host = typeof j?.host === 'string' ? j.host.trim() : '';
+      if (!host) break;
+      out.push({
+        host,
+        user: (typeof j?.user === 'string' && j.user.trim()) ? j.user.trim() : 'root',
+        port: Number(j?.port) || 22,
+        password: typeof j?.password === 'string' ? j.password : '',
+      });
+    }
+    return out;
+  }
+
+  // 점프 체인 설정: primary 위에서 jumps[] 를 순서대로 터널링해 최종 호스트까지 연결 후 셸 오픈.
+  // 각 홉의 비밀번호가 비어 있으면 직전 홉의 ~/.ssh/ 키를 재사용 (passwordless 설정 활용).
+  // 거쳐가는 모든 중간 연결(primary 포함)을 transportConns 로 보관해 종료 시 전부 해제.
+  private async _setupJumpedSession(panelId: string, session: any, primaryConn: any, cols?: number, rows?: number): Promise<void> {
+    const t0 = Date.now();
+    const stage = (name: string) => {
+      const msg = `[jump-${panelId.slice(-6)}] ${name} +${Date.now() - t0}ms`;
+      console.log(msg);
+      try { require('electron').BrowserWindow.getAllWindows()[0]?.webContents.send('debug:log', msg); } catch {}
+    };
+    stage('start');
+
+    const hops = this._normalizeJumps(session);
+    // 거쳐가는 transport 연결 추적 (종료 시 전부 해제). primary 가 가장 바깥.
+    const transportConns: any[] = [primaryConn];
+    let transport = primaryConn;          // 다음 홉이 터널링할 직전 연결
+    let keySourceLabel = session.host;    // 비밀번호 없을 때 키를 읽을 직전 호스트 이름
+    let finalConn = primaryConn;
+
+    for (let i = 0; i < hops.length; i++) {
+      const hop = hops[i];
+      try {
+        const conn = await this._openJumpConnOverTransport(panelId, session, transport, {
+          host: hop.host, user: hop.user, port: hop.port, password: hop.password, keySourceLabel,
+        }, stage, `${i + 1}단계 점프`);
+        finalConn = conn;
+        // 마지막 홉이 아니면 이 conn 도 이후 홉의 transport — 정리 목록에 추가
+        if (i < hops.length - 1) transportConns.push(conn);
+        transport = conn;
+        keySourceLabel = hop.host;
+      } catch (err) {
+        // 실패 — 지금까지 연 모든 중간 연결 정리 후 전파 (primary 는 호출부에서 정리)
+        for (const tc of transportConns) { if (tc !== primaryConn) { try { tc.end(); } catch {} } }
+        throw err;
+      }
+    }
+
+    // 최종 점프 타겟에서 shell + SFTP.
+    this._openShellOnConn(panelId, session, finalConn, cols, rows, primaryConn, transportConns);
   }
 
   private async _readSshKeyFromConn(conn: any): Promise<Buffer | null> {
@@ -398,9 +441,9 @@ class SSHBridge extends EventEmitter {
     return null;
   }
 
-  // 주어진 연결 위에 shell 을 열고 스트림·핸들러 연결. jump 사용 시 primaryConn 도 함께 받아
-  // close 시 둘 다 정리.
-  private _openShellOnConn(panelId: string, session: any, conn: any, cols: number | undefined, rows: number | undefined, primaryConn: any | undefined): void {
+  // 주어진 연결 위에 shell 을 열고 스트림·핸들러 연결. jump 사용 시 transportConns(거쳐온 모든
+  // 중간 연결, primary 포함)도 함께 받아 close 시 전부 정리. primaryConn 은 하위호환용(단일).
+  private _openShellOnConn(panelId: string, session: any, conn: any, cols: number | undefined, rows: number | undefined, primaryConn: any | undefined, transportConns?: any[]): void {
     const shellCols = typeof cols === 'number' ? cols : 120;
     const shellRows = typeof rows === 'number' ? rows : 24;
     this.termCols.set(panelId, shellCols);
@@ -441,7 +484,9 @@ class SSHBridge extends EventEmitter {
     conn.shell(shellOpts, (err: any, stream: any) => {
       if (err) {
         this.emit('message', { type: 'error', panelId, error: String(err) });
-        try { primaryConn?.end(); } catch {}
+        try { conn.end(); } catch {}
+        const transports = transportConns && transportConns.length ? transportConns : (primaryConn ? [primaryConn] : []);
+        for (const tc of transports) { try { tc?.end(); } catch {} }
         return;
       }
 
@@ -496,10 +541,12 @@ class SSHBridge extends EventEmitter {
         this._cleanupDedicatedSftp(panelId);
         this.emit('message', { type: 'closed', panelId });
         try { conn.end(); } catch {}
-        try { primaryConn?.end(); } catch {}
+        // 모든 중간 transport 연결 해제 (다단계 점프 포함). primaryConn 은 transportConns 에 포함됨.
+        const transports = transportConns && transportConns.length ? transportConns : (primaryConn ? [primaryConn] : []);
+        for (const tc of transports) { try { tc?.end(); } catch {} }
       });
 
-      this.clients.set(panelId, { conn, stream, encoding: initialEncoding, primaryConn });
+      this.clients.set(panelId, { conn, stream, encoding: initialEncoding, primaryConn, transportConns });
 
       // 세션 옵션 autoTrackPwd — fileTreeEnabled 가 켜져 있을 때만 의미가 있어 의존성 강제.
       // 켜져 있으면 즉시 UI 인디케이터 ON + 프롬프트 파싱 활성 (PID 탐지는 백그라운드).
@@ -837,7 +884,8 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
     // 프롬프트 파싱이 cwd 를 처리 중인 패널은 무거운 /proc 폴링을 시작하지 않음 (SSH 채널 절약)
     if (this.promptCwdActive.has(panelId)) return;
     this._stopCwdPolling(panelId); // 중복 방지
-    const baseInterval = 400;
+    // cwd 가 그렇게 빨리 바뀌지 않으므로 base 를 700ms 로 — 에이전트 호출이 latency 에 민감.
+    const baseInterval = 700;
     const maxInterval = 30_000; // 최대 30초까지 백오프
     let currentInterval = baseInterval;
     let consecutiveErrors = 0;
@@ -855,6 +903,8 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
       const curPid = this.shellPids.get(panelId);
       if (!curPid) { scheduleNext(); return; }
       if (inFlight) { scheduleNext(); return; } // 이전 호출 응답 대기 중 — 채널 누적 방지
+      // AI 에이전트가 같은 연결로 작업 중이면 무거운 /proc 스캔을 미룬다 — 채널 경합·원격 부하 회피.
+      if (this.isAgentBusy(panelId)) { this.cwdPollers.set(panelId, setTimeout(tick, 1000)); return; }
       inFlight = true;
       // ClearCase setview 처럼 로그인 셸이 자식 서브셸을 띄우면 추적 PID(로그인 셸, cwd=/user1/dev)가 아니라
       // 실제 사용자가 있는 자손 셸의 cwd 를 따라가야 함. 로그인 셸 tpgid(포그라운드 pgrp) + 전체 프로세스의
@@ -1333,31 +1383,39 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
         finish(authCfg.password ? [authCfg.password] : []);
       });
 
-      const jumpHost = session.jumpTargetHost?.trim();
-      if (jumpHost) {
-        // 점프 호스트 터널을 통해 전용 연결 오픈
-        const primaryConn = rec.primaryConn || rec.conn;
-        primaryConn.forwardOut('127.0.0.1', 0, jumpHost, session.jumpTargetPort || 22, (err: any, stream: any) => {
-          if (err) {
-            this.sftpDedicatedConn.delete(panelId);
-            return this.getSftp(panelId).then(resolve).catch(reject);
-          }
-          const jumpUser = session.jumpTargetUser || session.username;
-          const jumpCfg: any = { sock: stream, username: jumpUser, tryKeyboard: true, readyTimeout: 15000 };
-          if (session.jumpAuth?.type === 'password' && session.jumpAuth.password) {
-            jumpCfg.password = session.jumpAuth.password;
-          } else if (session.jumpAuth?.type === 'key') {
-            try { jumpCfg.privateKey = fs.readFileSync(session.jumpAuth.keyPath); } catch {}
-          } else {
-            if (authCfg.password) jumpCfg.password = authCfg.password;
-            if (authCfg.privateKey) jumpCfg.privateKey = authCfg.privateKey;
-          }
-          dedicatedConn.removeAllListeners('keyboard-interactive');
-          dedicatedConn.on('keyboard-interactive', (_n: any, _i: any, _l: any, _ps: any[], finish: any) => {
-            finish(jumpCfg.password ? [jumpCfg.password] : []);
+      const hops = this._normalizeJumps(session);
+      if (hops.length > 0) {
+        // 이미 살아있는 transport 체인(primary + 중간 점프들)을 재사용해 최종 호스트로 한 번만
+        // 더 터널링한다 (중간 점프 재핸드셰이크 회피). transportConns = [primary, jump1, ... jump(N-1)].
+        const transports = (rec.transportConns && rec.transportConns.length) ? rec.transportConns : [rec.primaryConn || rec.conn];
+        const tunnelConn = transports[transports.length - 1] || rec.primaryConn || rec.conn;
+        const finalHop = hops[hops.length - 1];
+        // 최종 홉 비밀번호 없으면 직전 홉(tunnelConn) 의 ~/.ssh/ 키를 읽어 인증 (passwordless ProxyJump).
+        const prepFinalAuth = async (): Promise<any> => {
+          if (finalHop.password) return { password: finalHop.password };
+          try {
+            const keyBuf = await this._readSshKeyFromConn(tunnelConn);
+            if (keyBuf) return { privateKey: keyBuf };
+          } catch { /* best-effort */ }
+          const fb: any = {};
+          if (authCfg.password) fb.password = authCfg.password;
+          if (authCfg.privateKey) fb.privateKey = authCfg.privateKey;
+          return fb;
+        };
+        prepFinalAuth().then(finalAuth => {
+          tunnelConn.forwardOut('127.0.0.1', 0, finalHop.host, finalHop.port, (err: any, stream: any) => {
+            if (err) {
+              this.sftpDedicatedConn.delete(panelId);
+              return this.getSftp(panelId).then(resolve).catch(reject);
+            }
+            const jumpCfg: any = { sock: stream, username: finalHop.user, tryKeyboard: !!finalAuth.password, readyTimeout: 15000, ...finalAuth };
+            dedicatedConn.removeAllListeners('keyboard-interactive');
+            dedicatedConn.on('keyboard-interactive', (_n: any, _i: any, _l: any, _ps: any[], finish: any) => {
+              finish(jumpCfg.password ? [jumpCfg.password] : []);
+            });
+            dedicatedConn.once('ready', openSftp);
+            dedicatedConn.connect({ ...jumpCfg, ...LEGACY_ALGO_OPT });
           });
-          dedicatedConn.once('ready', openSftp);
-          dedicatedConn.connect({ ...jumpCfg, ...LEGACY_ALGO_OPT });
         });
       } else {
         dedicatedConn.once('ready', openSftp);
@@ -1741,23 +1799,33 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
   }
 
   async handleSFTPReadFile(panelId: string, remotePath: string): Promise<Buffer> {
-    const sftp = await this.getSftp(panelId);
-    remotePath = await this.resolveCcPath(panelId, remotePath);
-    return new Promise((resolve, reject) => {
-      sftp.readFile(remotePath, (err: any, data: Buffer) => {
-        if (err) return reject(err);
-        resolve(data);
+    this.markAgentBusy(panelId);
+    try {
+      const sftp = await this.getSftp(panelId);
+      remotePath = await this.resolveCcPath(panelId, remotePath);
+      return await new Promise((resolve, reject) => {
+        sftp.readFile(remotePath, (err: any, data: Buffer) => {
+          if (err) return reject(err);
+          resolve(data);
+        });
       });
-    });
+    } finally {
+      this.markAgentIdle(panelId);
+    }
   }
 
   async handleSFTPWriteFile(panelId: string, remotePath: string, content: Buffer | string): Promise<void> {
-    const sftp = await this.getSftp(panelId);
-    remotePath = await this.resolveCcPath(panelId, remotePath);
-    const buf = typeof content === 'string' ? Buffer.from(content, 'utf-8') : content;
-    return new Promise((resolve, reject) => {
-      sftp.writeFile(remotePath, buf, (err: any) => err ? reject(err) : resolve());
-    });
+    this.markAgentBusy(panelId);
+    try {
+      const sftp = await this.getSftp(panelId);
+      remotePath = await this.resolveCcPath(panelId, remotePath);
+      const buf = typeof content === 'string' ? Buffer.from(content, 'utf-8') : content;
+      return await new Promise<void>((resolve, reject) => {
+        sftp.writeFile(remotePath, buf, (err: any) => err ? reject(err) : resolve());
+      });
+    } finally {
+      this.markAgentIdle(panelId);
+    }
   }
 
   async handleSFTPDelete(panelId: string, filePath: string): Promise<void> {
@@ -2382,9 +2450,36 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
     } catch { return 0; }
   }
 
+  // AI 에이전트 작업 시작/종료 표시 — cwd 폴러가 경합을 피해 양보하도록.
+  private markAgentBusy(panelId: string): void {
+    const e = this.agentBusy.get(panelId) || { count: 0, lastAt: 0 };
+    e.count++; e.lastAt = Date.now();
+    this.agentBusy.set(panelId, e);
+  }
+  private markAgentIdle(panelId: string): void {
+    const e = this.agentBusy.get(panelId);
+    if (!e) return;
+    e.count = Math.max(0, e.count - 1); e.lastAt = Date.now();
+  }
+  // 진행 중이거나 최근 1.2초 내 에이전트 활동이 있으면 true (연속 호출 사이 짧은 공백 흡수).
+  private isAgentBusy(panelId: string): boolean {
+    const e = this.agentBusy.get(panelId);
+    if (!e) return false;
+    return e.count > 0 || (Date.now() - e.lastAt < 1200);
+  }
+
   // SSH exec: 원격에서 쉘 명령 실행하고 stdout/stderr/exitCode 반환
   // 세션 인코딩(utf-8/cp949/euc-kr 등)에 맞춰 command 바이트 변환 + 출력 디코딩
   public async handleExec(panelId: string, command: string, timeoutMs = 60000): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
+    this.markAgentBusy(panelId);
+    try {
+      return await this._handleExecInner(panelId, command, timeoutMs);
+    } finally {
+      this.markAgentIdle(panelId);
+    }
+  }
+
+  private async _handleExecInner(panelId: string, command: string, timeoutMs = 60000): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
     const entry = this.clients.get(panelId);
     if (!entry) throw new Error(`SSH session not connected: ${panelId}`);
     const conn: any = entry.conn;
@@ -2448,22 +2543,29 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
     });
   }
 
-  // jumpOpts 가 주어지면 primary(host) 를 경유해서 점프 타겟에 SFTP 직결.
+  // jumps[] 가 주어지면 primary(host) 를 경유해 점프 체인을 거쳐 최종 호스트에 SFTP 직결.
   // 터미널 세션의 handleConnect 와 동일한 ProxyJump 패턴이지만 shell 대신 SFTP 채널만 유지.
+  // 하위호환: jumps 미지정 + 단일 jumpOpts 만 오면 1홉 체인으로 변환.
   async handleSFTPConnect(
     connId: string,
     host: string,
     port: number,
     username: string,
     auth?: any,
-    jumpOpts?: { host: string; user?: string; port?: number; password?: string }
+    jumpOpts?: { host: string; user?: string; port?: number; password?: string },
+    jumps?: { host: string; user?: string; port?: number; password?: string }[]
   ): Promise<void> {
     if (this.clients.has(connId)) return;
+    // 점프 체인 정규화 — jumps[] 우선, 없으면 단일 jumpOpts 를 1홉으로.
+    const rawHops = (Array.isArray(jumps) && jumps.length) ? jumps : (jumpOpts?.host ? [jumpOpts] : []);
+    const hops = rawHops
+      .filter(h => h && typeof h.host === 'string' && h.host.trim())
+      .map(h => ({ host: h.host.trim(), user: (h.user && String(h.user).trim()) || 'root', port: Number(h.port) || 22, password: typeof h.password === 'string' ? h.password : '' }));
     const log = (msg: string) => {
       console.log(`[sftp-connect-${connId}] ${msg}`);
       try { require('electron').BrowserWindow.getAllWindows()[0]?.webContents.send('debug:log', `[sftp-connect] ${msg}`); } catch {}
     };
-    log(`start host=${host} user=${username} jump=${jumpOpts?.host || '(none)'}`);
+    log(`start host=${host} user=${username} jumps=${hops.length ? hops.map(h => h.host).join('→') : '(none)'}`);
     return new Promise((resolve, reject) => {
       const primaryConn = new Client();
       primaryConn.on('error', (err: any) => {
@@ -2485,66 +2587,66 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
       primaryConn.on('close', () => cleanupOnClose('primary close'));
       primaryConn.on('ready', async () => {
         log(`primary ready`);
-        if (!jumpOpts?.host) {
+        if (hops.length === 0) {
           this.clients.set(connId, { conn: primaryConn });
           log(`no jump, saved as ${connId}`);
           resolve();
           return;
         }
+        const ssh2Constants = require('ssh2/lib/protocol/constants');
+        const LEGACY_ALGORITHMS = {
+          kex: ssh2Constants.SUPPORTED_KEX,
+          serverHostKey: ssh2Constants.SUPPORTED_SERVER_HOST_KEY,
+          cipher: ssh2Constants.SUPPORTED_CIPHER,
+          hmac: ssh2Constants.SUPPORTED_MAC,
+        };
+        const transportConns: any[] = [primaryConn];
+        let transport = primaryConn;
+        let keySrc = host; // 키 fallback 을 읽을 직전 호스트
         try {
-          const jumpHost = jumpOpts.host;
-          const jumpUser = jumpOpts.user || 'root';
-          const jumpPort = jumpOpts.port || 22;
-          const authCfg: any = {};
-          if (jumpOpts.password) {
-            authCfg.password = jumpOpts.password;
-            log(`jump auth: password`);
-          } else {
-            log(`jump auth: reading key from primary...`);
-            const keyBuf = await this._readSshKeyFromConn(primaryConn);
-            if (!keyBuf) throw new Error(`${host} 의 ~/.ssh/ 에서 사용 가능한 키 미발견`);
-            authCfg.privateKey = keyBuf;
-            log(`jump auth: key read (${keyBuf.length}B)`);
+          for (let i = 0; i < hops.length; i++) {
+            const hop = hops[i];
+            const authCfg: any = {};
+            if (hop.password) {
+              authCfg.password = hop.password;
+            } else {
+              log(`hop${i + 1} auth: reading key from ${keySrc}...`);
+              const keyBuf = await this._readSshKeyFromConn(transport);
+              if (!keyBuf) throw new Error(`${keySrc} 의 ~/.ssh/ 에서 사용 가능한 키 미발견`);
+              authCfg.privateKey = keyBuf;
+            }
+            log(`hop${i + 1} forwardOut → ${hop.host}:${hop.port}`);
+            const sock: any = await new Promise((res, rej) => {
+              transport.forwardOut('127.0.0.1', 0, hop.host, hop.port, (e: any, s: any) => e ? rej(e) : res(s));
+            });
+            sock.on('error', (e: any) => log(`hop${i + 1} sock error: ${e?.message}`));
+            const jumpConn = new Client();
+            jumpConn.on('error', (e: any) => log(`hop${i + 1} conn error: ${e?.message}`));
+            jumpConn.on('end', () => cleanupOnClose(`hop${i + 1} end`));
+            jumpConn.on('close', () => cleanupOnClose(`hop${i + 1} close`));
+            await new Promise<void>((res, rej) => {
+              const onReady = () => { cleanup(); res(); };
+              const onErr = (e: any) => { cleanup(); rej(e); };
+              const cleanup = () => { jumpConn.removeListener('ready', onReady); jumpConn.removeListener('error', onErr); };
+              jumpConn.once('ready', onReady);
+              jumpConn.once('error', onErr);
+              jumpConn.connect({
+                sock, username: hop.user, ...authCfg,
+                algorithms: LEGACY_ALGORITHMS,
+                tryKeyboard: !!hop.password,
+                readyTimeout: 30000, keepaliveInterval: 10000, keepaliveCountMax: 3,
+              } as any);
+            });
+            log(`hop${i + 1} ready (${hop.host})`);
+            if (i < hops.length - 1) transportConns.push(jumpConn);
+            transport = jumpConn;
+            keySrc = hop.host;
           }
-          log(`forwardOut → ${jumpHost}:${jumpPort}`);
-          const sock: any = await new Promise((res, rej) => {
-            primaryConn.forwardOut('127.0.0.1', 0, jumpHost, jumpPort, (e: any, s: any) => e ? rej(e) : res(s));
-          });
-          sock.on('error', (e: any) => log(`sock error: ${e?.message}`));
-          log(`forwardOut done, opening jump SSH`);
-          const ssh2Constants = require('ssh2/lib/protocol/constants');
-          const jumpConn = new Client();
-          jumpConn.on('error', (e: any) => log(`jumpConn error: ${e?.message}`));
-          jumpConn.on('end', () => cleanupOnClose('jumpConn end'));
-          jumpConn.on('close', () => cleanupOnClose('jumpConn close'));
-          await new Promise<void>((res, rej) => {
-            const onReady = () => { cleanup(); res(); };
-            const onErr = (e: any) => { cleanup(); rej(e); };
-            const cleanup = () => { jumpConn.removeListener('ready', onReady); jumpConn.removeListener('error', onErr); };
-            jumpConn.once('ready', onReady);
-            jumpConn.once('error', onErr);
-            jumpConn.connect({
-              sock,
-              username: jumpUser,
-              ...authCfg,
-              algorithms: {
-                kex: ssh2Constants.SUPPORTED_KEX,
-                serverHostKey: ssh2Constants.SUPPORTED_SERVER_HOST_KEY,
-                cipher: ssh2Constants.SUPPORTED_CIPHER,
-                hmac: ssh2Constants.SUPPORTED_MAC,
-              },
-              tryKeyboard: !!jumpOpts.password,
-              readyTimeout: 30000,
-              keepaliveInterval: 10000,
-              keepaliveCountMax: 3,
-            } as any);
-          });
-          log(`jumpConn ready`);
-          this.clients.set(connId, { conn: jumpConn, primaryConn });
+          this.clients.set(connId, { conn: transport, primaryConn, transportConns });
           resolve();
         } catch (err: any) {
           log(`jump setup FAILED: ${err?.message || err}`);
-          try { primaryConn.end(); } catch {}
+          for (const tc of transportConns) { try { tc.end(); } catch {} }
           reject(err);
         }
       });

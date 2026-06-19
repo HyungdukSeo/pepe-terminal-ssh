@@ -16,6 +16,7 @@
   "approveToolPrompt": "السماح لـ Claude باستخدام {{toolName}}؟",
   "deny": "❌ رفض",
   "approveOnce": "✅ السماح مرة واحدة",
+  "approveAlways": "✅ السماح دائمًا لهذه الجلسة",
   "planApprovalTitle": "🗺 الموافقة على الخطة",
   "planDeny": "❌ رفض",
   "planProceed": "✅ متابعة",
