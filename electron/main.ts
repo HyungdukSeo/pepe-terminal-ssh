@@ -4158,8 +4158,24 @@ ipcMain.handle('window:get-detached-init', (e) => {
   detachedInitPayloads.delete(e.sender.id);
   return p || null;
 });
+function getLiveSshPanelIds(): string[] {
+  const bridge: any = getSSHBridge();
+  for (const panelId of [...connectedPanels]) {
+    if (!bridge.hasActiveClient?.(panelId)) connectedPanels.delete(panelId);
+  }
+  return Array.from(connectedPanels);
+}
+
+function hasLiveSshPanel(panelId: string): boolean {
+  const bridge: any = getSSHBridge();
+  if (!connectedPanels.has(panelId)) return false;
+  if (bridge.hasActiveClient?.(panelId)) return true;
+  connectedPanels.delete(panelId);
+  return false;
+}
+
 // 새 창에서 라이브 세션 연결 상태 시딩용 — 현재 연결된 panelId 목록
-ipcMain.handle('ssh:connected-panels', () => Array.from(connectedPanels));
+ipcMain.handle('ssh:connected-panels', () => getLiveSshPanelIds());
 // 현재 마우스의 화면 좌표 (탭 드래그 분리 판정용)
 ipcMain.handle('window:cursor-point', () => { try { return screen.getCursorScreenPoint(); } catch { return null; } });
 // 호출 창이 화면 어디에 있는지 (드롭 좌표가 창 밖인지 판정용)
@@ -4284,7 +4300,7 @@ ipcMain.handle('ssh:test-web-target', async (_e, args: { panelId: string; url: s
 
 ipcMain.handle('ssh:connect', (_e, { panelId, sessionId, cols, rows }) => {
   if (connectingPanels.has(panelId)) return 'already';
-  if (connectedPanels.has(panelId)) return 'already';
+  if (hasLiveSshPanel(panelId)) return 'already';
 
   const session = sessionsData.sessions.find(s => s.id === sessionId);
   if (!session) throw new Error('Session not found');
@@ -4304,7 +4320,7 @@ ipcMain.handle('ssh:connect', (_e, { panelId, sessionId, cols, rows }) => {
 
 ipcMain.handle('ssh:connect-with-password', (_e, { panelId, sessionId, password, cols, rows }) => {
   if (connectingPanels.has(panelId)) return 'already';
-  if (connectedPanels.has(panelId)) return 'already';
+  if (hasLiveSshPanel(panelId)) return 'already';
   const session = sessionsData.sessions.find(s => s.id === sessionId);
   if (!session) throw new Error('Session not found');
   connectingPanels.add(panelId);
@@ -4317,7 +4333,7 @@ ipcMain.handle('ssh:connect-with-password', (_e, { panelId, sessionId, password,
 
 ipcMain.handle('ssh:quick-connect', (_e, { panelId, session, cols, rows }) => {
   if (connectingPanels.has(panelId)) return 'already';
-  if (connectedPanels.has(panelId)) return 'already';
+  if (hasLiveSshPanel(panelId)) return 'already';
   if (!session || !session.host) throw new Error('Invalid session');
   // username 이나 비밀번호가 비어있으면 renderer 에 자격증명 요청
   if (!session.username) return 'need-credentials';
@@ -4331,7 +4347,7 @@ ipcMain.handle('ssh:quick-connect', (_e, { panelId, session, cols, rows }) => {
 });
 
 ipcMain.handle('ssh:is-connected', (_e, panelId: string) => {
-  return connectedPanels.has(panelId);
+  return hasLiveSshPanel(panelId);
 });
 
 // 텔넷(raw TCP) 접속 — 접근통제 솔루션의 로컬 평문 프록시(127.0.0.1:port) 용.
@@ -4357,7 +4373,10 @@ ipcMain.on('ssh:disconnect', (_e, { panelId }) => {
     getTelnetBridge().disconnect(panelId);
     return;
   }
+  connectedPanels.delete(panelId);
+  connectingPanels.delete(panelId);
   getSSHBridge().handleDisconnect(panelId);
+  termBroadcast('ssh:closed', { panelId });
   if (webdavBridge) {
     try { webdavBridge.unregisterSession(panelId); } catch {}
   }

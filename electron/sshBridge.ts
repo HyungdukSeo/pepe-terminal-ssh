@@ -1085,7 +1085,13 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
     // 연결 완료 상태
     const rec = this.clients.get(panelId);
     if (rec) {
+      try { rec.stream?.end?.(); } catch {}
+      try { rec.stream?.close?.(); } catch {}
       try { rec.conn.end(); } catch {}
+      const transports = rec.transportConns && rec.transportConns.length
+        ? rec.transportConns
+        : (rec.primaryConn ? [rec.primaryConn] : []);
+      for (const tc of transports) { try { tc?.end?.(); } catch {} }
       this.clients.delete(panelId);
     }
     // 아직 ready 안 된 pending 연결도 정리
@@ -1116,6 +1122,9 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
       if (p.panelId !== panelId) continue;
       try { p.server.close(); } catch {}
       this.socksProxies.delete(proxyId);
+    }
+    if (rec || pending) {
+      this.emit('message', { type: 'closed', panelId });
     }
   }
 
