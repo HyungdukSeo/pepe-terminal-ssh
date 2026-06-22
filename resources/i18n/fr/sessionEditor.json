@@ -45,6 +45,7 @@
     "jumpPort": "Port de saut",
     "jumpPassword": "Mot de passe de saut",
     "jumpKey": "Clé privée de saut",
+    "browserUrl": "URL du navigateur",
     "loginScript": "Script de connexion (Expect/Send)",
     "folder": "Dossier",
     "jumpTargetHost": "Hôte cible du saut",
@@ -84,6 +85,7 @@
     "jumpTargetHost": "ex. I-MPM01 (vide = connexion directe)",
     "jumpTargetUser": "ex. root",
     "jumpTargetPassword": "Vide = utiliser ~/.ssh/id_rsa de l'hôte précédent",
+    "browserUrl": "ex. https://172.16.214.148",
     "initialPath": "ex. /home/user/project (vide = dossier home)"
   },
   "tooltips": {

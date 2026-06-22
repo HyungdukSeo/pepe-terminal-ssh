@@ -108,6 +108,10 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('ssh:open-local-forward', args),
   sshCloseLocalForward: (args: { forwardId: string }) =>
     ipcRenderer.invoke('ssh:close-local-forward', args),
+  sshListActiveSessions: () => ipcRenderer.invoke('ssh:list-active-sessions'),
+  sshOpenSocksProxy: (args: { panelId: string }) => ipcRenderer.invoke('ssh:open-socks-proxy', args),
+  sshCloseSocksProxy: (args: { proxyId: string }) => ipcRenderer.invoke('ssh:close-socks-proxy', args),
+  sshTestWebTarget: (args: { panelId: string; url: string }) => ipcRenderer.invoke('ssh:test-web-target', args),
   sshGetShellCwd: (args: { termId: string }) => ipcRenderer.invoke('ssh:get-shell-cwd', args),
   saveTextFile: (args: { defaultName?: string; content: string; filters?: { name: string; extensions: string[] }[] }) =>
     ipcRenderer.invoke('dialog:save-text-file', args),
@@ -195,6 +199,7 @@ contextBridge.exposeInMainWorld('api', {
   },
   getDetachedInit: () => ipcRenderer.invoke('window:get-detached-init'),
   getConnectedPanels: () => ipcRenderer.invoke('ssh:connected-panels'),
+  setWebviewProxy: (args: { webContentsId: number; proxyRules: string | null }) => ipcRenderer.invoke('browser:set-proxy', args),
   agentIsRunning: (args: { sessionId?: string; requestId?: string }) => ipcRenderer.invoke('agent:is-running', args),
   getCursorPoint: () => ipcRenderer.invoke('window:cursor-point'),
   getWindowBounds: () => ipcRenderer.invoke('window:get-bounds'),

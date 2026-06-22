@@ -45,6 +45,7 @@
     "jumpPort": "跳板端口",
     "jumpPassword": "跳板密码",
     "jumpKey": "跳板私钥",
+    "browserUrl": "浏览器 URL",
     "loginScript": "登录脚本 (Expect/Send)",
     "folder": "文件夹",
     "jumpTargetHost": "跳板目标主机",
@@ -84,6 +85,7 @@
     "jumpTargetHost": "例如 I-MPM01 (留空 = 直连)",
     "jumpTargetUser": "例如 root",
     "jumpTargetPassword": "留空 = 使用上一台主机的 ~/.ssh/id_rsa",
+    "browserUrl": "例如 https://172.16.214.148",
     "initialPath": "例如 /home/user/project (留空 = 主目录)"
   },
   "tooltips": {

@@ -1,5 +1,5 @@
-﻿// electron/main.ts
-import { app, BrowserWindow, ipcMain, dialog, Menu, shell, clipboard, nativeImage, safeStorage, screen } from 'electron';
+// electron/main.ts
+import { app, BrowserWindow, ipcMain, dialog, Menu, shell, clipboard, nativeImage, safeStorage, screen, webContents } from 'electron';
 
 // 패키지된(production/설치본) 빌드에서는 메인 프로세스 console.log(진단 로그)를 끈다.
 // dev 실행 시에만 [claude]/[codex]/[mcp-control] 등 디버그 로그 출력. console.error/warn 은 유지.
@@ -4164,6 +4164,24 @@ ipcMain.handle('ssh:connected-panels', () => Array.from(connectedPanels));
 ipcMain.handle('window:cursor-point', () => { try { return screen.getCursorScreenPoint(); } catch { return null; } });
 // 호출 창이 화면 어디에 있는지 (드롭 좌표가 창 밖인지 판정용)
 ipcMain.handle('window:get-bounds', (e) => { try { return winOf(e)?.getBounds() || null; } catch { return null; } });
+ipcMain.handle('browser:set-proxy', async (_e, args: { webContentsId: number; proxyRules: string | null }) => {
+  try {
+    const wc = webContents.fromId(args.webContentsId);
+    if (!wc) return { success: false, error: 'webContents not found' };
+    const session = wc.session;
+    if (!session) return { success: false, error: 'session not found' };
+    if (!args.proxyRules) {
+      await session.setProxy({ mode: 'direct' });
+      try { await session.closeAllConnections?.(); } catch {}
+      return { success: true };
+    }
+    await session.setProxy({ mode: 'fixed_servers', proxyRules: args.proxyRules, proxyBypassRules: 'localhost,127.0.0.1,::1' });
+    try { await session.closeAllConnections?.(); } catch {}
+    return { success: true };
+  } catch (e: any) {
+    return { success: false, error: String(e?.message || e) };
+  }
+});
 
 ipcMain.handle('ssh:auth-response', (_e, { panelId, responses }: { panelId: string; responses: string[] }) => {
   const bridge = getSSHBridge();
@@ -4210,6 +4228,55 @@ ipcMain.handle('ssh:close-local-forward', (_e, args: { forwardId: string }) => {
     const bridge: any = getSSHBridge();
     const ok = bridge.closeLocalForward?.(args.forwardId);
     return { success: !!ok };
+  } catch (e: any) {
+    return { success: false, error: String(e?.message || e) };
+  }
+});
+ipcMain.handle('ssh:list-active-sessions', () => {
+  try {
+    const bridge: any = getSSHBridge();
+    return bridge.listActiveSessions?.() || [];
+  } catch {
+    return [];
+  }
+});
+ipcMain.handle('ssh:open-socks-proxy', async (_e, args: { panelId: string }) => {
+  try {
+    const bridge: any = getSSHBridge();
+    const r = await bridge.openSocksProxy?.(args.panelId);
+    return { success: !!r, ...(r || {}) };
+  } catch (e: any) {
+    return { success: false, error: String(e?.message || e) };
+  }
+});
+ipcMain.handle('ssh:close-socks-proxy', (_e, args: { proxyId: string }) => {
+  try {
+    const bridge: any = getSSHBridge();
+    const ok = bridge.closeSocksProxy?.(args.proxyId);
+    return { success: !!ok };
+  } catch (e: any) {
+    return { success: false, error: String(e?.message || e) };
+  }
+});
+ipcMain.handle('ssh:test-web-target', async (_e, args: { panelId: string; url: string }) => {
+  try {
+    const bridge: any = getSSHBridge();
+    const raw = String(args.url || '').trim();
+    if (!raw) return { success: false, error: 'URL이 비어 있습니다' };
+    const parsed = new URL(raw);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return { success: false, error: 'http/https URL만 테스트할 수 있습니다' };
+    }
+    const port = parsed.port ? Number(parsed.port) : (parsed.protocol === 'https:' ? 443 : 80);
+    const path = `${parsed.pathname || '/'}${parsed.search || ''}`;
+    const result = await bridge.testWebTarget?.(args.panelId, {
+      protocol: parsed.protocol,
+      host: parsed.hostname,
+      port,
+      path,
+      timeoutMs: 10000,
+    });
+    return { success: true, result };
   } catch (e: any) {
     return { success: false, error: String(e?.message || e) };
   }
@@ -4322,6 +4389,9 @@ ipcMain.handle('ssh:get-encoding', (_e, panelId: string) => {
 
 // ── Local Shell (node-pty) ──
 const ptyProcesses = new Map<string, pty.IPty>();
+// Gemini 연동 쪽에서 과거에 프로세스 기반 구현을 쓰던 흔적과 호환하기 위한 정리용 맵.
+// 현재는 REST 스트리밍 기반이라 비어 있을 수 있지만, 종료/중복 실행 정리 코드는 그대로 유지한다.
+const geminiProcesses = new Map<string, any>();
 
 // 앱 종료 직전 — PTY/Claude 자식 프로세스 일괄 정리. (SSH/X11 정리는 위쪽 핸들러)
 app.on('before-quit', () => {
@@ -4846,26 +4916,30 @@ app.on('before-quit', () => {
 // ── Claude Code CLI 연동 ──
 const claudeProcesses: Map<string, any> = new Map();
 
-// ── Gemini CLI 연동 ──
-const geminiProcesses: Map<string, any> = new Map();
+// ── Gemini API 직접 호출 연동 ──
+// agy CLI 가 headless 환경에서 응답을 반환하지 않으므로 REST API 로 직접 호출.
+const geminiAbortControllers: Map<string, AbortController> = new Map();
 
-function findGeminiBundlePath(): string | null {
-  // Mac/Linux: gemini CLI 를 shell 로 직접 실행 (bundle 경로 불필요 → null 반환)
-  if (process.platform !== 'win32') return null;
-  // Windows: gemini.cmd 래퍼의 실제 bundle JS 를 찾아 node 모드로 직접 실행
+/** UI prefs (config.json) 에서 Gemini API 키 로드 */
+function loadGeminiApiKey(): string {
   try {
-    const { execFileSync } = require('child_process');
-    const fs = require('fs');
-    const path = require('path');
-    const whereOutput = execFileSync('where.exe', ['gemini.cmd'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).trim();
-    const cmdPath = whereOutput.split(/\r?\n/).find(Boolean);
-    if (!cmdPath) return null;
-    const baseDir = path.dirname(cmdPath);
-    const bundlePath = path.join(baseDir, 'node_modules', '@google', 'gemini-cli', 'bundle', 'gemini.js');
-    return fs.existsSync(bundlePath) ? bundlePath : null;
-  } catch {
-    return null;
-  }
+    const prefs = loadUIPrefs();
+    return (prefs?.geminiApiKey as string) || '';
+  } catch { return ''; }
+}
+
+/** 프론트엔드 모델 ID → Gemini REST API 모델명 매핑 */
+function mapGeminiModel(frontendModel: string): string {
+  const map: Record<string, string> = {
+    'gemini-3-flash-preview': 'gemini-3.0-flash',
+    'gemini-3.1-flash-lite-preview': 'gemini-3.1-flash-lite',
+    'gemini-2.5-flash': 'gemini-2.5-flash',
+    'gemini-2.5-flash-lite': 'gemini-2.5-flash-lite',
+    'gemini-3-pro': 'gemini-3.0-pro',
+    'gemini-3.1-pro': 'gemini-3.1-pro',
+    'gemini-2.5-pro': 'gemini-2.5-pro',
+  };
+  return map[frontendModel] || frontendModel;
 }
 
 // ── Codex CLI 연동 ──
@@ -4874,12 +4948,15 @@ const codexProcesses: Map<string, any> = new Map();
 // AI 에이전트(claude/gemini/codex) 프로세스가 아직 살아있는지 — 렌더러 streaming 안전망용.
 // procKey = requestId || sessionId 로 저장되므로 둘 다로 조회.
 ipcMain.handle('agent:is-running', (_e, { sessionId, requestId }: { sessionId?: string; requestId?: string }) => {
-  const maps = [claudeProcesses, geminiProcesses, codexProcesses];
+  const procMaps = [claudeProcesses, codexProcesses];
   const alive = (proc: any) => !!proc && proc.killed !== true && (proc.exitCode === null || proc.exitCode === undefined);
-  for (const m of maps) {
+  for (const m of procMaps) {
     if (requestId && m.has(requestId) && alive(m.get(requestId))) return true;
     if (sessionId && m.has(sessionId) && alive(m.get(sessionId))) return true;
   }
+  // Gemini: AbortController 가 아직 등록되어 있으면 실행 중
+  if (requestId && geminiAbortControllers.has(requestId)) return true;
+  if (sessionId && geminiAbortControllers.has(sessionId)) return true;
   return false;
 });
 
@@ -5669,32 +5746,17 @@ ipcMain.handle('claude:stop', (_e, { sessionId, requestId }: { sessionId: string
 
 ipcMain.handle('gemini:check', async () => {
   try {
-    const { spawn } = require('child_process');
-    const augmentedPath = buildAugmentedPath();
-    const env = { ...process.env, PATH: augmentedPath, Path: augmentedPath };
-    const bundlePath = findGeminiBundlePath();
-    return await new Promise<{ installed: boolean; version?: string }>(resolve => {
-      // Windows: bundle JS 직접 실행 / Mac·Linux: gemini CLI shell 실행
-      const proc = bundlePath
-        ? spawn(process.execPath, [bundlePath, '--version'], {
-            shell: false,
-            env: { ...env, ELECTRON_RUN_AS_NODE: '1' },
-            stdio: ['ignore', 'pipe', 'pipe'],
-            windowsHide: true,
-          })
-        : spawn('gemini', ['--version'], {
-            shell: true,
-            env,
-            stdio: ['ignore', 'pipe', 'pipe'],
-          });
-      let output = '';
-      proc.stdout?.on('data', (d: Buffer) => { output += d.toString(); });
-      proc.on('error', () => resolve({ installed: false }));
-      proc.on('close', (code: number) => {
-        if (code === 0) resolve({ installed: true, version: output.trim() });
-        else resolve({ installed: false });
-      });
-    });
+    const apiKey = loadGeminiApiKey();
+    if (!apiKey) return { installed: false };
+    // API 키가 유효한지 간단히 모델 목록 조회로 확인
+    const resp = await (globalThis as any).fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`,
+      { method: 'GET', signal: AbortSignal.timeout(10_000) },
+    );
+    if (resp.ok) {
+      return { installed: true, version: 'Gemini API (Direct)' };
+    }
+    return { installed: false };
   } catch {
     return { installed: false };
   }
@@ -5712,379 +5774,164 @@ ipcMain.handle('debug:dump', (_e, { name, content }: { name: string; content: st
 
 ipcMain.handle('gemini:modelInfo', async () => {
   try {
-    const fs = require('fs'), path = require('path'), os = require('os'), https = require('https');
-    const credPath = path.join(os.homedir(), '.gemini', 'oauth_creds.json');
-    if (!fs.existsSync(credPath)) return { success: false, error: 'no oauth creds' };
-    const cred = JSON.parse(fs.readFileSync(credPath, 'utf-8'));
-    // 토큰은 gemini CLI 가 oauth_creds.json 에 관리/갱신 — 그대로 사용 (만료 시 API 가 401 → 실패 처리)
-    const token = cred.access_token;
-    if (!token) return { success: false, error: 'no token' };
-    const codeAssistPost = (endpoint: string, bodyObj: any, pick: (j: any) => any): Promise<any> => new Promise(resolve => {
-      const body = JSON.stringify(bodyObj);
-      const req = https.request(`https://cloudcode-pa.googleapis.com/v1internal:${endpoint}`,
-        { method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' } },
-        (res: any) => { let d = ''; res.on('data', (x: any) => d += x); res.on('end', () => { try { resolve(pick(JSON.parse(d))); } catch { resolve(null); } }); });
-      req.on('error', () => resolve(null));
-      req.write(body); req.end();
-    });
-    // 1) loadCodeAssist → 요금제(tier) + cloudaicompanionProject
-    const ca: any = await codeAssistPost('loadCodeAssist',
-      { metadata: { ideType: 'IDE_UNSPECIFIED', platform: 'PLATFORM_UNSPECIFIED', pluginType: 'GEMINI' } }, j => j);
-    const tier = ca?.currentTier;
-    if (!tier) return { success: false, error: 'tier query failed' };
-    // 2) retrieveUserQuota — ⚠ project 파라미터 필수. 없으면 전부 remainingFraction=1 인 placeholder 가 옴.
-    const project = ca?.cloudaicompanionProject;
-    const quota = project
-      ? await codeAssistPost('retrieveUserQuota', { project }, j => j.buckets || null)
-      : null;
-    const quotaBuckets = Array.isArray(quota)
-      ? quota.filter((b: any) => b && b.modelId).map((b: any) => ({
-          modelId: b.modelId,
-          remainingFraction: typeof b.remainingFraction === 'number' ? b.remainingFraction : null,
-          resetTime: b.resetTime || null,
-        }))
-      : [];
-    return { success: true, tierId: tier.id, tierName: tier.name, isPaid: tier.id !== 'free-tier', quotaBuckets };
+    const apiKey = loadGeminiApiKey();
+    if (!apiKey) {
+      return { success: false, error: 'Gemini API 키가 설정되지 않았습니다' };
+    }
+    // API 키가 있으면 사용 가능으로 표시
+    return {
+      success: true,
+      tierId: 'gemini-api-direct',
+      tierName: 'Gemini API (Direct)',
+      isPaid: true,
+      quotaBuckets: []
+    };
   } catch (e: any) {
     return { success: false, error: String(e) };
   }
 });
 
-ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, yolo, addDirs, sshTermId, sshSessions }: { sessionId: string; prompt: string; requestId?: string; model?: string; yolo?: boolean; addDirs?: string[]; sshTermId?: string; sshSessions?: { id: string; label: string }[] }) => {
+ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model }: { sessionId: string; prompt: string; requestId?: string; model?: string; yolo?: boolean; addDirs?: string[]; sshTermId?: string; sshSessions?: { id: string; label: string }[] }) => {
   try {
-    // 같은 sessionId로 실행 중인 Codex 프로세스 정리
-    const prevCodex = codexProcesses.get(sessionId);
-    if (prevCodex) { try { prevCodex.kill('SIGKILL'); } catch {} codexProcesses.delete(sessionId); }
-    const { spawn } = require('child_process');
     const procKey = requestId || sessionId;
-    const os = require('os');
-    const path = require('path');
-    const fs = require('fs');
 
-    const tmpFile = path.join(os.tmpdir(), `gemini-prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`);
-    // 기본 응답 언어를 한국어로 (사용자가 다른 언어를 명시 요청하지 않는 한)
+    // 이전 요청 중단
+    const prevController = geminiAbortControllers.get(procKey);
+    if (prevController) {
+      try { prevController.abort(); } catch {}
+      geminiAbortControllers.delete(procKey);
+    }
+
+    const apiKey = loadGeminiApiKey();
+    const sendStream = (message: Record<string, any>) =>
+      mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message });
+
+    if (!apiKey) {
+      sendStream({ type: 'text', text: '⚠️ Gemini API 키가 설정되지 않았습니다.\n\n설정 방법:\n1. https://aistudio.google.com 에서 API 키를 발급받으세요\n2. 설정(⚙️) → Gemini API Key 에 입력하세요' });
+      sendStream({ type: 'done', code: 1 });
+      return { success: false, error: 'No API key configured' };
+    }
+
     const geminiLangPrefix = '[시스템 지시] 특별한 언어 요청이 없으면 항상 한국어로 응답하세요.\n\n';
-    fs.writeFileSync(tmpFile, geminiLangPrefix + prompt, 'utf-8');
+    const fullPrompt = geminiLangPrefix + prompt;
+    const apiModel = mapGeminiModel(model || 'gemini-2.5-flash');
 
-    const augmentedPath = buildAugmentedPath();
-    const spawnEnv: any = {
-      ...process.env,
-      PATH: augmentedPath,
-      Path: augmentedPath,
-      PYTHONIOENCODING: 'utf-8',
-      LANG: process.env.LANG || 'en_US.UTF-8',
-      LC_ALL: process.env.LC_ALL || 'en_US.UTF-8',
-    };
+    // AbortController 등록
+    const controller = new AbortController();
+    geminiAbortControllers.set(procKey, controller);
 
-    // ── SSH MCP 서버 연결 — sshTermId 가 있으면 gemini 에 pepe_ssh MCP(ssh_exec/read/write) 제공 ──
-    // gemini 는 WebDAV UNC 워크스페이스를 못 쓰므로(realpathSync hang) 원격 파일은 MCP 로 처리.
-    // GEMINI_CLI_SYSTEM_SETTINGS_PATH 로 임시 system settings 를 주입 → ~/.gemini/settings.json 오염 없음.
-    let geminiSettingsTmp = '';
-    if (sshTermId) {
-      try {
-        await startMcpControl();
-        const mcpScriptPath = path.join(os.tmpdir(), 'pepe-mcp-ssh-server.cjs');
-        try {
-          const existing = fs.existsSync(mcpScriptPath) ? fs.readFileSync(mcpScriptPath, 'utf-8') : '';
-          if (existing !== mcpSshServerScript) fs.writeFileSync(mcpScriptPath, mcpSshServerScript, 'utf-8');
-        } catch (e) { console.error('[gemini] MCP script extract failed:', e); }
-        const geminiSettings = {
-          mcpServers: {
-            pepe_ssh: {
-              command: process.execPath,
-              args: [mcpScriptPath],
-              env: {
-                PEPE_CTRL_PORT: String(mcpControlPort),
-                PEPE_CTRL_TOKEN: mcpControlToken,
-                PEPE_TERM_ID: sshTermId,
-                PEPE_TERM_IDS: JSON.stringify(Array.isArray(sshSessions) && sshSessions.length > 0 ? sshSessions : [{ id: sshTermId, label: sshTermId }]),
-                ELECTRON_RUN_AS_NODE: '1',
-              },
-              trust: true,
-            },
+    console.log(`[gemini:send] model=${apiModel}, procKey=${procKey}, promptLen=${fullPrompt.length}`);
+
+    // Gemini REST API SSE 스트리밍 호출
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${apiModel}:streamGenerateContent?alt=sse&key=${apiKey}`;
+
+    let resp: Response;
+    try {
+      resp = await (globalThis as any).fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: fullPrompt }] }],
+          generationConfig: {
+            temperature: 1.0,
+            maxOutputTokens: 65536,
           },
-        };
-        geminiSettingsTmp = path.join(os.tmpdir(), `gemini-mcp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`);
-        fs.writeFileSync(geminiSettingsTmp, JSON.stringify(geminiSettings), 'utf-8');
-        spawnEnv.GEMINI_CLI_SYSTEM_SETTINGS_PATH = geminiSettingsTmp;
-        console.log('[gemini] MCP(pepe_ssh) configured — termId:', sshTermId, '| settings:', geminiSettingsTmp);
-      } catch (e) {
-        console.error('[gemini] MCP setup failed:', e);
+        }),
+        signal: controller.signal,
+      });
+    } catch (fetchErr: any) {
+      geminiAbortControllers.delete(procKey);
+      if (fetchErr?.name === 'AbortError') {
+        sendStream({ type: 'done', code: 0 });
+        return { success: true };
       }
+      sendStream({ type: 'text', text: `❌ Gemini API 호출 실패: ${fetchErr?.message || fetchErr}` });
+      sendStream({ type: 'done', code: 1 });
+      return { success: false, error: String(fetchErr) };
     }
 
-    const modelFlag = model ? ['-m', model] : [];
-    // gemini 는 비대화형이라 항상 --yolo 필요 (없으면 도구가 막힘).
-    // 승인 게이트는 렌더러의 "계획 승인" 흐름이 담당.
-    void yolo;
-    const localDirs = Array.isArray(addDirs) ? addDirs.filter(d => d && !d.startsWith('\\\\')) : [];
-    const skippedUnc = Array.isArray(addDirs) ? addDirs.filter(d => d && d.startsWith('\\\\')) : [];
-    const cwd = process.env.USERPROFILE || process.env.HOME || os.homedir();
-    console.log('[gemini] include-dirs(local):', localDirs.length ? localDirs.join(', ') : '(none)');
-    if (skippedUnc.length) console.log('[gemini] UNC dirs skipped (realpathSync hang 회피):', skippedUnc.join(', '));
-    const geminiArgs = [
-      '-p', '',
-      '-o', 'stream-json',
-      ...modelFlag,
-      '--yolo',
-      '--skip-trust',
-      ...localDirs.flatMap(d => ['--include-directories', d]),
-    ];
-    console.log('[gemini] args:', geminiArgs.join(' '));
-    const bundlePath = findGeminiBundlePath();
-    // 인증 정보가 없으면 바로 실패 처리 — gemini CLI 가 대화형 로그인으로 멈출 수 있음
-    try {
-      const home = os.homedir();
-      const oauthPath = path.join(home, '.gemini', 'oauth_creds.json');
-      if (!fs.existsSync(oauthPath) && !spawnEnv.GEMINI_CLI_SYSTEM_SETTINGS_PATH) {
-        console.log('[gemini] missing oauth_creds.json — aborting spawn');
-        try { fs.unlinkSync(tmpFile); } catch {}
-        mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message: { type: 'error', text: 'Gemini 인증 정보가 없습니다. `gemini auth login`로 로그인하거나 GEMINI_CLI_SYSTEM_SETTINGS_PATH를 설정해 주세요.' } });
-        return { success: false, error: 'no oauth creds' };
-      }
-    } catch (e) {
-      // ignore fs/os errors and proceed to spawn (will surface later)
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => '');
+      geminiAbortControllers.delete(procKey);
+      sendStream({ type: 'text', text: `❌ Gemini API 오류 (${resp.status}): ${errText.slice(0, 500)}` });
+      sendStream({ type: 'done', code: 1 });
+      return { success: false, error: `API ${resp.status}` };
     }
-    // Windows: bundle JS 직접 실행 / Mac·Linux: gemini CLI shell 실행 (기존 방식)
-    const modelFlagStr = model ? ` -m ${model}` : '';
-    const includeFlagStr = localDirs.length > 0 ? ' ' + localDirs.map(d => `--include-directories "${d}"`).join(' ') : '';
-    const proc = bundlePath
-      ? spawn(process.execPath, [bundlePath, ...geminiArgs], {
-          shell: false,
-          stdio: ['pipe', 'pipe', 'pipe'],
-          env: { ...spawnEnv, ELECTRON_RUN_AS_NODE: '1' },
-          cwd,
-          windowsHide: true,
-        })
-      : spawn(`cat "${tmpFile}" | gemini -o stream-json${modelFlagStr} --yolo --skip-trust${includeFlagStr}`, [], {
-          shell: true,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          env: spawnEnv,
-          cwd,
-        });
-    geminiProcesses.set(procKey, proc);
+
+    // SSE 스트림 파싱
+    const reader = resp.body?.getReader();
+    if (!reader) {
+      geminiAbortControllers.delete(procKey);
+      sendStream({ type: 'text', text: '❌ 응답 스트림을 읽을 수 없습니다' });
+      sendStream({ type: 'done', code: 1 });
+      return { success: false, error: 'No response body' };
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = '';
 
     try {
-      proc.stdin.write(fs.readFileSync(tmpFile));
-      proc.stdin.end();
-    } catch (e) {
-      console.log('[gemini] stdin write error:', e);
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        if (stoppedAgentProcs.has(procKey)) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || ''; // 마지막 불완전 줄은 다음 청크에서 처리
+
+        for (const line of lines) {
+          if (stoppedAgentProcs.has(procKey)) break;
+
+          const trimmed = line.trim();
+          if (!trimmed || trimmed === 'data: [DONE]') continue;
+          if (!trimmed.startsWith('data: ')) continue;
+
+          try {
+            const json = JSON.parse(trimmed.slice(6));
+            const text = json?.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (text) {
+              sendStream({ type: 'text', text });
+            }
+          } catch {
+            // JSON 파싱 실패 — 무시 (SSE 형식 특수 줄)
+          }
+        }
+      }
+    } catch (streamErr: any) {
+      if (streamErr?.name !== 'AbortError') {
+        console.error('[gemini:send] stream read error:', streamErr);
+        sendStream({ type: 'text', text: `\n\n❌ 스트림 읽기 오류: ${streamErr?.message || streamErr}` });
+      }
+    } finally {
+      geminiAbortControllers.delete(procKey);
+      if (!stoppedAgentProcs.has(procKey)) {
+        sendStream({ type: 'done', code: 0 });
+      } else {
+        stoppedAgentProcs.delete(procKey);
+      }
     }
 
-    const cleanupTmp = () => {
-      try { fs.unlinkSync(tmpFile); } catch {}
-      if (geminiSettingsTmp) { try { fs.unlinkSync(geminiSettingsTmp); } catch {} }
-    };
-
-    console.log('[gemini] spawn — model:', model || 'default', '| yolo:', yolo !== false);
-    const sendStream = (message: any) => mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message });
-    // gemini stream-json 이벤트 → claude:stream (Claude 호환 포맷) 변환
-    const gIdPrefix = requestId || `gmn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    let geminiHadOutput = false;
-    let gTextBuf = '';
-    let gSegment = 0;
-    // flush 시 누적 텍스트에 대한 최종 정리. 모델이 update_topic 의 내부
-    // 파라미터(strategic_intent 등)를 평문으로 흘리는 경우가 있는데, 이 누수는
-    // 여러 델타에 걸쳐 쪼개져 오므로 per-delta 정리로는 못 잡고 flush 시 한 번 더 거른다.
-    // 'strategic_intent:' 다음부터 첫 마침표(.) 또는 줄바꿈까지를 한 단위로 제거.
-    // update_topic / save_memory 같은 메타 도구의 함수 호출 형태를 균형 잡힌 괄호 파서로 제거.
-    // (regex 만으로는 따옴표 안 ')' / unescape 된 따옴표 / 긴 multiline 값을 안정적으로 처리 못함)
-    const stripFnCall = (s: string, fnName: string): string => {
-      const re = new RegExp(`\\b${fnName}\\s*\\(`);
-      let result = s;
-      // 반복 — 같은 fnName 호출이 여러 개 있을 수 있음
-      for (let safety = 0; safety < 20; safety++) {
-        const m = re.exec(result);
-        if (!m) break;
-        const start = m.index;
-        let depth = 1;
-        let i = m.index + m[0].length;
-        let inStr: string | null = null;
-        while (i < result.length && depth > 0) {
-          const c = result[i];
-          if (inStr) {
-            if (c === '\\' && i + 1 < result.length) { i += 2; continue; }
-            if (c === inStr) inStr = null;
-          } else {
-            if (c === '"' || c === "'") inStr = c;
-            else if (c === '(') depth++;
-            else if (c === ')') depth--;
-          }
-          i++;
-        }
-        if (depth === 0) {
-          // 닫는 ')' 찾음 → 그 뒤 선행 개행 1개까지 같이 제거
-          let end = i;
-          if (result[end] === '\n') end++;
-          result = result.slice(0, start) + result.slice(end);
-        } else {
-          // 닫는 ')' 못 찾음 (모델이 미완 출력) → 줄 끝까지 잘라냄. 줄 없으면 전체.
-          const nlIdx = result.indexOf('\n', m.index);
-          if (nlIdx !== -1) result = result.slice(0, start) + result.slice(nlIdx + 1);
-          else result = result.slice(0, start);
-          break;
-        }
-      }
-      return result;
-    };
-    const finalizeGeminiText = (s: string): string => {
-      let out = s;
-      // 1) update_topic(...) / save_memory(...) 함수 호출 — 균형 괄호 파서로 안전하게 제거
-      out = stripFnCall(out, 'update_topic');
-      out = stripFnCall(out, 'save_memory');
-      // 2) bare 'strategic_intent: ...' narration 누수 — 첫 마침표/줄바꿈까지 제거
-      out = out.replace(/\bstrategic_intent\s*:[^.\n]*[.\n]?/gi, '');
-      // 3) 제거 후 선두 공백/개행 정리
-      out = out.replace(/^\s+/, '');
-      return out;
-    };
-    const flushGeminiText = () => {
-      const cleaned = finalizeGeminiText(gTextBuf);
-      if (cleaned.trim()) {
-        sendStream({ type: 'assistant', message: { id: `${gIdPrefix}-m-${gSegment}`, content: [{ type: 'text', text: cleaned }] } });
-        gSegment++;
-      }
-      gTextBuf = '';
-    };
-    // gemini 내부 메타 도구 — 화면에 표시하지 않음 (대화 토픽 관리용 bookkeeping)
-    const GEMINI_META_TOOLS = new Set(['update_topic', 'save_memory']);
-    const geminiMetaToolIds = new Set<string>();
-    // 모델이 텍스트에 섞어 내보내는 update_topic(...) 등 토픽 지시문 제거
-    // ⚠ trimStart() 금지 — 스트리밍 delta 마다 호출되므로 줄바꿈으로 시작하는 delta 의
-    // 선행 개행이 잘려 인접 줄이 붙어버림(코드블록/mermaid 깨짐). 지시문만 제거.
-    const stripGeminiDirectives = (s: string): string =>
-      s.replace(/update_topic\s*\(\s*\w+\s*=\s*(['"])[\s\S]*?\1(?:\s*,\s*\w+\s*=\s*(['"])[\s\S]*?\2)*\s*\)/g, '');
-
-    const handleGeminiEvent = (evt: any) => {
-      const t = evt?.type;
-      if (t === 'message') {
-        // role=user 는 입력 에코 → 무시. assistant 만 누적.
-        if (evt.role === 'assistant' && typeof evt.content === 'string' && evt.content) {
-          const cleaned = stripGeminiDirectives(evt.content);
-          if (cleaned) {
-            geminiHadOutput = true;
-            gTextBuf += cleaned;
-          }
-        }
-      } else if (t === 'tool_use') {
-        // 메타 도구는 타임라인에 표시 안 함
-        if (GEMINI_META_TOOLS.has(evt.tool_name)) { geminiMetaToolIds.add(evt.tool_id); return; }
-        geminiHadOutput = true;
-        flushGeminiText(); // 도구 앞의 텍스트를 먼저 메시지로 확정 (타임라인 인터리브)
-        sendStream({ type: 'assistant', message: { id: `${gIdPrefix}-a-${evt.tool_id}`, content: [{ type: 'tool_use', id: `${gIdPrefix}-${evt.tool_id}`, name: evt.tool_name || 'tool', input: evt.parameters || {} }] } });
-      } else if (t === 'tool_result') {
-        if (geminiMetaToolIds.has(evt.tool_id)) return; // 메타 도구 결과 무시
-        const out = evt.output ?? evt.content ?? evt.result ?? evt.error ?? evt.status ?? '';
-        sendStream({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: `${gIdPrefix}-${evt.tool_id}`, content: typeof out === 'string' ? out : JSON.stringify(out), is_error: !!evt.status && evt.status !== 'success' }] } });
-      } else if (t === 'error') {
-        // Gemini CLI 는 응답 끝에 meta 도구(update_topic 등)가 있으면
-        // "Invalid stream: empty response or malformed tool call" 같은 거짓 에러를 종종 뿜는다.
-        // 이미 텍스트/도구 출력이 있었다면(geminiHadOutput) 응답은 정상 전달된 것이므로
-        // 보류 중인 텍스트를 먼저 flush 하고 거짓 에러는 무시한다.
-        const msg = String(evt.message || evt.error || '');
-        if (geminiHadOutput || gTextBuf.trim()) {
-          flushGeminiText();
-          if (/invalid stream|empty response|malformed tool call/i.test(msg)) return;
-        }
-        sendStream({ type: 'error', text: msg || 'gemini error' });
-      } else if (t === 'result') {
-        // 토큰 사용량(컨텍스트) — 렌더러 usage 표시용
-        if (evt.stats) sendStream({ type: 'gemini_usage', stats: evt.stats });
-      }
-      // init / thought → 무시 (done 은 close 에서)
-    };
-
-    let stdoutBuf = '';
-    proc.stdout.setEncoding('utf-8');
-    proc.stdout.on('data', (data: string) => {
-      if (stoppedAgentProcs.has(procKey)) return; // stop 후 잔여 stdout 차단
-      stdoutBuf += data;
-      const lines = stdoutBuf.split('\n');
-      stdoutBuf = lines.pop() || '';
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        console.log('[gemini] stdout:', line.slice(0, 200));
-        try { handleGeminiEvent(JSON.parse(line)); }
-        catch { /* JSONL 아닌 노이즈 라인 → 무시 */ }
-      }
-    });
-    // stderr 노이즈 — 재시도 백오프/경고 (gemini 가 내부 재시도 후 성공하면 무시)
-    const GEMINI_NOISE = /YOLO mode is enabled|Ripgrep is not available|Falling back to GrepTool|256-color|overriding the built-in|^\s*$/;
-    let stderrBuf = '';
-    proc.stderr.on('data', (data: Buffer) => {
-      if (stoppedAgentProcs.has(procKey)) return;
-      const s = data.toString();
-      stderrBuf += s;
-      const lines = stderrBuf.split('\n');
-      stderrBuf = lines.pop() || '';
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        if (GEMINI_NOISE.test(line)) continue;
-        console.log('[gemini] stderr:', line.slice(0, 300));
-      }
-    });
-    proc.on('error', (err: any) => {
-      if (stoppedAgentProcs.has(procKey)) return;
-      console.log('[gemini] spawn error:', err);
-      sendStream({ type: 'error', text: String(err) });
-    });
-    proc.on('close', (code: number) => {
-      // 남은 stdout 버퍼 + 마지막 텍스트 세그먼트 플러시
-      if (stdoutBuf.trim()) {
-        try { handleGeminiEvent(JSON.parse(stdoutBuf)); } catch {}
-      }
-      flushGeminiText();
-      console.log('[gemini] close, code:', code, '| had output:', geminiHadOutput);
-      // ⚠ 에러는 gemini 가 실제 실패(출력 없음)했을 때만 표시.
-      // gemini 는 일시적 429/rate-limit 시 stderr 에 "quota will reset after 5s" 를 찍고
-      // 내부 재시도 → 성공함. 출력이 있으면 stderr 는 재시도 노이즈이므로 무시.
-      if (!geminiHadOutput) {
-        const lines = stderrBuf.split('\n').filter(l => l.trim() && !GEMINI_NOISE.test(l));
-        const joined = lines.join('\n');
-        if (joined.trim()) {
-          let errText = joined;
-          if (/ModelNotFoundError|Requested entity was not found|code:\s*404/i.test(joined)) {
-            errText = `❌ Gemini 모델을 찾을 수 없습니다 (404). 모델 선택에서 Flash 계열 모델을 선택하세요.`;
-          } else if (/TerminalQuotaError|QUOTA_EXHAUSTED|RESOURCE_EXHAUSTED|\b429\b/.test(joined)) {
-            const qm = joined.match(/quota will reset after ([^\n.]+)/i);
-            errText = qm
-              ? `❌ Gemini API 할당량 초과. ${qm[1]} 후 재시도하세요.`
-              : `❌ Gemini API 한도 초과. 잠시 후 다시 시도하세요.`;
-          }
-          console.log('[gemini] error reported:', errText.slice(0, 120));
-          sendStream({ type: 'error', text: errText });
-        }
-      }
-      cleanupTmp();
-      geminiProcesses.delete(procKey);
-      if (stoppedAgentProcs.has(procKey)) { stoppedAgentProcs.delete(procKey); return; }
-      sendStream({ type: 'done', code });
-    });
     return { success: true };
   } catch (err: any) {
+    console.error('[gemini:send] error:', err);
     return { success: false, error: String(err) };
   }
 });
 
 ipcMain.handle('gemini:stop', (_e, { sessionId, requestId }: { sessionId: string; requestId?: string }) => {
-  const { spawn } = require('child_process');
   const procKey = requestId || sessionId;
   markAgentStopped(procKey);
-  const proc = geminiProcesses.get(procKey);
-  if (proc) {
-    try {
-      if (process.platform === 'win32') {
-        const pid = proc.pid;
-        if (pid) spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
-      } else {
-        try { process.kill(-proc.pid, 'SIGKILL'); } catch { try { proc.kill('SIGKILL'); } catch {} }
-      }
-    } catch {}
-    try { proc.kill('SIGKILL'); } catch {}
-    geminiProcesses.delete(procKey);
+  const controller = geminiAbortControllers.get(procKey);
+  if (controller) {
+    try { controller.abort(); } catch {}
+    geminiAbortControllers.delete(procKey);
   }
   return { success: true };
 });
+
+
 
 ipcMain.handle('codex:check', async () => {
   try {

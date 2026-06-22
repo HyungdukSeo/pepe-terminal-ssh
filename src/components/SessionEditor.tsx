@@ -43,6 +43,7 @@ export type Session = {
   codePath?: string;     // CompareWorkspace 가 이 세션 선택 시 기본 base 디렉토리
   x11Forward?: boolean;
   x11Display?: number;
+  browserUrl?: string;
   jumps?: JumpHop[];
   dbms?: {
     type: 'altibase' | 'mysql' | 'postgres' | 'oracle' | 'mssql' | 'sqlite';
@@ -102,6 +103,7 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
   const [codePath, setCodePath] = useState(session?.codePath ?? '');
   const [x11Forward, setX11Forward] = useState<boolean>(!!session?.x11Forward);
   const [x11Display, setX11Display] = useState<number>(session?.x11Display ?? 0);
+  const [browserUrl, setBrowserUrl] = useState(session?.browserUrl ?? '');
   // 다단계 점프 — 편집용 행 배열. host/user/password 는 문자열, port 는 number|'' 로 보관.
   type JumpRow = { host: string; user: string; port: number | ''; password: string };
   const toJumpRows = (sess?: Session | null): JumpRow[] => (sess?.jumps ?? []).map(j => ({
@@ -138,6 +140,8 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
   const [category, setCategory] = useState<string>('connection');
   const [cursorStyle, setCursorStyle] = useState<'block' | 'underline' | 'bar' | 'flame' | 'star' | 'heart' | 'circle' | 'rainbow' | 'power' | 'prism'>(session?.cursorStyle ?? 'block');
   const [cursorBlink, setCursorBlink] = useState<boolean>(!!session?.cursorBlink);
+  const hasConfiguredJumps = () => jumps.some(j => (j.host || '').trim());
+  const dbmsRemoteHostForCurrentSession = () => hasConfiguredJumps() ? '127.0.0.1' : (dbmsHost || '127.0.0.1');
 
   useEffect(() => {
     setName(session?.name ?? 'New Session');
@@ -164,6 +168,7 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
     setCodePath(session?.codePath ?? '');
     setX11Forward(!!session?.x11Forward);
     setX11Display(session?.x11Display ?? 0);
+    setBrowserUrl(session?.browserUrl ?? '');
     setJumps(toJumpRows(session));
     setShowJumpPw(new Set());
     setDbmsEnabled(!!session?.dbms);
@@ -219,20 +224,6 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
     // dialect 는 선택된 driverId 에서 추론 (E-6).
     const selectedDriver = jdbcDrivers.find(d => d.id === dbmsDriverId);
     const dialect = (selectedDriver?.dialect || 'altibase') as 'altibase' | 'mysql' | 'postgres' | 'oracle' | 'mssql' | 'sqlite';
-    const dbms = dbmsEnabled
-      ? {
-          type: dialect,
-          driverId: dbmsDriverId || undefined,
-          port: dbmsPort || (selectedDriver?.defaultPort || 20300),
-          user: dbmsUser.trim(),
-          password: dbmsPassword,
-          host: dbmsHost.trim() || '127.0.0.1',
-          database: dbmsDatabase.trim() || undefined,
-          useSshTunnel: dbmsUseSshTunnel || undefined,
-          urlOverride: dbmsUrlEditMode && dbmsUrlOverride.trim() ? dbmsUrlOverride.trim() : undefined,
-        }
-      : undefined;
-    // 점프 체인 정리 — host 가 있는 행만, 첫 빈 host 에서 체인 종료 (중간 빈 행이 끊지 않도록).
     const cleanedJumps: JumpHop[] = [];
     for (const row of jumps) {
       const h = (row.host || '').trim();
@@ -244,7 +235,20 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
         password: row.password || undefined,
       });
     }
-    return { id, name, host: normalizeHost(host), port, username, auth, encoding, folderId: folderId || undefined, loginScript: script.length > 0 ? script : undefined, theme: theme || undefined, fontFamily: fontFamily || undefined, fontSize: fontSize || undefined, scrollback: scrollback || undefined, icon: icon || undefined, initialPath: initialPath.trim() || undefined, fileTreeEnabled: fileTreeEnabled || undefined, autoTrackPwd: (fileTreeEnabled && autoTrackPwd) ? true : undefined, backspaceKeyMode, deleteKeyMode, logPath: logPath.trim() || undefined, codePath: codePath.trim() || undefined, x11Forward: x11Forward || undefined, x11Display: x11Forward ? x11Display : undefined, jumps: cleanedJumps.length > 0 ? cleanedJumps : undefined, cursorStyle: cursorStyle !== 'block' ? cursorStyle : undefined, cursorBlink: !!cursorBlink, dbms } as Session;
+    const dbms = dbmsEnabled
+      ? {
+          type: dialect,
+          driverId: dbmsDriverId || undefined,
+          port: dbmsPort || (selectedDriver?.defaultPort || 20300),
+          user: dbmsUser.trim(),
+          password: dbmsPassword,
+          host: dbmsHost.trim() || '127.0.0.1',
+          database: dbmsDatabase.trim() || undefined,
+          useSshTunnel: (dbmsUseSshTunnel || cleanedJumps.length > 0) || undefined,
+          urlOverride: dbmsUrlEditMode && dbmsUrlOverride.trim() ? dbmsUrlOverride.trim() : undefined,
+        }
+      : undefined;
+    return { id, name, host: normalizeHost(host), port, username, auth, encoding, folderId: folderId || undefined, loginScript: script.length > 0 ? script : undefined, theme: theme || undefined, fontFamily: fontFamily || undefined, fontSize: fontSize || undefined, scrollback: scrollback || undefined, icon: icon || undefined, initialPath: initialPath.trim() || undefined, fileTreeEnabled: fileTreeEnabled || undefined, autoTrackPwd: (fileTreeEnabled && autoTrackPwd) ? true : undefined, backspaceKeyMode, deleteKeyMode, logPath: logPath.trim() || undefined, codePath: codePath.trim() || undefined, x11Forward: x11Forward || undefined, x11Display: x11Forward ? x11Display : undefined, browserUrl: browserUrl.trim() || undefined, jumps: cleanedJumps.length > 0 ? cleanedJumps : undefined, cursorStyle: cursorStyle !== 'block' ? cursorStyle : undefined, cursorBlink: !!cursorBlink, dbms } as Session;
   };
   // ── 점프 행 조작 ──
   const addJump = () => setJumps(prev => [...prev, { host: '', user: '', port: '', password: '' }]);
@@ -353,6 +357,8 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
                 <input className={host && !isValidHost(host) ? 'invalid' : ''} value={host} onChange={e => setHost(e.target.value)} placeholder={t('placeholders.hostExample')} />
                 <label>{t('fields.port')}</label>
                 <input type="number" value={port} onChange={e => setPort(Number(e.target.value) || 22)} />
+                <label>{t('fields.browserUrl')}</label>
+                <input value={browserUrl} onChange={e => setBrowserUrl(e.target.value)} placeholder={t('placeholders.browserUrl')} />
               </div>
             )}
             {category === 'auth' && (
@@ -678,15 +684,19 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
                 let forwardId = '';
                 try {
                   // SSH 터널 사용 시 — 로컬 포워드 열고 URL 의 host:port 를 127.0.0.1:localPort 로 재작성
-                  if (dbmsUseSshTunnel && session?.id) {
+                  const forceSshTunnel = hasConfiguredJumps();
+                  const useSshTunnel = dbmsUseSshTunnel || forceSshTunnel;
+                  if (useSshTunnel && session?.id) {
                     if (typeof api.sshOpenLocalForward !== 'function') {
                       setDbmsTestResult('❌ SSH 터널 IPC 미등록 — Electron 메인 재시작 필요'); return;
                     }
                     setDbmsTestResult('SSH 터널 여는 중...');
+                    const remoteHost = dbmsRemoteHostForCurrentSession();
+                    const remotePort = dbmsPort || selectedDriver?.defaultPort || 0;
                     const fwd = await api.sshOpenLocalForward({
                       sessionId: session.id,
-                      remoteHost: dbmsHost || '127.0.0.1',
-                      remotePort: dbmsPort || selectedDriver?.defaultPort || 0,
+                      remoteHost,
+                      remotePort,
                       sshHost: host,
                       sshPort: parseInt(String(port || '22'), 10) || 22,
                     });
@@ -698,7 +708,7 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
                     // 원래 호스트:포트를 127.0.0.1:localPort 로 치환
                     const orig = `${dbmsHost || '127.0.0.1'}:${dbmsPort || selectedDriver?.defaultPort || 0}`;
                     testUrl = effectiveUrl.replace(orig, `127.0.0.1:${fwd.localPort}`);
-                    setDbmsTestResult(`SSH 터널 OK (local=${fwd.localPort}) — JDBC 테스트 중...`);
+                    setDbmsTestResult(`SSH 터널 OK (${remoteHost}:${remotePort} → local=${fwd.localPort}) — JDBC 테스트 중...`);
                   }
                   const cr = await api.jdbcConnect?.({
                     connectionId: cid,
@@ -763,8 +773,8 @@ export const SessionEditor: React.FC<Props> = ({ session, folders = [], onSave, 
                   </div>
                   <label>SSH 터널</label>
                   <label style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#bbb', fontSize: 12 }}>
-                    <input type="checkbox" checked={dbmsUseSshTunnel} onChange={e => setDbmsUseSshTunnel(e.target.checked)} disabled={!dbmsEnabled} />
-                    <span>SSH 세션 위에 포트 포워딩 후 로컬에서 JDBC 접속</span>
+                    <input type="checkbox" checked={dbmsUseSshTunnel || hasConfiguredJumps()} onChange={e => setDbmsUseSshTunnel(e.target.checked)} disabled={!dbmsEnabled || hasConfiguredJumps()} />
+                    <span>{hasConfiguredJumps() ? '점프 최종 SSH 장비 기준으로 JDBC 접속' : 'SSH 세션 위에 포트 포워딩 후 로컬에서 JDBC 접속'}</span>
                   </label>
                 </div>
 

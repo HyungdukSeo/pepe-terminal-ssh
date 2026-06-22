@@ -45,6 +45,7 @@
     "jumpPort": "점프 포트",
     "jumpPassword": "점프 비밀번호",
     "jumpKey": "점프 개인키",
+    "browserUrl": "브라우저 URL",
     "loginScript": "로그인 스크립트 (Expect/Send)",
     "folder": "폴더",
     "jumpTargetHost": "점프 타겟 호스트",
@@ -84,6 +85,7 @@
     "jumpTargetHost": "예: I-MPM01",
     "jumpTargetUser": "예: root",
     "jumpTargetPassword": "비우면 직전 호스트의 ~/.ssh/id_rsa 자동 사용",
+    "browserUrl": "예: https://172.16.214.148",
     "initialPath": "예: /home/user/project (비우면 홈 디렉토리)"
   },
   "tooltips": {

@@ -45,6 +45,7 @@
     "jumpPort": "منفذ القفز",
     "jumpPassword": "كلمة مرور القفز",
     "jumpKey": "مفتاح القفز الخاص",
+    "browserUrl": "عنوان المتصفح",
     "loginScript": "سكربت الدخول (Expect/Send)",
     "folder": "المجلد",
     "jumpTargetHost": "مضيف هدف القفز",
@@ -84,6 +85,7 @@
     "jumpTargetHost": "مثال: I-MPM01 (فارغ = اتصال مباشر)",
     "jumpTargetUser": "مثال: root",
     "jumpTargetPassword": "فارغ = استخدم ~/.ssh/id_rsa للمضيف السابق",
+    "browserUrl": "مثال: https://172.16.214.148",
     "initialPath": "مثال: /home/user/project (فارغ = المجلد الرئيسي)"
   },
   "tooltips": {

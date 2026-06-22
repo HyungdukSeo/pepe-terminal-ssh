@@ -3,6 +3,7 @@ import { Client } from 'ssh2';
 import { EventEmitter } from 'events';
 import { Worker } from 'worker_threads';
 import net from 'net';
+import tls from 'tls';
 import fs from 'fs';
 import path from 'path';
 import iconv from 'iconv-lite';
@@ -45,6 +46,10 @@ function setupX11Forwarding(conn: any, displayNum = 0, emit?: (msg: string) => v
     xstream.on('error', () => { try { xclient.end(); } catch {} });
     xstream.on('close', () => { try { xclient.end(); } catch {} });
   });
+}
+
+function quoteShellArg(value: string): string {
+  return `'${String(value).replace(/'/g, `'\"'\"'`)}'`;
 }
 
 interface ClientRecord {
@@ -1102,6 +1107,16 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
     this.autoTrackOn.delete(panelId);
     this.homeDirs.delete(panelId);
     this.homeFetching.delete(panelId);
+    for (const [forwardId, f] of [...this.localForwards.entries()]) {
+      if (f.panelId !== panelId) continue;
+      try { f.server.close(); } catch {}
+      this.localForwards.delete(forwardId);
+    }
+    for (const [proxyId, p] of [...this.socksProxies.entries()]) {
+      if (p.panelId !== panelId) continue;
+      try { p.server.close(); } catch {}
+      this.socksProxies.delete(proxyId);
+    }
   }
 
   // 앱 종료 시 — 모든 SSH 연결을 일괄 종료. 비차단(fire-and-forget).
@@ -1113,8 +1128,25 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
   // 로컬 포트 포워딩 (SSH 터널) — 활성 SSH 연결을 통해 원격 host:port 를 로컬 127.0.0.1:auto 로 매핑.
   // SqlTool 의 JDBC 연결을 SSH 세션 위로 라우팅할 때 사용.
   private localForwards = new Map<string, { server: net.Server; localPort: number; panelId: string }>();
+  // SOCKS5 프록시 — 브라우저/외부 클라이언트가 활성 SSH 세션을 경유하도록 함.
+  private socksProxies = new Map<string, { server: net.Server; localPort: number; panelId: string }>();
   public hasActiveClient(panelId: string): boolean { return this.clients.has(panelId); }
   public listActivePanels(): string[] { return [...this.clients.keys()]; }
+  public listActiveSessions(): { panelId: string; sessionId?: string; sessionName?: string; host?: string; port?: number; browserUrl?: string }[] {
+    const out: { panelId: string; sessionId?: string; sessionName?: string; host?: string; port?: number; browserUrl?: string }[] = [];
+    for (const panelId of this.clients.keys()) {
+      const s = this.sessionStore.get(panelId);
+      out.push({
+        panelId,
+        sessionId: s?.id,
+        sessionName: s?.name,
+        host: s?.host,
+        port: s?.port,
+        browserUrl: s?.browserUrl,
+      });
+    }
+    return out;
+  }
   // 디버그용 — 각 활성 패널의 sessionStore 정보(id, host, port) 한 줄 요약. (메인 콘솔 로그 전용)
   public dumpSessionInfo(): string {
     const lines: string[] = [];
@@ -1204,6 +1236,335 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
     try { f.server.close(); } catch {}
     this.localForwards.delete(forwardId);
     return true;
+  }
+
+  public async openSocksProxy(panelId: string): Promise<{ proxyId: string; localPort: number }> {
+    const rec = this.clients.get(panelId);
+    if (!rec?.conn) throw new Error('SSH 연결 없음');
+
+    const makeFailureReply = (rep: number) => Buffer.from([0x05, rep, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
+
+    return new Promise((resolve, reject) => {
+      const server = net.createServer((client: net.Socket) => {
+        let buffer = Buffer.alloc(0);
+        let stage: 'greeting' | 'request' | 'stream' = 'greeting';
+        let upstream: any = null;
+        let closed = false;
+
+        const finish = () => {
+          if (closed) return;
+          closed = true;
+          try { client.destroy(); } catch {}
+          try { upstream?.destroy?.(); } catch {}
+        };
+
+        const replyAndClose = (rep: number) => {
+          try { client.write(makeFailureReply(rep)); } catch {}
+          finish();
+        };
+
+        const parseRequest = () => {
+          if (buffer.length < 4) return false;
+          const ver = buffer[0];
+          const cmd = buffer[1];
+          const atyp = buffer[3];
+          if (ver !== 0x05) {
+            replyAndClose(0x01);
+            return true;
+          }
+          if (cmd !== 0x01) {
+            replyAndClose(0x07);
+            return true;
+          }
+
+          let offset = 4;
+          let host = '';
+          if (atyp === 0x01) {
+            if (buffer.length < offset + 4 + 2) return false;
+            host = Array.from(buffer.slice(offset, offset + 4)).join('.');
+            offset += 4;
+          } else if (atyp === 0x03) {
+            if (buffer.length < offset + 1) return false;
+            const len = buffer[offset];
+            offset += 1;
+            if (buffer.length < offset + len + 2) return false;
+            host = buffer.slice(offset, offset + len).toString('utf8');
+            offset += len;
+          } else if (atyp === 0x04) {
+            if (buffer.length < offset + 16 + 2) return false;
+            const parts: string[] = [];
+            for (let i = 0; i < 16; i += 2) parts.push(buffer.readUInt16BE(offset + i).toString(16));
+            host = parts.join(':');
+            offset += 16;
+          } else {
+            replyAndClose(0x08);
+            return true;
+          }
+
+          const port = buffer.readUInt16BE(offset);
+          buffer = buffer.slice(offset + 2);
+
+          rec.conn.forwardOut('127.0.0.1', 0, host, port, (err: any, stream: any) => {
+            if (err || !stream) {
+              console.error('[socks-proxy] forwardOut error:', err?.message || err);
+              replyAndClose(0x01);
+              return;
+            }
+            upstream = stream;
+            try {
+              client.write(Buffer.from([0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]));
+            } catch {
+              finish();
+              return;
+            }
+            stage = 'stream';
+            client.pipe(stream).pipe(client);
+            client.on('error', (e: any) => { console.error('[socks-proxy] client err:', e?.message || e); finish(); });
+            stream.on('error', (e: any) => { console.error('[socks-proxy] stream err:', e?.message || e); finish(); });
+            client.on('close', finish);
+            stream.on('close', finish);
+          });
+          return true;
+        };
+
+        client.on('data', (chunk: Buffer) => {
+          if (closed) return;
+          buffer = Buffer.concat([buffer, chunk]);
+
+          if (stage === 'greeting') {
+            if (buffer.length < 2) return;
+            const ver = buffer[0];
+            const nMethods = buffer[1];
+            if (ver !== 0x05 || buffer.length < 2 + nMethods) {
+              replyAndClose(0x01);
+              return;
+            }
+            // NO AUTH only
+            try { client.write(Buffer.from([0x05, 0x00])); } catch { finish(); return; }
+            buffer = buffer.slice(2 + nMethods);
+            stage = 'request';
+          }
+
+          if (stage === 'request') {
+            parseRequest();
+          }
+        });
+
+        client.on('error', (e: any) => {
+          console.error('[socks-proxy] client socket err:', e?.message || e);
+          finish();
+        });
+      });
+
+      server.on('error', (e: any) => { console.error('[socks-proxy] server err:', e?.message || e); reject(e); });
+      server.on('close', () => { console.log('[socks-proxy] server closed'); });
+      server.listen(0, '127.0.0.1', () => {
+        const addr = server.address() as net.AddressInfo;
+        const localPort = addr.port;
+        const proxyId = `socks-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        this.socksProxies.set(proxyId, { server, localPort, panelId });
+        console.log(`[socks-proxy] listening 127.0.0.1:${localPort} (panelId=${panelId}, proxyId=${proxyId})`);
+        resolve({ proxyId, localPort });
+      });
+    });
+  }
+
+  public closeSocksProxy(proxyId: string): boolean {
+    const p = this.socksProxies.get(proxyId);
+    if (!p) return false;
+    try { p.server.close(); } catch {}
+    this.socksProxies.delete(proxyId);
+    return true;
+  }
+
+  public async testWebTarget(panelId: string, target: { protocol: 'http:' | 'https:'; host: string; port: number; path: string; timeoutMs?: number }): Promise<{
+    protocol: 'http:' | 'https:';
+    host: string;
+    port: number;
+    path: string;
+    elapsedMs: number;
+    statusCode?: number;
+    statusLine?: string;
+    mode?: 'forward' | 'exec';
+  }> {
+    const rec = this.clients.get(panelId);
+    if (!rec?.conn) throw new Error('SSH 연결 없음');
+
+    const started = Date.now();
+    const timeoutMs = Math.max(1000, Math.min(30000, target.timeoutMs || 10000));
+    const toResult = (raw: string, mode: 'forward' | 'exec') => {
+      const firstLine = raw.split(/\r?\n/, 1)[0]?.trim() || '';
+      const statusMatch = firstLine.match(/^HTTP\/\d(?:\.\d)?\s+(\d{3})\b/i);
+      return {
+        protocol: target.protocol,
+        host: target.host,
+        port: target.port,
+        path: target.path,
+        elapsedMs: Date.now() - started,
+        statusCode: statusMatch ? Number(statusMatch[1]) : undefined,
+        statusLine: firstLine || undefined,
+        mode,
+      };
+    };
+
+    const probeViaForward = () => new Promise<any>((resolve, reject) => {
+      let settled = false;
+      let socket: any = null;
+      let secure: any = null;
+      let timer: NodeJS.Timeout | null = null;
+      let buffer = '';
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        try { secure?.destroy?.(); } catch {}
+        try { socket?.destroy?.(); } catch {}
+        fn();
+      };
+      const fail = (err: any) => finish(() => reject(err instanceof Error ? err : new Error(String(err))));
+      const ok = (raw: string) => finish(() => resolve(toResult(raw, 'forward')));
+
+      timer = setTimeout(() => fail(new Error(`timeout after ${timeoutMs}ms`)), timeoutMs);
+      rec.conn.forwardOut('127.0.0.1', 0, target.host, target.port, (err: any, stream: any) => {
+        if (err || !stream) return fail(err || new Error('forwardOut failed'));
+        socket = stream;
+
+        const handleData = (data: Buffer) => {
+          buffer += data.toString('utf8');
+          if (buffer.includes('\r\n\r\n')) ok(buffer);
+        };
+
+        if (target.protocol === 'https:') {
+          secure = tls.connect({
+            socket: stream,
+            servername: target.host,
+            rejectUnauthorized: false,
+          }, () => {
+            const req = [
+              `HEAD ${target.path || '/'} HTTP/1.1`,
+              `Host: ${target.host}`,
+              'Connection: close',
+              'User-Agent: PePeBrowser/1.0',
+              '',
+              '',
+            ].join('\r\n');
+            try { secure.write(req); } catch (e) { fail(e); }
+          });
+          secure.on('data', handleData);
+          secure.on('error', fail);
+          secure.on('end', () => { if (buffer) ok(buffer); else fail(new Error('empty response')); });
+        } else {
+          stream.on('data', handleData);
+          stream.on('error', fail);
+          stream.on('end', () => { if (buffer) ok(buffer); else fail(new Error('empty response')); });
+          const req = [
+            `HEAD ${target.path || '/'} HTTP/1.1`,
+            `Host: ${target.host}`,
+            'Connection: close',
+            'User-Agent: PePeBrowser/1.0',
+            '',
+            '',
+          ].join('\r\n');
+          try { stream.write(req); } catch (e) { fail(e); }
+        }
+      });
+    });
+
+    const probeViaExec = async () => {
+      const url = `${target.protocol}//${target.host}:${target.port}${target.path || '/'}`;
+      const timeoutSec = Math.max(1, Math.min(30, Math.ceil(timeoutMs / 1000)));
+      const shScript = `
+url=${quoteShellArg(url)}
+timeout_sec=${timeoutSec}
+probe_curl() {
+  for bin in /usr/bin/curl /bin/curl curl; do
+    if command -v "$bin" >/dev/null 2>&1; then
+      cmd_path="$(command -v "$bin")"
+      out="$("$cmd_path" -k -sS --connect-timeout "$timeout_sec" --max-time "$timeout_sec" -o /dev/null -w 'HTTP/%{http_version} %{http_code} %{time_total}' "$url" 2>/dev/null)" || true
+      if [ -n "$out" ]; then printf '%s\n' "$out"; return 0; fi
+    fi
+  done
+  return 1
+}
+probe_wget() {
+  for bin in /usr/bin/wget /bin/wget wget; do
+    if command -v "$bin" >/dev/null 2>&1; then
+      cmd_path="$(command -v "$bin")"
+      out="$("$cmd_path" --no-check-certificate --spider -S -T "$timeout_sec" "$url" 2>&1)" || true
+      line="$(printf '%s\n' "$out" | grep -E '^  HTTP/' | tail -n 1 | sed 's/^  //')"
+      if [ -n "$line" ]; then printf '%s\n' "$line"; return 0; fi
+    fi
+  done
+  return 1
+}
+probe_python() {
+  for py in python3 python; do
+    if command -v "$py" >/dev/null 2>&1; then
+      "$py" - "$url" "$timeout_sec" <<'PY'
+import ssl
+import sys
+import time
+import urllib.request
+from urllib.error import HTTPError, URLError
+
+url = sys.argv[1]
+timeout = float(sys.argv[2])
+start = time.time()
+ctx = ssl._create_unverified_context()
+try:
+    with urllib.request.urlopen(url, timeout=timeout, context=ctx) as res:
+        code = getattr(res, "status", res.getcode())
+        version = getattr(res, "version", 11)
+        major = 1
+        minor = 1 if version == 11 else 0
+        print(f"HTTP/{major}.{minor} {code} {time.time() - start:.3f}")
+        raise SystemExit(0)
+except HTTPError as e:
+    version = getattr(e, "version", 11)
+    major = 1
+    minor = 1 if version == 11 else 0
+    print(f"HTTP/{major}.{minor} {e.code} {time.time() - start:.3f}")
+    raise SystemExit(0)
+except URLError as e:
+    print(f"ERROR {e.reason}")
+    raise SystemExit(1)
+PY
+      return $?
+    fi
+  done
+  return 1
+}
+probe_curl || probe_wget || probe_python
+`;
+      const cmd = `sh -lc ${quoteShellArg(shScript)}`;
+      const exec = await this.handleExec(panelId, cmd, timeoutMs + 2000);
+      const raw = String(exec.stdout || '').trim();
+      const firstLine = raw.split(/\r?\n/, 1)[0]?.trim() || '';
+      const statusMatch = firstLine.match(/^HTTP\/\d(?:\.\d)?\s+(\d{3})\b/i);
+      if (statusMatch) {
+        return {
+          protocol: target.protocol,
+          host: target.host,
+          port: target.port,
+          path: target.path,
+          elapsedMs: Date.now() - started,
+          statusCode: Number(statusMatch[1]),
+          statusLine: firstLine,
+          mode: 'exec' as const,
+        };
+      }
+      throw new Error(`remote probe failed: ${raw || exec.stderr || 'no output'}`);
+    };
+
+    try {
+      return await probeViaExec();
+    } catch (execErr: any) {
+      try {
+        return await probeViaForward();
+      } catch (forwardErr: any) {
+        throw new Error(`${execErr?.message || execErr} / forward failed: ${forwardErr?.message || forwardErr}`);
+      }
+    }
   }
 
   // ── SFTP ──

@@ -45,6 +45,7 @@
     "jumpPort": "Jump port",
     "jumpPassword": "Jump password",
     "jumpKey": "Jump private key",
+    "browserUrl": "Browser URL",
     "loginScript": "Login script (Expect/Send)",
     "folder": "Folder",
     "jumpTargetHost": "Jump target host",
@@ -84,6 +85,7 @@
     "jumpTargetHost": "e.g. I-MPM01",
     "jumpTargetUser": "e.g. root",
     "jumpTargetPassword": "Empty = use previous host's ~/.ssh/id_rsa",
+    "browserUrl": "e.g. https://172.16.214.148",
     "initialPath": "e.g. /home/user/project (empty = home dir)"
   },
   "tooltips": {

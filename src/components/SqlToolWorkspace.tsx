@@ -54,6 +54,7 @@ type Session = {
   jumpTargetUser?: string;
   jumpTargetPort?: number;
   jumpTargetPassword?: string;
+  jumps?: { host: string; user?: string; port?: number; password?: string }[];
   dbms?: DbmsCfg;
 };
 
@@ -198,6 +199,8 @@ const SQL_KEYWORDS = [
 // 그리드에 렌더할 최대 행 수 — div 로 셀 렌더하므로 1만행도 부담스럽지 않지만,
 // SELECT 결과 확인+간단 편집 용도이므로 2000 정도가 실용적 상한. 사이드카의 maxRows 도 이 값을 씀.
 const MAX_DISPLAY_ROWS = 2000;
+const hasJumpChain = (session?: Session | null) => !!session?.jumps?.some(j => (j.host || '').trim());
+const dbmsRemoteHostForSession = (session: Session) => hasJumpChain(session) ? '127.0.0.1' : (session.dbms?.host || '127.0.0.1');
 
 // (E-7/E-8: 레거시 isql 파서/드라이버 코드 제거됨 — JdbcBackend 가 사이드카 RPC 로 대체)
 export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAgent = 'claude' }) => {
@@ -584,17 +587,21 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
       let effectiveDbms: any = session.dbms;
       let forwardId = '';
       console.log('[SqlTool] connect() session.dbms =', session.dbms);
-      if (session.dbms?.useSshTunnel) {
+      const forceSshTunnel = hasJumpChain(session);
+      const useSshTunnel = !!session.dbms?.useSshTunnel || forceSshTunnel;
+      if (useSshTunnel) {
         if (typeof api.sshOpenLocalForward !== 'function') {
           setConnectError('SSH 터널 IPC 미등록 — Electron 메인 프로세스를 재시작하세요 (코드 변경 적용을 위해).');
           return;
         }
+        const remoteHost = dbmsRemoteHostForSession(session);
+        const remotePort = session.dbms.port || def.defaultPort || 0;
         let fwd: any;
         try {
           fwd = await api.sshOpenLocalForward({
             sessionId,
-            remoteHost: session.dbms.host || '127.0.0.1',
-            remotePort: session.dbms.port || def.defaultPort || 0,
+            remoteHost,
+            remotePort,
             // SSH 호스트 힌트 — quick-connect 시 session.id 가 불일치해도 매칭 가능
             sshHost: (session as any).host,
             sshPort: (session as any).port || 22,
@@ -617,7 +624,7 @@ export const SqlToolWorkspace: React.FC<Props> = ({ sessionId, sessionName, aiAg
         forwardId = fwd.forwardId;
         // urlOverride 가 남아있으면 host/port 교체가 무시되므로 함께 비움
         effectiveDbms = { ...session.dbms, host: '127.0.0.1', port: fwd.localPort, urlOverride: undefined };
-        console.log('[SqlTool] SSH tunnel opened:', { remoteHost: session.dbms.host, remotePort: session.dbms.port, localPort: fwd.localPort, forwardId, panelId: fwd.panelId });
+        console.log('[SqlTool] SSH tunnel opened:', { remoteHost, remotePort, localPort: fwd.localPort, forwardId, panelId: fwd.panelId, forcedByJump: forceSshTunnel });
       }
       const newBackend = new JdbcBackend(sessionId, effectiveDbms, def);
       // forwardId 를 backend 에 저장해 disconnect 시 정리

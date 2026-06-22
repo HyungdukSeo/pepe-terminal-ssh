@@ -1171,7 +1171,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   // Git 상태 — 현재 cwd / 활성 SSH 세션 자동 감지
   const [gitStatus, setGitStatus] = useState<{ ok: boolean; branch?: string; additions?: number; deletions?: number } | null>(null);
   const [input, setInput] = useState('');
-  const [pendingCodexSteeringQueue, setPendingCodexSteeringQueue] = useState<string[]>([]);
+  const [pendingSteeringQueue, setPendingSteeringQueue] = useState<string[]>([]);
   // 외부 워크스페이스(예: LogAnalyzer)에서 prompt prefill — 'claude-prefill' window event 로 수신.
   // detail: { text?: string, attachments?: { name, content }[], newConversation?: boolean, agent?: 'claude'|'gemini'|'codex' }
   useEffect(() => {
@@ -2937,7 +2937,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const currentAgentStreaming = shareContext
     ? (requestBusy || streaming || activeReqAgent === currentAgent)
     : (requestBusy || streamingAgents.has(currentAgent) || activeReqAgent === currentAgent);
-  const isCodexSteeringMode = currentAgent === 'codex' && currentAgentStreaming;
+  // steering 모드 — 현재 에이전트(codex/claude/antigravity 무관)가 응답 중이면 입력을 큐에 넣는다.
+  // 현재 턴이 끝나면 큐 순서대로 자동 전송 (codex 처럼 claude·antigravity 도 동일 동작).
+  const isSteeringMode = currentAgentStreaming;
   const send = useCallback(async (text: string, contextItems: FileContextItem[]) => {
     // 첨부만 있고 텍스트가 없어도 전송 허용 (이미지/문서만 보내는 경우)
     if (!text.trim() && binaryAttachments.length === 0 && localFileAttachments.length === 0 && (contextItems?.length || 0) === 0) return;
@@ -3417,10 +3419,10 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   }, [pendingContext, onContextConsumed]);
 
   const handleSend = () => {
-    if (isCodexSteeringMode) {
+    if (isSteeringMode) {
       const trimmed = input.trim();
       if (!trimmed) return;
-      queueCodexSteering(trimmed);
+      queueSteering(trimmed);
       setInput('');
       return;
     }
@@ -3476,7 +3478,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     pendingPlanToolIdRef.current = null;
     setPendingPlan(null);
     setPendingPlanAgent(null);
-    setPendingCodexSteeringQueue([]);
+    setPendingSteeringQueue([]);
     setStreaming(false);
     setRequestBusy(false);
     claudeSessionIdRef.current = null;
@@ -3641,18 +3643,18 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   // 계획 승인 — "진행해줘" 메시지로 bypass 모드 send 자동 실행
   // streaming 상태 race 방지용 — 승인 시점에 streaming 이 아직 true 면 끝나기를 기다렸다 send
   const pendingApprovalSendRef = useRef<string | null>(null);
-  const buildCodexSteeringPrompt = (text: string) => [
+  const buildSteeringPrompt = (text: string) => [
     '# 작업 중 추가 지시 (steering)',
-    '아래 메시지는 Codex가 현재 작업을 수행하는 도중 사용자가 추가한 지시입니다.',
+    '아래 메시지는 직전 작업을 수행하는 도중 사용자가 추가한 지시입니다.',
     '현재 작업 맥락을 유지한 채, 아래 지시를 최우선으로 반영해 바로 이어서 진행하세요.',
     '',
     text.trim(),
   ].join('\n');
-  const queueCodexSteering = (rawText: string) => {
+  const queueSteering = (rawText: string) => {
     const trimmed = rawText.trim();
     if (!trimmed) return;
-    console.log('[ClaudeChat] codex steering queued:', trimmed.slice(0, 200));
-    setPendingCodexSteeringQueue(prev => [...prev, trimmed]);
+    console.log('[ClaudeChat] steering queued:', trimmed.slice(0, 200));
+    setPendingSteeringQueue(prev => [...prev, trimmed]);
   };
   const approvePlan = () => {
     // 편집 모드면 수정된 계획 내용으로 진행. 원본과 동일하면 기본 메시지.
@@ -3692,7 +3694,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       send(text, []);
     }
   };
-  // streaming 이 false 가 되면 큐잉된 승인 메시지 / Codex steering 자동 전송
+  // streaming 이 false 가 되면 큐잉된 승인 메시지 / steering 메시지 자동 전송 (모든 에이전트 공용)
   useEffect(() => {
     if (streaming) return;
     if (pendingApprovalSendRef.current) {
@@ -3702,14 +3704,13 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       setTimeout(() => send(pendingTxt, []), 0);
       return;
     }
-    if (currentAgent !== 'codex') return;
-    if (pendingCodexSteeringQueue.length > 0) {
-      const [pendingTxt, ...rest] = pendingCodexSteeringQueue;
-      console.log('[ClaudeChat] codex steering auto-send:', pendingTxt.slice(0, 200));
-      setPendingCodexSteeringQueue(rest);
-      setTimeout(() => send(buildCodexSteeringPrompt(pendingTxt), []), 0);
+    if (pendingSteeringQueue.length > 0) {
+      const [pendingTxt, ...rest] = pendingSteeringQueue;
+      console.log('[ClaudeChat] steering auto-send:', pendingTxt.slice(0, 200));
+      setPendingSteeringQueue(rest);
+      setTimeout(() => send(buildSteeringPrompt(pendingTxt), []), 0);
     }
-  }, [streaming, send, currentAgent, pendingCodexSteeringQueue]);
+  }, [streaming, send, pendingSteeringQueue]);
   const rejectPlan = () => {
     pendingPlanToolIdRef.current = null;
     setPlanEditing(false);
@@ -4995,20 +4996,20 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           <button className="claude-chat-streaming-stop" onClick={stop} title={tt('stop')}>{tt('stopShort')}</button>
         </div>
       )}
-      {currentAgent === 'codex' && (isCodexSteeringMode || pendingCodexSteeringQueue.length > 0) && (
+      {(isSteeringMode || pendingSteeringQueue.length > 0) && (
         <div className="claude-chat-steering-banner">
           <div className="claude-chat-steering-text">
             <span className="claude-chat-steering-title">
-              {pendingCodexSteeringQueue.length > 0
-                ? tt('steeringQueuedCount', { count: pendingCodexSteeringQueue.length })
+              {pendingSteeringQueue.length > 0
+                ? tt('steeringQueuedCount', { count: pendingSteeringQueue.length })
                 : tt('steeringQueueReady')}
             </span>
             <span className="claude-chat-steering-hint">{tt('steeringQueueHint')}</span>
           </div>
           <button
             className="claude-chat-steering-clear"
-            onClick={() => setPendingCodexSteeringQueue([])}
-            disabled={pendingCodexSteeringQueue.length === 0}
+            onClick={() => setPendingSteeringQueue([])}
+            disabled={pendingSteeringQueue.length === 0}
             title={tt('steeringQueueClear')}
           >{tt('steeringQueueClear')}</button>
         </div>
@@ -5453,7 +5454,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           style={{ position: 'relative' }}
         >
           <textarea
-            className={`claude-chat-input${isCodexSteeringMode ? ' steering-mode' : ''}`}
+            className={`claude-chat-input${isSteeringMode ? ' steering-mode' : ''}`}
             value={input}
             onChange={e => setInput(e.target.value)}
             onPaste={onInputPaste}
@@ -5463,9 +5464,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
                 handleSend();
               }
             }}
-            placeholder={`${isCodexSteeringMode ? tt('steeringInputPlaceholder') : tt('inputPlaceholder')}\n\n📎 첨부: 스크린샷은 Ctrl+V · 파일은 📎 + 버튼 · 드래그 앤 드롭`}
+            placeholder={`${isSteeringMode ? tt('steeringInputPlaceholder') : tt('inputPlaceholder')}\n\n📎 첨부: 스크린샷은 Ctrl+V · 파일은 📎 + 버튼 · 드래그 앤 드롭`}
             rows={3}
-            disabled={currentAgentStreaming && currentAgent !== 'codex'}
+            // 응답 중에도 입력 가능 — steering 큐잉을 위해 (codex/claude/antigravity 모두)
           />
           {isDragOver && (
             <div style={{
@@ -5535,11 +5536,11 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             <button className="claude-chat-btn stop" onClick={stop}>{tt('stopShort')}</button>
           ) : (
             <button
-              className={`claude-chat-btn ${isCodexSteeringMode ? 'steer' : 'send'}`}
+              className={`claude-chat-btn ${isSteeringMode ? 'steer' : 'send'}`}
               onClick={handleSend}
-              disabled={isCodexSteeringMode ? !input.trim() : (!input.trim() && binaryAttachments.length === 0 && localFileAttachments.length === 0)}
-              title={isCodexSteeringMode ? tt('steeringSendTitle') : undefined}
-            >{isCodexSteeringMode ? tt('steer') : tt('send')}</button>
+              disabled={isSteeringMode ? !input.trim() : (!input.trim() && binaryAttachments.length === 0 && localFileAttachments.length === 0)}
+              title={isSteeringMode ? tt('steeringSendTitle') : undefined}
+            >{isSteeringMode ? tt('steer') : tt('send')}</button>
           )}
         </div>
       </div>
