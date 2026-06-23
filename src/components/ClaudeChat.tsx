@@ -4183,6 +4183,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   }
   if (!installed) {
     const notInstalledMsg = currentAgent === 'gemini' ? tt('notInstalledGemini') : currentAgent === 'codex' ? tt('notInstalledCodex') : tt('notInstalled');
+    const antigravityInstallCmd = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform || '')
+      ? 'curl -fsSL https://antigravity.google/cli/install.sh | bash'
+      : 'irm https://antigravity.google/cli/install.ps1 | iex';
     return (
       <div className="claude-chat-container">
         <div className="claude-chat-header">
@@ -4214,7 +4217,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           <p>{notInstalledMsg}</p>
           {currentAgent === 'gemini' ? (
             <>
-              <p>{tt('installCmd')} <code>irm https://antigravity.google/cli/install.ps1 | iex</code></p>
+              <p>{tt('installCmd')} <code>{antigravityInstallCmd}</code></p>
               <p>{tt('loginHint', { cmd: 'agy' })}</p>
             </>
           ) : currentAgent === 'codex' ? (

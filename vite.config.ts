@@ -11,6 +11,12 @@ export default defineConfig({
       main: {
         // Shortcut of `build.lib.entry`.
         entry: 'electron/main.ts',
+        onstart({ startup }) {
+          // VS Code terminal inherits ELECTRON_RUN_AS_NODE=1 which prevents Electron browser
+          // process from initializing. Unset it before spawning Electron.
+          delete process.env.ELECTRON_RUN_AS_NODE;
+          startup();
+        },
         vite: {
           build: {
             rollupOptions: {

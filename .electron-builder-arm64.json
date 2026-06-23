@@ -10,7 +10,7 @@
   "publish": [
     {
       "provider": "github",
-      "owner": "nyaong902",
+      "owner": "HyungdukSeo",
       "repo": "pepe-terminal-ssh"
     }
   ],

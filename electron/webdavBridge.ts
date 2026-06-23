@@ -59,7 +59,7 @@ class SFTPFileSystem extends webdav.FileSystem {
     if (cached && cached.expiresAt > now) return Promise.resolve(cached.stats);
     const inflight = this.inflightStat.get(remotePath);
     if (inflight) return inflight;
-    const pending = this.sftp().then(sftp => new Promise((resolve, reject) => {
+    const promise = this.sftp().then(sftp => new Promise<any>((resolve, reject) => {
       sftp.stat(remotePath, (err: any, stats: any) => {
         if (err) return reject(err);
         this.statCache.set(remotePath, { stats, expiresAt: Date.now() + this.STAT_TTL });
@@ -68,8 +68,8 @@ class SFTPFileSystem extends webdav.FileSystem {
     })).finally(() => {
       this.inflightStat.delete(remotePath);
     });
-    this.inflightStat.set(remotePath, pending);
-    return pending;
+    this.inflightStat.set(remotePath, promise);
+    return promise;
   }
 
   private invalidateStat(remotePath: string) {
@@ -133,7 +133,7 @@ class SFTPFileSystem extends webdav.FileSystem {
       inflight.then(entries => cb(undefined, entries.slice())).catch(() => cb(webdav.Errors.ResourceNotFound));
       return;
     }
-    const pending = this.sftp().then(sftp => new Promise<string[]>((resolve, reject) => {
+    const promise: Promise<string[]> = this.sftp().then(sftp => new Promise<string[]>((resolve, reject) => {
       sftp.readdir(remote, (err: any, list: any[]) => {
         if (err) return reject(err);
         const names = list
@@ -159,8 +159,8 @@ class SFTPFileSystem extends webdav.FileSystem {
     })).finally(() => {
       this.inflightReadDir.delete(remote);
     });
-    this.inflightReadDir.set(remote, pending);
-    pending.then(entries => cb(undefined, entries.slice())).catch(() => cb(webdav.Errors.ResourceNotFound));
+    this.inflightReadDir.set(remote, promise);
+    promise.then(names => cb(undefined, names.slice())).catch(() => cb(webdav.Errors.ResourceNotFound));
   }
 
   _displayName(path: webdav.Path, _info: webdav.DisplayNameInfo, cb: webdav.ReturnCallback<string>) {
