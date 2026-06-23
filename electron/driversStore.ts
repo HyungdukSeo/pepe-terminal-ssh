@@ -99,7 +99,7 @@ const BUILTIN_DRIVERS: JdbcDriverDef[] = [
   },
   {
     id: 'altibase-builtin',
-    name: 'Altibase',
+    name: 'Altibase 7.x',
     className: 'Altibase.jdbc.driver.AltibaseDriver',
     urlTemplate: 'jdbc:Altibase://{host}:{port}/{database}',
     defaultPort: 20300,
@@ -110,6 +110,19 @@ const BUILTIN_DRIVERS: JdbcDriverDef[] = [
     builtin: true,
     dialect: 'altibase',
     note: 'Maven Central 의 com.altibase:altibase-jdbc 자동 다운로드 (또는 번들/사용자 폴더 jar 사용).',
+  },
+  {
+    id: 'altibase-6-builtin',
+    name: 'Altibase 6.x',
+    className: 'Altibase.jdbc.driver.AltibaseDriver',
+    urlTemplate: 'jdbc:Altibase://{host}:{port}/{database}',
+    defaultPort: 20300,
+    jars: [
+      '${bundled}/altibase-6.jar',
+    ],
+    builtin: true,
+    dialect: 'altibase',
+    note: '기본 번들 Altibase 6.x JDBC 드라이버(Altibase.jar). Altibase 6.x 서버 접속용.',
   },
   {
     id: 'oracle-template',

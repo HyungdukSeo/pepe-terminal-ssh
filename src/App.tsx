@@ -18,6 +18,7 @@ import { LogAnalyzer } from './components/LogAnalyzer';
 import { VpnWorkspace } from './components/VpnWorkspace';
 import { TranslationEditor } from './components/TranslationEditor';
 import { SqlToolWorkspace } from './components/SqlToolWorkspace';
+import { MessengerWorkspace } from './components/MessengerWorkspace';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { RemoteFileTree } from './components/RemoteFileTree';
 import { QuickConnectBar, QuickConnectResult } from './components/QuickConnectDialog';
@@ -57,7 +58,7 @@ import {
 export type { LayoutNode, ContainerNode, LeafNode, Panel, PanelSession } from './utils/layoutUtils';
 
 export type TabId = string;
-export type TabType = 'terminal' | 'fileExplorer' | 'fileEditor' | 'browser' | 'compare' | 'logAnalyzer' | 'vpn' | 'i18nEditor' | 'sqlTool';
+export type TabType = 'terminal' | 'fileExplorer' | 'fileEditor' | 'browser' | 'compare' | 'logAnalyzer' | 'vpn' | 'i18nEditor' | 'sqlTool' | 'messenger';
 export type Tab = { id: TabId; title: string; layout: LayoutNode; type?: TabType; customTitle?: boolean; editor?: { termId: string; remotePath: string; fileName: string }; sqlTool?: { sessionId: string; sessionName: string }; initialTermId?: string; initialRemotePath?: string };
 
 // 세션의 점프 체인을 SFTP 연결용 배열로 정규화. host 있는 항목만, 첫 빈 host 에서 종료.
@@ -283,7 +284,8 @@ function App() {
   const [optFontFamily, setOptFontFamily] = useState(() => localStorage.getItem('terminalFontFamily') || '');
   const [optFontSize, setOptFontSize] = useState(() => Number(localStorage.getItem('terminalFontSize')) || 14);
   const [availableFonts, setAvailableFonts] = useState<string[]>([]);
-  const [optionsTab, setOptionsTab] = useState<'terminal' | 'session' | 'keybindings'>('terminal');
+  const [optionsTab, setOptionsTab] = useState<'terminal' | 'session' | 'messenger' | 'keybindings'>('terminal');
+  const [messengerPrefsDraft, setMessengerPrefsDraft] = useState<{ displayName: string; retainEnabled: boolean; retainDays: number; hidePresence: boolean }>({ displayName: '', retainEnabled: false, retainDays: 30, hidePresence: false });
   const [keybindingsState, setKeybindingsState] = useState<Record<string, string>>({});
   const [keybindingsDraft, setKeybindingsDraft] = useState<Record<string, string>>({});
 
@@ -325,6 +327,12 @@ function App() {
         try { (window as any).api?.setUIPrefs?.({ defaultShellName: name }); } catch {}
       }
       setDefaultShell({ name, path: spath });
+      setMessengerPrefsDraft({
+        displayName: prefs?.messenger?.displayName || '',
+        retainEnabled: !!prefs?.messenger?.retainEnabled,
+        retainDays: Number(prefs?.messenger?.retainDays) || 30,
+        hidePresence: !!prefs?.messenger?.hidePresence,
+      });
       setShellPrefsLoaded(true);
       // 초기 탭의 세션명/경로/cwd를 업데이트
       setTabs(prev => prev.map((t, i) => {
@@ -1985,6 +1993,7 @@ function App() {
   const addLogAnalyzerTab = () => addSpecialTab('logAnalyzer', '📈 로그 분석');
   const addVpnTab = () => addSpecialTab('vpn', '🔒 VPN');
   const addI18nEditorTab = () => addSpecialTab('i18nEditor', '🌍 다국어 편집');
+  const addMessengerTab = () => addSpecialTab('messenger', '💬 메신저');
   const openSqlToolTab = (sessionId: string, sessionName: string) => {
     // 동일 sessionId 의 SQL Tool 탭이 이미 있으면 그 탭으로 전환
     const existing = tabs.find(t => t.type === 'sqlTool' && t.sqlTool?.sessionId === sessionId);
@@ -2643,7 +2652,7 @@ function App() {
     // 터미널이 아닌 워크스페이스(브라우저/파일비교/로그분석/VPN/다국어/SQL Tool)에서 더블클릭한 경우
     // → 기존 터미널 워크스페이스 탭을 찾아 활성화하고 거기서 세션 연결 (없으면 새로 생성).
     // fileExplorer / fileEditor 는 아래에서 별도 처리(SFTP/편집기 흐름).
-    const NON_TERMINAL_NON_FE: TabType[] = ['browser', 'compare', 'logAnalyzer', 'vpn', 'i18nEditor', 'sqlTool'];
+    const NON_TERMINAL_NON_FE: TabType[] = ['browser', 'compare', 'logAnalyzer', 'vpn', 'i18nEditor', 'sqlTool', 'messenger'];
     if (activeTab.type && NON_TERMINAL_NON_FE.includes(activeTab.type)) {
       // 터미널 탭은 type 미지정 또는 'terminal' (실제로 type 필드 없는 게 일반적)
       let termTab = tabs.find(t => !t.type || t.type === 'terminal');
@@ -3096,6 +3105,7 @@ function App() {
         { label: tMenu('tools.compareWs'), action: addCompareTab },
         { label: tMenu('tools.logAnalyzerWs'), action: addLogAnalyzerTab },
         { label: tMenu('tools.vpnWs'), action: addVpnTab },
+        { label: '💬 메신저', action: addMessengerTab },
         { label: tMenu('tools.i18nWs'), action: addI18nEditorTab },
         { separator: true, label: '' },
         { label: showToolbar ? tMenu('tools.toolbarHide') : tMenu('tools.toolbarShow'), action: () => setShowToolbar(v => !v) },
@@ -3579,6 +3589,7 @@ function App() {
           onAddCompareTab={addCompareTab}
           onAddLogAnalyzerTab={addLogAnalyzerTab}
           onAddVpnTab={addVpnTab}
+          onAddMessengerTab={addMessengerTab}
           onAddI18nEditorTab={addI18nEditorTab}
           onCloseTab={closeTab} onRenameTab={renameTab}
           onReorderTabs={(fromId, toId) => {
@@ -4008,14 +4019,14 @@ function App() {
         {tabs.filter(t => t.type === 'compare').map(t => (
           <div key={t.id} style={{ flex: 1, minHeight: 0, display: activeTab?.id === t.id ? 'flex' : 'none' }}>
             <ErrorBoundary label="파일 비교">
-              <CompareWorkspace sessions={tabs.filter(t => t.type !== 'fileExplorer' && t.type !== 'fileEditor' && !t.type?.match(/browser|compare|logAnalyzer|vpn|i18n|sqlTool/)).flatMap(t => collectAllSessions(t.layout)).filter(s => s.sessionId)} />
+              <CompareWorkspace sessions={tabs.filter(t => t.type !== 'fileExplorer' && t.type !== 'fileEditor' && !t.type?.match(/browser|compare|logAnalyzer|vpn|i18n|sqlTool|messenger/)).flatMap(t => collectAllSessions(t.layout)).filter(s => s.sessionId)} />
             </ErrorBoundary>
           </div>
         ))}
         {tabs.filter(t => t.type === 'logAnalyzer').map(t => (
           <div key={t.id} style={{ flex: 1, minHeight: 0, display: activeTab?.id === t.id ? 'flex' : 'none' }}>
             <ErrorBoundary label="로그 분석">
-              <LogAnalyzer sessions={tabs.filter(t => t.type !== 'fileExplorer' && t.type !== 'fileEditor' && !t.type?.match(/browser|compare|logAnalyzer|vpn|i18n|sqlTool/)).flatMap(t => collectAllSessions(t.layout)).filter(s => s.sessionId)} />
+              <LogAnalyzer sessions={tabs.filter(t => t.type !== 'fileExplorer' && t.type !== 'fileEditor' && !t.type?.match(/browser|compare|logAnalyzer|vpn|i18n|sqlTool|messenger/)).flatMap(t => collectAllSessions(t.layout)).filter(s => s.sessionId)} />
             </ErrorBoundary>
           </div>
         ))}
@@ -4023,6 +4034,13 @@ function App() {
           <div key={t.id} style={{ flex: 1, minHeight: 0, display: activeTab?.id === t.id ? 'flex' : 'none' }}>
             <ErrorBoundary label="VPN">
               <VpnWorkspace />
+            </ErrorBoundary>
+          </div>
+        ))}
+        {tabs.filter(t => t.type === 'messenger').map(t => (
+          <div key={t.id} style={{ flex: 1, minHeight: 0, display: activeTab?.id === t.id ? 'flex' : 'none' }}>
+            <ErrorBoundary label="메신저">
+              <MessengerWorkspace />
             </ErrorBoundary>
           </div>
         ))}
@@ -4042,7 +4060,7 @@ function App() {
           </div>
         ))}
 
-        {activeTab && activeTab.type !== 'fileExplorer' && activeTab.type !== 'fileEditor' && activeTab.type !== 'browser' && activeTab.type !== 'compare' && activeTab.type !== 'logAnalyzer' && activeTab.type !== 'vpn' && activeTab.type !== 'i18nEditor' && activeTab.type !== 'sqlTool' && (() => {
+        {activeTab && activeTab.type !== 'fileExplorer' && activeTab.type !== 'fileEditor' && activeTab.type !== 'browser' && activeTab.type !== 'compare' && activeTab.type !== 'logAnalyzer' && activeTab.type !== 'vpn' && activeTab.type !== 'i18nEditor' && activeTab.type !== 'sqlTool' && activeTab.type !== 'messenger' && (() => {
           // 워크스페이스 레벨 파일 트리 — 선택된 패널의 활성 세션이 SSH 연결이면 표시
           let fileTreeNode: React.ReactNode = null;
           if (selectedPanelId) {
@@ -4492,6 +4510,7 @@ function App() {
                 <button className={`options-tab ${optionsTab === 'terminal' ? 'active' : ''}`} onClick={() => setOptionsTab('terminal')}>{tOpt('tabs.terminal')}</button>
                 <button className={`options-tab ${optionsTab === 'session' ? 'active' : ''}`} onClick={() => setOptionsTab('session')}>{tOpt('tabs.session')}</button>
                 <button className={`options-tab ${optionsTab === 'keybindings' ? 'active' : ''}`} onClick={() => setOptionsTab('keybindings')}>{tOpt('tabs.keybindings')}</button>
+                <button className={`options-tab ${optionsTab === 'messenger' ? 'active' : ''}`} onClick={() => setOptionsTab('messenger')}>메신저</button>
               </div>
               <div className="options-pane">
 
@@ -4704,6 +4723,74 @@ function App() {
               </div>
             )}
 
+            {optionsTab === 'messenger' && (
+              <div className="options-content">
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>미니 메신저</div>
+                  <p style={{ color: '#888', fontSize: 12, margin: '0 0 10px' }}>
+                    같은 네트워크의 PePe 사용자끼리 메시지와 파일을 주고받습니다. Windows 방화벽에서 앱 통신 허용이 필요할 수 있습니다.
+                  </p>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
+                    <span style={{ color: '#bbb', fontSize: 13 }}>내 표시 이름</span>
+                    <input
+                      style={{ background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '8px', fontSize: 14 }}
+                      value={messengerPrefsDraft.displayName}
+                      onChange={e => setMessengerPrefsDraft(s => ({ ...s, displayName: e.target.value }))}
+                      placeholder="예: 홍길동"
+                    />
+                  </label>
+                  <label className="settings-checkbox" style={{ marginBottom: 10 }}>
+                    <input
+                      type="checkbox"
+                      checked={messengerPrefsDraft.retainEnabled}
+                      onChange={e => setMessengerPrefsDraft(s => ({ ...s, retainEnabled: e.target.checked }))}
+                    />
+                    <span>지난 대화 자동 삭제</span>
+                  </label>
+                  <label className="settings-checkbox" style={{ marginBottom: 10 }}>
+                    <input
+                      type="checkbox"
+                      checked={messengerPrefsDraft.hidePresence}
+                      onChange={e => setMessengerPrefsDraft(s => ({ ...s, hidePresence: e.target.checked }))}
+                    />
+                    <span>나의 접속 숨기기</span>
+                  </label>
+                  <p style={{ color: '#888', fontSize: 12, margin: '0 0 12px' }}>
+                    체크하면 메신저 워크스페이스를 열어도 다른 사용자에게 검색/응답되지 않고, 기존 사용자 목록에서는 오프라인처럼 전송이 막힙니다.
+                  </p>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                    <span style={{ color: '#bbb', fontSize: 13, width: 100 }}>저장 기간</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={3650}
+                      disabled={!messengerPrefsDraft.retainEnabled}
+                      style={{ width: 110, background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '8px', fontSize: 14 }}
+                      value={messengerPrefsDraft.retainDays}
+                      onChange={e => setMessengerPrefsDraft(s => ({ ...s, retainDays: Number(e.target.value) || 30 }))}
+                    />
+                    <span style={{ color: '#888', fontSize: 12 }}>일</span>
+                  </label>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button className="btn-add" onClick={async () => {
+                      const next = {
+                        displayName: messengerPrefsDraft.displayName.trim(),
+                        retainEnabled: messengerPrefsDraft.retainEnabled,
+                        retainDays: messengerPrefsDraft.retainDays,
+                        hidePresence: messengerPrefsDraft.hidePresence,
+                      };
+                      await (window as any).api?.setUIPrefs?.({ messenger: next });
+                      await (window as any).api?.messengerUpdatePrefs?.(next);
+                    }}>메신저 설정 저장</button>
+                    <button className="btn-cancel" onClick={async () => {
+                      if (!confirm('모든 메신저 대화내역을 초기화할까요?')) return;
+                      await (window as any).api?.messengerClearAll?.();
+                    }}>대화내역 모두 초기화</button>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {optionsTab === 'keybindings' && (
               <div className="options-content">
                 <div className="keybinding-list">
@@ -4760,6 +4847,14 @@ function App() {
                 setKeybindingsState(keybindingsDraft);
                 loadKeybindings(keybindingsDraft);
                 (window as any).api?.setUIPrefs?.({ keybindings: keybindingsDraft });
+                const messengerPrefs = {
+                  displayName: messengerPrefsDraft.displayName.trim(),
+                  retainEnabled: messengerPrefsDraft.retainEnabled,
+                  retainDays: messengerPrefsDraft.retainDays,
+                  hidePresence: messengerPrefsDraft.hidePresence,
+                };
+                (window as any).api?.setUIPrefs?.({ messenger: messengerPrefs });
+                (window as any).api?.messengerUpdatePrefs?.(messengerPrefs);
                 setListeningAction(null);
                 setShowOptions(false);
                 if (isOptionsPopout) {

@@ -4,9 +4,9 @@
 // resources/jdbc-drivers/bundled/. Idempotent: skips drivers whose target
 // JAR already exists at the expected size (or use --force).
 //
-// Altibase JDBC is NOT on Maven Central and license-bundling is unclear,
-// so we leave a placeholder + note. Users can drop their own JAR into the
-// user driver folder via the Driver Manager UI (E-5).
+// Altibase 7.x is resolved from Maven Central by the driver definition.
+// Altibase 6.x is bundled as resources/jdbc-drivers/bundled/altibase-6.jar
+// from a user-provided vendor JAR.
 
 'use strict';
 
@@ -106,7 +106,7 @@ async function main() {
     '| mariadb.jar    | org.mariadb.jdbc:mariadb-java-client | LGPL-2.1 |',
     '| mssql.jar      | com.microsoft.sqlserver:mssql-jdbc | MIT |',
     '| sqlite.jar     | org.xerial:sqlite-jdbc | Apache-2.0 |',
-    '| altibase.jar   | (Altibase 라이선스 — 사용자 지정) | — |',
+    '| altibase-6.jar | user-provided Altibase.jar for Altibase 6.x | Altibase vendor license |',
     '',
     'Oracle ojdbc 는 OTN 라이선스 제약으로 번들하지 않습니다. 사용자가 직접 추가하세요.',
     '',
@@ -133,12 +133,13 @@ async function main() {
     }
   }
 
-  // Altibase placeholder — empty .gitkeep so the folder is well-defined.
+  // Altibase 6.x placeholder note — the actual altibase-6.jar is tracked
+  // separately as a user-provided vendor JAR.
   const altibaseNote = path.join(DEST_DIR, 'altibase.jar.NOTE.txt');
   if (!fs.existsSync(altibaseNote)) {
     fs.writeFileSync(altibaseNote,
-      'Altibase JDBC JAR (Altibase.jar) 는 라이선스 사정상 자동 번들에서 제외됩니다.\n' +
-      '이 디렉토리에 altibase.jar 로 복사하면 기본 드라이버로 자동 인식됩니다.\n' +
+      'Altibase 6.x JDBC JAR 은 altibase-6.jar 파일명으로 번들됩니다.\n' +
+      'Altibase 7.x 는 드라이버 관리자에서 Maven Central 의 com.altibase:altibase-jdbc 로 자동 다운로드됩니다.\n' +
       '또는 Driver Manager UI(E-5)에서 다른 경로의 JAR 을 지정할 수 있습니다.\n',
       'utf8');
   }

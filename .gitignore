@@ -29,6 +29,7 @@ resources/rg/
 
 # Downloaded JDBC driver JARs (scripts/download-jdbc-drivers.js)
 resources/jdbc-drivers/bundled/*.jar
+!resources/jdbc-drivers/bundled/altibase-6.jar
 
 # Certificates
 cert/

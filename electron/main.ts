@@ -676,6 +676,357 @@ ipcMain.handle('sessions:open-editor', () => {
 ipcMain.handle('ui-prefs:get', () => loadUIPrefs());
 ipcMain.handle('ui-prefs:set', (_e, prefs: Record<string, any>) => { saveUIPrefs(prefs); return true; });
 
+// ── LAN Mini Messenger ─────────────────────────────────────────────
+type MessengerPeer = { id: string; name: string; host: string; port: number; lastSeen: number; online?: boolean };
+type MessengerMessage = { id: string; peerId: string; direction: 'in' | 'out'; kind: 'text' | 'file'; text?: string; fileName?: string; filePath?: string; size?: number; ts: number };
+type MessengerPrefs = { enabled?: boolean; displayName?: string; retainEnabled?: boolean; retainDays?: number; downloadDir?: string; hidePresence?: boolean };
+
+const MSG_DISCOVERY_PORT = 39455;
+let messengerUdp: any = null;
+let messengerTcp: any = null;
+let messengerTimer: any = null;
+let messengerId = '';
+let messengerPort = 0;
+let messengerPrefs: MessengerPrefs = {};
+const messengerPeers = new Map<string, MessengerPeer>();
+let messengerMessages: MessengerMessage[] = [];
+
+function messengerDir() {
+  const dir = path.join(app.getPath('userData'), 'messenger');
+  try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+  return dir;
+}
+function messengerMessagesPath() { return path.join(messengerDir(), 'messages.json'); }
+function messengerIdentityPath() { return path.join(messengerDir(), 'identity.json'); }
+function messengerPeersPath() { return path.join(messengerDir(), 'peers.json'); }
+function messengerDownloadsDir() {
+  const dir = messengerPrefs.downloadDir || path.join(messengerDir(), 'downloads');
+  try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+  return dir;
+}
+function messengerEmit(payload: any) {
+  for (const win of BrowserWindow.getAllWindows()) {
+    try { win.webContents.send('messenger:event', payload); } catch {}
+  }
+}
+function messengerLoadIdentity() {
+  const crypto = require('crypto');
+  const { execFileSync } = require('child_process');
+  const stableId = () => {
+    try {
+      if (process.platform === 'win32') {
+        const out = execFileSync('reg.exe', ['query', 'HKLM\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid'], { encoding: 'utf8', windowsHide: true });
+        const m = out.match(/MachineGuid\s+REG_SZ\s+([^\r\n]+)/i);
+        if (m?.[1]) return `pepe-${crypto.createHash('sha256').update(`win:${m[1].trim()}`).digest('hex').slice(0, 24)}`;
+      }
+    } catch {}
+    try {
+      const seed = `${os.hostname()}|${os.userInfo().username}|${os.platform()}|${os.arch()}`;
+      return `pepe-${crypto.createHash('sha256').update(seed).digest('hex').slice(0, 24)}`;
+    } catch {
+      return '';
+    }
+  };
+  try {
+    const obj = JSON.parse(fs.readFileSync(messengerIdentityPath(), 'utf8'));
+    if (obj?.id) messengerId = String(obj.id);
+  } catch {}
+  if (!messengerId) {
+    messengerId = stableId() || `pepe-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    try { fs.writeFileSync(messengerIdentityPath(), JSON.stringify({ id: messengerId }, null, 2), 'utf8'); } catch {}
+  }
+}
+function messengerLoadPeers() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(messengerPeersPath(), 'utf8'));
+    if (Array.isArray(raw)) {
+      messengerPeers.clear();
+      for (const p of raw) {
+        if (p?.id) messengerPeers.set(String(p.id), {
+          id: String(p.id),
+          name: String(p.name || 'PePe'),
+          host: String(p.host || ''),
+          port: Number(p.port) || 0,
+          lastSeen: Number(p.lastSeen) || 0,
+        });
+      }
+    }
+  } catch {}
+}
+function messengerSavePeers() {
+  try { fs.writeFileSync(messengerPeersPath(), JSON.stringify([...messengerPeers.values()].map(({ online, ...p }) => p), null, 2), 'utf8'); } catch {}
+}
+function messengerLoadMessages() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(messengerMessagesPath(), 'utf8'));
+    messengerMessages = Array.isArray(raw) ? raw : [];
+  } catch { messengerMessages = []; }
+  messengerPruneMessages();
+}
+function messengerSaveMessages() {
+  try { fs.writeFileSync(messengerMessagesPath(), JSON.stringify(messengerMessages, null, 2), 'utf8'); } catch {}
+}
+function messengerPruneMessages() {
+  if (!messengerPrefs.retainEnabled) return;
+  const days = Math.max(1, Number(messengerPrefs.retainDays) || 30);
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+  const before = messengerMessages.length;
+  messengerMessages = messengerMessages.filter(m => m.ts >= cutoff);
+  if (messengerMessages.length !== before) messengerSaveMessages();
+}
+function messengerState() {
+  const now = Date.now();
+  const peers = [...messengerPeers.values()]
+    .map(p => ({ ...p, online: now - p.lastSeen < 20_000 }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  return { self: { id: messengerId, name: messengerPrefs.displayName || os.userInfo().username || 'PePe', port: messengerPort, hidden: !!messengerPrefs.hidePresence }, peers, messages: messengerMessages, prefs: messengerPrefs };
+}
+function messengerRemember(msg: MessengerMessage) {
+  messengerMessages.push(msg);
+  messengerPruneMessages();
+  messengerSaveMessages();
+  messengerEmit({ type: 'message', message: msg, state: messengerState() });
+}
+function messengerPacket() {
+  return Buffer.from(JSON.stringify({
+    app: 'pepe-terminal-ssh',
+    type: 'hello',
+    id: messengerId,
+    name: messengerPrefs.displayName || os.userInfo().username || 'PePe',
+    port: messengerPort,
+    ts: Date.now(),
+  }));
+}
+function messengerBroadcast() {
+  if (!messengerUdp || !messengerPort) return;
+  if (messengerPrefs.hidePresence) return;
+  const packet = messengerPacket();
+  try { messengerUdp.send(packet, 0, packet.length, MSG_DISCOVERY_PORT, '255.255.255.255'); } catch {}
+}
+function messengerSendHelloTo(host: string) {
+  if (!messengerUdp || !messengerPort || !host) return;
+  if (messengerPrefs.hidePresence) return;
+  const packet = messengerPacket();
+  try { messengerUdp.send(packet, 0, packet.length, MSG_DISCOVERY_PORT, host); } catch {}
+}
+function messengerScanRange(prefix = '10.100') {
+  if (!messengerUdp || !messengerPort) return { success: false, error: 'messenger not started' };
+  if (messengerPrefs.hidePresence) return { success: false, error: 'presence hidden' };
+  const cleanPrefix = String(prefix || '10.100').replace(/[^\d.]/g, '').replace(/\.+$/, '') || '10.100';
+  if (!/^\d{1,3}\.\d{1,3}$/.test(cleanPrefix)) return { success: false, error: 'prefix must look like 10.100' };
+  let third = 0;
+  let fourth = 1;
+  let sent = 0;
+  const batchSize = 512;
+  const total = 256 * 254;
+  const tick = () => {
+    let count = 0;
+    while (third <= 255 && count < batchSize) {
+      messengerSendHelloTo(`${cleanPrefix}.${third}.${fourth}`);
+      sent++;
+      count++;
+      fourth++;
+      if (fourth >= 255) {
+        fourth = 1;
+        third++;
+      }
+    }
+    messengerEmit({ type: 'scan-progress', prefix: cleanPrefix, sent, total, state: messengerState() });
+    if (third <= 255) setTimeout(tick, 25);
+    else messengerEmit({ type: 'scan-complete', prefix: cleanPrefix, sent, state: messengerState() });
+  };
+  setTimeout(tick, 0);
+  return { success: true, prefix: cleanPrefix, total };
+}
+function messengerWritePeer(peer: MessengerPeer, payload: any): Promise<void> {
+  const net = require('net');
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host: peer.host, port: peer.port, timeout: 8000 }, () => {
+      socket.write(JSON.stringify(payload) + '\n');
+      socket.end();
+    });
+    socket.on('close', () => resolve());
+    socket.on('timeout', () => { socket.destroy(); reject(new Error('timeout')); });
+    socket.on('error', reject);
+  });
+}
+async function messengerSendFileBuffer(peer: MessengerPeer, fileName: string, filePath: string, data: Buffer) {
+  if (data.length > 25 * 1024 * 1024) throw new Error('25MB 이하 파일만 전송 가능합니다');
+  const msg: MessengerMessage = {
+    id: `file-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    peerId: peer.id,
+    direction: 'out',
+    kind: 'file',
+    fileName,
+    filePath,
+    size: data.length,
+    ts: Date.now(),
+  };
+  await messengerWritePeer(peer, {
+    app: 'pepe-terminal-ssh',
+    type: 'file',
+    fromId: messengerId,
+    fromName: messengerPrefs.displayName || os.userInfo().username || 'PePe',
+    fromPort: messengerPort,
+    messageId: msg.id,
+    fileName: msg.fileName,
+    size: data.length,
+    dataBase64: data.toString('base64'),
+    ts: msg.ts,
+  });
+  messengerRemember(msg);
+}
+function messengerHandleIncoming(payload: any, remoteHost: string) {
+  if (!payload || payload.app !== 'pepe-terminal-ssh' || payload.fromId === messengerId) return;
+  if (messengerPrefs.hidePresence) return;
+  const peerId = String(payload.fromId || payload.id || '');
+  if (!peerId) return;
+  const peer = messengerPeers.get(peerId) || { id: peerId, name: payload.fromName || 'PePe', host: remoteHost, port: Number(payload.fromPort) || 0, lastSeen: Date.now() };
+  peer.name = payload.fromName || peer.name;
+  peer.host = remoteHost || peer.host;
+  peer.port = Number(payload.fromPort || peer.port) || peer.port;
+  peer.lastSeen = Date.now();
+  messengerPeers.set(peerId, peer);
+  messengerSavePeers();
+
+  if (payload.type === 'message') {
+    messengerRemember({ id: payload.messageId || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, peerId, direction: 'in', kind: 'text', text: String(payload.text || ''), ts: Number(payload.ts) || Date.now() });
+  } else if (payload.type === 'file') {
+    const fileName = path.basename(String(payload.fileName || 'received.bin')).replace(/[<>:"/\\|?*]/g, '_');
+    const data = Buffer.from(String(payload.dataBase64 || ''), 'base64');
+    const savePath = path.join(messengerDownloadsDir(), `${Date.now()}-${fileName}`);
+    fs.writeFileSync(savePath, data);
+    messengerRemember({ id: payload.messageId || `file-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, peerId, direction: 'in', kind: 'file', fileName, filePath: savePath, size: data.length, ts: Number(payload.ts) || Date.now() });
+  }
+}
+
+ipcMain.handle('messenger:start', async (_e, prefs?: MessengerPrefs) => {
+  const dgram = require('dgram');
+  const net = require('net');
+  messengerPrefs = { retainEnabled: false, retainDays: 30, ...(loadUIPrefs().messenger || {}), ...(prefs || {}) };
+  saveUIPrefs({ messenger: messengerPrefs });
+  messengerLoadIdentity();
+  messengerLoadPeers();
+  messengerLoadMessages();
+  if (!messengerTcp) {
+    messengerTcp = net.createServer((socket: any) => {
+      let buf = '';
+      socket.on('data', (chunk: Buffer) => {
+        buf += chunk.toString('utf8');
+        let idx;
+        while ((idx = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, idx).trim();
+          buf = buf.slice(idx + 1);
+          if (!line) continue;
+          try { messengerHandleIncoming(JSON.parse(line), String(socket.remoteAddress || '').replace(/^::ffff:/, '')); } catch {}
+        }
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      messengerTcp.listen(0, '0.0.0.0', () => {
+        const addr = messengerTcp.address();
+        messengerPort = typeof addr === 'object' && addr ? addr.port : 0;
+        resolve();
+      });
+      messengerTcp.once('error', reject);
+    });
+  }
+  if (!messengerUdp) {
+    messengerUdp = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+    messengerUdp.on('message', (msg: Buffer, rinfo: any) => {
+      try {
+        const p = JSON.parse(msg.toString('utf8'));
+        if (p?.app !== 'pepe-terminal-ssh' || p?.type !== 'hello' || p?.id === messengerId) return;
+        messengerPeers.set(String(p.id), { id: String(p.id), name: String(p.name || 'PePe'), host: rinfo.address, port: Number(p.port) || 0, lastSeen: Date.now() });
+        messengerSavePeers();
+        messengerSendHelloTo(rinfo.address);
+        messengerEmit({ type: 'peers', state: messengerState() });
+      } catch {}
+    });
+    await new Promise<void>((resolve, reject) => {
+      messengerUdp.bind(MSG_DISCOVERY_PORT, () => {
+        try { messengerUdp.setBroadcast(true); } catch {}
+        resolve();
+      });
+      messengerUdp.once('error', reject);
+    });
+  }
+  if (!messengerTimer) messengerTimer = setInterval(() => { messengerBroadcast(); messengerEmit({ type: 'peers', state: messengerState() }); }, 3000);
+  messengerBroadcast();
+  return { success: true, state: messengerState() };
+});
+ipcMain.handle('messenger:stop', () => {
+  if (messengerTimer) clearInterval(messengerTimer);
+  messengerTimer = null;
+  try { messengerUdp?.close(); } catch {}
+  try { messengerTcp?.close(); } catch {}
+  messengerUdp = null; messengerTcp = null; messengerPort = 0;
+  return { success: true };
+});
+ipcMain.handle('messenger:get-state', () => { messengerLoadIdentity(); messengerLoadMessages(); return messengerState(); });
+ipcMain.handle('messenger:update-prefs', (_e, prefs: MessengerPrefs) => {
+  messengerPrefs = { ...messengerPrefs, ...(prefs || {}) };
+  saveUIPrefs({ messenger: messengerPrefs });
+  messengerPruneMessages();
+  if (!messengerPrefs.hidePresence) messengerBroadcast();
+  return { success: true, state: messengerState() };
+});
+ipcMain.handle('messenger:scan-range', (_e, { prefix }: { prefix?: string }) => messengerScanRange(prefix || '10.100'));
+ipcMain.handle('messenger:send-message', async (_e, { peerId, text }: { peerId: string; text: string }) => {
+  if (messengerPrefs.hidePresence) return { success: false, error: 'presence hidden' };
+  const peer = messengerPeers.get(peerId);
+  if (!peer) return { success: false, error: 'peer not found' };
+  if (Date.now() - peer.lastSeen >= 20_000) return { success: false, error: 'peer is offline' };
+  const msg: MessengerMessage = { id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, peerId, direction: 'out', kind: 'text', text, ts: Date.now() };
+  await messengerWritePeer(peer, { app: 'pepe-terminal-ssh', type: 'message', fromId: messengerId, fromName: messengerPrefs.displayName || os.userInfo().username || 'PePe', fromPort: messengerPort, messageId: msg.id, text, ts: msg.ts });
+  messengerRemember(msg);
+  return { success: true };
+});
+ipcMain.handle('messenger:send-files', async (_e, { peerId }: { peerId: string }) => {
+  if (messengerPrefs.hidePresence) return { success: false, error: 'presence hidden' };
+  const peer = messengerPeers.get(peerId);
+  if (!peer || !mainWindow) return { success: false, error: 'peer not found' };
+  if (Date.now() - peer.lastSeen >= 20_000) return { success: false, error: 'peer is offline' };
+  const picked = await dialog.showOpenDialog(mainWindow, { properties: ['openFile', 'multiSelections'] });
+  if (picked.canceled || picked.filePaths.length === 0) return { success: false, canceled: true };
+  for (const filePath of picked.filePaths) {
+    const st = fs.statSync(filePath);
+    if (!st.isFile()) continue;
+    await messengerSendFileBuffer(peer, path.basename(filePath), filePath, fs.readFileSync(filePath));
+  }
+  return { success: true };
+});
+ipcMain.handle('messenger:send-remote-files', async (_e, { peerId, connId, remotePaths }: { peerId: string; connId: string; remotePaths: string[] }) => {
+  try {
+    if (messengerPrefs.hidePresence) return { success: false, error: 'presence hidden' };
+    const peer = messengerPeers.get(peerId);
+    if (!peer) return { success: false, error: 'peer not found' };
+    if (Date.now() - peer.lastSeen >= 20_000) return { success: false, error: 'peer is offline' };
+    const paths = Array.isArray(remotePaths) ? remotePaths.filter(Boolean) : [];
+    if (!connId || paths.length === 0) return { success: false, error: 'no remote files selected' };
+    const bridge = getSSHBridge();
+    for (const remotePath of paths) {
+      const data = await bridge.handleSFTPReadFile(connId, remotePath);
+      await messengerSendFileBuffer(peer, path.posix.basename(String(remotePath)) || path.basename(String(remotePath)) || 'remote-file', String(remotePath), data);
+    }
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: String(err?.message || err) };
+  }
+});
+ipcMain.handle('messenger:delete-conversation', (_e, { peerId }: { peerId: string }) => {
+  messengerMessages = messengerMessages.filter(m => m.peerId !== peerId);
+  messengerSaveMessages();
+  messengerEmit({ type: 'state', state: messengerState() });
+  return { success: true };
+});
+ipcMain.handle('messenger:clear-all', () => {
+  messengerMessages = [];
+  messengerSaveMessages();
+  messengerEmit({ type: 'state', state: messengerState() });
+  return { success: true };
+});
+
 // 외부(Explorer) 에서 드래그된 파일을 chat 첨부 디렉토리로 복사 후 경로 반환.
 // 렌더러는 webUtils.getPathForFile() 로 얻은 원본 절대경로를 전달.
 ipcMain.handle('chat:copy-external-file', async (_e, { srcPath, displayName }: { srcPath: string; displayName?: string }) => {

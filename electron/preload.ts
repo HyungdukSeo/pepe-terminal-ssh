@@ -19,6 +19,23 @@ contextBridge.exposeInMainWorld('api', {
   getUIPrefs: () => ipcRenderer.invoke('ui-prefs:get'),
   setUIPrefs: (prefs: Record<string, any>) => ipcRenderer.invoke('ui-prefs:set', prefs),
 
+  // PePe Messenger
+  messengerStart: (prefs?: any) => ipcRenderer.invoke('messenger:start', prefs),
+  messengerStop: () => ipcRenderer.invoke('messenger:stop'),
+  messengerGetState: () => ipcRenderer.invoke('messenger:get-state'),
+  messengerUpdatePrefs: (prefs: any) => ipcRenderer.invoke('messenger:update-prefs', prefs),
+  messengerSendMessage: (peerId: string, text: string) => ipcRenderer.invoke('messenger:send-message', { peerId, text }),
+  messengerSendFiles: (peerId: string) => ipcRenderer.invoke('messenger:send-files', { peerId }),
+  messengerSendRemoteFiles: (peerId: string, connId: string, remotePaths: string[]) => ipcRenderer.invoke('messenger:send-remote-files', { peerId, connId, remotePaths }),
+  messengerScanRange: (prefix?: string) => ipcRenderer.invoke('messenger:scan-range', { prefix }),
+  messengerDeleteConversation: (peerId: string) => ipcRenderer.invoke('messenger:delete-conversation', { peerId }),
+  messengerClearAll: () => ipcRenderer.invoke('messenger:clear-all'),
+  onMessengerEvent: (cb: (p: any) => void) => {
+    const handler = (_: any, p: any) => cb(p);
+    ipcRenderer.on('messenger:event', handler);
+    return () => ipcRenderer.removeListener('messenger:event', handler);
+  },
+
   // Folders
   saveFolder: (f: any) => ipcRenderer.invoke('folders:save', f),
   deleteFolder: (id: string) => ipcRenderer.invoke('folders:delete', id),
