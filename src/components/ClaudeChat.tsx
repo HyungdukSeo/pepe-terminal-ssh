@@ -23,22 +23,28 @@ mermaid.initialize({
 // Mermaid 다이어그램 키워드 — 이 패턴으로 시작하면 mermaid 블록으로 간주
 const MERMAID_START_RE = /^(graph\s+(TB|TD|BT|RL|LR)|flowchart\s+(TB|TD|BT|RL|LR)|sequenceDiagram|classDiagram|stateDiagram(-v2)?|erDiagram|gantt|pie|journey|gitGraph|mindmap|timeline|quadrantChart)\b/;
 
-// gemini 모델 목록. pro=true 는 유료 요금제(Code Assist Standard 이상)에서만 사용 가능 →
-// free-tier 계정에서는 '지원안함' 으로 표시. tier 는 gemini:modelInfo(loadCodeAssist) 로 조회.
-const GEMINI_MODELS: { v: string; l: string; icon: string; pro?: boolean }[] = [
-  { v: 'gemini-3-flash-preview', l: 'Gemini 3 Flash', icon: '⚡' },
-  { v: 'gemini-3.1-flash-lite-preview', l: 'Gemini 3.1 Flash Lite', icon: '⚡' },
-  { v: 'gemini-2.5-flash', l: 'Gemini 2.5 Flash', icon: '⚡' },
-  { v: 'gemini-2.5-flash-lite', l: 'Gemini 2.5 Flash Lite', icon: '⚡' },
-  { v: 'gemini-3-pro', l: 'Gemini 3 Pro', icon: '✨', pro: true },
-  { v: 'gemini-2.5-pro', l: 'Gemini 2.5 Pro', icon: '✨', pro: true },
+// agy(Antigravity) 에이전트의 모델 목록.
+// 핵심: agy --model 플래그는 슬러그가 아니라 "Switch Model" 드롭다운의 정확한 라벨
+// 문자열(추론 강도 포함, 예: "Gemini 3.5 Flash (Medium)")을 받는다. 라벨이 정확히
+// 일치하지 않으면 agy 는 조용히 기본 모델로 폴백한다(이전 슬러그 매핑이 무력했던 원인).
+// 따라서 v(값)에 라벨을 그대로 넣어 백엔드가 --model 로 직통 전달한다.
+// api: Gemini API Direct 폴백(REST)용 슬러그. Claude/GPT-OSS 등 agy 전용 모델은
+//      API 폴백 시 가장 가까운 Gemini 모델로 대체한다.
+const GEMINI_MODELS: { v: string; l: string; icon: string; api: string; pro?: boolean }[] = [
+  { v: 'Gemini 3.5 Flash (Medium)', l: 'Gemini 3.5 Flash (Medium)', icon: '⚡', api: 'gemini-2.5-flash' },
+  { v: 'Gemini 3.5 Flash (High)',   l: 'Gemini 3.5 Flash (High)',   icon: '⚡', api: 'gemini-2.5-flash' },
+  { v: 'Gemini 3.5 Flash (Low)',    l: 'Gemini 3.5 Flash (Low)',    icon: '⚡', api: 'gemini-2.5-flash' },
+  { v: 'Gemini 3.1 Pro (Low)',      l: 'Gemini 3.1 Pro (Low)',      icon: '✨', api: 'gemini-2.5-pro' },
+  { v: 'Gemini 3.1 Pro (High)',     l: 'Gemini 3.1 Pro (High)',     icon: '✨', api: 'gemini-2.5-pro' },
+  { v: 'Claude Sonnet 4.6 (Thinking)', l: 'Claude Sonnet 4.6 (Thinking)', icon: '🧠', api: 'gemini-2.5-pro' },
+  { v: 'Claude Opus 4.6 (Thinking)',   l: 'Claude Opus 4.6 (Thinking)',   icon: '🧠', api: 'gemini-2.5-pro' },
+  { v: 'GPT-OSS 120B (Medium)',     l: 'GPT-OSS 120B (Medium)',     icon: '🤖', api: 'gemini-2.5-flash' },
 ];
+const DEFAULT_GEMINI_MODEL = 'Gemini 3.5 Flash (Medium)';
 const isValidGeminiModel = (m: string) => GEMINI_MODELS.some(x => x.v === m);
-// 요금제(isPaid)에 따라 해당 모델을 실제 사용할 수 있는지
-const isGeminiModelUsable = (m: string, isPaid: boolean) => {
-  const def = GEMINI_MODELS.find(x => x.v === m);
-  return !!def && (!def.pro || isPaid);
-};
+// 요금제(isPaid)에 따라 해당 모델을 실제 사용할 수 있는지.
+// agy 라벨은 로그인 계정 기준으로 모두 노출되므로 pro 게이팅은 두지 않는다.
+const isGeminiModelUsable = (m: string, _isPaid: boolean) => isValidGeminiModel(m);
 
 // flowchart 노드 라벨에 () / :: / # 등 특수문자가 unquoted 로 들어가면 mermaid 파서가 깨짐.
 // (예: E[new TraceJob(datas)] → Parse error). 라벨을 "..." 로 감싸 안전하게 만든다.
@@ -1683,11 +1689,11 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   // 요금제 확인 후 현재 선택 모델이 못 쓰는 모델이면 기본 모델로 자동 전환
   useEffect(() => {
     if (currentAgent === 'gemini' && geminiTier && !isGeminiModelUsable(model, geminiTier.isPaid)) {
-      setModel('gemini-2.5-flash');
+      setModel(DEFAULT_GEMINI_MODEL);
     }
   }, [geminiTier, currentAgent]);
   // 모델 선택 — 에이전트별 기본 모델
-  const defaultModelFor = (a: AgentType) => a === 'gemini' ? 'gemini-2.5-flash' : a === 'codex' ? 'gpt-5.5' : 'opus';
+  const defaultModelFor = (a: AgentType) => a === 'gemini' ? DEFAULT_GEMINI_MODEL : a === 'codex' ? 'gpt-5.5' : 'opus';
   const [model, setModelRaw] = useState<string>(defaultModelFor(aiAgent));
   const saveCurrentAgentSettings = () => {
     agentSettingsMemory.current[currentAgentRef.current] = {
@@ -3388,7 +3394,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     try {
       if (currentAgentRef.current === 'gemini') {
         // 요금제에서 못 쓰는 모델(또는 미등록 모델)이면 안전한 기본 모델로 대체
-        const geminiModel = isGeminiModelUsable(model, geminiTier?.isPaid === true) ? model : 'gemini-2.5-flash';
+        const geminiModel = isGeminiModelUsable(model, geminiTier?.isPaid === true) ? model : DEFAULT_GEMINI_MODEL;
         // 자동 승인(geminiYolo) OFF + 승인성 발화 아님 → "계획 먼저 보여주고 승인" 단계
         const approveKeywords = ['실행', '진행', '좋아', 'yes', 'ok', '승인', 'approve', '해줘', 'go ahead', '네'];
         const isApproval = approveKeywords.some(k => text.toLowerCase().includes(k.toLowerCase()));
@@ -5336,7 +5342,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             <>
               <select
                 className="claude-chat-perm-select"
-                value={isGeminiModelUsable(model, geminiTier?.isPaid === true) ? model : 'gemini-2.5-flash'}
+                value={isGeminiModelUsable(model, geminiTier?.isPaid === true) ? model : DEFAULT_GEMINI_MODEL}
                 onChange={e => setModel(e.target.value)}
                 title={geminiTier ? `${tt('geminiModelSelect')} · ${geminiTier.tierName}` : tt('geminiModelSelect')}
               >
