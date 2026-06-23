@@ -2960,9 +2960,14 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
   const currentAgentStreaming = shareContext
     ? (requestBusy || streaming || activeReqAgent === currentAgent)
     : (requestBusy || streamingAgents.has(currentAgent) || activeReqAgent === currentAgent);
-  // steering 모드 — 현재 에이전트(codex/claude/antigravity 무관)가 응답 중이면 입력을 큐에 넣는다.
-  // 현재 턴이 끝나면 큐 순서대로 자동 전송 (codex 처럼 claude·antigravity 도 동일 동작).
-  const isSteeringMode = currentAgentStreaming;
+  // steering 모드 — 현재 에이전트(codex/claude)가 응답 중이면 입력을 큐에 넣고,
+  // 현재 턴이 끝나면 큐 순서대로 자동 전송한다.
+  // gemini/agy(antigravity)는 세션 없는 one-shot --print 라 mid-turn steering 이
+  // 불가능하다. steering 으로 큐잉하면 "직전 작업 이어서" 래퍼가 붙은 메시지가 매번
+  // 새 print 턴으로 전송되어 ① You 버블이 여러 개로 보이고 ② agy 가 이전 맥락에
+  // 답하는 것처럼 동작했다. 따라서 gemini 에서는 steering 을 끄고, 응답 중 입력은
+  // (send 의 guardBusy 로) 차단한다.
+  const isSteeringMode = currentAgentStreaming && currentAgent !== 'gemini';
   const send = useCallback(async (text: string, contextItems: FileContextItem[]) => {
     // 첨부만 있고 텍스트가 없어도 전송 허용 (이미지/문서만 보내는 경우)
     if (!text.trim() && binaryAttachments.length === 0 && localFileAttachments.length === 0 && (contextItems?.length || 0) === 0) return;
@@ -5527,7 +5532,9 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
             }}
             placeholder={`${isSteeringMode ? tt('steeringInputPlaceholder') : tt('inputPlaceholder')}\n\n📎 첨부: 스크린샷은 Ctrl+V · 파일은 📎 + 버튼 · 드래그 앤 드롭`}
             rows={3}
-            // 응답 중에도 입력 가능 — steering 큐잉을 위해 (codex/claude/antigravity 모두)
+            // 응답 중에도 입력 가능 — steering 큐잉을 위해 (codex/claude).
+            // gemini/agy 는 steering 미지원이라 응답 중 입력을 막는다.
+            disabled={currentAgentStreaming && currentAgent === 'gemini'}
           />
           {isDragOver && (
             <div style={{
