@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 type Peer = { id: string; name: string; host: string; port: number; lastSeen: number; online?: boolean };
 type Msg = { id: string; peerId: string; direction: 'in' | 'out'; kind: 'text' | 'file'; text?: string; fileName?: string; filePath?: string; size?: number; ts: number };
@@ -54,6 +54,8 @@ export const MessengerWorkspace: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [scanText, setScanText] = useState('');
   const [settingsExpanded, setSettingsExpanded] = useState(false);
+  const [nameInput, setNameInput] = useState('');
+  const nameComposing = useRef(false);
   const [menu, setMenu] = useState<{ x: number; y: number; peerId: string } | null>(null);
   const [remoteOpen, setRemoteOpen] = useState(false);
   const [remoteSessions, setRemoteSessions] = useState<any[]>([]);
@@ -98,7 +100,19 @@ export const MessengerWorkspace: React.FC = () => {
 
   const selectedPeer = state.peers.find(p => p.id === selectedPeerId);
   const messages = useMemo(() => state.messages.filter(m => m.peerId === selectedPeerId).sort((a, b) => a.ts - b.ts), [state.messages, selectedPeerId]);
-  const displayName = state.prefs.displayName || state.self?.name || '';
+  const storedName = state.prefs.displayName ?? '';
+  const fallbackName = state.self?.name || '';
+
+  // Seed the local name input from prefs, but never clobber what the user is
+  // typing (especially mid Hangul IME composition) — only sync when the value
+  // actually diverges and the user is not actively editing the field.
+  useEffect(() => {
+    if (nameComposing.current) return;
+    const el = document.activeElement as HTMLElement | null;
+    if (el?.dataset?.messengerName === '1') return;
+    setNameInput(storedName);
+  }, [storedName]);
+
   const retainEnabled = !!state.prefs.retainEnabled;
   const retainDays = Number(state.prefs.retainDays) || 30;
   const hidePresence = !!state.prefs.hidePresence;
@@ -258,7 +272,16 @@ export const MessengerWorkspace: React.FC = () => {
         <div className="messenger-settings">
           <label>
             <span>내 이름</span>
-            <input value={displayName} onChange={e => updatePrefs({ displayName: e.target.value })} placeholder="표시 이름" />
+            <input
+              data-messenger-name="1"
+              value={nameInput}
+              placeholder={fallbackName || '표시 이름'}
+              onChange={e => setNameInput(e.target.value)}
+              onCompositionStart={() => { nameComposing.current = true; }}
+              onCompositionEnd={e => { nameComposing.current = false; setNameInput((e.target as HTMLInputElement).value); }}
+              onBlur={() => { if (nameInput !== storedName) updatePrefs({ displayName: nameInput }); }}
+              onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+            />
           </label>
           <button
             type="button"
