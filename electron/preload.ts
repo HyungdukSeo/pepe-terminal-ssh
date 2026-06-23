@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld('api', {
   messengerDeleteConversation: (peerId: string) => ipcRenderer.invoke('messenger:delete-conversation', { peerId }),
   messengerDeletePeer: (peerId: string) => ipcRenderer.invoke('messenger:delete-peer', { peerId }),
   messengerClearAll: () => ipcRenderer.invoke('messenger:clear-all'),
+  messengerClearPeers: () => ipcRenderer.invoke('messenger:clear-peers'),
   onMessengerEvent: (cb: (p: any) => void) => {
     const handler = (_: any, p: any) => cb(p);
     ipcRenderer.on('messenger:event', handler);

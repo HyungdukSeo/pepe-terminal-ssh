@@ -7120,6 +7120,15 @@ mark.claude-search-hit.current {
   border-top: 1px solid rgba(166, 200, 230, 0.13);
   border-bottom: 0;
 }
+.messenger-remote-modal footer span {
+  font-size: 11px;
+  color: #8fa9bf;
+}
+.messenger-remote-modal footer button.primary {
+  background: rgba(46, 122, 80, 0.85);
+  border-color: rgba(85, 191, 134, 0.6);
+  white-space: nowrap;
+}
 .messenger-remote-modal h3 {
   margin: 0;
   font-size: 18px;
@@ -7146,17 +7155,28 @@ mark.claude-search-hit.current {
   opacity: 0.48;
   cursor: not-allowed;
 }
-.messenger-remote-connect,
-.messenger-remote-path {
-  display: grid;
-  grid-template-columns: minmax(170px, 1.4fr) minmax(100px, 0.7fr) minmax(120px, 0.9fr) auto;
-  gap: 8px;
+.messenger-remote-connect {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   padding: 12px 18px 0;
 }
+.messenger-remote-connect select {
+  width: 100%;
+}
+.messenger-remote-label {
+  font-size: 12px;
+  color: #8fa9bf;
+}
+.messenger-remote-connecting {
+  font-size: 11px;
+  color: #f0c64c;
+}
 .messenger-remote-path {
+  display: grid;
   grid-template-columns: auto 1fr auto;
-  padding-top: 10px;
-  padding-bottom: 12px;
+  gap: 8px;
+  padding: 10px 18px 12px;
 }
 .messenger-remote-error {
   margin: 0 18px 10px;

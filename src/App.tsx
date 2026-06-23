@@ -285,7 +285,6 @@ function App() {
   const [optFontSize, setOptFontSize] = useState(() => Number(localStorage.getItem('terminalFontSize')) || 14);
   const [availableFonts, setAvailableFonts] = useState<string[]>([]);
   const [optionsTab, setOptionsTab] = useState<'terminal' | 'session' | 'messenger' | 'keybindings'>('terminal');
-  const [messengerPrefsDraft, setMessengerPrefsDraft] = useState<{ displayName: string; retainEnabled: boolean; retainDays: number; hidePresence: boolean }>({ displayName: '', retainEnabled: false, retainDays: 30, hidePresence: false });
   const [keybindingsState, setKeybindingsState] = useState<Record<string, string>>({});
   const [keybindingsDraft, setKeybindingsDraft] = useState<Record<string, string>>({});
 
@@ -327,12 +326,6 @@ function App() {
         try { (window as any).api?.setUIPrefs?.({ defaultShellName: name }); } catch {}
       }
       setDefaultShell({ name, path: spath });
-      setMessengerPrefsDraft({
-        displayName: prefs?.messenger?.displayName || '',
-        retainEnabled: !!prefs?.messenger?.retainEnabled,
-        retainDays: Number(prefs?.messenger?.retainDays) || 30,
-        hidePresence: !!prefs?.messenger?.hidePresence,
-      });
       setShellPrefsLoaded(true);
       // 초기 탭의 세션명/경로/cwd를 업데이트
       setTabs(prev => prev.map((t, i) => {
@@ -4040,7 +4033,7 @@ function App() {
         {tabs.filter(t => t.type === 'messenger').map(t => (
           <div key={t.id} style={{ flex: 1, minHeight: 0, display: activeTab?.id === t.id ? 'flex' : 'none' }}>
             <ErrorBoundary label="메신저">
-              <MessengerWorkspace />
+              <MessengerWorkspace connectedSessions={connectedBrowserSessions} />
             </ErrorBoundary>
           </div>
         ))}
@@ -4727,65 +4720,18 @@ function App() {
               <div className="options-content">
                 <div style={{ marginBottom: 16 }}>
                   <div style={{ color: '#ccc', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>미니 메신저</div>
-                  <p style={{ color: '#888', fontSize: 12, margin: '0 0 10px' }}>
-                    같은 네트워크의 PePe 사용자끼리 메시지와 파일을 주고받습니다. Windows 방화벽에서 앱 통신 허용이 필요할 수 있습니다.
+                  <p style={{ color: '#888', fontSize: 12, margin: '0 0 14px' }}>
+                    표시 이름·접속 숨기기·자동 삭제 등 메신저 설정은 메신저 화면에서 직접 변경할 수 있습니다. 여기서는 전체 초기화만 제공합니다.
                   </p>
-                  <label style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
-                    <span style={{ color: '#bbb', fontSize: 13 }}>내 표시 이름</span>
-                    <input
-                      style={{ background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '8px', fontSize: 14 }}
-                      value={messengerPrefsDraft.displayName}
-                      onChange={e => setMessengerPrefsDraft(s => ({ ...s, displayName: e.target.value }))}
-                      placeholder="예: 홍길동"
-                    />
-                  </label>
-                  <label className="settings-checkbox" style={{ marginBottom: 10 }}>
-                    <input
-                      type="checkbox"
-                      checked={messengerPrefsDraft.retainEnabled}
-                      onChange={e => setMessengerPrefsDraft(s => ({ ...s, retainEnabled: e.target.checked }))}
-                    />
-                    <span>지난 대화 자동 삭제</span>
-                  </label>
-                  <label className="settings-checkbox" style={{ marginBottom: 10 }}>
-                    <input
-                      type="checkbox"
-                      checked={messengerPrefsDraft.hidePresence}
-                      onChange={e => setMessengerPrefsDraft(s => ({ ...s, hidePresence: e.target.checked }))}
-                    />
-                    <span>나의 접속 숨기기</span>
-                  </label>
-                  <p style={{ color: '#888', fontSize: 12, margin: '0 0 12px' }}>
-                    체크하면 메신저 워크스페이스를 열어도 다른 사용자에게 검색/응답되지 않고, 기존 사용자 목록에서는 오프라인처럼 전송이 막힙니다.
-                  </p>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-                    <span style={{ color: '#bbb', fontSize: 13, width: 100 }}>저장 기간</span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={3650}
-                      disabled={!messengerPrefsDraft.retainEnabled}
-                      style={{ width: 110, background: '#1a1a1a', color: '#eee', border: '1px solid #333', borderRadius: 4, padding: '8px', fontSize: 14 }}
-                      value={messengerPrefsDraft.retainDays}
-                      onChange={e => setMessengerPrefsDraft(s => ({ ...s, retainDays: Number(e.target.value) || 30 }))}
-                    />
-                    <span style={{ color: '#888', fontSize: 12 }}>일</span>
-                  </label>
                   <div style={{ display: 'flex', gap: 8 }}>
-                    <button className="btn-add" onClick={async () => {
-                      const next = {
-                        displayName: messengerPrefsDraft.displayName.trim(),
-                        retainEnabled: messengerPrefsDraft.retainEnabled,
-                        retainDays: messengerPrefsDraft.retainDays,
-                        hidePresence: messengerPrefsDraft.hidePresence,
-                      };
-                      await (window as any).api?.setUIPrefs?.({ messenger: next });
-                      await (window as any).api?.messengerUpdatePrefs?.(next);
-                    }}>메신저 설정 저장</button>
                     <button className="btn-cancel" onClick={async () => {
-                      if (!confirm('모든 메신저 대화내역을 초기화할까요?')) return;
+                      if (!confirm('모든 메신저 대화내역을 삭제할까요?')) return;
                       await (window as any).api?.messengerClearAll?.();
-                    }}>대화내역 모두 초기화</button>
+                    }}>전체 대화삭제</button>
+                    <button className="btn-cancel" onClick={async () => {
+                      if (!confirm('모든 사용자와 대화내역을 삭제할까요?\n사용자 목록이 비워지며, 다시 검색하면 재등록됩니다.')) return;
+                      await (window as any).api?.messengerClearPeers?.();
+                    }}>전체 사용자 삭제</button>
                   </div>
                 </div>
               </div>
@@ -4847,14 +4793,8 @@ function App() {
                 setKeybindingsState(keybindingsDraft);
                 loadKeybindings(keybindingsDraft);
                 (window as any).api?.setUIPrefs?.({ keybindings: keybindingsDraft });
-                const messengerPrefs = {
-                  displayName: messengerPrefsDraft.displayName.trim(),
-                  retainEnabled: messengerPrefsDraft.retainEnabled,
-                  retainDays: messengerPrefsDraft.retainDays,
-                  hidePresence: messengerPrefsDraft.hidePresence,
-                };
-                (window as any).api?.setUIPrefs?.({ messenger: messengerPrefs });
-                (window as any).api?.messengerUpdatePrefs?.(messengerPrefs);
+                // 메신저 설정(표시 이름/숨기기/자동삭제)은 메신저 화면에서 직접 관리하므로
+                // 옵션 저장 시 건드리지 않는다 (덮어쓰기 방지).
                 setListeningAction(null);
                 setShowOptions(false);
                 if (isOptionsPopout) {
