@@ -1928,8 +1928,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     return () => { if (dispose) dispose(); };
   }, []);
 
-  // 선택된 SSH 세션 목록을 AI 대상으로 등록 (WebDAV 마운트 없이 — 파일 접근은 pepe_ssh MCP 도구로).
-  // WebDAV 가 느리고 불안정해서 제거: 이제 ssh_read_file/ssh_write_file/ssh_exec/ssh_grep/ssh_glob 로만 접근.
+  // 선택된 SSH 세션 목록을 AI 대상으로 등록.
+  // Claude/Codex 는 pepe_ssh MCP 를 우선 쓰고, Antigravity 는 SSH MCP 가 없으므로 WebDAV UNC workspace 를 사용한다.
   useEffect(() => {
     const sessionsForMount = selectedSshSessions.length > 0 ? selectedSshSessions : (defaultSshSession ? [defaultSshSession] : []);
     console.log('[ClaudeChat][WebDAV] sync active mounts', {
@@ -1940,7 +1940,24 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
       sessionsForMount: sessionsForMount.map(s => ({ termId: s.termId, sessionId: s.sessionId || null, label: s.label })),
     });
     if (sessionsForMount.length === 0) { setActiveMounts([]); return; }
+    let cancelled = false;
     setActiveMounts(sessionsForMount.map(s => ({ termId: s.termId, mountRoot: '', label: s.label })));
+    (async () => {
+      const mounted = await Promise.all(sessionsForMount.map(async (s) => {
+        try {
+          const reg: any = await (window as any).api?.claudeRegisterMount?.(s.termId, s.label);
+          if (reg?.success) {
+            return { termId: s.termId, mountRoot: reg.mountRoot || '', label: s.label };
+          }
+          console.warn('[ClaudeChat][WebDAV] active mount register failed', { termId: s.termId, label: s.label, error: reg?.error });
+        } catch (err) {
+          console.warn('[ClaudeChat][WebDAV] active mount register error', { termId: s.termId, label: s.label, err });
+        }
+        return { termId: s.termId, mountRoot: '', label: s.label };
+      }));
+      if (!cancelled) setActiveMounts(mounted);
+    })();
+    return () => { cancelled = true; };
   }, [selectedSshSessions.map(s => s.termId).join(','), defaultSshSession?.termId]);
   const restoreWebdavMounts = useCallback(async (sessionsToRestore: { termId: string; label: string; sessionId?: string }[], source: 'selection' | 'event') => {
     if (!mountPresetsLoadedRef.current || !mountPresetsReady) {
@@ -2965,6 +2982,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     let attachBadge = '';
     const addDirsSet = new Set<string>();
     const contextLines: string[] = [];
+    const sendingAgent = currentAgentRef.current;
+    const isGeminiAgent = sendingAgent === 'gemini';
 
     // 0.A) 포크/이력 후속 질문이면 작업 대상을 prompt 최상단 + user text 에 직접 명시.
     // 공유 OFF 시에는 다른 에이전트한테 했던 첫 user 메시지를 inject 하면 정보가 누설되므로,
@@ -3013,7 +3032,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
     }
 
     // 0) 활성 SSH 세션: 원격 파일/명령은 pepe_ssh MCP 도구로 접근 (WebDAV 제거 — 빠르고 안정적)
-    if (activeMount) {
+    if (activeMount && !isGeminiAgent) {
       const multi = activeMounts.length > 1;
       contextLines.push(
         `# 중요: 원격 SSH 접근 규칙 (필수)`,
@@ -3036,6 +3055,20 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         );
       }
       contextLines.push(``, `분석 결과는 **원격 Unix 경로 기준**으로 설명해주세요.`);
+    } else if (activeMount && isGeminiAgent) {
+      const multi = activeMounts.length > 1;
+      contextLines.push(
+        `# 원격 SSH 컨텍스트 참고`,
+        ``,
+        `현재 SSH 세션: **${activeMount.label}** — 원격 Linux 호스트입니다.`,
+        `Antigravity CLI(agy)는 현재 PePe의 SSH MCP 도구를 직접 사용할 수 없으므로, 파일 접근이 필요하면 아래에 명시된 WebDAV workspace 경로만 사용하세요.`,
+        `원격 Unix 경로(/vmsdata/... 등)를 Windows 로컬 경로로 직접 추측하지 마세요.`,
+        `사용자가 단순 질문을 한 경우에는 첨부/이전 원격 경로를 불필요하게 탐색하지 말고 질문에만 답하세요.`,
+      );
+      if (multi) {
+        contextLines.push(`연결된 SSH 세션: ${activeMounts.map(m => m.label).join(', ')}`);
+      }
+      contextLines.push(``);
     }
 
     // 0.5) 사용자 메시지에서 Windows 로컬 절대 경로 자동 감지 → --add-dir 추가
@@ -3108,19 +3141,41 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
 
     // 1) 개별 WebDAV 마운트 첨부 (파일/폴더 우클릭 → Claude 첨부)
     if (mountEntries.length > 0) {
-      for (const m of mountEntries) addDirsSet.add(m.uncPath);
-      const pathMap = mountEntries.map(m =>
-        `- \`${m.remotePath}\`${m.isDir ? '/' : ''} ← \`${m.uncPath}\``
-      ).join('\n');
-      contextLines.push('', '[명시적으로 첨부된 파일/폴더]', pathMap);
+      let pathMap: string;
+      if (isGeminiAgent) {
+        for (const m of mountEntries) {
+          if (m.uncPath) addDirsSet.add(m.uncPath);
+        }
+        pathMap = mountEntries.map(m =>
+          `- \`${m.remotePath}\`${m.isDir ? '/' : ''} ← WebDAV workspace \`${m.uncPath || '(mount pending)'}\``
+        ).join('\n');
+        contextLines.push(
+          '',
+          '[명시적으로 첨부된 원격 파일/폴더]',
+          pathMap,
+          'Antigravity CLI에서는 위 WebDAV workspace 경로가 원격 SSH 파일시스템입니다. 원격 Unix 경로를 로컬 경로로 직접 추측하지 말고, 필요한 경우 매핑된 WebDAV workspace 안에서만 파일을 읽으세요.',
+        );
+      } else {
+        for (const m of mountEntries) addDirsSet.add(m.uncPath);
+        pathMap = mountEntries.map(m =>
+          `- \`${m.remotePath}\`${m.isDir ? '/' : ''} ← \`${m.uncPath}\``
+        ).join('\n');
+        contextLines.push('', '[명시적으로 첨부된 파일/폴더]', pathMap);
+      }
       attachBadge = `📂 첨부 ${mountEntries.length}개:\n${mountEntries.slice(0, 5).map(m => `• ${m.remotePath}${m.isDir ? '/' : ''}`).join('\n')}${mountEntries.length > 5 ? `\n외 ${mountEntries.length - 5}개` : ''}\n\n`;
     } else if (activeMounts.length > 0) {
       // 멀티 SSH 컨텍스트 — 파일 접근은 pepe_ssh MCP 도구로 (WebDAV 마운트 없음)
       if (activeMounts.length > 1) {
         const mapLines = activeMounts.map(m => `- ${m.label}`).join('\n');
+        if (isGeminiAgent) {
+          for (const m of activeMounts) {
+            if (m.mountRoot) addDirsSet.add(m.mountRoot);
+          }
+        }
         contextLines.push('', '[연결된 여러 SSH 세션 — pepe_ssh 도구의 session 인자로 대상 지정]', mapLines);
         attachBadge = `🔗 활성 SSH ${activeMounts.length}개: ${activeMounts.map(m => m.label).join(', ')}\n\n`;
       } else {
+        if (isGeminiAgent && activeMounts[0].mountRoot) addDirsSet.add(activeMounts[0].mountRoot);
         attachBadge = `🔗 활성 SSH: ${activeMounts[0].label}\n\n`;
       }
     }
@@ -4159,8 +4214,8 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           <p>{notInstalledMsg}</p>
           {currentAgent === 'gemini' ? (
             <>
-              <p>{tt('installCmd')} <code>npm install -g @google/gemini-cli</code></p>
-              <p>{tt('loginHint', { cmd: 'gemini' })}</p>
+              <p>{tt('installCmd')} <code>irm https://antigravity.google/cli/install.ps1 | iex</code></p>
+              <p>{tt('loginHint', { cmd: 'agy' })}</p>
             </>
           ) : currentAgent === 'codex' ? (
             <>

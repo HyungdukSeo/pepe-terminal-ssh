@@ -5076,8 +5076,9 @@ app.on('before-quit', () => {
 // ── Claude Code CLI 연동 ──
 const claudeProcesses: Map<string, any> = new Map();
 
-// ── Gemini API 직접 호출 연동 ──
-// agy CLI 가 headless 환경에서 응답을 반환하지 않으므로 REST API 로 직접 호출.
+// ── Gemini / Antigravity CLI 연동 ──
+// 개인 Gemini CLI OAuth 경로가 종료되어 Antigravity CLI(agy)를 우선 사용한다.
+// agy가 없거나 긴 프롬프트/환경 문제로 실행할 수 없으면 기존 Gemini API Direct를 fallback으로 둔다.
 const geminiAbortControllers: Map<string, AbortController> = new Map();
 
 /** UI prefs (config.json) 에서 Gemini API 키 로드 */
@@ -5102,13 +5103,240 @@ function mapGeminiModel(frontendModel: string): string {
   return map[frontendModel] || frontendModel;
 }
 
+function mapAgyModel(frontendModel?: string): string {
+  // agy는 모델 alias가 Gemini CLI와 완전히 같지 않을 수 있어 보수적으로 매핑한다.
+  // 알 수 없는 값은 넘기지 않아 agy의 기본 모델 선택을 사용한다.
+  const map: Record<string, string> = {
+    'gemini-2.5-flash': 'gemini-2.5-flash',
+    'gemini-2.5-flash-lite': 'gemini-2.5-flash-lite',
+    'gemini-2.5-pro': 'gemini-2.5-pro',
+    'gemini-3-flash-preview': 'gemini-3.0-flash',
+    'gemini-3.1-flash-lite-preview': 'gemini-3.1-flash-lite',
+    'gemini-3-pro': 'gemini-3.0-pro',
+  };
+  return frontendModel ? (map[frontendModel] || '') : '';
+}
+
+function findAgyCliPath(): string | null {
+  const candidates: string[] = [];
+  if (process.platform === 'win32') {
+    if (process.env.LOCALAPPDATA) candidates.push(path.join(process.env.LOCALAPPDATA, 'agy', 'bin', 'agy.exe'));
+    if (process.env.USERPROFILE) candidates.push(path.join(process.env.USERPROFILE, 'AppData', 'Local', 'agy', 'bin', 'agy.exe'));
+  }
+
+  for (const candidate of candidates) {
+    try {
+      if (candidate && fs.existsSync(candidate)) return candidate;
+    } catch {}
+  }
+
+  try {
+    const { spawnSync } = require('child_process');
+    const augmentedPath = buildAugmentedPath();
+    const env = { ...process.env, PATH: augmentedPath, Path: augmentedPath };
+    const lookup = process.platform === 'win32'
+      ? spawnSync('where.exe', ['agy'], { shell: false, encoding: 'utf8', env, windowsHide: true })
+      : spawnSync('which', ['agy'], { shell: false, encoding: 'utf8', env });
+    const found = String(lookup.stdout || '').split(/\r?\n/).map(s => s.trim()).find(Boolean);
+    if (lookup.status === 0 && found) return found;
+  } catch {}
+
+  return null;
+}
+
+function readAgyPrintTranscript(logPath: string): string | null {
+  try {
+    if (!logPath || !fs.existsSync(logPath)) return null;
+    const logText = fs.readFileSync(logPath, 'utf8');
+    const matches = Array.from(logText.matchAll(/(?:Created conversation|Print mode: conversation=)\s*([0-9a-f-]{36})/gi));
+    const conversationId = matches.length ? matches[matches.length - 1][1] : null;
+    if (!conversationId) return null;
+
+    const transcriptPath = path.join(
+      os.homedir(),
+      '.gemini',
+      'antigravity-cli',
+      'brain',
+      conversationId,
+      '.system_generated',
+      'logs',
+      'transcript.jsonl',
+    );
+    if (!fs.existsSync(transcriptPath)) return null;
+
+    let lastModelText = '';
+    const lines = fs.readFileSync(transcriptPath, 'utf8').split(/\r?\n/);
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const event = JSON.parse(trimmed);
+        if (event?.source === 'MODEL' && typeof event?.content === 'string' && event.content.trim()) {
+          lastModelText = event.content;
+        }
+      } catch {}
+    }
+    return lastModelText || null;
+  } catch (err) {
+    console.log('[gemini:agy] failed to read transcript fallback:', err);
+    return null;
+  }
+}
+
+async function waitForAgyPrintTranscript(logPath: string, timeoutMs = 3000): Promise<string | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const text = readAgyPrintTranscript(logPath);
+    if (text) return text;
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  return readAgyPrintTranscript(logPath);
+}
+
+async function checkAgyCli(): Promise<{ installed: boolean; version?: string; path?: string; error?: string }> {
+  try {
+    const { spawn } = require('child_process');
+    const agyPath = findAgyCliPath();
+    if (!agyPath) return { installed: false, error: 'agy executable not found' };
+    const augmentedPath = buildAugmentedPath();
+    const env = { ...process.env, PATH: augmentedPath, Path: augmentedPath };
+    return await new Promise(resolve => {
+      const proc = spawn(agyPath, ['--version'], { shell: false, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+      let stdout = '';
+      let stderr = '';
+      proc.stdout?.on('data', (d: Buffer) => { stdout += d.toString('utf8'); });
+      proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString('utf8'); });
+      proc.on('error', (err: any) => resolve({ installed: false, error: String(err?.message || err) }));
+      proc.on('close', (code: number) => {
+        if (code === 0) resolve({ installed: true, version: stdout.trim() || 'agy', path: agyPath });
+        else resolve({ installed: false, error: stderr.trim() || stdout.trim() || `exit ${code}` });
+      });
+    });
+  } catch (err: any) {
+    return { installed: false, error: String(err?.message || err) };
+  }
+}
+
+async function sendGeminiApiDirect(sessionId: string, prompt: string, requestId: string | undefined, model: string | undefined) {
+  const procKey = requestId || sessionId;
+
+  const prevController = geminiAbortControllers.get(procKey);
+  if (prevController) {
+    try { prevController.abort(); } catch {}
+    geminiAbortControllers.delete(procKey);
+  }
+
+  const apiKey = loadGeminiApiKey();
+  const sendStream = (message: Record<string, any>) =>
+    mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message });
+
+  if (!apiKey) {
+    sendStream({ type: 'text', text: '⚠️ Antigravity CLI(agy) 실행에 실패했고 Gemini API 키도 설정되지 않았습니다.\n\n설정 방법:\n1. agy 설치/로그인을 확인하거나\n2. https://aistudio.google.com 에서 API 키를 발급받아 설정(⚙️) → Gemini API Key 에 입력하세요' });
+    sendStream({ type: 'done', code: 1 });
+    return { success: false, error: 'No agy backend or API key configured' };
+  }
+
+  const geminiLangPrefix = '[시스템 지시] 특별한 언어 요청이 없으면 항상 한국어로 응답하세요.\n\n';
+  const fullPrompt = geminiLangPrefix + prompt;
+  const apiModel = mapGeminiModel(model || 'gemini-2.5-flash');
+
+  const controller = new AbortController();
+  geminiAbortControllers.set(procKey, controller);
+
+  console.log(`[gemini:api] model=${apiModel}, procKey=${procKey}, promptLen=${fullPrompt.length}`);
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${apiModel}:streamGenerateContent?alt=sse&key=${apiKey}`;
+
+  let resp: Response;
+  try {
+    resp = await (globalThis as any).fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: fullPrompt }] }],
+        generationConfig: {
+          temperature: 1.0,
+          maxOutputTokens: 65536,
+        },
+      }),
+      signal: controller.signal,
+    });
+  } catch (fetchErr: any) {
+    geminiAbortControllers.delete(procKey);
+    if (fetchErr?.name === 'AbortError') {
+      sendStream({ type: 'done', code: 0 });
+      return { success: true };
+    }
+    sendStream({ type: 'text', text: `❌ Gemini API 호출 실패: ${fetchErr?.message || fetchErr}` });
+    sendStream({ type: 'done', code: 1 });
+    return { success: false, error: String(fetchErr) };
+  }
+
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => '');
+    geminiAbortControllers.delete(procKey);
+    sendStream({ type: 'text', text: `❌ Gemini API 오류 (${resp.status}): ${errText.slice(0, 500)}` });
+    sendStream({ type: 'done', code: 1 });
+    return { success: false, error: `API ${resp.status}` };
+  }
+
+  const reader = resp.body?.getReader();
+  if (!reader) {
+    geminiAbortControllers.delete(procKey);
+    sendStream({ type: 'text', text: '❌ 응답 스트림을 읽을 수 없습니다' });
+    sendStream({ type: 'done', code: 1 });
+    return { success: false, error: 'No response body' };
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (stoppedAgentProcs.has(procKey)) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (stoppedAgentProcs.has(procKey)) break;
+        const trimmed = line.trim();
+        if (!trimmed || trimmed === 'data: [DONE]') continue;
+        if (!trimmed.startsWith('data: ')) continue;
+
+        try {
+          const json = JSON.parse(trimmed.slice(6));
+          const text = json?.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (text) sendStream({ type: 'text', text });
+        } catch {}
+      }
+    }
+  } catch (streamErr: any) {
+    if (streamErr?.name !== 'AbortError') {
+      console.error('[gemini:api] stream read error:', streamErr);
+      sendStream({ type: 'text', text: `\n\n❌ 스트림 읽기 오류: ${streamErr?.message || streamErr}` });
+    }
+  } finally {
+    geminiAbortControllers.delete(procKey);
+    if (!stoppedAgentProcs.has(procKey)) {
+      sendStream({ type: 'done', code: 0 });
+    } else {
+      stoppedAgentProcs.delete(procKey);
+    }
+  }
+
+  return { success: true };
+}
+
 // ── Codex CLI 연동 ──
 const codexProcesses: Map<string, any> = new Map();
 
 // AI 에이전트(claude/gemini/codex) 프로세스가 아직 살아있는지 — 렌더러 streaming 안전망용.
 // procKey = requestId || sessionId 로 저장되므로 둘 다로 조회.
 ipcMain.handle('agent:is-running', (_e, { sessionId, requestId }: { sessionId?: string; requestId?: string }) => {
-  const procMaps = [claudeProcesses, codexProcesses];
+  const procMaps = [claudeProcesses, geminiProcesses, codexProcesses];
   const alive = (proc: any) => !!proc && proc.killed !== true && (proc.exitCode === null || proc.exitCode === undefined);
   for (const m of procMaps) {
     if (requestId && m.has(requestId) && alive(m.get(requestId))) return true;
@@ -5906,6 +6134,10 @@ ipcMain.handle('claude:stop', (_e, { sessionId, requestId }: { sessionId: string
 
 ipcMain.handle('gemini:check', async () => {
   try {
+    const agy = await checkAgyCli();
+    if (agy.installed) {
+      return { installed: true, version: `Antigravity CLI ${agy.version || ''}`.trim(), backend: 'agy' };
+    }
     const apiKey = loadGeminiApiKey();
     if (!apiKey) return { installed: false };
     // API 키가 유효한지 간단히 모델 목록 조회로 확인
@@ -5914,7 +6146,7 @@ ipcMain.handle('gemini:check', async () => {
       { method: 'GET', signal: AbortSignal.timeout(10_000) },
     );
     if (resp.ok) {
-      return { installed: true, version: 'Gemini API (Direct)' };
+      return { installed: true, version: 'Gemini API (Direct)', backend: 'api' };
     }
     return { installed: false };
   } catch {
@@ -5934,9 +6166,19 @@ ipcMain.handle('debug:dump', (_e, { name, content }: { name: string; content: st
 
 ipcMain.handle('gemini:modelInfo', async () => {
   try {
+    const agy = await checkAgyCli();
+    if (agy.installed) {
+      return {
+        success: true,
+        tierId: 'antigravity-cli',
+        tierName: `Antigravity CLI${agy.version ? ` ${agy.version}` : ''}`,
+        isPaid: true,
+        quotaBuckets: [],
+      };
+    }
     const apiKey = loadGeminiApiKey();
     if (!apiKey) {
-      return { success: false, error: 'Gemini API 키가 설정되지 않았습니다' };
+      return { success: false, error: 'Antigravity CLI(agy)를 찾지 못했고 Gemini API 키도 설정되지 않았습니다' };
     }
     // API 키가 있으면 사용 가능으로 표시
     return {
@@ -5951,128 +6193,158 @@ ipcMain.handle('gemini:modelInfo', async () => {
   }
 });
 
-ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model }: { sessionId: string; prompt: string; requestId?: string; model?: string; yolo?: boolean; addDirs?: string[]; sshTermId?: string; sshSessions?: { id: string; label: string }[] }) => {
+ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, yolo, addDirs }: { sessionId: string; prompt: string; requestId?: string; model?: string; yolo?: boolean; addDirs?: string[]; sshTermId?: string; sshSessions?: { id: string; label: string }[] }) => {
   try {
+    const { spawn } = require('child_process');
     const procKey = requestId || sessionId;
-
-    // 이전 요청 중단
-    const prevController = geminiAbortControllers.get(procKey);
-    if (prevController) {
-      try { prevController.abort(); } catch {}
-      geminiAbortControllers.delete(procKey);
-    }
-
-    const apiKey = loadGeminiApiKey();
     const sendStream = (message: Record<string, any>) =>
       mainWindow?.webContents.send('claude:stream', { sessionId, requestId, message });
 
-    if (!apiKey) {
-      sendStream({ type: 'text', text: '⚠️ Gemini API 키가 설정되지 않았습니다.\n\n설정 방법:\n1. https://aistudio.google.com 에서 API 키를 발급받으세요\n2. 설정(⚙️) → Gemini API Key 에 입력하세요' });
-      sendStream({ type: 'done', code: 1 });
-      return { success: false, error: 'No API key configured' };
-    }
-
-    const geminiLangPrefix = '[시스템 지시] 특별한 언어 요청이 없으면 항상 한국어로 응답하세요.\n\n';
-    const fullPrompt = geminiLangPrefix + prompt;
-    const apiModel = mapGeminiModel(model || 'gemini-2.5-flash');
-
-    // AbortController 등록
-    const controller = new AbortController();
-    geminiAbortControllers.set(procKey, controller);
-
-    console.log(`[gemini:send] model=${apiModel}, procKey=${procKey}, promptLen=${fullPrompt.length}`);
-
-    // Gemini REST API SSE 스트리밍 호출
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${apiModel}:streamGenerateContent?alt=sse&key=${apiKey}`;
-
-    let resp: Response;
-    try {
-      resp = await (globalThis as any).fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: fullPrompt }] }],
-          generationConfig: {
-            temperature: 1.0,
-            maxOutputTokens: 65536,
-          },
-        }),
-        signal: controller.signal,
-      });
-    } catch (fetchErr: any) {
-      geminiAbortControllers.delete(procKey);
-      if (fetchErr?.name === 'AbortError') {
-        sendStream({ type: 'done', code: 0 });
-        return { success: true };
-      }
-      sendStream({ type: 'text', text: `❌ Gemini API 호출 실패: ${fetchErr?.message || fetchErr}` });
-      sendStream({ type: 'done', code: 1 });
-      return { success: false, error: String(fetchErr) };
-    }
-
-    if (!resp.ok) {
-      const errText = await resp.text().catch(() => '');
-      geminiAbortControllers.delete(procKey);
-      sendStream({ type: 'text', text: `❌ Gemini API 오류 (${resp.status}): ${errText.slice(0, 500)}` });
-      sendStream({ type: 'done', code: 1 });
-      return { success: false, error: `API ${resp.status}` };
-    }
-
-    // SSE 스트림 파싱
-    const reader = resp.body?.getReader();
-    if (!reader) {
-      geminiAbortControllers.delete(procKey);
-      sendStream({ type: 'text', text: '❌ 응답 스트림을 읽을 수 없습니다' });
-      sendStream({ type: 'done', code: 1 });
-      return { success: false, error: 'No response body' };
-    }
-
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        if (stoppedAgentProcs.has(procKey)) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || ''; // 마지막 불완전 줄은 다음 청크에서 처리
-
-        for (const line of lines) {
-          if (stoppedAgentProcs.has(procKey)) break;
-
-          const trimmed = line.trim();
-          if (!trimmed || trimmed === 'data: [DONE]') continue;
-          if (!trimmed.startsWith('data: ')) continue;
-
-          try {
-            const json = JSON.parse(trimmed.slice(6));
-            const text = json?.candidates?.[0]?.content?.parts?.[0]?.text;
-            if (text) {
-              sendStream({ type: 'text', text });
-            }
-          } catch {
-            // JSON 파싱 실패 — 무시 (SSE 형식 특수 줄)
-          }
+    const prevGemini = geminiProcesses.get(procKey) || geminiProcesses.get(sessionId);
+    if (prevGemini) {
+      try {
+        if (process.platform === 'win32' && prevGemini.pid) {
+          spawn('taskkill', ['/pid', String(prevGemini.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+        } else {
+          prevGemini.kill?.('SIGKILL');
         }
-      }
-    } catch (streamErr: any) {
-      if (streamErr?.name !== 'AbortError') {
-        console.error('[gemini:send] stream read error:', streamErr);
-        sendStream({ type: 'text', text: `\n\n❌ 스트림 읽기 오류: ${streamErr?.message || streamErr}` });
-      }
-    } finally {
-      geminiAbortControllers.delete(procKey);
-      if (!stoppedAgentProcs.has(procKey)) {
-        sendStream({ type: 'done', code: 0 });
-      } else {
-        stoppedAgentProcs.delete(procKey);
-      }
+      } catch {}
+      geminiProcesses.delete(procKey);
+      geminiProcesses.delete(sessionId);
     }
 
+    const agy = await checkAgyCli();
+    if (!agy.installed) {
+      return await sendGeminiApiDirect(sessionId, prompt, requestId, model);
+    }
+
+    if (prompt.length > 24000) {
+      sendStream({ type: 'text', text: '⚠️ Antigravity CLI print 모드는 Windows 명령줄 길이 제한 때문에 긴 프롬프트를 직접 전달하기 어렵습니다. Gemini API Direct fallback을 시도합니다.\n\n' });
+      return await sendGeminiApiDirect(sessionId, prompt, requestId, model);
+    }
+
+    const augmentedPath = buildAugmentedPath();
+    const spawnEnv = {
+      ...process.env,
+      PATH: augmentedPath,
+      Path: augmentedPath,
+      PYTHONIOENCODING: 'utf-8',
+      LANG: process.env.LANG || 'en_US.UTF-8',
+      LC_ALL: process.env.LC_ALL || 'en_US.UTF-8',
+    };
+    const cwd = process.env.USERPROFILE || process.env.HOME || os.homedir();
+    const fullPrompt = '[시스템 지시] 특별한 언어 요청이 없으면 항상 한국어로 응답하세요.\n\n' + prompt;
+    const agyLogPath = path.join(os.tmpdir(), `pepe-agy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.log`);
+    const args = ['--print', fullPrompt, '--print-timeout', '5m'];
+    args.push('--log-file', agyLogPath);
+    const agyModel = mapAgyModel(model);
+    if (agyModel) args.push('--model', agyModel);
+    if (yolo) args.push('--dangerously-skip-permissions');
+    const rejectedAddDirs: { dir: string; reason: string }[] = [];
+    const validAddDirs = Array.isArray(addDirs)
+      ? addDirs.filter(d => {
+          if (!d) return false;
+          const dir = String(d);
+          if (process.platform === 'win32') {
+            // SSH/원격 첨부의 Linux 경로(/vmsdata/...)는 Windows agy --add-dir 로 열 수 없다.
+            // 단, PePe WebDAV UNC(\\127.0.0.1@PORT\DavWWWRoot\...)는 Antigravity workspace 로 허용한다.
+            if (dir.startsWith('/')) {
+              rejectedAddDirs.push({ dir, reason: 'remote unix path cannot be opened by Windows agy' });
+              return false;
+            }
+            // WebDAV UNC 는 Node fs.existsSync 가 WebClient 타이밍/권한 상태에 따라 false 를 줄 수 있다.
+            // 여기서 선제 차단하지 말고 agy 에 직접 넘겨 실제 접근 결과를 보게 한다.
+            if (/^\\\\[^\\]+\\DavWWWRoot\\/i.test(dir)) return true;
+          }
+          try {
+            if (fs.existsSync(dir)) return true;
+            rejectedAddDirs.push({ dir, reason: 'path does not exist or WebClient service cannot resolve UNC' });
+            return false;
+          } catch (err: any) {
+            rejectedAddDirs.push({ dir, reason: err?.message || 'exists check failed' });
+            return false;
+          }
+        })
+      : [];
+    for (const d of validAddDirs) args.push('--add-dir', d);
+
+    const agyCommand = agy.path || findAgyCliPath() || 'agy';
+    console.log('[gemini:agy] spawn start', {
+      procKey,
+      command: agyCommand,
+      logPath: agyLogPath,
+      promptLen: fullPrompt.length,
+      model: agyModel || '(default)',
+      addDirs: validAddDirs.length,
+      rejectedAddDirs,
+      yolo: !!yolo,
+      cwd,
+    });
+    if (rejectedAddDirs.length > 0) {
+      const webdavRejected = rejectedAddDirs.some(x => /DavWWWRoot|^\\\\/.test(x.dir));
+      if (webdavRejected) {
+        sendStream({
+          type: 'text',
+          text: `⚠️ Antigravity WebDAV workspace 일부를 열 수 없습니다.\nWindows WebClient 서비스가 꺼져 있거나 권한 문제일 수 있습니다.\n관리자 PowerShell에서 \`net start WebClient\` 후 다시 시도해 주세요.\n\n`,
+        });
+      }
+      console.warn('[gemini:agy] rejected addDirs', rejectedAddDirs);
+    }
+    const proc = spawn(agyCommand, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd, windowsHide: true });
+    geminiProcesses.set(procKey, proc);
+
+    let stdoutHadContent = false;
+    let stderrText = '';
+    proc.stdout?.setEncoding?.('utf-8');
+    proc.stdout?.on('data', (data: string | Buffer) => {
+      if (stoppedAgentProcs.has(procKey)) return;
+      const text = Buffer.isBuffer(data) ? data.toString('utf8') : data;
+      if (text) {
+        stdoutHadContent = true;
+        sendStream({ type: 'text', text });
+      }
+    });
+    proc.stderr?.on('data', (data: Buffer | string) => {
+      if (stoppedAgentProcs.has(procKey)) return;
+      const err = Buffer.isBuffer(data) ? data.toString('utf8') : data;
+      stderrText += err;
+      console.log('[gemini:agy] stderr:', err.slice(0, 500));
+      if (/error|failed|unauthorized|permission|quota|invalid/i.test(err)) {
+        sendStream({ type: 'error', text: err });
+      }
+    });
+    proc.on('error', async (err: any) => {
+      if (stoppedAgentProcs.has(procKey)) return;
+      console.log('[gemini:agy] spawn error:', err);
+      geminiProcesses.delete(procKey);
+      sendStream({ type: 'text', text: `⚠️ Antigravity CLI 실행 실패, Gemini API Direct fallback을 시도합니다: ${err?.message || err}\n\n` });
+      await sendGeminiApiDirect(sessionId, prompt, requestId, model);
+    });
+    proc.on('close', async (code: number) => {
+      console.log('[gemini:agy] close, code:', code, 'hadContent:', stdoutHadContent);
+      geminiProcesses.delete(procKey);
+      if (stoppedAgentProcs.has(procKey)) {
+        stoppedAgentProcs.delete(procKey);
+        return;
+      }
+      if (!stdoutHadContent) {
+        const transcriptText = await waitForAgyPrintTranscript(agyLogPath);
+        if (transcriptText) {
+          sendStream({ type: 'text', text: transcriptText });
+          sendStream({ type: 'done', code: code || 0 });
+          try { fs.unlinkSync(agyLogPath); } catch {}
+          return;
+        }
+        const reason = stderrText.trim()
+          ? `code=${code}, stderr=${stderrText.trim().slice(0, 500)}`
+          : `code=${code}, stdout empty`;
+        sendStream({ type: 'text', text: `⚠️ Antigravity CLI print 모드가 stdout을 비운 채 종료되었습니다(${reason}). transcript fallback도 응답을 찾지 못했습니다.\n\n진단 로그: ${agyLogPath}\n\nGemini API Direct fallback을 시도합니다.\n\n` });
+        await sendGeminiApiDirect(sessionId, prompt, requestId, model);
+        return;
+      }
+      try { fs.unlinkSync(agyLogPath); } catch {}
+      sendStream({ type: 'done', code });
+    });
     return { success: true };
   } catch (err: any) {
     console.error('[gemini:send] error:', err);
@@ -6081,6 +6353,7 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model }
 });
 
 ipcMain.handle('gemini:stop', (_e, { sessionId, requestId }: { sessionId: string; requestId?: string }) => {
+  const { spawn } = require('child_process');
   const procKey = requestId || sessionId;
   markAgentStopped(procKey);
   const controller = geminiAbortControllers.get(procKey);
@@ -6088,10 +6361,22 @@ ipcMain.handle('gemini:stop', (_e, { sessionId, requestId }: { sessionId: string
     try { controller.abort(); } catch {}
     geminiAbortControllers.delete(procKey);
   }
+  const proc = geminiProcesses.get(procKey) || geminiProcesses.get(sessionId);
+  if (proc) {
+    try {
+      if (process.platform === 'win32') {
+        const pid = proc.pid;
+        if (pid) spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+      } else {
+        try { process.kill(-proc.pid, 'SIGKILL'); } catch { try { proc.kill('SIGKILL'); } catch {} }
+      }
+    } catch {}
+    try { proc.kill('SIGKILL'); } catch {}
+    geminiProcesses.delete(procKey);
+    geminiProcesses.delete(sessionId);
+  }
   return { success: true };
 });
-
-
 
 ipcMain.handle('codex:check', async () => {
   try {

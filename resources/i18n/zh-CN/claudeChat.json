@@ -1,9 +1,9 @@
 {
   "loading": "正在检查 Claude CLI...",
-  "loadingGemini": "正在检查 Gemini CLI...",
+  "loadingGemini": "正在检查 Antigravity CLI...",
   "loadingCodex": "正在检查 Codex CLI...",
   "notInstalled": "未安装 Claude Code CLI。",
-  "notInstalledGemini": "Gemini CLI 未安装。",
+  "notInstalledGemini": "未安装 Antigravity CLI (agy)。",
   "notInstalledCodex": "Codex CLI 未安装。",
   "installCmd": "安装:",
   "loginHint": "登录:在终端运行 {{cmd}}",

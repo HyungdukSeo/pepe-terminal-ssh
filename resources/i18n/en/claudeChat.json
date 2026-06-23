@@ -1,9 +1,9 @@
 {
   "loading": "Checking Claude CLI...",
-  "loadingGemini": "Checking Gemini CLI...",
+  "loadingGemini": "Checking Antigravity CLI...",
   "loadingCodex": "Checking Codex CLI...",
   "notInstalled": "Claude Code CLI is not installed.",
-  "notInstalledGemini": "Gemini CLI is not installed.",
+  "notInstalledGemini": "Antigravity CLI (agy) is not installed.",
   "notInstalledCodex": "Codex CLI is not installed.",
   "installCmd": "Install:",
   "loginHint": "Login: run {{cmd}} in terminal",
