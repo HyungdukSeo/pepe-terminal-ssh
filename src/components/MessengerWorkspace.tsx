@@ -138,8 +138,9 @@ export const MessengerWorkspace: React.FC<{ connectedSessions?: ConnectedSession
     if (latest > 0) markRead(selectedPeerId, latest);
   }, [selectedPeerId, state.messages]);
 
-  // Seed the local name input from prefs when it changes, but only if the user
-  // is not actively focusing/editing it to prevent breaking Hangul IME.
+  // Seed the name input from prefs when it changes, but only if the user is not
+  // actively focusing/editing it. Uncontrolled input(=DOM이 입력을 소유)이라
+  // React 가 입력 중 re-render 하지 않아 한글 IME 조합이 깨지지 않는다.
   useEffect(() => {
     if (nameInputRef.current && document.activeElement !== nameInputRef.current) {
       nameInputRef.current.value = storedName;
@@ -345,15 +346,9 @@ export const MessengerWorkspace: React.FC<{ connectedSessions?: ConnectedSession
               placeholder={fallbackName || '표시 이름'}
               onBlur={() => {
                 const val = nameInputRef.current?.value ?? '';
-                if (val !== storedName) {
-                  updatePrefs({ displayName: val });
-                }
+                if (val !== storedName) updatePrefs({ displayName: val });
               }}
-              onKeyDown={e => {
-                if (e.key === 'Enter') {
-                  (e.target as HTMLInputElement).blur();
-                }
-              }}
+              onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
             />
           </label>
           <button
