@@ -1041,6 +1041,19 @@ const MarkdownMessage = React.memo(({ id, content, className }: MarkdownMessageP
 ), (prev, next) => prev.id === next.id && prev.content === next.content && prev.className === next.className);
 
 type AgentType = 'claude' | 'gemini' | 'codex';
+
+// 직전 턴 계획에 대한 "승인" 발화인지 판정. 단순 부분 문자열 매칭(text.includes('해줘'))은
+// "아래 계획대로 정확히 진행해줘: ...(긴 지시문)" 같은 새 지시까지 승인으로 오인해, 계획 모드의
+// 쓰기 금지 가드를 풀어버린다. 짧은 단독 승인 발화일 때만 승인으로 본다.
+const APPROVAL_KEYWORDS = ['실행', '진행', '좋아', 'yes', 'ok', 'okay', '승인', 'approve', '해줘', '해주세요', 'go ahead', '네', '응', '그래'];
+const isApprovalUtterance = (text: string): boolean => {
+  const s = (text || '').trim().toLowerCase();
+  if (!s) return false;
+  // 긴 입력은 새 지시문으로 간주 — 짧은 승인 발화만 승인 처리.
+  if (s.length > 25) return false;
+  return APPROVAL_KEYWORDS.some(k => s.includes(k.toLowerCase()));
+};
+
 type Message = {
   role: 'user' | 'assistant';
   content: string;
@@ -3401,8 +3414,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         // 요금제에서 못 쓰는 모델(또는 미등록 모델)이면 안전한 기본 모델로 대체
         const geminiModel = isGeminiModelUsable(model, geminiTier?.isPaid === true) ? model : DEFAULT_GEMINI_MODEL;
         // 자동 승인(geminiYolo) OFF + 승인성 발화 아님 → "계획 먼저 보여주고 승인" 단계
-        const approveKeywords = ['실행', '진행', '좋아', 'yes', 'ok', '승인', 'approve', '해줘', 'go ahead', '네'];
-        const isApproval = approveKeywords.some(k => text.toLowerCase().includes(k.toLowerCase()));
+        const isApproval = isApprovalUtterance(text);
         const geminiPlanPhase = !geminiYolo && !isApproval;
         let geminiPrompt = prompt;
         if (geminiPlanPhase) {
@@ -3422,8 +3434,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         // codex 는 비대화형(exec)이라 실행 중 승인이 불가 → claude 처럼 "계획 먼저 보여주고 승인" 2단계로 처리.
         // plan 모드(또는 default + 승인성 발화 아님)면 계획 단계로 전송.
         // 단, Codex 승인 정책이 '전체 권한'(full-auto)이면 계획/승인 단계 없이 바로 실행.
-        const approveKeywords = ['실행', '진행', '좋아', 'yes', 'ok', '승인', 'approve', '해줘', 'go ahead', '네'];
-        const isApproval = approveKeywords.some(k => text.toLowerCase().includes(k.toLowerCase()));
+        const isApproval = isApprovalUtterance(text);
         const codexPlanPhase = codexApprovalPolicy !== 'full-auto'
           && (permissionMode === 'plan' || (permissionMode === 'default' && !isApproval));
         let codexPrompt = prompt;
@@ -3444,8 +3455,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         const disallowBash = !!sshTermId;
         const resumeSessionId = claudeSessionIdRef.current;
         // 비대화형 모드(-p)에서는 'default' 권한이 항상 거부됨 → 대신 'plan' 모드로 변환
-        const approveKeywords = ['실행', '진행', '좋아', 'yes', 'ok', '승인', 'approve', '해줘', 'go ahead', '네'];
-        const isApproval = approveKeywords.some(k => text.toLowerCase().includes(k.toLowerCase()));
+        const isApproval = isApprovalUtterance(text);
         let effectivePermMode: string = permissionMode;
         if (permissionMode === 'default') {
           effectivePermMode = (isApproval && claudeSessionIdRef.current) ? 'bypassPermissions' : 'plan';
