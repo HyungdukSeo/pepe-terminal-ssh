@@ -3,7 +3,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useTranslation } from 'react-i18next';
 import { FixedSizeList as VList, ListChildComponentProps } from 'react-window';
 import { subscribePwdChange, isTermPty, subscribeConnectedChange, getCurrentPwdForTerm } from './TerminalPanel';
-import { notifyError, notifyConfirm } from './Notify';
+import { notifyError, notifyConfirm, notifyOk } from './Notify';
 
 const ROW_HEIGHT = 22; // App.css 의 .remote-file-item height 와 동기
 
@@ -490,6 +490,25 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
     });
   };
 
+  const quickShareItems = async (items: { path: string; isDir: boolean }[]) => {
+    if (!items.length) return;
+    try {
+      const r = await (window as any).api?.sftpQuickShare?.(termId, items);
+      if (!r?.success) {
+        notifyError('Quick Share 실패', r?.error || '알 수 없는 오류');
+        return;
+      }
+      const count = r.ok || items.length;
+      if (r.method === 'folder') {
+        notifyOk('Quick Share 준비 완료', `공유 UI를 직접 열지 못해 임시 폴더를 열었습니다.\n${r.localDir || ''}`);
+      } else {
+        notifyOk('Quick Share 준비 완료', `${count}개 항목을 공유로 보냈습니다.`);
+      }
+    } catch (err: any) {
+      notifyError('Quick Share 실패', String(err?.message || err));
+    }
+  };
+
   return (
     <div className="remote-file-tree">
       <div className="remote-file-header">
@@ -592,6 +611,11 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
               <div className="remote-file-ctx-item" onClick={async () => {
                 const items = [...selectedPaths].map(p => ({ path: p, isDir: false }));
                 setCtxMenu(null);
+                await quickShareItems(items);
+              }}>Quick Share로 보내기</div>
+              <div className="remote-file-ctx-item" onClick={async () => {
+                const items = [...selectedPaths].map(p => ({ path: p, isDir: false }));
+                setCtxMenu(null);
                 try {
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
                   await (window as any).api?.sftpDownloadMulti?.(termId, items);
@@ -632,6 +656,11 @@ export const RemoteFileTree: React.FC<Props> = ({ termId, sessionName, sessionId
               setCtxMenu(null);
             }}>{t('openFolderMenu')}</div>
           )}
+          <div className="remote-file-ctx-item" onClick={async () => {
+            const node = ctxMenu.node;
+            setCtxMenu(null);
+            await quickShareItems([{ path: node.path, isDir: node.isDir }]);
+          }}>Quick Share로 보내기{ctxMenu.node.isDir ? t('downloadRecursive') : ''}</div>
           <div className="remote-file-ctx-item" onClick={async () => {
             const node = ctxMenu.node;
             setCtxMenu(null);

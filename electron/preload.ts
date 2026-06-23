@@ -135,6 +135,7 @@ contextBridge.exposeInMainWorld('api', {
   // SFTP
   sftpDownload: (panelId: string, remotePath: string, isDir?: boolean) => ipcRenderer.invoke('sftp:download', { panelId, remotePath, isDir }),
   sftpDownloadMulti: (panelId: string, items: { path: string; isDir: boolean }[]) => ipcRenderer.invoke('sftp:download-multi', { panelId, items }),
+  sftpQuickShare: (panelId: string, items: { path: string; isDir: boolean }[]) => ipcRenderer.invoke('sftp:quick-share', { panelId, items }),
   sftpUpload: (panelId: string, remotePath: string, kind?: 'file' | 'folder' | 'multi-file') => ipcRenderer.invoke('sftp:upload', { panelId, remotePath, kind }),
   sftpListDir: (panelId: string, remotePath: string) => ipcRenderer.invoke('sftp:list-dir', { panelId, remotePath }),
   sftpReadFile: (panelId: string, remotePath: string, encoding?: string) => ipcRenderer.invoke('sftp:read-file', { panelId, remotePath, encoding }),

@@ -3753,6 +3753,147 @@ ipcMain.handle('sftp:download-multi', async (_e, { panelId, items }: { panelId: 
   return { success: okCount > 0, total: items.length, ok: okCount, results, localDir: parentDir };
 });
 
+function safeDownloadName(name: string): string {
+  const cleaned = String(name || 'download').replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').trim();
+  return cleaned || 'download';
+}
+
+function uniqueLocalPath(dir: string, name: string): string {
+  const parsed = path.parse(safeDownloadName(name));
+  let candidate = path.join(dir, parsed.base);
+  let idx = 1;
+  while (fs.existsSync(candidate)) {
+    candidate = path.join(dir, `${parsed.name || 'download'} (${idx++})${parsed.ext || ''}`);
+  }
+  return candidate;
+}
+
+function findGoogleQuickShareExe(): string | null {
+  if (process.platform !== 'win32') return null;
+  const candidates = [
+    path.join(process.env.ProgramFiles || '', 'Google', 'NearbyShare', 'nearby_share.exe'),
+    path.join(process.env.ProgramFiles || '', 'Google', 'NearbyShare', 'nearby_share_launcher.exe'),
+    path.join(process.env['ProgramFiles(x86)'] || '', 'Google', 'NearbyShare', 'nearby_share.exe'),
+    path.join(process.env['ProgramFiles(x86)'] || '', 'Google', 'NearbyShare', 'nearby_share_launcher.exe'),
+  ];
+  return candidates.find(p => p && fs.existsSync(p)) || null;
+}
+
+async function openQuickShareForLocalPaths(localPaths: string[], tempDir: string): Promise<{ method: string; warning?: string }> {
+  if (process.platform !== 'win32') {
+    await shell.openPath(tempDir);
+    return { method: 'folder', warning: 'Quick Share는 Windows에서만 자동 호출됩니다.' };
+  }
+  const payloadPath = path.join(tempDir, 'quick-share-paths.json');
+  const scriptPath = path.join(tempDir, 'invoke-quick-share.ps1');
+  fs.writeFileSync(payloadPath, JSON.stringify(localPaths), 'utf8');
+  fs.writeFileSync(scriptPath, `
+$ErrorActionPreference = 'Stop'
+$paths = Get-Content -LiteralPath $args[0] -Raw | ConvertFrom-Json
+$preferred = @('Quick Share', 'Nearby Share', '빠른 공유', '퀵 쉐어', '근거리 공유')
+$fallback = @('공유', 'Share')
+$shell = New-Object -ComObject Shell.Application
+$miss = New-Object System.Collections.Generic.List[string]
+foreach ($p in $paths) {
+  $parent = [System.IO.Path]::GetDirectoryName([string]$p)
+  $leaf = [System.IO.Path]::GetFileName([string]$p)
+  $folder = $shell.Namespace($parent)
+  if ($null -eq $folder) { $miss.Add("$p :: folder not found"); continue }
+  $item = $folder.ParseName($leaf)
+  if ($null -eq $item) { $miss.Add("$p :: item not found"); continue }
+  $verbs = @($item.Verbs())
+  $chosen = $null
+  foreach ($needle in $preferred) {
+    $chosen = $verbs | Where-Object { (($_.Name -replace '&','').Trim()) -like "*$needle*" } | Select-Object -First 1
+    if ($null -ne $chosen) { break }
+  }
+  if ($null -eq $chosen) {
+    foreach ($needle in $fallback) {
+      $chosen = $verbs | Where-Object { (($_.Name -replace '&','').Trim()) -eq $needle -or (($_.Name -replace '&','').Trim()) -like "$needle(*)" } | Select-Object -First 1
+      if ($null -ne $chosen) { break }
+    }
+  }
+  if ($null -ne $chosen) {
+    $chosen.DoIt()
+    Start-Sleep -Milliseconds 350
+  } else {
+    $names = ($verbs | ForEach-Object { ($_.Name -replace '&','').Trim() }) -join ', '
+    $miss.Add("$p :: $names")
+  }
+}
+if ($miss.Count -gt 0) { throw ('share verb not found: ' + ($miss -join ' | ')) }
+`, 'utf8');
+
+  try {
+    const { execFileSync } = require('child_process');
+    execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, payloadPath], {
+      timeout: 15000,
+      windowsHide: true,
+      stdio: 'pipe',
+    });
+    return { method: 'shell-verb' };
+  } catch (err: any) {
+    const exe = findGoogleQuickShareExe();
+    if (exe) {
+      try {
+        const { spawn } = require('child_process');
+        const proc = spawn(exe, localPaths, { detached: true, stdio: 'ignore', windowsHide: false });
+        proc.unref();
+        return { method: 'google-quick-share-exe', warning: String(err?.stderr?.toString?.() || err?.message || err).slice(0, 1000) };
+      } catch {}
+    }
+    await shell.openPath(tempDir);
+    return { method: 'folder', warning: String(err?.stderr?.toString?.() || err?.message || err).slice(0, 1000) };
+  }
+}
+
+async function downloadRemoteItemsToTemp(panelId: string, items: { path: string; isDir: boolean }[], prefix: string) {
+  const bridge = getSSHBridge();
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const results: { remotePath: string; localPath?: string; success: boolean; error?: string }[] = [];
+  const localPaths: string[] = [];
+  for (const item of items) {
+    const baseName = safeDownloadName(item.path.split('/').filter(Boolean).pop() || 'download');
+    const localDst = uniqueLocalPath(tempDir, baseName);
+    try {
+      if (item.isDir) {
+        await bridge.handleTransfer(
+          { mode: 'remote', termId: panelId, path: item.path },
+          { mode: 'local', path: localDst },
+          baseName,
+        );
+      } else {
+        await bridge.handleSFTPDownload(panelId, item.path, localDst);
+      }
+      localPaths.push(localDst);
+      results.push({ remotePath: item.path, localPath: localDst, success: true });
+    } catch (err: any) {
+      results.push({ remotePath: item.path, success: false, error: String(err?.message || err) });
+    }
+  }
+  return { tempDir, results, localPaths };
+}
+
+ipcMain.handle('sftp:quick-share', async (_e, { panelId, items }: { panelId: string; items: { path: string; isDir: boolean }[] }) => {
+  if (!mainWindow || !items || items.length === 0) return { success: false, error: '공유할 파일이 없습니다.' };
+  const { tempDir, results, localPaths } = await downloadRemoteItemsToTemp(panelId, items, 'pepe-quick-share-');
+
+  if (localPaths.length === 0) {
+    return { success: false, error: 'Quick Share용 임시 다운로드에 실패했습니다.', results, localDir: tempDir };
+  }
+
+  const opened = await openQuickShareForLocalPaths(localPaths, tempDir);
+  return {
+    success: true,
+    total: items.length,
+    ok: localPaths.length,
+    results,
+    localDir: tempDir,
+    method: opened.method,
+    warning: opened.warning,
+  };
+});
+
 ipcMain.handle('sftp:upload', async (_e, { panelId, remotePath, kind }: { panelId: string; remotePath: string; kind?: 'file' | 'folder' | 'multi-file' }) => {
   if (!mainWindow) return null;
   const isFolder = kind === 'folder';

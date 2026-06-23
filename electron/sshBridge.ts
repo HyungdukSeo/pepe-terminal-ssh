@@ -1401,6 +1401,15 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
 
     const started = Date.now();
     const timeoutMs = Math.max(1000, Math.min(30000, target.timeoutMs || 10000));
+    const probeTag = `web-probe-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const logProbe = (msg: string, extra?: any) => {
+      try {
+        const suffix = extra === undefined ? '' : ` ${typeof extra === 'string' ? extra : JSON.stringify(extra).slice(0, 2000)}`;
+        console.log(`[web-probe] ${probeTag} panel=${panelId} ${msg}${suffix}`);
+      } catch {
+        console.log(`[web-probe] ${probeTag} panel=${panelId} ${msg}`);
+      }
+    };
     const toResult = (raw: string, mode: 'forward' | 'exec') => {
       const firstLine = raw.split(/\r?\n/, 1)[0]?.trim() || '';
       const statusMatch = firstLine.match(/^HTTP\/\d(?:\.\d)?\s+(\d{3})\b/i);
@@ -1417,6 +1426,7 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
     };
 
     const probeViaForward = () => new Promise<any>((resolve, reject) => {
+      logProbe('forward:start', { host: target.host, port: target.port, protocol: target.protocol, path: target.path, timeoutMs });
       let settled = false;
       let socket: any = null;
       let secure: any = null;
@@ -1430,8 +1440,14 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
         try { socket?.destroy?.(); } catch {}
         fn();
       };
-      const fail = (err: any) => finish(() => reject(err instanceof Error ? err : new Error(String(err))));
-      const ok = (raw: string) => finish(() => resolve(toResult(raw, 'forward')));
+      const fail = (err: any) => finish(() => {
+        logProbe('forward:fail', String(err?.message || err));
+        reject(err instanceof Error ? err : new Error(String(err)));
+      });
+      const ok = (raw: string) => finish(() => {
+        logProbe('forward:ok', raw.split(/\r?\n/, 1)[0]?.trim() || '(empty status)');
+        resolve(toResult(raw, 'forward'));
+      });
 
       timer = setTimeout(() => fail(new Error(`timeout after ${timeoutMs}ms`)), timeoutMs);
       rec.conn.forwardOut('127.0.0.1', 0, target.host, target.port, (err: any, stream: any) => {
@@ -1482,9 +1498,11 @@ printf '<<PEPE>>%s<<END>>' "$pid2"`;
     const probeViaExec = async () => {
       const url = `${target.protocol}//${target.host}:${target.port}${target.path || '/'}`;
       const timeoutSec = Math.max(1, Math.min(30, Math.ceil(timeoutMs / 1000)));
+      logProbe('exec:start', { url, timeoutSec });
       const shScript = `
 url=${quoteShellArg(url)}
 timeout_sec=${timeoutSec}
+printf '[probe-debug] shell=%s user=%s host=%s pwd=%s\\n' "$SHELL" "$(id -un 2>/dev/null || whoami 2>/dev/null || printf '?')" "$(hostname 2>/dev/null || uname -n 2>/dev/null || printf '?')" "$(pwd 2>/dev/null || printf '?')" >&2
 probe_curl() {
   for bin in /usr/bin/curl /bin/curl curl; do
     if command -v "$bin" >/dev/null 2>&1; then
@@ -1545,9 +1563,18 @@ PY
 }
 probe_curl || probe_wget || probe_python
 `;
-      const cmd = `sh -lc ${quoteShellArg(shScript)}`;
+      const encoded = Buffer.from(shScript, 'utf8').toString('base64');
+      const decoder = `PATH=/usr/bin:/bin:/usr/local/bin:$PATH; printf %s ${encoded} | base64 -d | /bin/sh`;
+      const cmd = `/bin/sh -c ${quoteShellArg(decoder)}`;
+      logProbe('exec:command-preview', cmd.slice(0, 1200));
       const exec = await this.handleExec(panelId, cmd, timeoutMs + 2000);
       const raw = String(exec.stdout || '').trim();
+      const stderr = String(exec.stderr || '').trim();
+      logProbe('exec:done', {
+        exitCode: exec.exitCode,
+        stdout: raw.slice(0, 1000),
+        stderr: stderr.slice(0, 1000),
+      });
       const firstLine = raw.split(/\r?\n/, 1)[0]?.trim() || '';
       const statusMatch = firstLine.match(/^HTTP\/\d(?:\.\d)?\s+(\d{3})\b/i);
       if (statusMatch) {
@@ -1562,15 +1589,17 @@ probe_curl || probe_wget || probe_python
           mode: 'exec' as const,
         };
       }
-      throw new Error(`remote probe failed: ${raw || exec.stderr || 'no output'}`);
+      throw new Error(`remote probe failed: ${raw || stderr || 'no output'}`);
     };
 
     try {
       return await probeViaExec();
     } catch (execErr: any) {
+      logProbe('exec:error', String(execErr?.message || execErr));
       try {
         return await probeViaForward();
       } catch (forwardErr: any) {
+        logProbe('all:failed', { exec: String(execErr?.message || execErr), forward: String(forwardErr?.message || forwardErr) });
         throw new Error(`${execErr?.message || execErr} / forward failed: ${forwardErr?.message || forwardErr}`);
       }
     }
