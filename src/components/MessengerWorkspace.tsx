@@ -5,6 +5,7 @@ type Msg = { id: string; peerId: string; direction: 'in' | 'out'; kind: 'text' |
 type Prefs = { enabled?: boolean; displayName?: string; retainEnabled?: boolean; retainDays?: number; downloadDir?: string; hidePresence?: boolean };
 type State = { self?: { id: string; name: string; port: number; hidden?: boolean }; peers: Peer[]; messages: Msg[]; prefs: Prefs };
 type RemoteEntry = { name: string; isDir: boolean; size?: number; mtime?: number };
+type ConnectedSession = { panelId: string; sessionId?: string; sessionName?: string; host?: string; port?: number };
 
 const emptyState: State = { peers: [], messages: [], prefs: {} };
 
@@ -28,6 +29,14 @@ function joinRemotePath(base: string, name: string) {
   return root === '/' ? `/${name}` : `${root}/${name}`;
 }
 
+function sessionFolderPath(folders: any[], fid?: string): string {
+  if (!fid) return '';
+  const f = folders.find((x: any) => x.id === fid);
+  if (!f) return '';
+  const parent = sessionFolderPath(folders, f.parentId);
+  return parent ? `${parent}/${f.name}` : f.name;
+}
+
 function parentRemotePath(cur: string) {
   const p = (cur || '/').replace(/\/+$/, '') || '/';
   if (p === '/') return '/';
@@ -47,7 +56,7 @@ function scanLabel(payload: any) {
   return ranges.length ? ranges.join(', ') : '할당 IP 대역';
 }
 
-export const MessengerWorkspace: React.FC = () => {
+export const MessengerWorkspace: React.FC<{ connectedSessions?: ConnectedSession[] }> = ({ connectedSessions = [] }) => {
   const [state, setState] = useState<State>(emptyState);
   const [selectedPeerId, setSelectedPeerId] = useState('');
   const [text, setText] = useState('');
@@ -62,10 +71,13 @@ export const MessengerWorkspace: React.FC = () => {
   const [menu, setMenu] = useState<{ x: number; y: number; peerId: string } | null>(null);
   const [remoteOpen, setRemoteOpen] = useState(false);
   const [remoteSessions, setRemoteSessions] = useState<any[]>([]);
+  const [remoteFolders, setRemoteFolders] = useState<any[]>([]);
   const [remoteSessionId, setRemoteSessionId] = useState('');
-  const [remoteUser, setRemoteUser] = useState('');
-  const [remotePass, setRemotePass] = useState('');
   const [remoteConnId, setRemoteConnId] = useState('');
+  const [remoteConnecting, setRemoteConnecting] = useState(false);
+  // SFTP connections this picker opened itself (vs. reused live terminal conns),
+  // so we only disconnect what we created.
+  const remoteTempConns = useRef<Set<string>>(new Set());
   const [remotePath, setRemotePath] = useState('/');
   const [remoteFiles, setRemoteFiles] = useState<RemoteEntry[]>([]);
   const [remoteSelected, setRemoteSelected] = useState<Set<string>>(new Set());
@@ -167,18 +179,27 @@ export const MessengerWorkspace: React.FC = () => {
     await (window as any).api?.messengerSendFiles?.(selectedPeerId);
   };
 
+  // sessionId 기준 연결 상태 맵 + 이미 살아있는 터미널 연결의 termId(재사용용)
+  const connectedSessionMap = useMemo(() => {
+    const m = new Map<string, ConnectedSession>();
+    for (const c of connectedSessions) {
+      if (c.sessionId) m.set(c.sessionId, c);
+    }
+    return m;
+  }, [connectedSessions]);
+
+  // picker 열릴 때 전체 세션/폴더 로드
   useEffect(() => {
     if (!remoteOpen) return;
     (async () => {
       const data = await (window as any).api?.listSessions?.().catch(() => null);
-      const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
-      setRemoteSessions(sessions);
-      setRemoteSessionId(cur => cur || sessions[0]?.id || '');
-      setRemoteUser(cur => cur || sessions[0]?.username || '');
+      setRemoteSessions(Array.isArray(data?.sessions) ? data.sessions : []);
+      setRemoteFolders(Array.isArray(data?.folders) ? data.folders : []);
     })();
   }, [remoteOpen]);
 
   const loadRemoteDir = async (connId: string, dir: string) => {
+    if (!connId) return;
     setRemoteLoading(true);
     setRemoteError('');
     try {
@@ -195,44 +216,68 @@ export const MessengerWorkspace: React.FC = () => {
     }
   };
 
-  const closeRemotePicker = async () => {
-    if (remoteConnId) {
-      try { await (window as any).api?.feSftpDisconnect?.(remoteConnId); } catch {}
+  const disconnectTempConns = () => {
+    for (const cid of remoteTempConns.current) {
+      try { (window as any).api?.feSftpDisconnect?.(cid); } catch {}
     }
+    remoteTempConns.current.clear();
+  };
+
+  const closeRemotePicker = () => {
+    disconnectTempConns();
     setRemoteOpen(false);
+    setRemoteSessionId('');
     setRemoteConnId('');
+    setRemoteConnecting(false);
     setRemoteFiles([]);
     setRemoteSelected(new Set());
     setRemoteError('');
   };
 
-  const connectRemoteSession = async () => {
-    const sess = remoteSessions.find(s => s.id === remoteSessionId);
-    if (!sess) return;
-    setRemoteLoading(true);
+  // 세션 선택 → 자동으로 연결 보장 후 홈 디렉터리 로드.
+  // 이미 터미널로 연결된 세션이면 그 connId 를 재사용(추가 연결 없음), 아니면 백그라운드 SFTP 연결.
+  const selectRemoteSession = async (sessionId: string) => {
+    setRemoteSessionId(sessionId);
+    setRemoteConnId('');
+    setRemoteFiles([]);
+    setRemoteSelected(new Set());
     setRemoteError('');
+    if (!sessionId) return;
+    const sess = remoteSessions.find(s => s.id === sessionId);
+    if (!sess) { setRemoteError('세션을 찾을 수 없습니다.'); return; }
+
+    setRemoteConnecting(true);
     try {
-      if (remoteConnId) {
-        try { await (window as any).api?.feSftpDisconnect?.(remoteConnId); } catch {}
+      // 1) 이미 살아있는 터미널 연결 재사용
+      const live = connectedSessionMap.get(sessionId);
+      if (live?.panelId) {
+        setRemoteConnId(live.panelId);
+        const home = await (window as any).api?.feHomeDir?.('remote', live.panelId).catch(() => '/');
+        await loadRemoteDir(live.panelId, home || '/');
+        return;
+      }
+      // 2) 백그라운드 SFTP 연결
+      const auth = sess.auth;
+      const hasCredential = auth?.type === 'key' || (auth?.type === 'password' && auth?.password);
+      if (!sess.username || !hasCredential) {
+        setRemoteError('이 세션은 저장된 자격증명이 없어 자동 연결할 수 없습니다. 먼저 터미널로 연결한 뒤 사용해 주세요.');
+        return;
       }
       const connId = `msg-sftp-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
       const jumps = buildJumpChain(sess);
-      const username = remoteUser || sess.username || '';
-      const auth = remotePass ? { type: 'password', password: remotePass } : sess.auth;
-      if (!username || (!auth && !remotePass)) {
-        setRemoteError('사용자명/비밀번호를 입력해 주세요.');
-        return;
-      }
-      const res = await (window as any).api?.feSftpConnect?.(connId, sess.host, sess.port || 22, username, auth, undefined, jumps.length ? jumps : undefined);
+      const res = await (window as any).api?.feSftpConnect?.(connId, sess.host, sess.port || 22, sess.username, auth, undefined, jumps.length ? jumps : undefined);
       if (!res?.success) {
         setRemoteError(`연결 실패: ${res?.error || 'unknown'}`);
         return;
       }
+      remoteTempConns.current.add(connId);
       setRemoteConnId(connId);
       const home = await (window as any).api?.feHomeDir?.('remote', connId).catch(() => '/');
       await loadRemoteDir(connId, home || '/');
+    } catch (err: any) {
+      setRemoteError(String(err?.message || err));
     } finally {
-      setRemoteLoading(false);
+      setRemoteConnecting(false);
     }
   };
 
@@ -246,7 +291,7 @@ export const MessengerWorkspace: React.FC = () => {
         setRemoteError(`전송 실패: ${res?.error || 'unknown'}`);
         return;
       }
-      await closeRemotePicker();
+      closeRemotePicker();
     } finally {
       setRemoteLoading(false);
     }
@@ -433,45 +478,50 @@ export const MessengerWorkspace: React.FC = () => {
           <div className="messenger-remote-modal" onClick={e => e.stopPropagation()}>
             <header>
               <div>
-                <h3>원격 파일 전송</h3>
+                <h3>🌐 원격 파일 선택</h3>
                 <p>{selectedPeer?.name || '사용자'}에게 서버 파일을 바로 보냅니다.</p>
               </div>
               <button onClick={closeRemotePicker}>닫기</button>
             </header>
 
             <div className="messenger-remote-connect">
-              <select
-                value={remoteSessionId}
-                onChange={e => {
-                  const id = e.target.value;
-                  const sess = remoteSessions.find(s => s.id === id);
-                  setRemoteSessionId(id);
-                  setRemoteUser(sess?.username || '');
-                  setRemotePass('');
-                  setRemoteConnId('');
-                  setRemoteFiles([]);
-                  setRemoteSelected(new Set());
-                }}
-              >
-                {remoteSessions.length === 0 && <option value="">저장된 세션 없음</option>}
-                {remoteSessions.map(sess => <option key={sess.id} value={sess.id}>{sess.name || sess.host} ({sess.host})</option>)}
-              </select>
-              <input value={remoteUser} onChange={e => setRemoteUser(e.target.value)} placeholder="사용자" />
-              <input value={remotePass} onChange={e => setRemotePass(e.target.value)} placeholder="비밀번호 필요 시 입력" type="password" />
-              <button onClick={connectRemoteSession} disabled={remoteLoading || !remoteSessionId}>{remoteConnId ? '재연결' : '연결'}</button>
+              <label className="messenger-remote-label">소스 세션 (연결된 세션은 🟢, 미연결 세션 선택 시 백그라운드 SFTP 연결)</label>
+              {(() => {
+                const connected = remoteSessions.filter(s => connectedSessionMap.has(s.id));
+                const disconnected = remoteSessions.filter(s => !connectedSessionMap.has(s.id));
+                const sortFn = (a: any, b: any) => {
+                  const fa = sessionFolderPath(remoteFolders, a.folderId);
+                  const fb = sessionFolderPath(remoteFolders, b.folderId);
+                  return fa.localeCompare(fb) || String(a.name || '').localeCompare(String(b.name || ''));
+                };
+                const renderOption = (s: any) => {
+                  const fp = sessionFolderPath(remoteFolders, s.folderId);
+                  const mark = connectedSessionMap.has(s.id) ? '🟢' : '⚪';
+                  return <option key={s.id} value={s.id}>{mark} {s.name || s.host}{fp ? ` [${fp}]` : ''} ({s.host})</option>;
+                };
+                return (
+                  <select value={remoteSessionId} onChange={e => void selectRemoteSession(e.target.value)}>
+                    <option value="">(세션 선택)</option>
+                    {connected.length > 0 && <optgroup label="🟢 연결됨">{[...connected].sort(sortFn).map(renderOption)}</optgroup>}
+                    {disconnected.length > 0 && <optgroup label="⚪ 연결 안됨">{[...disconnected].sort(sortFn).map(renderOption)}</optgroup>}
+                    {remoteSessions.length === 0 && <option value="" disabled>저장된 세션 없음</option>}
+                  </select>
+                );
+              })()}
+              {remoteConnecting && <div className="messenger-remote-connecting">연결 중...</div>}
             </div>
 
             <div className="messenger-remote-path">
-              <button disabled={!remoteConnId || remotePath === '/'} onClick={() => loadRemoteDir(remoteConnId, parentRemotePath(remotePath))}>상위</button>
-              <input value={remotePath} onChange={e => setRemotePath(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && remoteConnId) void loadRemoteDir(remoteConnId, remotePath); }} />
-              <button disabled={!remoteConnId} onClick={() => loadRemoteDir(remoteConnId, remotePath)}>이동</button>
+              <button disabled={!remoteConnId || remotePath === '/'} onClick={() => loadRemoteDir(remoteConnId, parentRemotePath(remotePath))} title="상위 폴더">▲</button>
+              <input value={remotePath} disabled={!remoteConnId} onChange={e => setRemotePath(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && remoteConnId) void loadRemoteDir(remoteConnId, remotePath); }} />
+              <button disabled={!remoteConnId} onClick={() => loadRemoteDir(remoteConnId, remotePath)} title="이동/새로고침">⟳</button>
             </div>
 
             {remoteError && <div className="messenger-remote-error">{remoteError}</div>}
             <div className="messenger-remote-list">
-              {!remoteConnId && <div className="messenger-empty">세션을 선택하고 연결하면 원격 파일 목록이 표시됩니다.</div>}
-              {remoteConnId && remoteFiles.length === 0 && <div className="messenger-empty">{remoteLoading ? '불러오는 중...' : '파일이 없습니다.'}</div>}
-              {remoteFiles.map(file => {
+              {!remoteConnId && <div className="messenger-empty">{remoteConnecting ? '연결 중...' : '세션을 선택하세요'}</div>}
+              {remoteConnId && remoteFiles.length === 0 && <div className="messenger-empty">{remoteLoading ? '불러오는 중...' : '(비어있음 또는 경로 에러)'}</div>}
+              {remoteConnId && remoteFiles.map(file => {
                 const full = joinRemotePath(remotePath, file.name);
                 const checked = remoteSelected.has(full);
                 return (
@@ -498,8 +548,8 @@ export const MessengerWorkspace: React.FC = () => {
             </div>
 
             <footer>
-              <span>{remoteSelected.size}개 선택됨</span>
-              <button onClick={sendRemoteFiles} disabled={!canSend || remoteLoading || remoteSelected.size === 0}>선택 파일 전송</button>
+              <span>🟢 연결됨 / ⚪ 미연결(자동 연결). 더블클릭: 폴더 진입. {remoteSelected.size}개 선택됨</span>
+              <button className="primary" onClick={sendRemoteFiles} disabled={!canSend || remoteLoading || remoteConnecting || remoteSelected.size === 0}>{remoteSelected.size}개 전송</button>
             </footer>
           </div>
         </div>

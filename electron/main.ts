@@ -1131,6 +1131,14 @@ ipcMain.handle('messenger:clear-all', () => {
   messengerEmit({ type: 'state', state: messengerState() });
   return { success: true };
 });
+ipcMain.handle('messenger:clear-peers', () => {
+  messengerPeers.clear();
+  messengerMessages = [];
+  messengerSavePeers();
+  messengerSaveMessages();
+  messengerEmit({ type: 'state', state: messengerState() });
+  return { success: true };
+});
 
 // 외부(Explorer) 에서 드래그된 파일을 chat 첨부 디렉토리로 복사 후 경로 반환.
 // 렌더러는 webUtils.getPathForFile() 로 얻은 원본 절대경로를 전달.
