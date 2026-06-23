@@ -63,8 +63,7 @@ export const MessengerWorkspace: React.FC<{ connectedSessions?: ConnectedSession
   const [saving, setSaving] = useState(false);
   const [scanText, setScanText] = useState('');
   const [settingsExpanded, setSettingsExpanded] = useState(false);
-  const [nameInput, setNameInput] = useState('');
-  const nameComposing = useRef(false);
+  const nameInputRef = useRef<HTMLInputElement | null>(null);
   const [readMarks, setReadMarks] = useState<Record<string, number>>(() => {
     try { return JSON.parse(localStorage.getItem('messenger:readMarks') || '{}') || {}; } catch { return {}; }
   });
@@ -139,14 +138,12 @@ export const MessengerWorkspace: React.FC<{ connectedSessions?: ConnectedSession
     if (latest > 0) markRead(selectedPeerId, latest);
   }, [selectedPeerId, state.messages]);
 
-  // Seed the local name input from prefs, but never clobber what the user is
-  // typing (especially mid Hangul IME composition) — only sync when the value
-  // actually diverges and the user is not actively editing the field.
+  // Seed the local name input from prefs when it changes, but only if the user
+  // is not actively focusing/editing it to prevent breaking Hangul IME.
   useEffect(() => {
-    if (nameComposing.current) return;
-    const el = document.activeElement as HTMLElement | null;
-    if (el?.dataset?.messengerName === '1') return;
-    setNameInput(storedName);
+    if (nameInputRef.current && document.activeElement !== nameInputRef.current) {
+      nameInputRef.current.value = storedName;
+    }
   }, [storedName]);
 
   const retainEnabled = !!state.prefs.retainEnabled;
@@ -342,14 +339,21 @@ export const MessengerWorkspace: React.FC<{ connectedSessions?: ConnectedSession
           <label>
             <span>내 이름</span>
             <input
+              ref={nameInputRef}
               data-messenger-name="1"
-              value={nameInput}
+              defaultValue={storedName}
               placeholder={fallbackName || '표시 이름'}
-              onChange={e => setNameInput(e.target.value)}
-              onCompositionStart={() => { nameComposing.current = true; }}
-              onCompositionEnd={e => { nameComposing.current = false; setNameInput((e.target as HTMLInputElement).value); }}
-              onBlur={() => { if (nameInput !== storedName) updatePrefs({ displayName: nameInput }); }}
-              onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+              onBlur={() => {
+                const val = nameInputRef.current?.value ?? '';
+                if (val !== storedName) {
+                  updatePrefs({ displayName: val });
+                }
+              }}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  (e.target as HTMLInputElement).blur();
+                }
+              }}
             />
           </label>
           <button
