@@ -7082,6 +7082,10 @@ mark.claude-search-hit.current {
   padding: 6px;
   box-shadow: 0 16px 44px rgba(0,0,0,0.5);
 }
+.messenger-context button.danger {
+  background: rgba(128, 39, 39, 0.82);
+  border-color: rgba(255, 135, 135, 0.28);
+}
 .messenger-modal-backdrop {
   position: fixed;
   inset: 0;

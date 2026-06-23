@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('api', {
   messengerSendRemoteFiles: (peerId: string, connId: string, remotePaths: string[]) => ipcRenderer.invoke('messenger:send-remote-files', { peerId, connId, remotePaths }),
   messengerScanRange: (prefix?: string) => ipcRenderer.invoke('messenger:scan-range', { prefix }),
   messengerDeleteConversation: (peerId: string) => ipcRenderer.invoke('messenger:delete-conversation', { peerId }),
+  messengerDeletePeer: (peerId: string) => ipcRenderer.invoke('messenger:delete-peer', { peerId }),
   messengerClearAll: () => ipcRenderer.invoke('messenger:clear-all'),
   onMessengerEvent: (cb: (p: any) => void) => {
     const handler = (_: any, p: any) => cb(p);

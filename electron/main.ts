@@ -809,20 +809,79 @@ function messengerSendHelloTo(host: string) {
   const packet = messengerPacket();
   try { messengerUdp.send(packet, 0, packet.length, MSG_DISCOVERY_PORT, host); } catch {}
 }
-function messengerScanRange(prefix = '10.100') {
+function messengerAssignedBClassPrefixes() {
+  const prefixes = new Set<string>();
+  try {
+    const nets = os.networkInterfaces();
+    for (const addrs of Object.values(nets)) {
+      for (const addr of addrs || []) {
+        if (!addr || addr.family !== 'IPv4' || addr.internal) continue;
+        const ip = String(addr.address || '');
+        const parts = ip.split('.').map(n => Number(n));
+        if (parts.length !== 4 || parts.some(n => !Number.isInteger(n) || n < 0 || n > 255)) continue;
+        if (parts[0] === 127 || (parts[0] === 169 && parts[1] === 254) || parts[0] === 0) continue;
+        prefixes.add(`${parts[0]}.${parts[1]}`);
+      }
+    }
+  } catch {}
+  return [...prefixes].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+}
+function messengerKnownOverlayHosts() {
+  const hosts = new Set<string>();
+  const addHost = (ip: string) => {
+    const parts = String(ip || '').split('.').map(n => Number(n));
+    if (parts.length !== 4 || parts.some(n => !Number.isInteger(n) || n < 0 || n > 255)) return;
+    if (parts[0] === 127 || (parts[0] === 169 && parts[1] === 254) || parts[0] === 0) return;
+    hosts.add(parts.join('.'));
+  };
+  try {
+    const { execFileSync } = require('child_process');
+    const candidates = process.platform === 'win32'
+      ? ['tailscale.exe', path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Tailscale', 'tailscale.exe')]
+      : ['tailscale'];
+    for (const exe of candidates) {
+      try {
+        const out = execFileSync(exe, ['status', '--json'], { encoding: 'utf8', timeout: 2500, windowsHide: true });
+        const data = JSON.parse(out || '{}');
+        for (const peer of Object.values(data?.Peer || {}) as any[]) {
+          for (const ip of peer?.TailscaleIPs || []) addHost(String(ip));
+        }
+        break;
+      } catch {}
+    }
+  } catch {}
+  if (process.platform === 'win32') {
+    try {
+      const { execFileSync } = require('child_process');
+      const ps = "Get-NetRoute -AddressFamily IPv4 | Where-Object { $_.InterfaceAlias -like '*Tailscale*' -and $_.DestinationPrefix -match '^\\d+\\.\\d+\\.\\d+\\.\\d+/32$' } | ForEach-Object { $_.DestinationPrefix.Split('/')[0] }";
+      const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { encoding: 'utf8', timeout: 2500, windowsHide: true });
+      for (const line of out.split(/\r?\n/)) addHost(line.trim());
+    } catch {}
+  }
+  return [...hosts].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+}
+function messengerScanRange(prefix?: string) {
   if (!messengerUdp || !messengerPort) return { success: false, error: 'messenger not started' };
   if (messengerPrefs.hidePresence) return { success: false, error: 'presence hidden' };
-  const cleanPrefix = String(prefix || '10.100').replace(/[^\d.]/g, '').replace(/\.+$/, '') || '10.100';
-  if (!/^\d{1,3}\.\d{1,3}$/.test(cleanPrefix)) return { success: false, error: 'prefix must look like 10.100' };
+  const prefixes = prefix
+    ? [String(prefix).replace(/[^\d.]/g, '').replace(/\.+$/, '')]
+    : messengerAssignedBClassPrefixes();
+  const cleanPrefixes = [...new Set(prefixes)]
+    .filter(p => /^\d{1,3}\.\d{1,3}$/.test(p))
+    .filter(p => p.split('.').every(n => Number(n) >= 0 && Number(n) <= 255));
+  const directHosts = prefix ? [] : messengerKnownOverlayHosts();
+  if (cleanPrefixes.length === 0 && directHosts.length === 0) return { success: false, error: 'no assigned IPv4 network found' };
+  let prefixIdx = 0;
   let third = 0;
   let fourth = 1;
+  let directIdx = 0;
   let sent = 0;
   const batchSize = 512;
-  const total = 256 * 254;
+  const total = cleanPrefixes.length * 256 * 254 + directHosts.length;
   const tick = () => {
     let count = 0;
-    while (third <= 255 && count < batchSize) {
-      messengerSendHelloTo(`${cleanPrefix}.${third}.${fourth}`);
+    while (prefixIdx < cleanPrefixes.length && count < batchSize) {
+      messengerSendHelloTo(`${cleanPrefixes[prefixIdx]}.${third}.${fourth}`);
       sent++;
       count++;
       fourth++;
@@ -830,13 +889,23 @@ function messengerScanRange(prefix = '10.100') {
         fourth = 1;
         third++;
       }
+      if (third > 255) {
+        third = 0;
+        prefixIdx++;
+      }
     }
-    messengerEmit({ type: 'scan-progress', prefix: cleanPrefix, sent, total, state: messengerState() });
-    if (third <= 255) setTimeout(tick, 25);
-    else messengerEmit({ type: 'scan-complete', prefix: cleanPrefix, sent, state: messengerState() });
+    while (prefixIdx >= cleanPrefixes.length && directIdx < directHosts.length && count < batchSize) {
+      messengerSendHelloTo(directHosts[directIdx]);
+      directIdx++;
+      sent++;
+      count++;
+    }
+    messengerEmit({ type: 'scan-progress', prefixes: cleanPrefixes, directHosts, sent, total, state: messengerState() });
+    if (prefixIdx < cleanPrefixes.length || directIdx < directHosts.length) setTimeout(tick, 25);
+    else messengerEmit({ type: 'scan-complete', prefixes: cleanPrefixes, directHosts, sent, state: messengerState() });
   };
   setTimeout(tick, 0);
-  return { success: true, prefix: cleanPrefix, total };
+  return { success: true, prefixes: cleanPrefixes, directHosts, total };
 }
 function messengerWritePeer(peer: MessengerPeer, payload: any): Promise<void> {
   const net = require('net');
@@ -971,7 +1040,7 @@ ipcMain.handle('messenger:update-prefs', (_e, prefs: MessengerPrefs) => {
   if (!messengerPrefs.hidePresence) messengerBroadcast();
   return { success: true, state: messengerState() };
 });
-ipcMain.handle('messenger:scan-range', (_e, { prefix }: { prefix?: string }) => messengerScanRange(prefix || '10.100'));
+ipcMain.handle('messenger:scan-range', (_e, { prefix }: { prefix?: string }) => messengerScanRange(prefix));
 ipcMain.handle('messenger:send-message', async (_e, { peerId, text }: { peerId: string; text: string }) => {
   if (messengerPrefs.hidePresence) return { success: false, error: 'presence hidden' };
   const peer = messengerPeers.get(peerId);
@@ -1016,6 +1085,14 @@ ipcMain.handle('messenger:send-remote-files', async (_e, { peerId, connId, remot
 });
 ipcMain.handle('messenger:delete-conversation', (_e, { peerId }: { peerId: string }) => {
   messengerMessages = messengerMessages.filter(m => m.peerId !== peerId);
+  messengerSaveMessages();
+  messengerEmit({ type: 'state', state: messengerState() });
+  return { success: true };
+});
+ipcMain.handle('messenger:delete-peer', (_e, { peerId }: { peerId: string }) => {
+  messengerPeers.delete(peerId);
+  messengerMessages = messengerMessages.filter(m => m.peerId !== peerId);
+  messengerSavePeers();
   messengerSaveMessages();
   messengerEmit({ type: 'state', state: messengerState() });
   return { success: true };

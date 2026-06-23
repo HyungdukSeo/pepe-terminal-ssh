@@ -40,6 +40,13 @@ function canRevealFile(msg: Msg) {
   return msg.direction === 'in' || /^[A-Za-z]:[\\/]/.test(p) || /^\\\\/.test(p);
 }
 
+function scanLabel(payload: any) {
+  const ranges = Array.isArray(payload?.prefixes) ? payload.prefixes.map((v: string) => `${v}.x.x`) : [];
+  const directCount = Array.isArray(payload?.directHosts) ? payload.directHosts.length : 0;
+  if (directCount > 0) ranges.push(`Tailscale/overlay ${directCount}개`);
+  return ranges.length ? ranges.join(', ') : '할당 IP 대역';
+}
+
 export const MessengerWorkspace: React.FC = () => {
   const [state, setState] = useState<State>(emptyState);
   const [selectedPeerId, setSelectedPeerId] = useState('');
@@ -76,9 +83,9 @@ export const MessengerWorkspace: React.FC = () => {
         setSelectedPeerId((cur) => cur || p.state.peers?.[0]?.id || '');
       }
       if (p?.type === 'scan-progress') {
-        setScanText(`10.100.x.x 검색 중... ${p.sent}/${p.total}`);
+        setScanText(`${scanLabel(p)} 검색 중... ${p.sent}/${p.total}`);
       } else if (p?.type === 'scan-complete') {
-        setScanText(`10.100.x.x 검색 완료 (${p.sent}개 확인)`);
+        setScanText(`${scanLabel(p)} 검색 완료 (${p.sent}개 확인)`);
         setTimeout(() => setScanText(''), 5000);
       }
     });
@@ -212,13 +219,28 @@ export const MessengerWorkspace: React.FC = () => {
     setMenu(null);
   };
 
+  const deletePeer = async (peerId: string) => {
+    const peer = state.peers.find(p => p.id === peerId);
+    if (!confirm(`${peer?.name || '선택한 사용자'}를 목록에서 삭제할까요?\n대화내역도 함께 삭제됩니다.`)) return;
+    const res = await (window as any).api?.messengerDeletePeer?.(peerId);
+    if (res?.success) {
+      setMenu(null);
+      setSelectedPeerId(cur => cur === peerId ? '' : cur);
+      setState(prev => ({
+        ...prev,
+        peers: prev.peers.filter(p => p.id !== peerId),
+        messages: prev.messages.filter(m => m.peerId !== peerId),
+      }));
+    }
+  };
+
   const clearAll = async () => {
     if (!confirm('모든 메신저 대화내역을 삭제할까요?')) return;
     await (window as any).api?.messengerClearAll?.();
   };
-  const scan10Range = async () => {
-    setScanText('10.100.x.x 검색 시작...');
-    const res = await (window as any).api?.messengerScanRange?.('10.100');
+  const scanAssignedRanges = async () => {
+    setScanText('할당 IP B 클래스 대역 검색 시작...');
+    const res = await (window as any).api?.messengerScanRange?.();
     if (!res?.success) setScanText(res?.error === 'presence hidden' ? '나의 접속 숨기기 상태에서는 검색할 수 없습니다.' : `검색 시작 실패: ${res?.error || 'unknown'}`);
   };
 
@@ -262,8 +284,8 @@ export const MessengerWorkspace: React.FC = () => {
               </label>
               <button className="messenger-danger" onClick={clearAll}>대화내역 모두 초기화</button>
               <div className="messenger-scan compact">
-                <button onClick={scan10Range} disabled={hidePresence}>리스트 업데이트 / 10.100.x.x 검색</button>
-                <small>{scanText || (hidePresence ? '숨김 상태에서는 사용자 검색과 응답을 하지 않습니다.' : '브로드캐스트로 안 잡히는 사내망 사용자를 직접 찾습니다.')}</small>
+                <button onClick={scanAssignedRanges} disabled={hidePresence}>리스트 업데이트</button>
+                <small>{scanText || (hidePresence ? '숨김 상태에서는 사용자 검색과 응답을 하지 않습니다.' : '네트워크 카드에 할당된 IPv4의 B 클래스 대역을 직접 찾습니다.')}</small>
               </div>
             </div>
           )}
@@ -354,7 +376,7 @@ export const MessengerWorkspace: React.FC = () => {
 
       {menu && (
         <div className="messenger-context" style={{ left: menu.x, top: menu.y }} onClick={e => e.stopPropagation()}>
-          <button onClick={() => deleteConversation(menu.peerId)}>대화내역 삭제</button>
+          <button className="danger" onClick={() => deletePeer(menu.peerId)}>사용자 삭제</button>
         </div>
       )}
 
