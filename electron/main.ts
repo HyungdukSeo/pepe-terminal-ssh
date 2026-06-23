@@ -5586,6 +5586,11 @@ function findAgyCliPath(): string | null {
   if (process.platform === 'win32') {
     if (process.env.LOCALAPPDATA) candidates.push(path.join(process.env.LOCALAPPDATA, 'agy', 'bin', 'agy.exe'));
     if (process.env.USERPROFILE) candidates.push(path.join(process.env.USERPROFILE, 'AppData', 'Local', 'agy', 'bin', 'agy.exe'));
+  } else {
+    // macOS/Linux: agy 는 보통 ~/.local/bin 에 설치된다. 패키징된 앱은 launchd 의
+    // 최소 PATH 만 상속받아 which 가 실패할 수 있으므로 직접 경로도 후보로 둔다.
+    const home = os.homedir();
+    candidates.push(path.join(home, '.local', 'bin', 'agy'), path.join(home, 'bin', 'agy'), '/usr/local/bin/agy', '/opt/homebrew/bin/agy');
   }
 
   for (const candidate of candidates) {
@@ -5854,7 +5859,7 @@ function buildAugmentedPath(): string {
     if (process.env.ProgramFiles) extraPaths.push(path.join(process.env.ProgramFiles, 'nodejs'));
   } else {
     const home = os.homedir();
-    extraPaths.push('/usr/local/bin', '/opt/homebrew/bin', path.join(home, '.npm-global', 'bin'), path.join(home, '.volta', 'bin'));
+    extraPaths.push('/usr/local/bin', '/opt/homebrew/bin', path.join(home, '.local', 'bin'), path.join(home, 'bin'), path.join(home, '.npm-global', 'bin'), path.join(home, '.volta', 'bin'));
     // nvm — alias/default 체인으로 활성 버전 bin 먼저, 나머지 버전도 폴백으로 추가
     try {
       const nvmDir = path.join(home, '.nvm');
