@@ -1596,6 +1596,10 @@ function App() {
     const doFocus = () => {
       try {
         if (!activeTab) return;
+        // 비-터미널 워크스페이스(메신저/파일탐색기/브라우저 등)가 활성일 때는
+        // 숨겨진 백그라운드 터미널로 포커스를 뺏지 않는다. 이게 발생하면 메신저
+        // 입력창을 클릭해도 포커스가 즉시 터미널로 넘어가 입력이 먹통이 된다.
+        if (activeTab.type && activeTab.type !== 'terminal') return;
         const sessions = collectAllSessions(activeTab.layout);
         if (sessions.length === 0) return;
         let targetTermId: string | null = null;

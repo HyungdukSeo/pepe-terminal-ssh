@@ -5553,9 +5553,24 @@ function loadGeminiApiKey(): string {
   } catch { return ''; }
 }
 
-/** 프론트엔드 모델 ID → Gemini REST API 모델명 매핑 */
+/** 프론트엔드 모델 값 → Gemini REST API 모델명 매핑.
+ * 프론트엔드 값은 agy 라벨("Gemini 3.5 Flash (Medium)" 등)이다. REST API 는 이 라벨을
+ * 모르므로 가장 가까운 Gemini 모델 슬러그로 변환한다. Claude/GPT-OSS 등 비-Gemini 라벨도
+ * API Direct 폴백에서는 Gemini 모델로 대체된다(REST 는 Gemini 만 지원). */
 function mapGeminiModel(frontendModel: string): string {
-  const map: Record<string, string> = {
+  const labelMap: Record<string, string> = {
+    'Gemini 3.5 Flash (Medium)': 'gemini-2.5-flash',
+    'Gemini 3.5 Flash (High)': 'gemini-2.5-flash',
+    'Gemini 3.5 Flash (Low)': 'gemini-2.5-flash',
+    'Gemini 3.1 Pro (Low)': 'gemini-2.5-pro',
+    'Gemini 3.1 Pro (High)': 'gemini-2.5-pro',
+    'Claude Sonnet 4.6 (Thinking)': 'gemini-2.5-pro',
+    'Claude Opus 4.6 (Thinking)': 'gemini-2.5-pro',
+    'GPT-OSS 120B (Medium)': 'gemini-2.5-flash',
+  };
+  if (labelMap[frontendModel]) return labelMap[frontendModel];
+  // 구버전 슬러그 호환
+  const slugMap: Record<string, string> = {
     'gemini-3-flash-preview': 'gemini-3.0-flash',
     'gemini-3.1-flash-lite-preview': 'gemini-3.1-flash-lite',
     'gemini-2.5-flash': 'gemini-2.5-flash',
@@ -5564,21 +5579,29 @@ function mapGeminiModel(frontendModel: string): string {
     'gemini-3.1-pro': 'gemini-3.1-pro',
     'gemini-2.5-pro': 'gemini-2.5-pro',
   };
-  return map[frontendModel] || frontendModel;
+  return slugMap[frontendModel] || 'gemini-2.5-flash';
 }
 
+// agy --model 은 "Switch Model" 드롭다운의 정확한 라벨 문자열(추론 강도 포함)을 받는다.
+// 예: "Gemini 3.5 Flash (Medium)", "Claude Opus 4.6 (Thinking)". 라벨이 일치하지 않으면
+// agy 는 경고 후 기본 모델로 폴백한다. 프론트엔드 모델 값이 이미 이 라벨이므로 그대로 전달한다.
+// (구버전 슬러그가 들어오면 매핑할 수 없으니 빈 값으로 → agy 기본값 사용)
+const AGY_MODEL_LABELS = new Set([
+  'Gemini 3.5 Flash (Medium)',
+  'Gemini 3.5 Flash (High)',
+  'Gemini 3.5 Flash (Low)',
+  'Gemini 3.1 Pro (Low)',
+  'Gemini 3.1 Pro (High)',
+  'Claude Sonnet 4.6 (Thinking)',
+  'Claude Opus 4.6 (Thinking)',
+  'GPT-OSS 120B (Medium)',
+]);
 function mapAgyModel(frontendModel?: string): string {
-  // agy는 모델 alias가 Gemini CLI와 완전히 같지 않을 수 있어 보수적으로 매핑한다.
-  // 알 수 없는 값은 넘기지 않아 agy의 기본 모델 선택을 사용한다.
-  const map: Record<string, string> = {
-    'gemini-2.5-flash': 'gemini-2.5-flash',
-    'gemini-2.5-flash-lite': 'gemini-2.5-flash-lite',
-    'gemini-2.5-pro': 'gemini-2.5-pro',
-    'gemini-3-flash-preview': 'gemini-3.0-flash',
-    'gemini-3.1-flash-lite-preview': 'gemini-3.1-flash-lite',
-    'gemini-3-pro': 'gemini-3.0-pro',
-  };
-  return frontendModel ? (map[frontendModel] || '') : '';
+  if (!frontendModel) return '';
+  // 정확한 라벨이면 그대로 전달.
+  if (AGY_MODEL_LABELS.has(frontendModel)) return frontendModel;
+  // 구버전 슬러그(gemini-2.5-flash 등) → 알 수 없으니 agy 기본값에 맡긴다.
+  return '';
 }
 
 function findAgyCliPath(): string | null {
@@ -5613,7 +5636,14 @@ function findAgyCliPath(): string | null {
   return null;
 }
 
-function readAgyPrintTranscript(logPath: string): string | null {
+// agy print 모드는 conversation/brain 디렉터리를 턴마다 재사용하며 transcript.jsonl 에
+// 모든 턴을 누적한다(compaction 으로 이전 대화까지 resume 됨). 따라서 단순히 "마지막
+// MODEL content" 를 읽으면 ① 직전 턴의 답변이나 ② 도구 호출(LIST_DIRECTORY 등) 출력을
+// 현재 답변으로 착각한다. 이번 턴의 실제 답변만 고르기 위해:
+//   - sinceTs(이번 spawn 시각) 이후의 이벤트만 고려하고,
+//   - 마지막 USER_EXPLICIT(=이번 질문) 이후에 등장한
+//   - 자연어 응답 타입(PLANNER_RESPONSE)의 MODEL 이벤트만 채택한다.
+function readAgyPrintTranscript(logPath: string, sinceTs = 0): string | null {
   try {
     if (!logPath || !fs.existsSync(logPath)) return null;
     const logText = fs.readFileSync(logPath, 'utf8');
@@ -5633,33 +5663,50 @@ function readAgyPrintTranscript(logPath: string): string | null {
     );
     if (!fs.existsSync(transcriptPath)) return null;
 
-    let lastModelText = '';
-    const lines = fs.readFileSync(transcriptPath, 'utf8').split(/\r?\n/);
-    for (const line of lines) {
+    type AgyEvent = { source?: string; type?: string; content?: string; created_at?: string };
+    const events: AgyEvent[] = [];
+    for (const line of fs.readFileSync(transcriptPath, 'utf8').split(/\r?\n/)) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      try {
-        const event = JSON.parse(trimmed);
-        if (event?.source === 'MODEL' && typeof event?.content === 'string' && event.content.trim()) {
-          lastModelText = event.content;
-        }
-      } catch {}
+      try { events.push(JSON.parse(trimmed)); } catch {}
     }
-    return lastModelText || null;
+
+    const ts = (e: AgyEvent) => { const t = Date.parse(e.created_at || ''); return Number.isNaN(t) ? 0 : t; };
+
+    // 이번 질문(가장 최근 USER_EXPLICIT)의 시각 — 이 이후의 MODEL 응답만 현재 턴 것이다.
+    let lastUserTs = 0;
+    for (const e of events) {
+      if (e.source === 'USER_EXPLICIT' && ts(e) >= lastUserTs) lastUserTs = ts(e);
+    }
+    // 이번 spawn 이후로 USER_EXPLICIT 이 아직 기록되지 않았다면, transcript 에 남은 건
+    // 직전 턴 내용뿐이다. 현재 턴 입력이 보일 때까지 답변을 채택하지 않는다(이전 답 재출력 방지).
+    if (lastUserTs < sinceTs) return null;
+    // spawn 시각과 마지막 질문 시각 중 더 나중을 기준선으로(이전 턴 답변 완전 배제).
+    const floor = Math.max(sinceTs, lastUserTs);
+
+    // 기준선 이후의 자연어 응답(PLANNER_RESPONSE) 중 마지막 것을 채택.
+    let answer = '';
+    for (const e of events) {
+      if (e.source !== 'MODEL' || e.type !== 'PLANNER_RESPONSE') continue;
+      if (typeof e.content !== 'string' || !e.content.trim()) continue;
+      if (ts(e) < floor) continue;
+      answer = e.content;
+    }
+    return answer.trim() || null;
   } catch (err) {
     console.log('[gemini:agy] failed to read transcript fallback:', err);
     return null;
   }
 }
 
-async function waitForAgyPrintTranscript(logPath: string, timeoutMs = 3000): Promise<string | null> {
+async function waitForAgyPrintTranscript(logPath: string, sinceTs = 0, timeoutMs = 8000): Promise<string | null> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const text = readAgyPrintTranscript(logPath);
+    const text = readAgyPrintTranscript(logPath, sinceTs);
     if (text) return text;
     await new Promise(resolve => setTimeout(resolve, 250));
   }
-  return readAgyPrintTranscript(logPath);
+  return readAgyPrintTranscript(logPath, sinceTs);
 }
 
 async function checkAgyCli(): Promise<{ installed: boolean; version?: string; path?: string; error?: string }> {
@@ -6759,6 +6806,9 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
       }
       console.warn('[gemini:agy] rejected addDirs', rejectedAddDirs);
     }
+    // transcript created_at 은 초 단위라, 같은 초에 기록된 이번 턴 이벤트가 기준선에서
+    // 밀려나지 않도록 spawn 시각을 직전 초 경계로 내림한다.
+    const agySpawnTs = Math.floor(Date.now() / 1000) * 1000;
     const proc = spawn(agyCommand, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd, windowsHide: true });
     geminiProcesses.set(procKey, proc);
 
@@ -6797,7 +6847,7 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
         return;
       }
       if (!stdoutHadContent) {
-        const transcriptText = await waitForAgyPrintTranscript(agyLogPath);
+        const transcriptText = await waitForAgyPrintTranscript(agyLogPath, agySpawnTs);
         if (transcriptText) {
           sendStream({ type: 'text', text: transcriptText });
           sendStream({ type: 'done', code: code || 0 });
