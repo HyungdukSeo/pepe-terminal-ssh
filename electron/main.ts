@@ -682,6 +682,11 @@ type MessengerMessage = { id: string; peerId: string; direction: 'in' | 'out'; k
 type MessengerPrefs = { enabled?: boolean; displayName?: string; retainEnabled?: boolean; retainDays?: number; downloadDir?: string; hidePresence?: boolean };
 
 const MSG_DISCOVERY_PORT = 39455;
+// Presence: a peer is "online" while we've heard from it within this window.
+// We send keepalive hellos every MSG_KEEPALIVE_MS, so the window must comfortably
+// absorb a few dropped UDP packets (lossy on Wi-Fi / broadcast-filtered switches).
+const MSG_KEEPALIVE_MS = 3000;
+const MSG_ONLINE_WINDOW_MS = 35_000;
 let messengerUdp: any = null;
 let messengerTcp: any = null;
 let messengerTimer: any = null;
@@ -777,7 +782,7 @@ function messengerPruneMessages() {
 function messengerState() {
   const now = Date.now();
   const peers = [...messengerPeers.values()]
-    .map(p => ({ ...p, online: now - p.lastSeen < 20_000 }))
+    .map(p => ({ ...p, online: now - p.lastSeen < MSG_ONLINE_WINDOW_MS }))
     .sort((a, b) => a.name.localeCompare(b.name));
   return { self: { id: messengerId, name: messengerPrefs.displayName || os.userInfo().username || 'PePe', port: messengerPort, hidden: !!messengerPrefs.hidePresence }, peers, messages: messengerMessages, prefs: messengerPrefs };
 }
@@ -787,13 +792,14 @@ function messengerRemember(msg: MessengerMessage) {
   messengerSaveMessages();
   messengerEmit({ type: 'message', message: msg, state: messengerState() });
 }
-function messengerPacket() {
+function messengerPacket(reply = false) {
   return Buffer.from(JSON.stringify({
     app: 'pepe-terminal-ssh',
     type: 'hello',
     id: messengerId,
     name: messengerPrefs.displayName || os.userInfo().username || 'PePe',
     port: messengerPort,
+    reply,
     ts: Date.now(),
   }));
 }
@@ -803,11 +809,26 @@ function messengerBroadcast() {
   const packet = messengerPacket();
   try { messengerUdp.send(packet, 0, packet.length, MSG_DISCOVERY_PORT, '255.255.255.255'); } catch {}
 }
-function messengerSendHelloTo(host: string) {
+function messengerSendHelloTo(host: string, reply = false) {
   if (!messengerUdp || !messengerPort || !host) return;
   if (messengerPrefs.hidePresence) return;
-  const packet = messengerPacket();
+  const packet = messengerPacket(reply);
   try { messengerUdp.send(packet, 0, packet.length, MSG_DISCOVERY_PORT, host); } catch {}
+}
+// Directed keepalive: ping every known peer's last address so presence survives
+// even when broadcast frames are dropped or filtered (Wi-Fi, cross-subnet, overlays).
+// The receiver answers each hello with its own hello (see UDP handler), so the
+// liveness check stays mutual without any extra protocol.
+function messengerKeepalive() {
+  if (!messengerUdp || !messengerPort) return;
+  if (messengerPrefs.hidePresence) return;
+  const seen = new Set<string>();
+  for (const peer of messengerPeers.values()) {
+    const host = String(peer.host || '').trim();
+    if (!host || seen.has(host)) continue;
+    seen.add(host);
+    messengerSendHelloTo(host);
+  }
 }
 function messengerAssignedBClassPrefixes() {
   const prefixes = new Set<string>();
@@ -1008,7 +1029,9 @@ ipcMain.handle('messenger:start', async (_e, prefs?: MessengerPrefs) => {
         if (p?.app !== 'pepe-terminal-ssh' || p?.type !== 'hello' || p?.id === messengerId) return;
         messengerPeers.set(String(p.id), { id: String(p.id), name: String(p.name || 'PePe'), host: rinfo.address, port: Number(p.port) || 0, lastSeen: Date.now() });
         messengerSavePeers();
-        messengerSendHelloTo(rinfo.address);
+        // Answer an initiating hello once with a reply hello. Reply packets are
+        // not answered again, which keeps presence mutual without a ping-pong loop.
+        if (!p.reply) messengerSendHelloTo(rinfo.address, true);
         messengerEmit({ type: 'peers', state: messengerState() });
       } catch {}
     });
@@ -1020,8 +1043,13 @@ ipcMain.handle('messenger:start', async (_e, prefs?: MessengerPrefs) => {
       messengerUdp.once('error', reject);
     });
   }
-  if (!messengerTimer) messengerTimer = setInterval(() => { messengerBroadcast(); messengerEmit({ type: 'peers', state: messengerState() }); }, 3000);
+  if (!messengerTimer) messengerTimer = setInterval(() => {
+    messengerBroadcast();
+    messengerKeepalive();
+    messengerEmit({ type: 'peers', state: messengerState() });
+  }, MSG_KEEPALIVE_MS);
   messengerBroadcast();
+  messengerKeepalive();
   return { success: true, state: messengerState() };
 });
 ipcMain.handle('messenger:stop', () => {
@@ -1045,7 +1073,7 @@ ipcMain.handle('messenger:send-message', async (_e, { peerId, text }: { peerId: 
   if (messengerPrefs.hidePresence) return { success: false, error: 'presence hidden' };
   const peer = messengerPeers.get(peerId);
   if (!peer) return { success: false, error: 'peer not found' };
-  if (Date.now() - peer.lastSeen >= 20_000) return { success: false, error: 'peer is offline' };
+  if (Date.now() - peer.lastSeen >= MSG_ONLINE_WINDOW_MS) return { success: false, error: 'peer is offline' };
   const msg: MessengerMessage = { id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, peerId, direction: 'out', kind: 'text', text, ts: Date.now() };
   await messengerWritePeer(peer, { app: 'pepe-terminal-ssh', type: 'message', fromId: messengerId, fromName: messengerPrefs.displayName || os.userInfo().username || 'PePe', fromPort: messengerPort, messageId: msg.id, text, ts: msg.ts });
   messengerRemember(msg);
@@ -1055,7 +1083,7 @@ ipcMain.handle('messenger:send-files', async (_e, { peerId }: { peerId: string }
   if (messengerPrefs.hidePresence) return { success: false, error: 'presence hidden' };
   const peer = messengerPeers.get(peerId);
   if (!peer || !mainWindow) return { success: false, error: 'peer not found' };
-  if (Date.now() - peer.lastSeen >= 20_000) return { success: false, error: 'peer is offline' };
+  if (Date.now() - peer.lastSeen >= MSG_ONLINE_WINDOW_MS) return { success: false, error: 'peer is offline' };
   const picked = await dialog.showOpenDialog(mainWindow, { properties: ['openFile', 'multiSelections'] });
   if (picked.canceled || picked.filePaths.length === 0) return { success: false, canceled: true };
   for (const filePath of picked.filePaths) {
@@ -1070,7 +1098,7 @@ ipcMain.handle('messenger:send-remote-files', async (_e, { peerId, connId, remot
     if (messengerPrefs.hidePresence) return { success: false, error: 'presence hidden' };
     const peer = messengerPeers.get(peerId);
     if (!peer) return { success: false, error: 'peer not found' };
-    if (Date.now() - peer.lastSeen >= 20_000) return { success: false, error: 'peer is offline' };
+    if (Date.now() - peer.lastSeen >= MSG_ONLINE_WINDOW_MS) return { success: false, error: 'peer is offline' };
     const paths = Array.isArray(remotePaths) ? remotePaths.filter(Boolean) : [];
     if (!connId || paths.length === 0) return { success: false, error: 'no remote files selected' };
     const bridge = getSSHBridge();
