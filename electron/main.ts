@@ -6748,7 +6748,17 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
       LANG: process.env.LANG || 'en_US.UTF-8',
       LC_ALL: process.env.LC_ALL || 'en_US.UTF-8',
     };
-    const cwd = process.env.USERPROFILE || process.env.HOME || os.homedir();
+    // agy 는 에이전트형 CLI 라 cwd 로 받은 디렉터리 트리 전체를 읽기/쓰기 작업공간으로
+    // 삼는다. cwd 를 HOME 으로 두면 HOME 하위(이 프로젝트 포함) 모든 파일을 --add-dir
+    // 없이도 수정할 수 있어 위험하다. 명시적으로 --add-dir 로 추가한 경로만 작업 대상이
+    // 되도록 cwd 는 빈 전용 샌드박스 디렉터리로 둔다.
+    let cwd: string;
+    try {
+      cwd = path.join(app.getPath('userData'), 'agy-workspace');
+      fs.mkdirSync(cwd, { recursive: true });
+    } catch {
+      cwd = os.tmpdir();
+    }
     const fullPrompt = '[시스템 지시] 특별한 언어 요청이 없으면 항상 한국어로 응답하세요.\n\n' + prompt;
     const agyLogPath = path.join(os.tmpdir(), `pepe-agy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.log`);
     const args = ['--print', fullPrompt, '--print-timeout', '5m'];
