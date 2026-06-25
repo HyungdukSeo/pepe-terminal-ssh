@@ -18,7 +18,6 @@ import { LogAnalyzer } from './components/LogAnalyzer';
 import { VpnWorkspace } from './components/VpnWorkspace';
 import { TranslationEditor } from './components/TranslationEditor';
 import { SqlToolWorkspace } from './components/SqlToolWorkspace';
-import { MessengerWorkspace } from './components/MessengerWorkspace';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { RemoteFileTree } from './components/RemoteFileTree';
 import { QuickConnectBar, QuickConnectResult } from './components/QuickConnectDialog';
@@ -365,6 +364,9 @@ function App() {
         if (typeof prefs?.showClaudeChat === 'boolean') {
           setShowClaudeChat(prefs.showClaudeChat);
         }
+        if (prefs?.claudeChatView === 'ai' || prefs?.claudeChatView === 'messenger') {
+          setClaudeChatView(prefs.claudeChatView);
+        }
         if (typeof prefs?.remoteTreeWidth === 'number' && prefs.remoteTreeWidth >= 160 && prefs.remoteTreeWidth <= 800) {
           setRemoteTreeWidth(prefs.remoteTreeWidth);
         }
@@ -381,6 +383,7 @@ function App() {
         remoteTreePinnedLoadedRef.current = true;
         claudeChatPinnedLoadedRef.current = true;
         showClaudeChatLoadedRef.current = true;
+        claudeChatViewLoadedRef.current = true;
       } catch {}
       showBroadcastLoadedRef.current = true;
     })();
@@ -752,6 +755,17 @@ function App() {
     }, ms));
   }, [terminalPinned]);
   const [showClaudeChat, setShowClaudeChat] = useState(true);
+  const [claudeChatView, setClaudeChatView] = useState<'ai' | 'messenger'>('ai');
+  const claudeChatViewLoadedRef = useRef(false);
+  const [messengerPopup, setMessengerPopup] = useState<{
+    peerId: string;
+    peerName: string;
+    text: string;
+    ts: number;
+    style: 'toast' | 'edge';
+  } | null>(null);
+  const [messengerReplyText, setMessengerReplyText] = useState('');
+  const [messengerAttention, setMessengerAttention] = useState(false);
   // 외부 워크스페이스의 prefill 요청 시 채팅창 자동 열기
   useEffect(() => {
     const onPrefill = () => setShowClaudeChat(true);
@@ -770,6 +784,33 @@ function App() {
     try { (window as any).api?.setUIPrefs?.({ showClaudeChat }); } catch {}
   }, [showClaudeChat]);
   useEffect(() => {
+    if (!claudeChatViewLoadedRef.current) return;
+    try { (window as any).api?.setUIPrefs?.({ claudeChatView }); } catch {}
+  }, [claudeChatView]);
+  useEffect(() => {
+    const onMessengerEvent = (p: any) => {
+      if (p?.type !== 'message' || p?.message?.direction !== 'in') return;
+      setMessengerAttention(true);
+      const peerId = String(p.message.peerId || '');
+      const peerName = String(p.state?.peers?.find?.((x: any) => x.id === peerId)?.name || peerId || '메신저');
+      const text = p.message.kind === 'file'
+        ? `파일: ${p.message.fileName || '첨부 파일'}`
+        : String(p.message.text || '');
+      const popupStyle: 'toast' | 'edge' = p.state?.prefs?.popupStyle === 'edge' ? 'edge' : 'toast';
+      const messengerVisible = showClaudeChat && claudeChatView === 'messenger' && (claudeChatPinned || claudeChatVisible);
+      if (messengerVisible) return;
+      (async () => {
+        const prefs = await (window as any).api?.getUIPrefs?.().catch(() => ({}));
+        const popupEnabled = prefs?.messenger?.popupNotify !== false;
+        if (!popupEnabled) return;
+        setMessengerPopup({ peerId, peerName, text, ts: Number(p.message.ts) || Date.now(), style: popupStyle });
+        setMessengerReplyText('');
+      })();
+    };
+    const off = (window as any).api?.onMessengerEvent?.(onMessengerEvent);
+    return () => { if (off) off(); };
+  }, [showClaudeChat, claudeChatView, claudeChatPinned, claudeChatVisible]);
+  useEffect(() => {
     if (!claudeChatPinnedLoadedRef.current) return;
     try { (window as any).api?.setUIPrefs?.({ claudeChatPinned }); } catch {}
     if (claudeChatPinned) setClaudeChatVisible(true);
@@ -779,6 +820,37 @@ function App() {
       refitAllTerms();
     }, ms));
   }, [claudeChatPinned]);
+  useEffect(() => {
+    if (showClaudeChat && claudeChatView === 'messenger' && (claudeChatPinned || claudeChatVisible)) {
+      setMessengerPopup(null);
+      setMessengerReplyText('');
+      setMessengerAttention(false);
+    }
+  }, [showClaudeChat, claudeChatView, claudeChatPinned, claudeChatVisible]);
+  const openClaudeChatView = (view: 'ai' | 'messenger') => {
+    setShowClaudeChat(true);
+    setClaudeChatView(view);
+    if (!claudeChatPinned) setClaudeChatVisible(true);
+    if (view === 'messenger') {
+      setMessengerAttention(false);
+      setMessengerPopup(null);
+      setMessengerReplyText('');
+    }
+  };
+  const dismissMessengerPopup = () => {
+    setMessengerPopup(null);
+    setMessengerReplyText('');
+  };
+  const sendMessengerPopupReply = async () => {
+    if (!messengerPopup || !messengerReplyText.trim()) return;
+    const body = messengerReplyText.trim();
+    const res = await (window as any).api?.messengerSendMessage?.(messengerPopup.peerId, body);
+    if (res?.success) {
+      dismissMessengerPopup();
+    } else {
+      try { notifyError('메신저 답장 실패', String(res?.error || 'unknown')); } catch {}
+    }
+  };
   // 사이드바 너비 드래그 중인지 — 드래그 중엔 매 픽셀 refit 을 건너뛰어 버벅임 방지 (종료 시 1회만 refit)
   const chatResizingRef = useRef(false);
   // 너비/표시 변경 시에도 터미널 리핏 — 드래그 중이면 skip
@@ -1990,7 +2062,6 @@ function App() {
   const addLogAnalyzerTab = () => addSpecialTab('logAnalyzer', '📈 로그 분석');
   const addVpnTab = () => addSpecialTab('vpn', '🔒 VPN');
   const addI18nEditorTab = () => addSpecialTab('i18nEditor', '🌍 다국어 편집');
-  const addMessengerTab = () => addSpecialTab('messenger', '💬 메신저');
   const openSqlToolTab = (sessionId: string, sessionName: string) => {
     // 동일 sessionId 의 SQL Tool 탭이 이미 있으면 그 탭으로 전환
     const existing = tabs.find(t => t.type === 'sqlTool' && t.sqlTool?.sessionId === sessionId);
@@ -3102,7 +3173,6 @@ function App() {
         { label: tMenu('tools.compareWs'), action: addCompareTab },
         { label: tMenu('tools.logAnalyzerWs'), action: addLogAnalyzerTab },
         { label: tMenu('tools.vpnWs'), action: addVpnTab },
-        { label: '💬 메신저', action: addMessengerTab },
         { label: tMenu('tools.i18nWs'), action: addI18nEditorTab },
         { separator: true, label: '' },
         { label: showToolbar ? tMenu('tools.toolbarHide') : tMenu('tools.toolbarShow'), action: () => setShowToolbar(v => !v) },
@@ -3586,7 +3656,6 @@ function App() {
           onAddCompareTab={addCompareTab}
           onAddLogAnalyzerTab={addLogAnalyzerTab}
           onAddVpnTab={addVpnTab}
-          onAddMessengerTab={addMessengerTab}
           onAddI18nEditorTab={addI18nEditorTab}
           onCloseTab={closeTab} onRenameTab={renameTab}
           onReorderTabs={(fromId, toId) => {
@@ -3715,7 +3784,22 @@ function App() {
           </button>
           <span className="tool-sep" />
           <button className={`tool-btn ${showQuickConnect ? 'active' : ''}`} title={showQuickConnect ? '빠른 연결 바 숨기기' : '빠른 연결 바 표시'} onClick={() => setShowQuickConnect(v => !v)}>⚡</button>
-          <button className={`tool-btn ${showClaudeChat ? 'active' : ''}`} title={showClaudeChat ? 'Claude 채팅 숨기기' : 'Claude 채팅 표시'} onClick={() => setShowClaudeChat(v => !v)}>🤖</button>
+          <button
+            className={`tool-btn ${showClaudeChat && claudeChatView === 'ai' ? 'active' : ''}`}
+            title={showClaudeChat && claudeChatView === 'ai' ? 'AI chat 숨기기' : 'AI chat 표시'}
+            onClick={() => {
+              if (showClaudeChat && claudeChatView === 'ai') setShowClaudeChat(false);
+              else openClaudeChatView('ai');
+            }}
+          >🤖</button>
+          <button
+            className={`tool-btn ${showClaudeChat && claudeChatView === 'messenger' ? 'active' : ''}${messengerAttention || messengerPopup ? ' messenger-alert' : ''}`}
+            title={showClaudeChat && claudeChatView === 'messenger' ? '메신저 숨기기' : (messengerAttention || messengerPopup ? '새 메신저 메시지' : '메신저 표시')}
+            onClick={() => {
+              if (showClaudeChat && claudeChatView === 'messenger') setShowClaudeChat(false);
+              else openClaudeChatView('messenger');
+            }}
+          >💬</button>
           <button className={`tool-btn ${showBroadcast ? 'active' : ''}`} title={showBroadcast ? '텍스트 일괄 전송 바 숨기기' : '텍스트 일괄 전송 바 표시'} onClick={() => setShowBroadcast(v => !v)}>📢</button>
           <button
             className={`tool-btn btn-pin${terminalPinned ? ' pinned' : ''}`}
@@ -4016,14 +4100,14 @@ function App() {
         {tabs.filter(t => t.type === 'compare').map(t => (
           <div key={t.id} style={{ flex: 1, minHeight: 0, display: activeTab?.id === t.id ? 'flex' : 'none' }}>
             <ErrorBoundary label="파일 비교">
-              <CompareWorkspace sessions={tabs.filter(t => t.type !== 'fileExplorer' && t.type !== 'fileEditor' && !t.type?.match(/browser|compare|logAnalyzer|vpn|i18n|sqlTool|messenger/)).flatMap(t => collectAllSessions(t.layout)).filter(s => s.sessionId)} />
+              <CompareWorkspace sessions={tabs.filter(t => t.type !== 'fileExplorer' && t.type !== 'fileEditor' && !t.type?.match(/browser|compare|logAnalyzer|vpn|i18n|sqlTool/)).flatMap(t => collectAllSessions(t.layout)).filter(s => s.sessionId)} />
             </ErrorBoundary>
           </div>
         ))}
         {tabs.filter(t => t.type === 'logAnalyzer').map(t => (
           <div key={t.id} style={{ flex: 1, minHeight: 0, display: activeTab?.id === t.id ? 'flex' : 'none' }}>
             <ErrorBoundary label="로그 분석">
-              <LogAnalyzer sessions={tabs.filter(t => t.type !== 'fileExplorer' && t.type !== 'fileEditor' && !t.type?.match(/browser|compare|logAnalyzer|vpn|i18n|sqlTool|messenger/)).flatMap(t => collectAllSessions(t.layout)).filter(s => s.sessionId)} />
+              <LogAnalyzer sessions={tabs.filter(t => t.type !== 'fileExplorer' && t.type !== 'fileEditor' && !t.type?.match(/browser|compare|logAnalyzer|vpn|i18n|sqlTool/)).flatMap(t => collectAllSessions(t.layout)).filter(s => s.sessionId)} />
             </ErrorBoundary>
           </div>
         ))}
@@ -4031,13 +4115,6 @@ function App() {
           <div key={t.id} style={{ flex: 1, minHeight: 0, display: activeTab?.id === t.id ? 'flex' : 'none' }}>
             <ErrorBoundary label="VPN">
               <VpnWorkspace />
-            </ErrorBoundary>
-          </div>
-        ))}
-        {tabs.filter(t => t.type === 'messenger').map(t => (
-          <div key={t.id} style={{ flex: 1, minHeight: 0, display: activeTab?.id === t.id ? 'flex' : 'none' }}>
-            <ErrorBoundary label="메신저">
-              <MessengerWorkspace connectedSessions={connectedBrowserSessions} />
             </ErrorBoundary>
           </div>
         ))}
@@ -4057,7 +4134,7 @@ function App() {
           </div>
         ))}
 
-        {activeTab && activeTab.type !== 'fileExplorer' && activeTab.type !== 'fileEditor' && activeTab.type !== 'browser' && activeTab.type !== 'compare' && activeTab.type !== 'logAnalyzer' && activeTab.type !== 'vpn' && activeTab.type !== 'i18nEditor' && activeTab.type !== 'sqlTool' && activeTab.type !== 'messenger' && (() => {
+        {activeTab && activeTab.type !== 'fileExplorer' && activeTab.type !== 'fileEditor' && activeTab.type !== 'browser' && activeTab.type !== 'compare' && activeTab.type !== 'logAnalyzer' && activeTab.type !== 'vpn' && activeTab.type !== 'i18nEditor' && activeTab.type !== 'sqlTool' && (() => {
           // 워크스페이스 레벨 파일 트리 — 선택된 패널의 활성 세션이 SSH 연결이면 표시
           let fileTreeNode: React.ReactNode = null;
           if (selectedPanelId) {
@@ -4855,12 +4932,6 @@ function App() {
           }
         }
 
-        const onClickTrigger = () => {
-          if (claudeChatPinned) return;
-          if (claudeChatHideTimer.current) { clearTimeout(claudeChatHideTimer.current); claudeChatHideTimer.current = null; }
-          if (claudeChatHoverShowTimer.current) { clearTimeout(claudeChatHoverShowTimer.current); claudeChatHoverShowTimer.current = null; }
-          setClaudeChatVisible(v => !v);
-        };
         const onEnterTriggerHover = () => {
           if (claudeChatPinned) return;
           if (claudeChatHideTimer.current) { clearTimeout(claudeChatHideTimer.current); claudeChatHideTimer.current = null; }
@@ -4879,6 +4950,12 @@ function App() {
           if (claudeChatHideTimer.current) clearTimeout(claudeChatHideTimer.current);
           claudeChatHideTimer.current = setTimeout(() => setClaudeChatVisible(false), 500);
         };
+        const onClickTrigger = () => {
+          if (claudeChatPinned) return;
+          if (claudeChatHideTimer.current) { clearTimeout(claudeChatHideTimer.current); claudeChatHideTimer.current = null; }
+          if (claudeChatHoverShowTimer.current) { clearTimeout(claudeChatHoverShowTimer.current); claudeChatHoverShowTimer.current = null; }
+          setClaudeChatVisible(v => !v);
+        };
         const onLeaveTrigger = () => {
           if (claudeChatPinned) return;
           if (claudeChatHideTimer.current) clearTimeout(claudeChatHideTimer.current);
@@ -4890,7 +4967,7 @@ function App() {
             {!claudeChatPinned && (
               <div className="claude-chat-sidebar-trigger">
                 <div className="claude-chat-sidebar-trigger-top" onClick={onClickTrigger} onMouseEnter={onEnterTriggerHover} onMouseLeave={onLeaveTriggerHover} style={{ cursor: 'pointer' }} title="클릭=토글 / 2.5초 오버=자동 열림">
-                  <span className="claude-chat-sidebar-trigger-text">🤖 AI Chat</span>
+                  <span className="claude-chat-sidebar-trigger-text">🤖 AI Chat · 💬 메신저</span>
                 </div>
                 <div className="claude-chat-sidebar-trigger-bottom" />
               </div>
@@ -4959,6 +5036,8 @@ function App() {
               defaultSshSession={defaultSsh}
               pinned={claudeChatPinned}
               onTogglePin={() => setClaudeChatPinned(p => !p)}
+              view={claudeChatView}
+              onViewChange={setClaudeChatView}
               aiAgent={aiAgent}
               onAgentChange={setAiAgent}
             />
@@ -4974,6 +5053,34 @@ function App() {
               <div className="claude-attach-toast-bar-fill" style={{ width: `${Math.min(100, (claudeAttaching.progress / claudeAttaching.total) * 100)}%` }} />
             </div>
           )}
+        </div>
+      )}
+      {messengerPopup && (
+        <div className={`messenger-popup ${messengerPopup.style}`}>
+          <div className="messenger-popup-head">
+            <div>
+              <div className="messenger-popup-title">💬 {messengerPopup.peerName}</div>
+              <div className="messenger-popup-time">{new Date(messengerPopup.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+            </div>
+            <button className="messenger-popup-close" onClick={dismissMessengerPopup}>×</button>
+          </div>
+          <div className="messenger-popup-body">{messengerPopup.text || '(빈 메시지)'}</div>
+          <textarea
+            className="messenger-popup-reply"
+            value={messengerReplyText}
+            onChange={e => setMessengerReplyText(e.target.value)}
+            placeholder="간단한 답장"
+            onKeyDown={e => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                void sendMessengerPopupReply();
+              }
+            }}
+          />
+          <div className="messenger-popup-actions">
+            <button className="messenger-popup-open" onClick={() => openClaudeChatView('messenger')}>열기</button>
+            <button className="messenger-popup-send" onClick={() => { void sendMessengerPopupReply(); }} disabled={!messengerReplyText.trim()}>보내기</button>
+          </div>
         </div>
       )}
       {splitSessionPicker && (() => {

@@ -2449,12 +2449,21 @@ body.popout-options .session-editor h3:first-child {
   background: #2b4a6b;
   border-color: #3a6b9c;
 }
+.tool-toolbar .tool-btn.messenger-alert {
+  border-color: rgba(90, 190, 255, 0.5);
+  box-shadow: 0 0 0 1px rgba(90, 190, 255, 0.14), 0 0 12px rgba(90, 190, 255, 0.28);
+  animation: tool-messenger-alert 1.1s ease-in-out infinite;
+}
 .tool-toolbar .tool-sep {
   width: 1px;
   height: 16px;
   background: #3a475a;
   margin: 0 4px;
   display: inline-block;
+}
+@keyframes tool-messenger-alert {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-1px); }
 }
 /* bar+blink: 네이티브 bar 렌더는 유지하고 CSS 로만 cursor 엘리먼트를 깜박이게 함 (셀 텍스트 안 가림) */
 @keyframes pepe-bar-blink { 50% { opacity: 0; } }
@@ -5449,6 +5458,83 @@ body.popout-options .session-editor h3:first-child {
   background: #333;
   color: #fff;
 }
+.claude-chat-view-toggle {
+  min-width: 28px;
+}
+.claude-chat-view-toggle.ai {
+  color: #8fd3ff;
+}
+.claude-chat-view-toggle.messenger {
+  color: #ffcc7a;
+}
+.claude-chat-view-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px 0;
+  border-bottom: 1px solid #2d3645;
+  background: linear-gradient(180deg, rgba(26, 26, 46, 0.96) 0%, rgba(20, 26, 37, 0.96) 100%);
+  flex-shrink: 0;
+}
+.claude-chat-view-tab {
+  border: 1px solid #334055;
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  background: rgba(13, 18, 26, 0.7);
+  color: #91a4bb;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.15s;
+}
+.claude-chat-view-tab:hover {
+  background: rgba(36, 48, 66, 0.9);
+  color: #d9e6f7;
+}
+.claude-chat-view-tab.active {
+  background: #172235;
+  color: #fff;
+  border-color: #4a90e2;
+  transform: translateY(1px);
+}
+.claude-chat-view-status {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #9fb3c8;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 0 2px 8px;
+  white-space: nowrap;
+}
+.claude-chat-view-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #3bd16f;
+  box-shadow: 0 0 10px rgba(59, 209, 111, 0.8);
+  animation: claude-chat-status-pulse 1.6s ease-in-out infinite;
+}
+.claude-chat-messenger-pane {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #0f141b;
+}
+.claude-chat-messenger-pane > .messenger-ws {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  width: 100%;
+}
+@keyframes claude-chat-status-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.75; }
+  50% { transform: scale(1.2); opacity: 1; }
+}
 .claude-chat-messages {
   flex: 1;
   overflow-y: auto;
@@ -6954,6 +7040,9 @@ mark.claude-search-hit.current {
   background: rgba(62, 130, 194, 0.28);
   border-color: rgba(120, 190, 255, 0.38);
 }
+.messenger-peer.has-unread {
+  animation: messengerUnreadPulse 1.2s ease-in-out infinite;
+}
 .messenger-peer.offline {
   opacity: 0.62;
 }
@@ -6984,6 +7073,15 @@ mark.claude-search-hit.current {
   place-items: center;
   font-size: 11px;
   font-weight: 800;
+  animation: messengerUnreadBadge 1.1s ease-in-out infinite;
+}
+@keyframes messengerUnreadPulse {
+  0%, 100% { box-shadow: 0 0 0 rgba(70, 160, 255, 0); }
+  50% { box-shadow: 0 0 0 2px rgba(70, 160, 255, 0.14), 0 0 16px rgba(70, 160, 255, 0.24); }
+}
+@keyframes messengerUnreadBadge {
+  0%, 100% { transform: scale(1); opacity: 0.86; }
+  50% { transform: scale(1.08); opacity: 1; }
 }
 .messenger-chat { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .messenger-chat-head {
@@ -7061,6 +7159,117 @@ mark.claude-search-hit.current {
   border-radius: 12px;
   padding: 11px 12px;
   outline: none;
+}
+.messenger-popup {
+  position: fixed;
+  right: 24px;
+  bottom: 88px;
+  width: min(380px, calc(100vw - 48px));
+  z-index: 1600;
+  background: linear-gradient(180deg, rgba(18, 26, 36, 0.98) 0%, rgba(11, 16, 22, 0.98) 100%);
+  border: 1px solid rgba(104, 151, 201, 0.38);
+  border-radius: 14px;
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.42), 0 0 0 1px rgba(104, 151, 201, 0.08) inset;
+  padding: 12px;
+  color: #e7f2ff;
+  animation: messengerPopupIn 160ms ease-out;
+}
+.messenger-popup.edge {
+  right: 0;
+  bottom: 96px;
+  width: min(380px, calc(100vw - 16px));
+  border-right: none;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  animation: messengerEdgeIn 170ms ease-out;
+}
+.messenger-popup-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.messenger-popup-title {
+  font-size: 13px;
+  font-weight: 800;
+  color: #f1f8ff;
+}
+.messenger-popup-time {
+  margin-top: 2px;
+  font-size: 11px;
+  color: #89a1ba;
+}
+.messenger-popup-close {
+  border: 0;
+  background: transparent;
+  color: #93a8c2;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.messenger-popup-close:hover {
+  color: #fff;
+}
+.messenger-popup-body {
+  margin-top: 10px;
+  padding: 10px 11px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.05);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.45;
+  max-height: 120px;
+  overflow: auto;
+}
+.messenger-popup-reply {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 10px;
+  min-height: 72px;
+  resize: vertical;
+  border-radius: 10px;
+  border: 1px solid rgba(104, 151, 201, 0.26);
+  background: rgba(7, 12, 18, 0.92);
+  color: #eef6ff;
+  padding: 10px 11px;
+  outline: none;
+  font: inherit;
+}
+.messenger-popup-reply:focus {
+  border-color: rgba(110, 174, 242, 0.65);
+  box-shadow: 0 0 0 1px rgba(110, 174, 242, 0.15);
+}
+.messenger-popup-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+.messenger-popup-actions button {
+  border: 1px solid rgba(104, 151, 201, 0.28);
+  background: rgba(31, 70, 106, 0.72);
+  color: #e9f5ff;
+  border-radius: 9px;
+  padding: 7px 12px;
+  cursor: pointer;
+}
+.messenger-popup-open {
+  background: rgba(52, 82, 117, 0.75);
+}
+.messenger-popup-send:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+@keyframes messengerPopupIn {
+  from { transform: translateY(10px) scale(0.98); opacity: 0; }
+  to { transform: translateY(0) scale(1); opacity: 1; }
+}
+@keyframes messengerEdgeIn {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
 }
 .messenger-empty {
   color: #7891a6;

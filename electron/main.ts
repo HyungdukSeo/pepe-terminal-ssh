@@ -484,6 +484,7 @@ app.whenReady().then(() => {
   cleanupStaleTempFiles();
   createWindow();
   installX11DisplayHook();
+  void messengerStartService();
 
   // 자동 업데이트 (GitHub Releases) — IPC 배선 + 시작 시 1회 확인
   setupAutoUpdater(() => mainWindow);
@@ -928,6 +929,66 @@ function messengerScanRange(prefix?: string) {
   setTimeout(tick, 0);
   return { success: true, prefixes: cleanPrefixes, directHosts, total };
 }
+async function messengerStartService(prefs?: MessengerPrefs) {
+  const dgram = require('dgram');
+  const net = require('net');
+  messengerPrefs = { retainEnabled: false, retainDays: 30, ...(loadUIPrefs().messenger || {}), ...(prefs || {}) };
+  saveUIPrefs({ messenger: messengerPrefs });
+  messengerLoadIdentity();
+  messengerLoadPeers();
+  messengerLoadMessages();
+  if (!messengerTcp) {
+    messengerTcp = net.createServer((socket: any) => {
+      let buf = '';
+      socket.on('data', (chunk: Buffer) => {
+        buf += chunk.toString('utf8');
+        let idx;
+        while ((idx = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, idx).trim();
+          buf = buf.slice(idx + 1);
+          if (!line) continue;
+          try { messengerHandleIncoming(JSON.parse(line), String(socket.remoteAddress || '').replace(/^::ffff:/, '')); } catch {}
+        }
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      messengerTcp.listen(0, '0.0.0.0', () => {
+        const addr = messengerTcp.address();
+        messengerPort = typeof addr === 'object' && addr ? addr.port : 0;
+        resolve();
+      });
+      messengerTcp.once('error', reject);
+    });
+  }
+  if (!messengerUdp) {
+    messengerUdp = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+    messengerUdp.on('message', (msg: Buffer, rinfo: any) => {
+      try {
+        const p = JSON.parse(msg.toString('utf8'));
+        if (p?.app !== 'pepe-terminal-ssh' || p?.type !== 'hello' || p?.id === messengerId) return;
+        messengerPeers.set(String(p.id), { id: String(p.id), name: String(p.name || 'PePe'), host: rinfo.address, port: Number(p.port) || 0, lastSeen: Date.now() });
+        messengerSavePeers();
+        if (!p.reply) messengerSendHelloTo(rinfo.address, true);
+        messengerEmit({ type: 'peers', state: messengerState() });
+      } catch {}
+    });
+    await new Promise<void>((resolve, reject) => {
+      messengerUdp.bind(MSG_DISCOVERY_PORT, () => {
+        try { messengerUdp.setBroadcast(true); } catch {}
+        resolve();
+      });
+      messengerUdp.once('error', reject);
+    });
+  }
+  if (!messengerTimer) messengerTimer = setInterval(() => {
+    messengerBroadcast();
+    messengerKeepalive();
+    messengerEmit({ type: 'peers', state: messengerState() });
+  }, MSG_KEEPALIVE_MS);
+  messengerBroadcast();
+  messengerKeepalive();
+  return { success: true, state: messengerState() };
+}
 function messengerWritePeer(peer: MessengerPeer, payload: any): Promise<void> {
   const net = require('net');
   return new Promise((resolve, reject) => {
@@ -990,68 +1051,7 @@ function messengerHandleIncoming(payload: any, remoteHost: string) {
   }
 }
 
-ipcMain.handle('messenger:start', async (_e, prefs?: MessengerPrefs) => {
-  const dgram = require('dgram');
-  const net = require('net');
-  messengerPrefs = { retainEnabled: false, retainDays: 30, ...(loadUIPrefs().messenger || {}), ...(prefs || {}) };
-  saveUIPrefs({ messenger: messengerPrefs });
-  messengerLoadIdentity();
-  messengerLoadPeers();
-  messengerLoadMessages();
-  if (!messengerTcp) {
-    messengerTcp = net.createServer((socket: any) => {
-      let buf = '';
-      socket.on('data', (chunk: Buffer) => {
-        buf += chunk.toString('utf8');
-        let idx;
-        while ((idx = buf.indexOf('\n')) >= 0) {
-          const line = buf.slice(0, idx).trim();
-          buf = buf.slice(idx + 1);
-          if (!line) continue;
-          try { messengerHandleIncoming(JSON.parse(line), String(socket.remoteAddress || '').replace(/^::ffff:/, '')); } catch {}
-        }
-      });
-    });
-    await new Promise<void>((resolve, reject) => {
-      messengerTcp.listen(0, '0.0.0.0', () => {
-        const addr = messengerTcp.address();
-        messengerPort = typeof addr === 'object' && addr ? addr.port : 0;
-        resolve();
-      });
-      messengerTcp.once('error', reject);
-    });
-  }
-  if (!messengerUdp) {
-    messengerUdp = dgram.createSocket({ type: 'udp4', reuseAddr: true });
-    messengerUdp.on('message', (msg: Buffer, rinfo: any) => {
-      try {
-        const p = JSON.parse(msg.toString('utf8'));
-        if (p?.app !== 'pepe-terminal-ssh' || p?.type !== 'hello' || p?.id === messengerId) return;
-        messengerPeers.set(String(p.id), { id: String(p.id), name: String(p.name || 'PePe'), host: rinfo.address, port: Number(p.port) || 0, lastSeen: Date.now() });
-        messengerSavePeers();
-        // Answer an initiating hello once with a reply hello. Reply packets are
-        // not answered again, which keeps presence mutual without a ping-pong loop.
-        if (!p.reply) messengerSendHelloTo(rinfo.address, true);
-        messengerEmit({ type: 'peers', state: messengerState() });
-      } catch {}
-    });
-    await new Promise<void>((resolve, reject) => {
-      messengerUdp.bind(MSG_DISCOVERY_PORT, () => {
-        try { messengerUdp.setBroadcast(true); } catch {}
-        resolve();
-      });
-      messengerUdp.once('error', reject);
-    });
-  }
-  if (!messengerTimer) messengerTimer = setInterval(() => {
-    messengerBroadcast();
-    messengerKeepalive();
-    messengerEmit({ type: 'peers', state: messengerState() });
-  }, MSG_KEEPALIVE_MS);
-  messengerBroadcast();
-  messengerKeepalive();
-  return { success: true, state: messengerState() };
-});
+ipcMain.handle('messenger:start', async (_e, prefs?: MessengerPrefs) => messengerStartService(prefs));
 ipcMain.handle('messenger:stop', () => {
   if (messengerTimer) clearInterval(messengerTimer);
   messengerTimer = null;
@@ -5636,31 +5636,8 @@ function findAgyCliPath(): string | null {
   return null;
 }
 
-// agy print 모드는 conversation/brain 디렉터리를 턴마다 재사용하며 transcript.jsonl 에
-// 모든 턴을 누적한다(compaction 으로 이전 대화까지 resume 됨). 따라서 단순히 "마지막
-// MODEL content" 를 읽으면 ① 직전 턴의 답변이나 ② 도구 호출(LIST_DIRECTORY 등) 출력을
-// 현재 답변으로 착각한다. 이번 턴의 실제 답변만 고르기 위해:
-//   - sinceTs(이번 spawn 시각) 이후의 이벤트만 고려하고,
-//   - 마지막 USER_EXPLICIT(=이번 질문) 이후에 등장한
-//   - 자연어 응답 타입(PLANNER_RESPONSE)의 MODEL 이벤트만 채택한다.
-function readAgyPrintTranscript(logPath: string, sinceTs = 0): string | null {
+function parseAgyTranscript(transcriptPath: string, sinceTs = 0): string | null {
   try {
-    if (!logPath || !fs.existsSync(logPath)) return null;
-    const logText = fs.readFileSync(logPath, 'utf8');
-    const matches = Array.from(logText.matchAll(/(?:Created conversation|Print mode: conversation=)\s*([0-9a-f-]{36})/gi));
-    const conversationId = matches.length ? matches[matches.length - 1][1] : null;
-    if (!conversationId) return null;
-
-    const transcriptPath = path.join(
-      os.homedir(),
-      '.gemini',
-      'antigravity-cli',
-      'brain',
-      conversationId,
-      '.system_generated',
-      'logs',
-      'transcript.jsonl',
-    );
     if (!fs.existsSync(transcriptPath)) return null;
 
     type AgyEvent = { source?: string; type?: string; content?: string; created_at?: string };
@@ -5684,12 +5661,36 @@ function readAgyPrintTranscript(logPath: string, sinceTs = 0): string | null {
     // spawn 시각과 마지막 질문 시각 중 더 나중을 기준선으로(이전 턴 답변 완전 배제).
     const floor = Math.max(sinceTs, lastUserTs);
 
-    // 기준선 이후의 자연어 응답(PLANNER_RESPONSE) 중 마지막 것을 채택.
+    const blockedTypes = new Set([
+      'USER_INPUT',
+      'CONVERSATION_HISTORY',
+      'CHECKPOINT',
+      'LIST_DIRECTORY',
+      'RUN_COMMAND',
+      'READ_FILE',
+      'WRITE_FILE',
+      'SEARCH',
+      'GREP',
+      'BASH',
+      'TOOL',
+    ]);
+
+    // 기준선 이후의 자연어 응답 중 마지막 것을 채택.
     let answer = '';
     for (const e of events) {
       if (e.source !== 'MODEL' || e.type !== 'PLANNER_RESPONSE') continue;
       if (typeof e.content !== 'string' || !e.content.trim()) continue;
       if (ts(e) < floor) continue;
+      answer = e.content;
+    }
+    if (answer.trim()) return answer.trim();
+
+    for (const e of events) {
+      if (e.source !== 'MODEL') continue;
+      if (typeof e.content !== 'string' || !e.content.trim()) continue;
+      if (ts(e) < floor) continue;
+      if (blockedTypes.has(String(e.type || '').toUpperCase())) continue;
+      if (/^Created At:|^Task id "/i.test(e.content)) continue;
       answer = e.content;
     }
     return answer.trim() || null;
@@ -5699,7 +5700,67 @@ function readAgyPrintTranscript(logPath: string, sinceTs = 0): string | null {
   }
 }
 
-async function waitForAgyPrintTranscript(logPath: string, sinceTs = 0, timeoutMs = 8000): Promise<string | null> {
+// agy print 모드는 conversation/brain 디렉터리를 턴마다 재사용하며 transcript.jsonl 에
+// 모든 턴을 누적한다(compaction 으로 이전 대화까지 resume 됨). 따라서 단순히 "마지막
+// MODEL content" 를 읽으면 ① 직전 턴의 답변이나 ② 도구 호출(LIST_DIRECTORY 등) 출력을
+// 현재 답변으로 착각한다. 이번 턴의 실제 답변만 고르기 위해:
+//   - sinceTs(이번 spawn 시각) 이후의 이벤트만 고려하고,
+//   - 마지막 USER_EXPLICIT(=이번 질문) 이후에 등장한
+//   - 자연어 응답 타입(PLANNER_RESPONSE)의 MODEL 이벤트만 채택한다.
+function readAgyPrintTranscript(logPath: string, sinceTs = 0): string | null {
+  try {
+    if (!logPath || !fs.existsSync(logPath)) return null;
+    const logText = fs.readFileSync(logPath, 'utf8');
+    const candidates = new Set<string>();
+    const matches = Array.from(logText.matchAll(/(?:Created conversation|Print mode: conversation=|conversationID=")([0-9a-f-]{36})/gi));
+    for (const match of matches) {
+      if (match[1]) {
+        candidates.add(path.join(
+          os.homedir(),
+          '.gemini',
+          'antigravity-cli',
+          'brain',
+          match[1],
+          '.system_generated',
+          'logs',
+          'transcript.jsonl',
+        ));
+      }
+    }
+
+    const brainRoot = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'brain');
+    if (fs.existsSync(brainRoot)) {
+      const cutoff = Math.max(0, sinceTs - 15000);
+      for (const dirent of fs.readdirSync(brainRoot, { withFileTypes: true })) {
+        if (!dirent.isDirectory()) continue;
+        const transcriptPath = path.join(brainRoot, dirent.name, '.system_generated', 'logs', 'transcript.jsonl');
+        try {
+          if (!fs.existsSync(transcriptPath)) continue;
+          const st = fs.statSync(transcriptPath);
+          if (st.mtimeMs >= cutoff) candidates.add(transcriptPath);
+        } catch {}
+      }
+    }
+
+    const ordered = Array.from(candidates).sort((a, b) => {
+      try {
+        return fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs;
+      } catch {
+        return 0;
+      }
+    });
+    for (const transcriptPath of ordered) {
+      const text = parseAgyTranscript(transcriptPath, sinceTs);
+      if (text) return text;
+    }
+    return null;
+  } catch (err) {
+    console.log('[gemini:agy] failed to read transcript fallback:', err);
+    return null;
+  }
+}
+
+async function waitForAgyPrintTranscript(logPath: string, sinceTs = 0, timeoutMs = 30000): Promise<string | null> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const text = readAgyPrintTranscript(logPath, sinceTs);
@@ -6734,11 +6795,6 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
       return await sendGeminiApiDirect(sessionId, prompt, requestId, model);
     }
 
-    if (prompt.length > 24000) {
-      sendStream({ type: 'text', text: '⚠️ Antigravity CLI print 모드는 Windows 명령줄 길이 제한 때문에 긴 프롬프트를 직접 전달하기 어렵습니다. Gemini API Direct fallback을 시도합니다.\n\n' });
-      return await sendGeminiApiDirect(sessionId, prompt, requestId, model);
-    }
-
     const augmentedPath = buildAugmentedPath();
     const spawnEnv = {
       ...process.env,
@@ -6761,7 +6817,13 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
     }
     const fullPrompt = '[시스템 지시] 특별한 언어 요청이 없으면 항상 한국어로 응답하세요.\n\n' + prompt;
     const agyLogPath = path.join(os.tmpdir(), `pepe-agy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.log`);
-    const args = ['--print', fullPrompt, '--print-timeout', '5m'];
+    const agyPromptPath = process.platform === 'win32'
+      ? path.join(os.tmpdir(), `pepe-gemini-prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`)
+      : null;
+    if (agyPromptPath) {
+      fs.writeFileSync(agyPromptPath, fullPrompt, 'utf8');
+    }
+    const args = ['--print', '--print-timeout', '5m'];
     args.push('--log-file', agyLogPath);
     const agyModel = mapAgyModel(model);
     if (agyModel) args.push('--model', agyModel);
@@ -6819,7 +6881,26 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
     // transcript created_at 은 초 단위라, 같은 초에 기록된 이번 턴 이벤트가 기준선에서
     // 밀려나지 않도록 spawn 시각을 직전 초 경계로 내림한다.
     const agySpawnTs = Math.floor(Date.now() / 1000) * 1000;
-    const proc = spawn(agyCommand, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd, windowsHide: true });
+    const cleanupPromptFile = () => {
+      if (agyPromptPath) {
+        try { fs.unlinkSync(agyPromptPath); } catch {}
+      }
+    };
+    let proc: any;
+    try {
+      proc = agyPromptPath
+        ? spawn(`type "${agyPromptPath}" | "${agyCommand}" ${args.map(a => `"${a.replace(/"/g, '""')}"`).join(' ')}`, {
+            shell: true,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: spawnEnv,
+            cwd,
+            windowsHide: true,
+          })
+        : spawn(agyCommand, [...args, fullPrompt], { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv, cwd, windowsHide: true });
+    } catch (err) {
+      cleanupPromptFile();
+      throw err;
+    }
     geminiProcesses.set(procKey, proc);
 
     let stdoutHadContent = false;
@@ -6846,12 +6927,14 @@ ipcMain.handle('gemini:send', async (_e, { sessionId, prompt, requestId, model, 
       if (stoppedAgentProcs.has(procKey)) return;
       console.log('[gemini:agy] spawn error:', err);
       geminiProcesses.delete(procKey);
+      cleanupPromptFile();
       sendStream({ type: 'text', text: `⚠️ Antigravity CLI 실행 실패, Gemini API Direct fallback을 시도합니다: ${err?.message || err}\n\n` });
       await sendGeminiApiDirect(sessionId, prompt, requestId, model);
     });
     proc.on('close', async (code: number) => {
       console.log('[gemini:agy] close, code:', code, 'hadContent:', stdoutHadContent);
       geminiProcesses.delete(procKey);
+      cleanupPromptFile();
       if (stoppedAgentProcs.has(procKey)) {
         stoppedAgentProcs.delete(procKey);
         return;

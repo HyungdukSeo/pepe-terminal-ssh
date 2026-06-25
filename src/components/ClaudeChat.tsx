@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { marked } from 'marked';
 import mermaid from 'mermaid';
+import { MessengerWorkspace } from './MessengerWorkspace';
 import { adjustClaudeFontSize } from '../utils/claudeFont';
 
 // Mermaid 다이어그램 초기화 (모듈 로드 시 1회)
@@ -1106,6 +1107,8 @@ type Props = {
   defaultSshSession?: { termId: string; label: string; sessionId?: string } | null;
   pinned?: boolean;
   onTogglePin?: () => void;
+  view?: 'ai' | 'messenger';
+  onViewChange?: (view: 'ai' | 'messenger') => void;
   aiAgent?: 'claude' | 'gemini' | 'codex';
   onAgentChange?: (agent: 'claude' | 'gemini' | 'codex') => void;
 };
@@ -1115,7 +1118,8 @@ let sessionCounter = 0;
 type MountPreset = { remotePath: string; isDir: boolean };
 type MountPresetMap = Record<string, MountPreset[]>;
 
-export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContextConsumed, mountEntries = [], onAddMountedEntry, onClearMounted, onRemoveMountedEntry, connectedSessions = [], defaultSshSession, pinned = true, onTogglePin, aiAgent = 'claude', onAgentChange }) => {
+export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContextConsumed, mountEntries = [], onAddMountedEntry, onClearMounted, onRemoveMountedEntry, connectedSessions = [], defaultSshSession, pinned = true, onTogglePin, view = 'ai', onViewChange, aiAgent = 'claude', onAgentChange }) => {
+  const activeView = view;
   // 채팅창 내에서 독립적으로 전환 가능한 에이전트 (전역 설정과 분리)
   const [currentAgent, setCurrentAgentState] = useState<AgentType>(aiAgent);
   const currentAgentRef = useRef<AgentType>(aiAgent);
@@ -4302,9 +4306,44 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
           <button onClick={startNewConversation} title={tt('newConversation')}>＋</button>
           <button onClick={() => setShowHistoryPanel(v => !v)} title={tt('historyToggle')} className={showHistoryPanel ? 'active' : ''}>≡</button>
           <button onClick={trashCurrentConversation} title={tt('clear')}>🗑</button>
+          {onViewChange && (
+            <button
+              className={`claude-chat-view-toggle ${activeView === 'messenger' ? 'messenger' : 'ai'}`}
+              onClick={() => onViewChange(activeView === 'messenger' ? 'ai' : 'messenger')}
+              title={activeView === 'messenger' ? 'AI chat로 전환' : '메신저로 전환'}
+            >
+              {activeView === 'messenger' ? '🤖' : '💬'}
+            </button>
+          )}
           {onClose && <button className="claude-chat-close" onClick={onClose} title={tt('close')}>×</button>}
         </div>
       </div>
+      <div className="claude-chat-view-tabs">
+        <button
+          className={`claude-chat-view-tab ${activeView === 'ai' ? 'active' : ''}`}
+          onClick={() => onViewChange?.('ai')}
+        >🤖 AI Chat</button>
+        <button
+          className={`claude-chat-view-tab ${activeView === 'messenger' ? 'active' : ''}`}
+          onClick={() => onViewChange?.('messenger')}
+        >💬 메신저</button>
+        <div className="claude-chat-view-status">
+          <span className="claude-chat-view-status-dot" />
+          메신저 백그라운드 실행 중
+        </div>
+      </div>
+      {activeView === 'messenger' ? (
+        <div className="claude-chat-messenger-pane">
+          <MessengerWorkspace
+            connectedSessions={connectedSessions.map(s => ({
+              panelId: s.sessionId || s.termId,
+              sessionId: s.sessionId,
+              sessionName: s.label,
+            }))}
+          />
+        </div>
+      ) : (
+      <>
       {showUsagePanel && (
         <div className="claude-chat-usage-panel claude-chat-usage-popup"
           style={usagePopupPos ? { left: usagePopupPos.left, bottom: usagePopupPos.bottom, right: 'auto' } : undefined}
@@ -5784,6 +5823,7 @@ export const ClaudeChat: React.FC<Props> = ({ onClose, pendingContext, onContext
         </div>,
         document.body,
       )}
+      </>)}
     </div>
   );
 };

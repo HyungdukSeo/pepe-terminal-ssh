@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 type Peer = { id: string; name: string; host: string; port: number; lastSeen: number; online?: boolean };
 type Msg = { id: string; peerId: string; direction: 'in' | 'out'; kind: 'text' | 'file'; text?: string; fileName?: string; filePath?: string; size?: number; ts: number };
-type Prefs = { enabled?: boolean; displayName?: string; retainEnabled?: boolean; retainDays?: number; downloadDir?: string; hidePresence?: boolean };
+type Prefs = { enabled?: boolean; displayName?: string; retainEnabled?: boolean; retainDays?: number; downloadDir?: string; hidePresence?: boolean; popupNotify?: boolean; popupStyle?: 'toast' | 'edge' };
 type State = { self?: { id: string; name: string; port: number; hidden?: boolean }; peers: Peer[]; messages: Msg[]; prefs: Prefs };
 type RemoteEntry = { name: string; isDir: boolean; size?: number; mtime?: number };
 type ConnectedSession = { panelId: string; sessionId?: string; sessionName?: string; host?: string; port?: number };
@@ -58,7 +58,9 @@ function scanLabel(payload: any) {
 
 export const MessengerWorkspace: React.FC<{ connectedSessions?: ConnectedSession[] }> = ({ connectedSessions = [] }) => {
   const [state, setState] = useState<State>(emptyState);
-  const [selectedPeerId, setSelectedPeerId] = useState('');
+  const [selectedPeerId, setSelectedPeerId] = useState(() => {
+    try { return localStorage.getItem('messenger:lastSelectedPeerId') || ''; } catch { return ''; }
+  });
   const [text, setText] = useState('');
   const [saving, setSaving] = useState(false);
   const [scanText, setScanText] = useState('');
@@ -86,8 +88,7 @@ export const MessengerWorkspace: React.FC<{ connectedSessions?: ConnectedSession
   useEffect(() => {
     let disposed = false;
     (async () => {
-      const prefs = await (window as any).api?.getUIPrefs?.().catch(() => ({}));
-      const res = await (window as any).api?.messengerStart?.(prefs?.messenger || {});
+      const res = await (window as any).api?.messengerGetState?.().catch(() => null);
       if (!disposed && res?.state) {
         setState(res.state);
         setSelectedPeerId((cur) => cur || res.state.peers?.[0]?.id || '');
@@ -108,9 +109,23 @@ export const MessengerWorkspace: React.FC<{ connectedSessions?: ConnectedSession
     return () => {
       disposed = true;
       if (off) off();
-      void (window as any).api?.messengerStop?.();
     };
   }, []);
+
+  useEffect(() => {
+    try {
+      if (selectedPeerId) localStorage.setItem('messenger:lastSelectedPeerId', selectedPeerId);
+      else localStorage.removeItem('messenger:lastSelectedPeerId');
+    } catch {}
+  }, [selectedPeerId]);
+
+  useEffect(() => {
+    if (!state.peers.length) return;
+    const stillExists = selectedPeerId && state.peers.some(p => p.id === selectedPeerId);
+    if (stillExists) return;
+    const fallback = state.peers.find(p => p.id === selectedPeerId)?.id || state.peers[0]?.id || '';
+    if (fallback && fallback !== selectedPeerId) setSelectedPeerId(fallback);
+  }, [state.peers, selectedPeerId]);
 
   const selectedPeer = state.peers.find(p => p.id === selectedPeerId);
   const messages = useMemo(() => state.messages.filter(m => m.peerId === selectedPeerId).sort((a, b) => a.ts - b.ts), [state.messages, selectedPeerId]);
@@ -150,6 +165,8 @@ export const MessengerWorkspace: React.FC<{ connectedSessions?: ConnectedSession
   const retainEnabled = !!state.prefs.retainEnabled;
   const retainDays = Number(state.prefs.retainDays) || 30;
   const hidePresence = !!state.prefs.hidePresence;
+  const popupNotify = state.prefs.popupNotify !== false;
+  const popupStyle = state.prefs.popupStyle || 'toast';
   const selectedOnline = !!selectedPeer?.online;
   const canSend = !!selectedPeerId && selectedOnline && !hidePresence;
 
@@ -369,6 +386,17 @@ export const MessengerWorkspace: React.FC<{ connectedSessions?: ConnectedSession
                 <input type="checkbox" checked={hidePresence} onChange={e => updatePrefs({ hidePresence: e.target.checked })} />
                 <span>나의 접속 숨기기</span>
               </label>
+              <label className="messenger-check">
+                <input type="checkbox" checked={popupNotify} onChange={e => updatePrefs({ popupNotify: e.target.checked })} />
+                <span>팝업 알림</span>
+              </label>
+              <label>
+                <span>팝업 스타일</span>
+                <select value={popupStyle} onChange={e => updatePrefs({ popupStyle: e.target.value === 'edge' ? 'edge' : 'toast' })}>
+                  <option value="toast">토스트</option>
+                  <option value="edge">가장자리 슬라이드</option>
+                </select>
+              </label>
               <label>
                 <span>저장 기간(일)</span>
                 <input type="number" min={1} max={3650} disabled={!retainEnabled} value={retainDays} onChange={e => updatePrefs({ retainDays: Number(e.target.value) || 30 })} />
@@ -391,7 +419,7 @@ export const MessengerWorkspace: React.FC<{ connectedSessions?: ConnectedSession
             return (
               <button
                 key={peer.id}
-                className={`messenger-peer ${peer.id === selectedPeerId ? 'active' : ''} ${peer.online ? 'online' : 'offline'}`}
+                className={`messenger-peer ${peer.id === selectedPeerId ? 'active' : ''} ${peer.online ? 'online' : 'offline'} ${unread > 0 ? 'has-unread' : ''}`}
                 onClick={() => setSelectedPeerId(peer.id)}
                 onContextMenu={e => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, peerId: peer.id }); }}
               >
